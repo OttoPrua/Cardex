@@ -2,6 +2,31 @@
 
 **中文** | [English](changelog.en.md) · 返回 [README](../README.md)
 
+## 2026-09-13 · v0.10.17：Goal 模式（字面 /goal、successor 设计、终端身份）
+
+- 可复制的原生 `/goal` 改为字面合同绝对路径 + SHA256，不再使用 TUI 不会展开的 `$(cat …)`。冻结合同含最新有效设计路径/摘要/输入身份/决策。
+- 手工子进程在 exec 前设置 `SysProcAttr` Foreground+Ctty，恢复前台进程组并保留错误，不再使用全局 `afterCmdStart`。Darwin PTY 测试调用生产 helper。
+- `design-result` 在既有 admission 锁内持久化新鲜设计与轮次后再发布 successor；`CurrentRound==MaxRounds` 不再创建 writer。Goal `repair` 拒绝快捷入口并引导 `design-result -decision revise`；普通非 Goal repair 不变。
+- 完成设计 Task 不再用 prompt hash 冒充结果；复用 ReviewOutput/result-gate 或有效外部收据。接纳/启动时复验 artifact 与输入漂移。
+- 终端接受要求真实 start/process/workspace 身份并消费冻结 InputDigest；`State=exited` 且 PID 0 不是已启动。保留退出后 hold 恢复。
+
+## 2026-09-13 · Goal 模式 S2：按独立 Astra D3 修复现有 Goal 垂直
+
+- 原生观察改为已证明的 Grok schema：`last_classifier_verdict=achieved`、`status=complete`、`params.update.goal_id`、summary `info.id`/`info.cwd`；`total_verify_rounds=0` 可以是有效完成。发明的 `classifier_verdict`/`evidence_complete` 不能证明 done。`budget_limited`/`not_achieved` 保持非接受。
+- 接受 done/failed 必须有精确 attempt，并走现有 `commitTaskTransition`，让 DAG 看到 `LastCommittedTransitionID` 与 `taskDurablyDone`。缺 attempt 的原生文件不是 done。custody 未释放时不关闭 attempt。
+- Goal writer 在第一次可见前就是完整 Goal 绑定任务。手工 launch 走短 admission（DAG/写域/资源/`max_parallel`），生命周期在 task/process/lease。Grok argv 保留 sandbox/permission/`--no-memory`/`--no-subagents`/`--disable-web-search` 与完整阶段合同 digest。
+- Goal 入场要求已完成的独立 Astra/Fable 设计任务或外部收据。`design-result` 可消费 failed/paused/needs-input/`budget_limited` 做 stop/input/一个 Goal 后继，不制造 done。
+- 普通 `workflow show` JSON 顶层仍是 `id`/`goal`/`status`。能力矩阵：Grok complete+restart 已证明；pause/resume 与自动未验证；Kimi/Codex/Claude/Cursor/agy/OpenCode 为 `manual-only`/`unverified`；Gemini 仍拒绝。`goal-sync` 不启动 provider，但会更新阶段事实。
+
+## 2026-09-13 · Goal 模式 S1：给目标，不是每一步（未接受：budget_limited/not_achieved）
+
+- 在现有 WorkflowRecord / Task / SessionID / admission / attempt / lease 上落地最小完整 Goal 工作流，不另起队列或状态机。`boardgoal.go` 仍是只读看板投影。
+- 设计节点只读（可记录独立 Astra 设计，不改变 `model=fable` 路由）；执行阶段绑 outcome/scope/depends/write-domain/acceptance/provider/session/budget/硬超时/stop。
+- CLI：`workflow init` 可绑定设计节点与 `-select-goal`；`writer -mode manual|native`；`goal-run -manual` 前台启动 Grok `/goal`（先绑 session）；`goal-sync` 只读；`design-repair` 至多一轮且必须消费当前候选与审核结果；`show` 打印真实 session/goal/attempt/status 与能力矩阵。`native` 在自动协议未证明时拒绝。
+- Grok 为 `manual-only`（TUI `/goal` 已证明启动；自动完成证明未完成）。`-p` 不是 goal 证明。Kimi 披露源码级 `print`/`goal.summary` 但未探测配置引擎。Codex/Claude/Cursor/agy headless ongoing-goal 未证明。Gemini 仍拒绝。引擎档案继承真实可执行文件限制。
+- 普通无 `goal` 字段的卡保持原 `eligible()` 语义。manual/active/paused/unknown Goal 不进普通 tick / `limit_paused` 自动续跑。启动前崩溃保持 unstarted；启动后为 unknown 并阻止再派发。
+- `goal-sync` 幂等，拒绝陈旧 revision/别的 session 或 goal/旧 attempt。completed 需 classifier 裁决且进程/lease 已释放才接受 done。取消先撤销调度；无 stop 证据不声称 canceled。设计修复本交付最多一轮。
+
 ## 2026-09-11 · v0.10.16：原生完成与审核产物验收
 
 - Grok 支持封闭的 plan 事件和极窄的 `_meta: {synthetic: true}` 合成兼容形式；未知扩展、未闭合工具、异常或迟到终态继续挂起。原生、解析和进程诊断只记录受控类别与计数，保留未知值。

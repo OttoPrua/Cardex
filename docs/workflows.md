@@ -19,7 +19,8 @@ Cardex 推荐两种工作流拓扑：
 | 显式 write domain | 已执行 | 仓相对路径先规范化；同仓 exact/subtree 重叠、同 domain/lineage、同封闭资源均串行 |
 | 旧卡兼容 | 已执行 | 写卡没声明 write domain 时，同一 Git common dir 仍按整仓串行；不会因升级而意外放宽 |
 | 独立审核角色 | 部分执行 | `design-review` 是只读类型并不占写域。`cardex workflow` 派出的 reviewer 额外由机器保证：另一张卡、`review_of` 指向 writer、无写域、不继承 writer session、同一 writer 同时只有一个 active reviewer |
-| 直派 / 联邦模式名、父子 manager | 部分执行 | `cardex workflow` 有耐久记录：`mode` = `serial` \| `federated`、`module_id` / `goal_id`、federated 的 `parent_id`、写域、轮次上限、候选身份、三道 effect gate。Task 侧新增的一等字段只有 `workflow_id` 与 `integration_gate`；manager 层级本身仍是约定 |
+| 直派 / 联邦模式名、父子 manager | 部分执行 | `cardex workflow` 有耐久记录：`mode` = `serial` \| `federated`、`module_id` / `goal_id`、federated 的 `parent_id`、写域、轮次上限、候选身份、三道 effect gate、可选设计谱系。Task 侧一等字段包括 `workflow_id`、`integration_gate` 与可选 `goal`（阶段执行 / 原生 goal 事实）；没有 `goal` 的普通卡语义不变。manager 层级本身仍是约定 |
+| Goal 模式（给目标，不是每一步） | 已执行（Grok 为 manual-only） | 一个阶段是一次连续的诊断/实现/测试/修复，不是按工具拆卡。`workflow writer -mode manual` 只允许一个 writer，且须先绑定已完成的独立设计；`goal-run -manual` 用现有 admission/attempt/lease 前台启动 Grok TUI（短 admission 锁，生命周期在 task/process/lease）；`goal-sync` 不启动 provider，但会更新阶段事实。active/paused/unknown 的 manual Goal 不会被普通 `eligible()` / running / `limit_paused` 自动续跑。tick 仍不推进 workflow |
 | 审核通过、集成通过、live、用户验收 | 不由 `done` 推断 | 必须是不同证据门；Cardex 卡完成不自动授权发布、服务重启、设备操作、凭证使用或外部写入 |
 | reviewer attempt custody | 部分执行 | 已机器执行的最小 custody 见上一行。完整的 `exited` ≠ `producerGone`（PID/PGID 身份、后代消失、workspace lease、runner 残留、后继 attempt 缺席）与 20 秒 quiet-window 仍是 W2 路线图，尚未落地 |
 | 语义集成门 | 已执行 | 带 `integration_gate` 的卡默认 held。tick 派发与 `cardex release` 都会**重新**从审核日志解析 verdict，要求 `pass` 且 `p0`/`p1` 皆空、候选 commit/tree 与冻结记录一致、custody 一致。durable review `done` 不够 |
@@ -309,15 +310,63 @@ cardex workflow init -mode serial -module auth -goal-id auth-token-v1 \
   -write-domain-component auth -write-paths internal/auth \
   -engine grok-build -max-rounds 3
 
-cardex workflow writer <id>                              # 派唯一 writer（钉定引擎，review_after=false）
+cardex workflow writer <id>                              # 派唯一普通 writer（tick 可派发；review_after=false）
+cardex workflow writer <id> -mode manual                 # 派唯一 Goal writer（不进普通 tick；须已绑定独立设计）
+cardex workflow goal-run <id> -manual [-budget N]        # 前台启动交互式 Grok /goal（绑定 session 后才有效果）
+cardex workflow goal-sync <id>                           # 不启动 provider；核对原生证据并更新阶段事实
+cardex workflow design-result <id> -decision stop|input|successor -observation failed|paused|needs-input|budget_limited
 cardex workflow freeze-candidate <id> -commit C -tree T  # writer 终止后冻结精确字节
 cardex workflow review <id>                              # 派独立只读 reviewer，绑定该候选
 cardex workflow ingest-review <id>                       # 重新解析审核日志，记录 verdict 与 hold 原因
-cardex workflow repair <id>                              # 有界修复轮；超过 max-rounds 即 exhausted
+cardex workflow repair <id>                              # 普通卡有界实现修复轮；Goal 卡拒绝并引导 design-result -decision revise
+cardex workflow design-repair <id> -model M -runner R -identity Astra  # 至多一轮设计修复，必须消费当前候选与审核结果
 cardex workflow try-release-integration <id>             # 仅 admissible pass 才把集成卡转 queued
 cardex workflow mark <id> -kind external|owner|exhausted -summary ...
-cardex workflow list|show <id>
+cardex workflow list|show <id>                           # 普通记录顶层仍是 id/goal/status；Goal 投影为附加字段
 ```
+
+### Goal 模式：给目标，而不是每一步
+
+设计角色与执行角色分开：设计节点只读，必须绑定已完成的独立 Astra/Fable 设计任务或受治理的外部收据（digest + 当前输入 + 实际模型）。任意调用方字符串不是设计证明。不改变现有 `model=fable` Cursor 路由。执行阶段绑在同一张 Task 上：outcome / scope / depends / write-domain / acceptance / provider / session / budget / 硬超时 / stop / return-to-design。一个阶段是一次连续执行，不是按工具拆卡。写域不重叠且 `max_parallel` > 1 时阶段可以并行；默认 `max_parallel` 为 1 则串行。审核仍走现有 `review` / `ingest-review` / `repair`；非接受的阶段观察（failed/paused/needs-input/budget_limited）走 `design-result` 做 stop、input 或一个 Goal 绑定的后继，不把阶段制造成 done。本交付至多一轮设计修复，然后停止。
+
+原生 ongoing-goal 能力由 runner 适配器持有，`workflow show` 打印同一张表：
+
+| runner | level | verified | 原因（摘要） |
+|---|---|---|---|
+| `grok-build` | `manual-only` | 是 | TUI 原生 `/goal` 的 complete 与同 session 重启已手工证明。自动协议与进行中的 pause/resume 未验证。`grok -p` 是单回合，不是 goal 证明 |
+| `kimi-cli` | `manual-only` | 否 | 源码支持 headless create 与 `goal.summary`；配置引擎探测未验证。不是「没有原生 goal」 |
+| `codex` / `claude` / `cursor` / `agy` | `manual-only` | 否 | 有原生候选 API；headless ongoing-goal 适配器未验证。不是一律 unsupported |
+| `opencode` | `manual-only` | 否 | 当前普通 runner 之一；原生 ongoing-goal 未验证 |
+| `gemini` | `unsupported`（拒绝） | 否 | 已退休，新 workflow/goal 工作继续拒绝 |
+| `config.engines` 档案 | `manual-only` | 否 | 继承真实可执行文件限制；headless ongoing-goal 未验证 |
+
+复制即可用的 Grok 手工入口（自动入口尚未证明，不要用 `-p`）。独立 Astra 设计通过收据绑定，不是 `grok-build` + `gpt-6-astra`：
+
+```bash
+cardex workflow init -mode serial -module auth -goal-id auth-token-v1 \
+  -select-goal "交付独立审核过的 auth token 垂直" \
+  -dir /absolute/path/to/auth-worktree \
+  -terminal-criteria "独立审核 pass 且 p0/p1 皆空；集成与 live 仍 held" \
+  -write-domain-id auth-tokens -write-domain-lineage auth-tokens-lineage \
+  -write-domain-component auth -write-paths internal/auth \
+  -engine grok-build -max-rounds 3 \
+  -design-receipt /absolute/path/to/astra-design.json
+
+cardex workflow writer <id> -mode manual
+cardex workflow goal-run <id> -manual -budget 350000
+# 在 Grok TUI 粘贴字面路径+摘要（不要 $(cat)；TUI 不是 shell）：
+#   /goal Read and implement the complete stage contract at <abs-path>; verify SHA256 <digest> before any write. --budget 350000
+#   /goal status
+# 进行中的 pause/resume 未验证，不要当成已接受行为。
+cardex workflow goal-sync <id>
+cardex workflow show <id>
+cardex workflow design-result <id> -design-receipt /absolute/path/to/fresh-astra-result.json \
+  -decision accept|revise|stop|input|successor -observation complete|failed|paused|needs-input|budget_limited
+```
+
+预算与停止：provider token 预算是软的；Cardex `step_timeout_min`（以及卡上的 `hard_timeout_seconds`）才是硬截止。启动前绑定唯一 `session_id`。启动前崩溃保持 unstarted，可在同一 writer 上重试；启动后崩溃为 unknown，阻止再派发，也不会再 admit 第二个 writer。`goal-sync` 核对 session + `params.update.goal_id` + 当前 attempt/revision，并校验 summary `info.id`/`info.cwd`：原生 active → running；已验证 paused/needs-input → held 且同一 session 显式续跑；`status=complete` 且 `last_classifier_verdict=achieved`、进程/后代/lease 已释放、且存在精确 attempt 的 durable transition → done；真失败且 custody 在 → failed；`budget_limited`/`not_achieved`、TERM/丢失/缺终态/矛盾终态、截断 updates、或没有 `last_classifier_verdict=achieved` 的 fail-open complete → held unknown，不猜成功。原生 completed 但 TUI/后代/lease 仍在，只是观察，不是 accepted done。取消先撤销调度资格再停 provider；没有 stop 证据不得声称 canceled。重复 sync 幂等；陈旧 revision、别的 session/goal、旧 attempt 一律拒绝。
+
+一条走完设计审核的例子：`init -design-receipt` → `writer -mode manual` → `goal-run -manual` → 操作员 `/goal` → `goal-sync` 直到 done → `freeze-candidate` → `review` → `ingest-review`。若阶段是 failed/paused/needs-input/`budget_limited`：`design-result` 可 stop、要求 input，或打开一个 Goal 绑定的后继（paused/needs-input 用同 session `goal-run`，不是新 writer）。若审核 `concerns`/`block`：普通卡实现修复走 `repair`（受 `max-rounds` 约束）；Goal 卡的 `repair` 被拒绝，须走 `design-result -decision revise` 消费新鲜独立设计。需要新的独立设计节点时走 `design-repair`（本交付最多一次），新节点必须消费当前候选与审核结果。区分 **provider native goal**（Grok TUI `/goal`）、**阶段 Goal**（Task 上的绑定）和 **看板投影**（`boardgoal.go` 只读）。`try-release-integration` 仍然只在 admissible `pass` 时放行集成卡；live/cutover 另门。
 
 联邦模式只多一个 `-mode federated -parent <program-workflow-id>`：父记录必须已存在且可加载，否则 fail closed。`serial` 模式不接受 `-parent`。
 

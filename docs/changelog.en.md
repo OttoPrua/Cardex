@@ -1,5 +1,30 @@
 # cardex changelog
 
+## 2026-09-13 · v0.10.17: Goal mode (literal /goal, successor design, terminal identity)
+
+- The copyable native `/goal` is a literal contract absolute path + SHA256. Do not use `$(cat …)`; the TUI is not a shell. The frozen contract includes the latest valid design path/digest/input identity/decision.
+- Manual-only children set `SysProcAttr` Foreground+Ctty before exec, restore the prior foreground group, and preserve errors. They do not use global `afterCmdStart`. Darwin PTY tests call the shipped helper.
+- `design-result` persists the fresh design and round under the existing admission lock before publishing a successor; `CurrentRound==MaxRounds` creates no writer. Goal `repair` is refused toward `design-result -decision revise`. Ordinary non-Goal repair is unchanged.
+- A completed design Task cannot prove output with a prompt hash; reuse ReviewOutput/result-gate or a valid external receipt. Admission/start re-verify artifact and input drift.
+- Terminal acceptance requires real start/process/workspace identity and consumes the frozen InputDigest. `State=exited` with PID 0 is not started. Post-exit hold recovery remains.
+
+## 2026-09-13 · Goal mode S2: repair the existing Goal vertical per independent Astra D3
+
+- Native observation uses the proven Grok schema: `last_classifier_verdict=achieved`, `status=complete`, `params.update.goal_id`, summary `info.id`/`info.cwd`; `total_verify_rounds=0` can be a valid complete. Invented `classifier_verdict`/`evidence_complete` do not prove done. `budget_limited`/`not_achieved` stays nonaccepted.
+- Accepted done/failed require the exact attempt and go through existing `commitTaskTransition` so DAG consumers see `LastCommittedTransitionID` and `taskDurablyDone`. Native-looking files without that attempt are not done. Attempts stay open until custody is released.
+- A Goal writer is published as a complete Goal-bound task before first visibility. Manual launch uses a short admission section (DAG/write-domain/resource/`max_parallel`); lifetime custody stays with task/process/lease. Grok argv keeps sandbox/permission/`--no-memory`/`--no-subagents`/`--disable-web-search` and a full stage-contract digest.
+- Goal admission requires a completed independent Astra/Fable design task or external receipt. `design-result` can consume `failed`/`paused`/`needs-input`/`budget_limited` for stop, input, or one Goal-bound successor without manufacturing done.
+- Ordinary `workflow show` JSON keeps top-level `id`/`goal`/`status`. Capability matrix: Grok complete+restart proven; pause/resume and automatic unverified; Kimi/Codex/Claude/Cursor/agy/OpenCode are `manual-only`/`unverified`; Gemini stays rejected. `goal-sync` does not launch a provider but does update stage facts.
+
+## 2026-09-13 · Goal mode S1: give the goal, not every step (not accepted: budget_limited/not_achieved)
+
+- Lands the smallest complete Goal workflow on existing WorkflowRecord / Task / SessionID / admission / attempt / lease owners. No second queue or universal state machine. `boardgoal.go` remains a read-only board projection.
+- Design nodes are read-only (independent Astra design may be recorded; existing `model=fable` routing is unchanged). The execution stage binds outcome/scope/depends/write-domain/acceptance/provider/session/budget/hard-timeout/stop.
+- CLI: `workflow init` can bind a design node and `-select-goal`; `writer -mode manual|native`; `goal-run -manual` launches foreground Grok `/goal` after binding a session; `goal-sync` is read-only; `design-repair` is at most one round and must consume the current candidate and review; `show` prints the actual session/goal/attempt/status and the capability matrix. `native` is refused while automatic protocol is unproven.
+- Grok is `manual-only` (TUI `/goal` proven started; complete/automatic proof pending). `-p` is not goal proof. Kimi discloses source-level `print`/`goal.summary` without probing the configured engine. Codex/Claude/Cursor/agy headless ongoing-goal remains unproven. Gemini stays rejected. Engine profiles inherit real executable limits.
+- Ordinary cards without a `goal` field keep current `eligible()` semantics. Manual/active/paused/unknown Goal tasks are excluded from ordinary tick / `limit_paused` auto-resume. Crash before start stays unstarted; crash after start is unknown and blocks redispatch.
+- `goal-sync` is idempotent and rejects stale revision, other session/goal, or an old attempt. Completed is accepted only with a classifier verdict and released process/lease. Cancel revokes eligibility first and does not claim canceled without stop evidence. This delivery allows at most one design repair round.
+
 ## 2026-09-11 · v0.10.16: native completion and review artifact acceptance
 
 - Grok supports closed plan events and the narrow synthetic `_meta: {synthetic: true}` compatibility shape. Unknown extensions, open tools, abnormal terminals and late semantic events remain held. Bounded diagnostics preserve controlled categories, counts and unknown process values.

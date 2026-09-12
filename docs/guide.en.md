@@ -2,6 +2,26 @@
 
 [中文](guide.md) | **English** · back to [README](../README.en.md)
 
+## Goal mode (give the goal, not every step)
+
+Unlike a fine-grained `sequence` card, a Goal stage is one continuous diagnosis/implementation/test/fix. The operator gives the objective and terminal criteria, not every prompt. The design node is read-only; the execution writer owns the write domain. Existing `model=fable` routing is unchanged; an independent Astra design may be recorded on the design node.
+
+Grok is currently `manual-only`: complete and same-session restart are manually proven; automatic protocol and active pause/resume remain unverified. Copyable:
+
+```bash
+cardex workflow init ... -design-receipt /path/to/astra-design.json
+cardex workflow writer <id> -mode manual
+cardex workflow goal-run <id> -manual -budget 350000
+# Grok TUI (literal path+digest; do not use $(cat)):
+#   /goal Read and implement the complete stage contract at <abs-path>; verify SHA256 <digest> before any write. --budget 350000
+#   /goal status
+cardex workflow goal-sync <id>
+cardex workflow show <id>
+cardex workflow design-result <id> -design-receipt R -decision stop|input|successor|accept|revise -observation failed|paused|needs-input|budget_limited|complete
+```
+
+Do not treat `grok -p` as goal proof. `goal-sync` does not launch a provider; it does update stage facts. The provider budget is soft; `step_timeout_min` is the hard deadline. The capability matrix is in `workflow show` and [recommended workflows](workflows.en.md). Kimi/Codex/Claude/Cursor/agy/OpenCode are `manual-only`/`unverified`; Gemini stays rejected. Independent Astra design uses a receipt or a completed design task, not a `grok-build` + `gpt-6-astra` tuple.
+
 ## Progress pull → coordinate → auto-advance
 
 The orchestration loop when several sessions work in parallel:

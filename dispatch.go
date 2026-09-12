@@ -10,6 +10,9 @@ func eligible(t *Task, now time.Time) bool {
 	if t == nil || !t.schedulingAllowed() {
 		return false
 	}
+	if goalBlocksOrdinaryDispatch(t) {
+		return false
+	}
 	switch t.Status {
 	case statusQueued:
 		return t.NotBeforeEpoch == 0 || now.Unix() >= t.NotBeforeEpoch

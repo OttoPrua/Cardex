@@ -328,6 +328,9 @@ type Task struct {
 	// Only review consumers require these. Other tasks have no artifact obligation.
 	ReviewCandidate *WorkflowCandidate `json:"review_candidate,omitempty"`
 	ReviewOutput    *reviewOutput      `json:"review_output,omitempty"`
+	// Goal is the stage execution / native-goal fact. Ordinary cards omit it and
+	// keep current eligible()/tick semantics.
+	Goal *TaskGoalBinding `json:"goal,omitempty"`
 }
 
 func (t *Task) touch() { t.UpdatedAt = time.Now().Format(time.RFC3339) }

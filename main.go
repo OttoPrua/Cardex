@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const version = "0.10.16"
+const version = "0.10.17"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -173,10 +173,13 @@ func printUsage() {
                                    # （kimi / glm-cn / glm-global / minimax-cn / minimax-global /
                                    #   mimo / opencode-go / ollama），add 后配好密钥即可
                                    #   -runner <引擎名> 钉定主跑，或加入 fallback_order 参与降级链
-  workflow  init|list|show|writer|freeze-candidate|review|ingest-review|repair|
+  workflow  init|list|show|writer|goal-run|goal-sync|design-result|design-repair|
+            freeze-candidate|review|ingest-review|repair|
             try-release-integration|mark
                                    # 串联/联邦工作流的耐久记录：绑定目标、写域、轮次上限、
-                                   # 候选身份与集成门。每一步都是显式命令，tick 不自动推进。
+                                   # 候选身份与集成门。Goal 模式：writer -mode manual +
+                                   # goal-run -manual 前台 /goal；goal-sync 不启动 provider，
+                                   # 但会更新阶段事实。每一步都是显式命令，tick 不自动推进。
                                    # 集成卡默认 held，只有机器核验 verdict=pass（p0/p1 皆空）、
                                    # 候选与 custody 一致才可能释放；live/cutover 始终是另外的门
 `)

@@ -109,6 +109,7 @@ type WorkflowRecord struct {
 	Progress          WorkflowProgressCoords `json:"progress"`
 	Status            string                 `json:"status"`
 	MaterialNotify    *WorkflowNotify        `json:"material_notify,omitempty"`
+	DesignLineage     *WorkflowDesignLineage `json:"design_lineage,omitempty"`
 	CreatedAt         string                 `json:"created_at"`
 	UpdatedAt         string                 `json:"updated_at"`
 }
@@ -293,6 +294,17 @@ func normalizeWorkflowRecord(cfg *Config, wf *WorkflowRecord) error {
 	}
 	if wf.Status == "" {
 		wf.Status = workflowStatusDesign
+	}
+	if wf.DesignLineage != nil {
+		if err := normalizeDesignNode(wf.DesignLineage.Initial); err != nil {
+			return err
+		}
+		if err := normalizeDesignNode(wf.DesignLineage.LatestValid); err != nil {
+			return err
+		}
+		if wf.DesignLineage.RepairCount < 0 {
+			return fmt.Errorf("%w: design repair_count", errWorkflowMalformed)
+		}
 	}
 	return nil
 }

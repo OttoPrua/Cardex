@@ -84,6 +84,22 @@ Both modes use Cardex `depends_on`, normalized write-domain/resource claims, sep
 
 `cardex workflow` turns either topology into a durable record: it binds `serial`/`federated` mode, the module goal, a write domain, bounded rounds, and candidate identity, and creates a default-held integration card. Both tick dispatch and `cardex release` **re-derive** the independent review `verdict=pass` (empty `p0`/`p1`), candidate agreement, and reviewer custody for a gated card; a durable review `done` is not enough. Every transition is an explicit command — tick consults the integration gate read-only and never advances a workflow. Live and cutover have no release path in this tree.
 
+Goal mode means give the goal, not every step: the design node is read-only (bind a completed independent Astra/Fable design task or external receipt; existing `model=fable` Cursor routing is unchanged), and the execution stage stays on one Task for continuous diagnosis/implementation/test/fix. Grok native `/goal` is `manual-only`: complete and same-session restart are manually proven; the automatic protocol and active pause/resume remain unverified. `grok -p` is a single turn, not goal proof. Kimi/Codex/Claude/Cursor/agy/OpenCode have native candidates but unverified adapters (`manual-only`/`unverified`, not blanket unsupported); Gemini stays rejected. Copyable:
+
+```bash
+cardex workflow init ... -engine grok-build -design-receipt /path/to/astra-design.json
+cardex workflow writer <id> -mode manual
+cardex workflow goal-run <id> -manual -budget 350000
+# In the Grok TUI (literal path+digest; do not use $(cat); the TUI is not a shell):
+#   /goal Read and implement the complete stage contract at <abs-path>; verify SHA256 <digest> before any write. --budget 350000
+#   /goal status
+cardex workflow goal-sync <id>    # does not launch a provider; does update stage facts
+cardex workflow show <id>         # ordinary records keep top-level id/goal/status; Goal fields are additive
+cardex workflow design-result <id> -design-receipt R -decision stop|input|successor|accept|revise -observation failed|paused|needs-input|budget_limited|complete
+```
+
+The provider budget is soft; `step_timeout_min` is the hard deadline. Active pause/resume is unverified. `goal-sync` accepts done only with native `last_classifier_verdict=achieved`, matching session/goal/attempt, matching frozen InputDigest, and released process/descendant/lease. Goal `repair` is refused. See [recommended workflows · Goal mode](docs/workflows.en.md). Distinguish provider native goal, stage Goal, and board projection.
+
 ## Low-token management sessions (optional Skill)
 
 This repository includes [`perlica-low-token-manager`](skills/perlica-low-token-manager/SKILL.md) as a portable attachment for long-lived project-management agents. It does not change the Cardex scheduler, and it should not be injected into ordinary Writer, Reviewer, test, or release cards; execution cards receive only their bounded task contract.

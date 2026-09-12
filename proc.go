@@ -33,6 +33,7 @@ var (
 	procGroups      = map[int]bool{}
 	killHandlerOnce sync.Once
 	taskExecRoot    sync.Map // taskID -> cardex root, for durable attempt PID bind
+	afterCmdStart   func(*exec.Cmd)
 )
 
 // taskPGIDs 是"任务→当前活着的执行器 pid 集合"的映射,供 CG-5 巡逻查任务进程组存活。
@@ -330,6 +331,9 @@ func runCmdRegisteredHarvestForTaskWorkspace(cmd *exec.Cmd, resultInBuf func() b
 		releaseGate()
 		abortLease()
 		return err
+	}
+	if hook := afterCmdStart; hook != nil {
+		hook(cmd)
 	}
 	if lease != nil && lease.commit != nil {
 		lease.commit()

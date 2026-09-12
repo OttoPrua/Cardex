@@ -356,7 +356,9 @@ func assertTaskWriteAuthority(root string, current, next *Task) error {
 			return errStaleTaskWrite
 		}
 		if current.Status == statusHeld && next.Status == statusFailed {
-			return errStaleTaskWrite
+			if current.Goal == nil {
+				return errStaleTaskWrite
+			}
 		}
 		if current.Status == statusCanceled && next.Status != statusCanceled {
 			return errStaleTaskWrite
@@ -370,6 +372,11 @@ func assertTaskWriteAuthority(root string, current, next *Task) error {
 		if next.ActiveAttemptID != "" {
 			if live, _ := liveAttempt(root, current); !live {
 				replacingDead = true
+			}
+		}
+		if next.ActiveAttemptID == "" {
+			if live, _ := liveAttempt(root, current); !live {
+				clearing = true
 			}
 		}
 		if !clearing && !replacingDead {
@@ -1355,6 +1362,7 @@ func terminalize(root string, id, status, actor, reason string, detail map[strin
 			}
 		}
 		revokeScheduling(t)
+		markGoalCancelRequested(t)
 		t.touch()
 		return persistTaskCASLocked(root, t)
 	})
@@ -1397,6 +1405,13 @@ func terminalize(root string, id, status, actor, reason string, detail map[strin
 	}
 	t.Status = status
 	markControlTerminal(t)
+	if t.Goal != nil {
+		t.Goal.StopEvidence = true
+		if status == statusCanceled {
+			t.Goal.Observation = goalObsCanceled
+			t.Goal.ObservationNote = "canceled with stop evidence"
+		}
+	}
 	evType := evHeld
 	if status == statusCanceled {
 		evType = evCanceled

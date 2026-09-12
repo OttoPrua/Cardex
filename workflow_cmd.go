@@ -11,7 +11,7 @@ import (
 
 func cmdWorkflow(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("用法: cardex workflow init|list|show|writer|freeze-candidate|review|ingest-review|repair|try-release-integration|mark ...")
+		return fmt.Errorf("用法: cardex workflow init|list|show|writer|goal-run|goal-sync|design-result|design-repair|freeze-candidate|review|ingest-review|repair|try-release-integration|mark ...")
 	}
 	switch args[0] {
 	case "init":
@@ -22,6 +22,14 @@ func cmdWorkflow(args []string) error {
 		return cmdWorkflowShow(args[1:])
 	case "writer":
 		return cmdWorkflowWriter(args[1:])
+	case "goal-run":
+		return cmdWorkflowGoalRun(args[1:])
+	case "goal-sync":
+		return cmdWorkflowGoalSync(args[1:])
+	case "design-result":
+		return cmdWorkflowDesignResult(args[1:])
+	case "design-repair":
+		return cmdWorkflowDesignRepair(args[1:])
 	case "freeze-candidate":
 		return cmdWorkflowFreeze(args[1:])
 	case "review":
@@ -55,6 +63,53 @@ func workflowTarget(fs *flag.FlagSet, rootFlag *string, usage string) (string, *
 		return "", nil, nil, err
 	}
 	return root, cfg, wf, nil
+}
+
+// parseWorkflowFlags accepts both `cmd -flag v <id>` and `cmd <id> -flag v`.
+// Go's FlagSet stops at the first positional, which would silently drop
+// documented shapes like `goal-run <id> -manual`.
+func parseWorkflowFlags(fs *flag.FlagSet, args []string) error {
+	return fs.Parse(reshapeWorkflowArgs(fs, args))
+}
+
+func reshapeWorkflowArgs(fs *flag.FlagSet, args []string) []string {
+	takesValue := map[string]bool{}
+	if fs != nil {
+		fs.VisitAll(func(f *flag.Flag) {
+			if f == nil {
+				return
+			}
+			boolish := false
+			if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok {
+				boolish = bf.IsBoolFlag()
+			}
+			takesValue[f.Name] = !boolish
+		})
+	}
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if !strings.HasPrefix(a, "-") || a == "-" {
+			pos = append(pos, a)
+			continue
+		}
+		name := strings.TrimLeft(a, "-")
+		if eq := strings.IndexByte(name, '='); eq >= 0 {
+			name = name[:eq]
+			flags = append(flags, a)
+			continue
+		}
+		flags = append(flags, a)
+		if takesValue[name] && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			flags = append(flags, args[i+1])
+			i++
+		}
+	}
+	return append(flags, pos...)
 }
 
 // firstNonBlank is firstNonEmpty with trimming, so a flag holding only spaces
@@ -100,7 +155,15 @@ func cmdWorkflowInit(args []string) error {
 	engine := fs.String("engine", "", "writer/reviewer 引擎（必填，必须是 tick 能钉定且不会 fail-open 的执行器）")
 	writerEngine := fs.String("writer-engine", "", "写者引擎，默认同 -engine")
 	reviewerEngine := fs.String("reviewer-engine", "", "审核引擎，默认同 -engine")
-	if err := fs.Parse(args); err != nil {
+	selectGoal := fs.String("select-goal", "", "目标陈述（-goal 的别名）")
+	designModel := fs.String("design-model", "", "设计节点模型（只读角色；须配合 -design-receipt 或 -design-task）")
+	designRunner := fs.String("design-runner", "", "设计节点 runner（只读角色；须配合收据或已完成设计任务）")
+	designActualModel := fs.String("design-actual-model", "", "设计节点实际模型")
+	designActualRunner := fs.String("design-actual-runner", "", "设计节点实际 runner")
+	designIdentity := fs.String("design-identity", "", "独立设计身份（Astra/Fable）")
+	designReceipt := fs.String("design-receipt", "", "已完成独立设计的外部收据 JSON")
+	designTask := fs.String("design-task", "", "已完成的独立只读设计 Task ID")
+	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
 
@@ -111,6 +174,9 @@ func cmdWorkflowInit(args []string) error {
 	}
 	if strings.TrimSpace(*moduleID) == "" {
 		return fmt.Errorf("-module 不能为空")
+	}
+	if strings.TrimSpace(*goal) == "" {
+		*goal = strings.TrimSpace(*selectGoal)
 	}
 	if strings.TrimSpace(*goal) == "" {
 		return fmt.Errorf("-goal 不能为空")
@@ -180,6 +246,14 @@ func cmdWorkflowInit(args []string) error {
 		},
 		Status: workflowStatusDesign,
 	}
+	if err := bindInitialDesignProof(wf, designBindRequest{
+		Model: *designModel, Runner: *designRunner,
+		ActualModel: *designActualModel, ActualRunner: *designActualRunner,
+		Identity: *designIdentity, ReceiptPath: *designReceipt,
+		DesignTaskID: *designTask, Root: root,
+	}); err != nil {
+		return err
+	}
 	if err := normalizeWorkflowRecord(cfg, wf); err != nil {
 		return err
 	}
@@ -206,7 +280,7 @@ func cmdWorkflowList(args []string) error {
 	fs := flag.NewFlagSet("workflow list", flag.ContinueOnError)
 	rootFlag := fs.String("root", "", "数据目录")
 	asJSON := fs.Bool("json", false, "输出 JSON")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
 	root := resolveRoot(*rootFlag)
@@ -238,34 +312,135 @@ func cmdWorkflowList(args []string) error {
 func cmdWorkflowShow(args []string) error {
 	fs := flag.NewFlagSet("workflow show", flag.ContinueOnError)
 	rootFlag := fs.String("root", "", "数据目录")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
-	_, _, wf, err := workflowTarget(fs, rootFlag, "cardex workflow show <id>")
+	root, _, wf, err := workflowTarget(fs, rootFlag, "cardex workflow show <id>")
 	if err != nil {
 		return err
 	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(wf)
+	return encodeWorkflowShow(os.Stdout, root, wf)
 }
 
 func cmdWorkflowWriter(args []string) error {
 	fs := flag.NewFlagSet("workflow writer", flag.ContinueOnError)
 	rootFlag := fs.String("root", "", "数据目录")
 	prompt := fs.String("prompt", "", "覆盖写者 prompt（默认用 workflow-writer 模板）")
-	if err := fs.Parse(args); err != nil {
+	mode := fs.String("mode", "", "native 或 manual；空=普通 writer（tick 可派发）")
+	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
-	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow writer <id> [-prompt ...]")
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow writer <id> [-mode native|manual] [-prompt ...]")
 	if err != nil {
 		return err
 	}
-	t, err := admitWorkflowWriter(root, cfg, wf, *prompt)
+	t, err := admitWorkflowWriterMode(root, cfg, wf, *prompt, *mode)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("workflow %s writer=%s round=%d engine=%s\n", wf.ID, t.ID, wf.CurrentRound, t.PreferRunner)
+	modeNote := *mode
+	if modeNote == "" {
+		modeNote = "ordinary"
+	}
+	fmt.Printf("workflow %s writer=%s round=%d engine=%s mode=%s\n", wf.ID, t.ID, wf.CurrentRound, t.PreferRunner, modeNote)
+	return nil
+}
+
+func cmdWorkflowGoalRun(args []string) error {
+	fs := flag.NewFlagSet("workflow goal-run", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	manual := fs.Bool("manual", false, "前台启动交互式 Grok /goal（必填；-p 不是 goal 证明）")
+	budget := fs.Int64("budget", 0, "软 token 预算，写入 /goal --budget")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	if !*manual {
+		return fmt.Errorf("%w", errGoalManualRequired)
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow goal-run <id> -manual [-budget N]")
+	if err != nil {
+		return err
+	}
+	return launchManualWorkflowGoal(root, cfg, wf, *budget)
+}
+
+func cmdWorkflowGoalSync(args []string) error {
+	fs := flag.NewFlagSet("workflow goal-sync", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow goal-sync <id>")
+	if err != nil {
+		return err
+	}
+	t, err := syncWorkflowGoal(root, cfg, wf, GoalSyncRequest{})
+	if err != nil {
+		return err
+	}
+	obs, sess, goalID, attempt := "", "", "", ""
+	if t != nil {
+		sess, attempt = t.SessionID, t.ActiveAttemptID
+		if t.Goal != nil {
+			obs = t.Goal.Observation
+			goalID = t.Goal.NativeGoalID
+			if attempt == "" {
+				attempt = t.Goal.BoundAttemptID
+			}
+		}
+		fmt.Printf("workflow %s task=%s status=%s session=%s goal_id=%s attempt=%s observation=%s\n",
+			wf.ID, t.ID, t.Status, orDash(sess), orDash(goalID), orDash(attempt), orDash(obs))
+	}
+	return nil
+}
+
+func cmdWorkflowDesignResult(args []string) error {
+	fs := flag.NewFlagSet("workflow design-result", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	decision := fs.String("decision", "", "stop、input、successor、accept 或 revise")
+	observation := fs.String("observation", "", "failed、paused、needs-input、budget_limited 或 complete")
+	receipt := fs.String("design-receipt", "", "消费当前阶段的新鲜独立设计结果")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag,
+		"cardex workflow design-result <id> -design-receipt R -decision stop|input|successor|accept|revise [-observation failed|paused|needs-input|budget_limited|complete]")
+	if err != nil {
+		return err
+	}
+	t, err := applyWorkflowDesignResult(root, cfg, wf, *decision, *observation, *receipt)
+	if err != nil {
+		return err
+	}
+	id := ""
+	if t != nil {
+		id = t.ID
+	}
+	fmt.Printf("workflow %s design-result=%s observation=%s task=%s status=%s\n",
+		wf.ID, *decision, *observation, orDash(id), wf.Status)
+	return nil
+}
+
+func cmdWorkflowDesignRepair(args []string) error {
+	fs := flag.NewFlagSet("workflow design-repair", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	receipt := fs.String("design-receipt", "", "消费当前候选的新鲜独立设计结果")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag,
+		"cardex workflow design-repair <id> -design-receipt R")
+	if err != nil {
+		return err
+	}
+	if err := bindWorkflowDesignRepair(root, cfg, wf, *receipt); err != nil {
+		return err
+	}
+	latest := wf.DesignLineage.LatestValid
+	fmt.Printf("workflow %s design-repair=%d latest_model=%s latest_runner=%s\n",
+		wf.ID, wf.DesignLineage.RepairCount,
+		firstNonBlank(latest.ActualModel, latest.Model),
+		firstNonBlank(latest.ActualRunner, latest.Runner))
 	return nil
 }
 
@@ -276,7 +451,7 @@ func cmdWorkflowFreeze(args []string) error {
 	tree := fs.String("tree", "", "候选 tree")
 	branch := fs.String("branch", "", "候选分支")
 	paths := fs.String("changed-paths", "", "逗号分隔 changed paths")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
 	root, cfg, wf, err := workflowTarget(fs, rootFlag,
@@ -300,7 +475,7 @@ func cmdWorkflowFreeze(args []string) error {
 func cmdWorkflowReview(args []string) error {
 	fs := flag.NewFlagSet("workflow review", flag.ContinueOnError)
 	rootFlag := fs.String("root", "", "数据目录")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
 	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow review <id>")
@@ -318,7 +493,7 @@ func cmdWorkflowReview(args []string) error {
 func cmdWorkflowIngest(args []string) error {
 	fs := flag.NewFlagSet("workflow ingest-review", flag.ContinueOnError)
 	rootFlag := fs.String("root", "", "数据目录")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
 	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow ingest-review <id>")
@@ -341,7 +516,7 @@ func cmdWorkflowRepair(args []string) error {
 	fs := flag.NewFlagSet("workflow repair", flag.ContinueOnError)
 	rootFlag := fs.String("root", "", "数据目录")
 	summary := fs.String("summary", "", "修复轮摘要")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
 	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow repair <id> [-summary ...]")
@@ -368,7 +543,7 @@ func cmdWorkflowRepair(args []string) error {
 func cmdWorkflowTryRelease(args []string) error {
 	fs := flag.NewFlagSet("workflow try-release-integration", flag.ContinueOnError)
 	rootFlag := fs.String("root", "", "数据目录")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
 	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow try-release-integration <id>")
@@ -388,7 +563,7 @@ func cmdWorkflowMark(args []string) error {
 	rootFlag := fs.String("root", "", "数据目录")
 	kind := fs.String("kind", "", "external | owner | exhausted")
 	summary := fs.String("summary", "", "简要原因")
-	if err := fs.Parse(args); err != nil {
+	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
 	root, cfg, wf, err := workflowTarget(fs, rootFlag,

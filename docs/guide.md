@@ -2,6 +2,26 @@
 
 **中文** | [English](guide.en.md) · 返回 [README](../README.md)
 
+## Goal 模式（给目标，不是每一步）
+
+与细粒度 `sequence` 卡不同：Goal 阶段是一次连续的诊断/实现/测试/修复，操作员给目标与完成标准，而不是逐步 prompt。设计节点只读；执行 writer 占写域。现有 `model=fable` 链不变；独立 Astra 设计可以记在设计节点上。
+
+Grok 目前是 `manual-only`：complete 与同 session 重启已手工证明；自动协议与进行中的 pause/resume 未验证。复制：
+
+```bash
+cardex workflow init ... -design-receipt /path/to/astra-design.json
+cardex workflow writer <id> -mode manual
+cardex workflow goal-run <id> -manual -budget 350000
+# Grok TUI（字面路径+摘要，不要 $(cat)）：
+#   /goal Read and implement the complete stage contract at <abs-path>; verify SHA256 <digest> before any write. --budget 350000
+#   /goal status
+cardex workflow goal-sync <id>
+cardex workflow show <id>
+cardex workflow design-result <id> -design-receipt R -decision stop|input|successor|accept|revise -observation failed|paused|needs-input|budget_limited|complete
+```
+
+不要用 `grok -p` 当 goal 证明。`goal-sync` 不启动 provider，但会更新阶段事实。provider 预算软，`step_timeout_min` 硬截止。能力矩阵见 `workflow show` 与 [推荐工作流](workflows.md)。Kimi/Codex/Claude/Cursor/agy/OpenCode 为 `manual-only`/`unverified`；Gemini 仍拒绝。独立 Astra 设计走收据或已完成设计任务，不是 `grok-build` + `gpt-6-astra`。
+
 ## 进度回收 → 分工协调 → 自动推进
 
 多个会话并行干活时的编排闭环：

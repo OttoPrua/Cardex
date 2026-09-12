@@ -110,6 +110,7 @@ func writeWorkflowProgress(root string, wf *WorkflowRecord) error {
 		"candidate":           wf.Candidate,
 		"review":              wf.Review,
 		"effect_gates":        wf.EffectGates,
+		"design_lineage":      wf.DesignLineage,
 		"updated_at":          wf.UpdatedAt,
 	}
 	data, err := json.MarshalIndent(payload, "", "  ")
@@ -277,8 +278,35 @@ func syncIntegrationGate(root string, wf *WorkflowRecord) error {
 // admitWorkflowWriter queues the single active writer for this workflow.
 // Replaying it while a writer is live is a duplicate, not a second attempt.
 func admitWorkflowWriter(root string, cfg *Config, wf *WorkflowRecord, prompt string) (*Task, error) {
-	if err := refreshWorkflow(root, cfg, wf); err != nil {
-		return nil, err
+	return publishWorkflowWriter(root, cfg, wf, prompt, nil)
+}
+
+// publishWorkflowWriter constructs the complete writer (including any Goal
+// binding) inside one admission lock, then saves once. A concurrent tick
+// therefore never sees an ordinary queued Goal-less card.
+func publishWorkflowWriter(root string, cfg *Config, wf *WorkflowRecord, prompt string, goal *TaskGoalBinding) (*Task, error) {
+	var out *Task
+	err := withTaskControlLock(root, "workflow-admit:"+wf.ID, func() error {
+		t, err := publishWorkflowWriterLocked(root, cfg, wf, prompt, goal, false)
+		out = t
+		return err
+	})
+	return out, err
+}
+
+// publishWorkflowWriterLocked constructs the complete writer inside the existing
+// workflow-admit lock. skipRefresh is true when the caller already refreshed
+// and holds in-memory DesignLineage/round that must not be clobbered.
+func publishWorkflowWriterLocked(root string, cfg *Config, wf *WorkflowRecord, prompt string, goal *TaskGoalBinding, skipRefresh bool) (*Task, error) {
+	if !skipRefresh {
+		if err := refreshWorkflow(root, cfg, wf); err != nil {
+			return nil, err
+		}
+	}
+	if goal != nil {
+		if err := reverifyGoalDesignProof(root, wf); err != nil {
+			return nil, err
+		}
 	}
 	if active, found := workflowActiveRole(root, wf, "writer"); found {
 		return active, duplicateRoleErr("writer", active)
@@ -307,6 +335,10 @@ func admitWorkflowWriter(root string, cfg *Config, wf *WorkflowRecord, prompt st
 	t.WriteDomain = copyWriteDomain(wf.WriteDomain)
 	t.PreferRunner = wf.WriterEngine
 	t.RunnerExplicit = true
+	t.Goal = goal
+	if hook := goalWriterPublishHook; hook != nil {
+		hook(t)
+	}
 	if err := saveTask(root, t); err != nil {
 		return nil, err
 	}
@@ -321,7 +353,10 @@ func admitWorkflowWriter(root string, cfg *Config, wf *WorkflowRecord, prompt st
 	if err := syncIntegrationGate(root, wf); err != nil {
 		return t, err
 	}
-	return t, persistWorkflow(root, cfg, wf)
+	if err := persistWorkflow(root, cfg, wf); err != nil {
+		return t, err
+	}
+	return t, nil
 }
 
 // admitWorkflowReviewer queues an independent read-only reviewer bound to the
@@ -455,8 +490,22 @@ func ingestWorkflowReview(root string, cfg *Config, wf *WorkflowRecord) error {
 // admitWorkflowRepair opens the next bounded repair round. Exceeding
 // max_rounds terminalizes the route and notifies Root instead of looping.
 func admitWorkflowRepair(root string, cfg *Config, wf *WorkflowRecord, findings, summary string) (*Task, error) {
+	var out *Task
+	err := withTaskControlLock(root, "workflow-admit:"+wf.ID, func() error {
+		t, err := admitWorkflowRepairLocked(root, cfg, wf, findings, summary)
+		out = t
+		return err
+	})
+	return out, err
+}
+
+func admitWorkflowRepairLocked(root string, cfg *Config, wf *WorkflowRecord, findings, summary string) (*Task, error) {
 	if err := refreshWorkflow(root, cfg, wf); err != nil {
 		return nil, err
+	}
+	writer, err := findTaskAnywhere(root, wf.WriterTaskID)
+	if err == nil && writer != nil && writer.Goal != nil {
+		return nil, fmt.Errorf("%w: Goal repair is refused; use design-result -decision revise with a fresh independent design", errGoalDesignResult)
 	}
 	if wf.Review == nil {
 		return nil, fmt.Errorf("%w: no ingested review to repair from", errWorkflowMalformed)
@@ -482,7 +531,6 @@ func admitWorkflowRepair(root string, cfg *Config, wf *WorkflowRecord, findings,
 	if active, found := workflowActiveRole(root, wf, "reviewer"); found {
 		return active, duplicateRoleErr("reviewer", active)
 	}
-	writer, err := findTaskAnywhere(root, wf.WriterTaskID)
 	if err != nil {
 		return nil, err
 	}
@@ -511,6 +559,9 @@ func admitWorkflowRepair(root string, cfg *Config, wf *WorkflowRecord, findings,
 	t.WriteDomain = copyWriteDomain(wf.WriteDomain)
 	t.PreferRunner = wf.WriterEngine
 	t.RunnerExplicit = true
+	if hook := goalWriterPublishHook; hook != nil {
+		hook(t)
+	}
 	if err := saveTask(root, t); err != nil {
 		return nil, err
 	}

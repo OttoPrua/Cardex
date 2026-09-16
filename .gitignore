@@ -1,0 +1,8 @@
+bin/
+.serena/
+tmp/
+/cardex
+/cardex.exe
+/claudego
+/claudego.exe
+.DS_Store

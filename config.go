@@ -1,0 +1,1112 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+)
+
+// TypeDefaults 是某一任务类型的默认执行参数，在 add/emit 时烘焙进任务。
+//
+// 【覆写合并粒度】与 stakes_policy 同类：JSON 的合并粒度只到**键**，用户写
+// `"type_defaults": {"design-review": {"model": "opus"}}`（只想换个复审模型）会把整条规则替换成
+// `{Model:"opus"}`——allowed_tools 变 nil、permission_mode/effort 变空串。下游 runner.go:92/344 是
+// `len(AllowedTools) > 0` 才下发 --allowedTools，于是复审卡的只读工具集**静默消失**，卡面看不出差别。
+// 实证：本机 ~/.cardex/config.json 的 prompt-assembly 条目缺 `effort`（内置表为 "high"），
+// 装配卡因此长期跑在空 effort。补齐由 typeDefaultsFor 完成。
+type TypeDefaults struct {
+	PermissionMode  string   `json:"permission_mode,omitempty"`
+	AllowedTools    []string `json:"allowed_tools,omitempty"`
+	SkipPermissions bool     `json:"skip_permissions,omitempty"`
+	// Model 该类型默认使用的模型（--model 值，如 haiku/sonnet），空表示账号默认模型。
+	Model string `json:"model,omitempty"`
+	// Effort 该类型默认思考等级（--effort 值：low/medium/high/xhigh/max），空表示 CLI 默认。
+	Effort string `json:"effort,omitempty"`
+}
+
+// OpenCodeNightRoute 是“夜间借用 OpenCode 订阅、白天仍走 Codex”的窄自动路由策略。
+// 当前只用于默认 Codex 路由的 Opus 卡；显式 runner=opencode 是独立的人工钉定语义，
+// 不受此时间窗限制，同一目标模型仅在真实额度命中时接力到 Codex。
+// 时间窗采用 [start_hour, end_hour) 半开区间，并在 timezone 指定的时区内判断。
+type OpenCodeNightRoute struct {
+	Enabled          bool   `json:"enabled"`
+	StartHour        int    `json:"start_hour"`
+	EndHour          int    `json:"end_hour"`
+	Timezone         string `json:"timezone,omitempty"`
+	Model            string `json:"model"`
+	Variant          string `json:"variant"`
+	LimitFallbackMin int    `json:"limit_fallback_min,omitempty"`
+}
+
+// KimiCLIOpusRoute 是 Owner 矩阵共用的 Kimi K3/max 串行腿：非 backend Opus、Sonnet/Haiku
+// 的 eligible fallback，以及 backend 的对抗复审/只读第二视角。Kimi CLI 与 OpenCode Go Kimi K3
+// 只构成容量冗余，不构成独立模型意见；任何后续 Sol 都必须来自显式条件或发布门。
+type KimiCLIOpusRoute struct {
+	Enabled          bool   `json:"enabled"`
+	ExcludeBackend   bool   `json:"exclude_backend,omitempty"`
+	Model            string `json:"model"`
+	Effort           string `json:"effort"`
+	LimitFallbackMin int    `json:"limit_fallback_min,omitempty"`
+	MaxParallel      int    `json:"max_parallel,omitempty"`
+}
+
+// GrokTierRoute 把一个来源档位钉到 Grok 推理档。CodexFallback* 是旧通用模式兼容字段；
+// final Owner resolver 只从闭合矩阵的显式 route gate 创建 Codex 腿。
+type GrokTierRoute struct {
+	Effort              string `json:"effort"`
+	CodexFallbackModel  string `json:"codex_fallback_model"`
+	CodexFallbackEffort string `json:"codex_fallback_effort"`
+}
+
+// GrokBuildRoute 是 Owner 的 Grok 主腿与受控串行接力。TierRoutes 的 exact identities 在加载
+// 时校验；final Owner 模式下不存在全局 Codex fallback，每个 Sol 都由解析器显式命名。
+// ReviewCodex* 与 OpusAdversarialReview 仅保留为通用模式兼容字段。
+type GrokBuildRoute struct {
+	Enabled                bool   `json:"enabled"`
+	Model                  string `json:"model"`
+	Effort                 string `json:"effort"`
+	ReadOnlySandboxProfile string `json:"read_only_sandbox_profile,omitempty"`
+	LimitFallbackMin       int    `json:"limit_fallback_min,omitempty"`
+	KimiOpusFallback       bool   `json:"kimi_opus_fallback,omitempty"`
+	// FableClaudeFallback/FableFirstPrinciples 仅用于读取并收口已经进入旧链的卡；Owner 路由
+	// 不再从这两个兼容字段创建新链，新 Fable 卡只走 CursorFableRoute。
+	FableClaudeFallback   bool                     `json:"fable_claude_fallback,omitempty"`
+	FableFirstPrinciples  bool                     `json:"fable_first_principles_review,omitempty"`
+	CodexFallbackModel    string                   `json:"codex_fallback_model,omitempty"`
+	CodexFallbackEffort   string                   `json:"codex_fallback_effort,omitempty"`
+	ReviewCodexModel      string                   `json:"review_codex_model,omitempty"`
+	ReviewCodexEffort     string                   `json:"review_codex_effort,omitempty"`
+	OpusAdversarialReview bool                     `json:"opus_adversarial_review,omitempty"`
+	TierRoutes            map[string]GrokTierRoute `json:"tier_routes,omitempty"`
+	MaxParallel           int                      `json:"max_parallel,omitempty"`
+}
+
+type AntigravityRoute struct {
+	Enabled bool   `json:"enabled"`
+	Effort  string `json:"effort,omitempty"`
+}
+
+// CursorFableRoute 把显式 Fable 档交给已登录的 Cursor CLI。模型固定 thinking-max；只有确认
+// quota 或 eligible、已证明的前语义失败且零工作/零变更/零残留时，FallbackProfile 才启动一份
+// Grok 只读答案，再由唯一一次 fresh Sol/ultra 对抗审查、修复并直接给出终局。语义或验收失败不触发。
+type CursorFableRoute struct {
+	Enabled          bool   `json:"enabled"`
+	Model            string `json:"model"`
+	LimitFallbackMin int    `json:"limit_fallback_min,omitempty"`
+	FallbackProfile  string `json:"fallback_profile"`
+}
+
+// OwnerProviderTargets are reporting bounds only. They never select a provider or mutate existing
+// tasks; deterministic route classification remains the sole dispatch authority.
+type OwnerProviderTargets struct {
+	GrokMinPercent      int `json:"grok_min_percent"`
+	GrokMaxPercent      int `json:"grok_max_percent"`
+	KimiMinPercent      int `json:"kimi_min_percent"`
+	KimiMaxPercent      int `json:"kimi_max_percent"`
+	DirectSolMinPercent int `json:"direct_sol_min_percent"`
+	DirectSolMaxPercent int `json:"direct_sol_max_percent"`
+}
+
+type Config struct {
+	ClaudeBin         string `json:"claude_bin"`
+	PollIntervalSec   int    `json:"poll_interval_sec"`
+	LimitFallbackMin  int    `json:"limit_fallback_min"`
+	CooldownMarginSec int    `json:"cooldown_margin_sec"`
+	StepTimeoutMin    int    `json:"step_timeout_min"`
+	MaxAttempts       int    `json:"max_attempts_per_step"`
+	RetryBackoffMin   int    `json:"retry_backoff_min"`
+	// MaxParallel: 单次 tick 内最多并行跑几个任务（同一工作目录始终串行）。1 为纯串行。
+	MaxParallel int  `json:"max_parallel"`
+	ResumeFirst bool `json:"resume_first"`
+	// DrainRescanSec: drain 等待期间的重扫周期（秒）。每周期重扫队列补派新就绪任务，
+	// 并做取消对账（running 任务的文件被标 canceled 即击杀其进程）。0 用默认 15。
+	DrainRescanSec int                     `json:"drain_rescan_sec,omitempty"`
+	TypeOrder      []string                `json:"type_order"`
+	ResumePrompt   string                  `json:"resume_prompt"`
+	TypeDefaults   map[string]TypeDefaults `json:"type_defaults"`
+	// DefaultRunner 决定未显式钉执行器的新卡默认走哪条主路由。空或 claude 保持历史行为；
+	// codex/agy 把手工卡与 newTask 派生的审核、修复、收口、复盘、emit 卡钉到对应执行器。
+	// 显式会话续跑与 cross profile 仍尊重其已声明的执行器身份。
+	DefaultRunner string `json:"default_runner,omitempty"`
+	// OwnerRoutingEnforced 把 final Owner 矩阵提升为配置加载期硬契约。关闭时 Cardex 仍可作为
+	// 通用调度器使用；开启时，Kimi/Grok/Cursor、全部风险/审核分支、显式 Sol gate 与 Fable
+	// reviewer-merger 任一缺失或漂移都拒绝加载，避免生产静默退回旧路线。
+	OwnerRoutingEnforced bool `json:"owner_routing_enforced,omitempty"`
+	// AutomaticCodexBudgetStopPercent is provider-specific to automatic Owner route gates. The final
+	// policy requires exactly 65: at or above it Cardex preserves the remaining ~35%; absent/stale
+	// usage_feed evidence fails closed. Explicit manual Codex pins remain outside this automatic budget.
+	AutomaticCodexBudgetStopPercent int                   `json:"automatic_codex_budget_stop_percent,omitempty"`
+	OwnerProviderTargets            *OwnerProviderTargets `json:"owner_provider_targets,omitempty"`
+
+	// ---- 5 小时额度红线（保底额度，给交互/突发任务留余量）----
+	// QueueBudgetTokens: 滑动 5 小时窗口内，队列最多消耗的加权 token 数；0 关闭。
+	// 只统计 cardex 自己派发的调用（桌面端消耗不可见），本质是"队列预算上限"。
+	QueueBudgetTokens int64 `json:"queue_budget_tokens"`
+	// RedlinePercent + UsageFeed: 外部全局用量源（CodexBar usage-history.jsonl 格式）。旧的通用
+	// redline 仍沿用其兼容策略；final Owner 自动 Codex gate 另行要求 provider-specific fresh evidence，
+	// 在 65% 停止且证据缺失时 fail closed。
+	RedlinePercent     int    `json:"redline_percent"`
+	UsageFeed          string `json:"usage_feed"`
+	UsageFeedMaxAgeMin int    `json:"usage_feed_max_age_min"`
+	// ---- 第三用量源：oauth/usage 端点直读 ----
+	// 端点未文档化（api.anthropic.com/api/oauth/usage + anthropic-beta: oauth-2025-04-20），
+	// 复用 ~/.claude/.credentials.json 的 OAuth accessToken。任何异常（网络/凭据/格式变更）
+	// 一律按"数据不足"处理，绝不 crash；判红线时与 usage_feed 合并取最保守（百分比更大）值。
+	// **只信响应 body，不解析响应头**（核验已推翻响应头带限流数值之说；沿用会被人蓄意伪造）。
+	OAuthUsage           bool   `json:"oauth_usage,omitempty"`
+	OAuthUsageURL        string `json:"oauth_usage_url,omitempty"`
+	OAuthUsageCredsPath  string `json:"oauth_usage_creds_path,omitempty"`
+	OAuthUsageMaxAgeMin  int    `json:"oauth_usage_max_age_min,omitempty"`
+	OAuthUsageTimeoutSec int    `json:"oauth_usage_timeout_sec,omitempty"`
+	// ModelWeights: 各模型 token 的额度权重（订阅限额按模型加权），键为 --model 值，"default" 兜底。
+	ModelWeights map[string]float64 `json:"model_weights"`
+	// RedlineWindows: 分时段红线。时段内非零字段覆盖全局阈值，时段外回落全局配置。
+	RedlineWindows []RedlineWindow `json:"redline_windows"`
+	// RedlineLeadMin: 红线时段的前置缓冲（分钟）。时段开始前这么多分钟就停发 claude 任务，
+	// 防止起跑的长任务踩进预留窗口（单步任务无法中途让位）。codex 钉定任务不受影响。
+	RedlineLeadMin int `json:"redline_lead_min,omitempty"`
+
+	// ---- Codex 备用执行器（claude 冷却/红线期间不断档）----
+	// CodexBin 非空且 CodexFallback 开启时：claude 被冷却或红线拦住的时段，
+	// 把"单步、无既有 claude 会话"的任务（协调/审核/装配/单步 add）切给 codex exec 执行；
+	// 带会话的多步任务仍等 claude 重置（跨 CLI 无法延续上下文）。
+	CodexBin      string `json:"codex_bin"`
+	CodexFallback bool   `json:"codex_fallback"`
+	// CodexFallbackModel 未命中档位槽位时的通用降级模型：claude 卡经 codex_fallback 改道 codex 时用它。
+	// 生产配置应选择已授权且适合落地实现的模型；不要把未授权/禁用模型当隐式回退。
+	// 空 = 沿用全局 codex_model。仅降级径生效；runner_pref=codex 主跑与远端 codex 不受影响。
+	CodexFallbackModel string `json:"codex_fallback_model,omitempty"`
+	// CodexFallbackOpusModel / CodexFallbackOpusReasoning：Opus 档 Claude 卡改道 codex 时的
+	// 专用模型与思考档。空表示不覆盖按档位映射；默认是 gpt-5.6-sol + xhigh。
+	CodexFallbackOpusModel     string `json:"codex_fallback_opus_model,omitempty"`
+	CodexFallbackOpusReasoning string `json:"codex_fallback_opus_reasoning,omitempty"`
+	// CodexOpusSimpleModel / CodexOpusSimpleReasoning：可选的 Opus 低投入(stakes=low)
+	// 显式降档。默认关闭；只有配置非空才生效，且只认结构化 stakes，不从 prompt 猜复杂度。
+	CodexOpusSimpleModel     string `json:"codex_opus_simple_model,omitempty"`
+	CodexOpusSimpleReasoning string `json:"codex_opus_simple_reasoning,omitempty"`
+	// CodexTierModels / CodexTierReasoning：Codex 主跑及可回退卡的档位槽位映射。
+	// 键为 fable/opus/sonnet/haiku；缺键时回落到旧的单值字段。
+	CodexTierModels    map[string]string `json:"codex_tier_models,omitempty"`
+	CodexTierReasoning map[string]string `json:"codex_tier_reasoning,omitempty"`
+	CodexModel         string            `json:"codex_model,omitempty"`
+	// CodexReasoning 透传 -c model_reasoning_effort，空则用 codex 默认。合法档位（实测 codex 0.144.1，
+	// 由低到高）：minimal < low < medium < high < xhigh < max < ultra（ultra 是多代理委派特档）。
+	// 与 claude --effort 的 low<medium<high<xhigh<max 完全同序、同名——所以 Task.Effort 是二者共用的
+	// "思考等级"字段（claude→--effort / codex→model_reasoning_effort）；任务级 Effort 非空时覆盖此全局值。
+	CodexReasoning string `json:"codex_reasoning,omitempty"`
+	// NoFallbackModels：这些模型的任务在 claude 冷却/红线期不降级到 codex，宁可排队等。
+	// 设计类卡（fable）质量优先——降级执行violates分层原则。runner_pref 钉定不受此限。
+	NoFallbackModels []string `json:"no_fallback_models,omitempty"`
+	// ThinkingTokens >0 时给 claude 调用设置 MAX_THINKING_TOKENS（拉高思考预算，设计类任务受益）。
+	ThinkingTokens int `json:"thinking_tokens,omitempty"`
+	// MaxFixRounds: "实现→对抗审核→自动修复"闭环的轮次上限，超过后不再自动派修复卡，
+	// 改挂 held 升级卡交人工/设计权威裁定（防同一叶卡在实现层无限打转）。0 用默认 3。
+	// 这是**全局兜底值**：stakes_policy.<档>.max_fix_rounds 非 0 时按档覆盖它（add 时钉到卡面）。
+	MaxFixRounds int `json:"max_fix_rounds,omitempty"`
+
+	// ---- Gemini 历史兼容字段 ----
+	// 仅用于解码和展示旧配置/旧任务；新默认、新卡、fallback、cross、workflow 与执行均拒绝。
+	GeminiBin string `json:"gemini_bin,omitempty"`
+	// GeminiModel 卡无模型时的默认；推荐官方稳定别名（pro/flash/flash-lite，核实 2026-08-03）。
+	// 空 = 内置 "pro"。**永不落空传给 CLI**——空即 auto 路由，撞配额静默换模型，已否决。
+	GeminiModel string `json:"gemini_model,omitempty"`
+	// GeminiModels 档位槽映射（fable/opus/sonnet/haiku → gemini 模型/别名），claude 卡改道
+	// gemini 时按 t.Model 档位查此表。缺省 = fable/opus→pro、sonnet→flash、haiku→flash-lite
+	// （高档取 pro 是按编码交叉信号 SWE-bench 的显式决定，见设计规格 §2）。
+	GeminiModels map[string]string `json:"gemini_models,omitempty"`
+	// GeminiApprovalMode sequence 卡的 --approval-mode（default/auto_edit/yolo/plan；空=yolo）。
+	// 非 sequence 卡（复审/协调/装配/交叉/进度回收）恒强制 plan（只读）——gemini 无 OS 沙箱，
+	// plan 是唯一硬护栏，与 codex「非 sequence 默认 read-only」同一纪律。
+	GeminiApprovalMode string `json:"gemini_approval_mode,omitempty"`
+	// GeminiAuthEnv 可选：命名一个环境变量，其值在执行时注入 GEMINI_API_KEY（密钥不进
+	// config，与引擎档案 auth_env 同一纪律）。空 = 继承环境（OAuth 缓存凭据 / 已 export 的
+	// GEMINI_API_KEY）。注意 2026-08-03 实测：OAuth 个人免费档已被 gemini-cli 0.42 拒绝
+	// （IneligibleTierError），需 API key 或 Google AI Pro/Ultra 订阅 OAuth。
+	GeminiAuthEnv string `json:"gemini_auth_env,omitempty"`
+
+	// OpenCode CLI 原生执行器：复用 OpenCode 自己的登录凭据。显式 runner=opencode 可钉定；
+	// OpenCodeNightOpus 非空且 enabled 时，还可在指定夜间窗口把默认 Codex 的 Opus 卡临时改道。
+	OpenCodeBin       string              `json:"opencode_bin,omitempty"`
+	OpenCodeModel     string              `json:"opencode_model,omitempty"`
+	OpenCodeModels    map[string]string   `json:"opencode_models,omitempty"`
+	OpenCodeNightOpus *OpenCodeNightRoute `json:"opencode_night_opus,omitempty"`
+
+	// Kimi Code CLI 原生执行器：复用 ~/.kimi-code 的 OAuth 登录，不复制 token。
+	// kimi_cli_opus 是独立于 OpenCode Go 的全时段 K3 自动路由与冷却车道。
+	KimiCLIBin string `json:"kimi_cli_bin,omitempty"`
+	// KimiCLIHome 指向已登录的 Kimi Code 数据目录；空时默认 ~/.kimi-code。
+	// Cardex 会在自身 root 下建立隔离运行目录，并只把 credentials 软链接回这里。
+	KimiCLIHome   string            `json:"kimi_cli_home,omitempty"`
+	KimiCLIModel  string            `json:"kimi_cli_model,omitempty"`
+	KimiCLIEffort string            `json:"kimi_cli_effort,omitempty"`
+	KimiCLIOpus   *KimiCLIOpusRoute `json:"kimi_cli_opus,omitempty"`
+
+	// Grok Build 原生执行器：复用 ~/.grok 的本机登录态，不读取或复制认证值。
+	// grok_build 为空/disabled 时完全保留旧 Kimi→Codex 与 Claude 限额行为。
+	GrokBuildBin string          `json:"grok_build_bin,omitempty"`
+	GrokBuild    *GrokBuildRoute `json:"grok_build,omitempty"`
+
+	// Antigravity is the supported Google migration route. It is opt-in until the user completes
+	// OAuth. New Gemini tasks are retired; historical Gemini task fields remain decodable.
+	AntigravityBin string            `json:"antigravity_bin,omitempty"`
+	Antigravity    *AntigravityRoute `json:"antigravity,omitempty"`
+
+	// Cursor Agent CLI 原生执行器：复用 ~/.cursor 的本机登录态，不读取或复制 token。
+	// cursor_fable 只接管默认 Codex 路由中显式标成 Fable 的 fresh 单步卡。
+	CursorBin   string            `json:"cursor_bin,omitempty"`
+	CursorModel string            `json:"cursor_model,omitempty"`
+	CursorFable *CursorFableRoute `json:"cursor_fable,omitempty"`
+
+	// ---- 多订阅引擎档案（Kimi Code / GLM Coding Plan / MiniMax / MiMo / OpenCode Go / Ollama Cloud…）----
+	// Engines 键 = 引擎名（进 Runner 标签与 cooldown-<名>.json，限小写字母数字连字符；
+	// claude/codex/remote 是保留字）。执行复用 claude CLI + 按档案注入环境变量（base_url/
+	// 认证/模型映射），每个引擎独立冷却、账本打 engine 标、不占 claude 红线预算。
+	// 内置预设用 `cardex engines add <预设名>` 并入；设计规格见 docs/2026-08-02-engine-profiles-design.md。
+	Engines map[string]EngineProfile `json:"engines,omitempty"`
+	// FallbackOrder 是 claude 被冷却/红线拦住时的改道顺序（"codex" 与 engines 的键混排，
+	// 逐个找第一个可用出路）。默认 ["codex"]——不配引擎则行为与旧版完全一致。
+	// 质量地板（no_fallback_models/交叉卡/复审位）对链上每一项同等生效，见 tick.go。
+	FallbackOrder []string `json:"fallback_order,omitempty"`
+	// ModelTiers 自定义分级表：模型 ID（小写；精确或前缀匹配，"glm-4.7" 盖住 "glm-4.7:cloud"）
+	// → 档位关键字（fable/opus/sonnet/haiku）。优先于内置统一标准线——给"机队里没有更强模型"
+	// 的用户按牌面定档：手里最强的模型就是自己的 fable 档，看板/引擎档位展示随之。
+	// Final Owner 矩阵也读取该解析结果；修改映射会改变未显式 pin 新卡的实际派发。
+	// 值写错载入即拒（fail fast），键必须全小写。见 docs/guide.md「自定义分级」。
+	ModelTiers map[string]string `json:"model_tiers,omitempty"`
+
+	// ---- 远程执行器（SSH → 远端 codex，让远端主机进编排）----
+	// SSHBin 默认 "ssh"（测试可指向 mock-ssh）。RemoteHosts 键 = Task.RemoteHost（ssh 别名）。
+	// 远端 codex 走自己的 GPT 额度：不记 claude 账本、不写全局冷却、不受 claude 冷却/红线阻塞。
+	SSHBin      string                      `json:"ssh_bin,omitempty"`
+	RemoteHosts map[string]RemoteHostConfig `json:"remote_hosts,omitempty"`
+
+	// ---- 交叉验证引擎对（设计档模型撞限时以两个不同引擎顶替设计/审核/裁决/追认）----
+	// CrossProfiles 键 = profile 名（如 "opus-codex"），值为一对引擎：甲先独立出结论，乙独立出结论后
+	// 再拿甲的结论对抗式交叉查漏。引擎来源可切换——换 profile 即换模型对，无需改任何代码。
+	CrossProfiles map[string]CrossProfile `json:"cross_profiles,omitempty"`
+	// DefaultCrossProfile: `cardex cross` 未指定 -profile 时用的 profile 名。
+	DefaultCrossProfile string `json:"default_cross_profile,omitempty"`
+
+	// ---- 默认复审分流（把只读复审负载默认压到第二台机器，均衡两侧额度）----
+	// DefaultReviewHost 非空时：本地实现卡（RemoteHost 空）的 review_after 自动复审、未显式声明 ReviewHost 者，
+	// 默认分流到该主机（RemoteHosts 的键）。RemoteMirrorRoot 是远端镜像根，自动推导 ReviewDir=<root>/<worktree 名>；
+	// DefaultReviewSync 是分流前跑的同步命令（sh -c，cwd=实现卡 Dir），把本地泳道同步到远端镜像。三者齐备才生效。
+	DefaultReviewHost string `json:"default_review_host,omitempty"`
+	RemoteMirrorRoot  string `json:"remote_mirror_root,omitempty"`
+	DefaultReviewSync string `json:"default_review_sync,omitempty"`
+
+	// ---- 卡级投入产出分档（BD-44，承 2026-07-31 委托人指示）----
+	// StakesPolicy 是 stakes 档位 → 复核深度的查表（键 = low/normal/high）。
+	// **只在 add 入队时查一次并把结果固化到卡面**（ReviewAfter/Effort），运行期不再回查——
+	// 否则入队后改这张表会让在队卡的复核深度静默漂移（与 XFrozenEngine "入队即钉引擎身份" 同一纪律）。
+	// 【覆写合并粒度】只写部分档位时其余档位沿用内置默认（json.Unmarshal 往非 nil map 按键合并，
+	// loadConfig 从 defaultConfig 起手）；**档内留空的字段也逐个回落内置同档位的值**——JSON 的合并
+	// 粒度只到键，只写 `{"high":{"default_effort":"xhigh"}}` 会把 review 打成空串，若按 follow 处理
+	// 就等于静默解除 high 档的强制复审。补齐由 stakesRule 完成，要 follow 必须显式写 "follow"。
+	// 【档内字段】review / default_effort / max_fix_rounds，三者同受上述字段级回落纪律。
+	StakesPolicy map[string]StakesRule `json:"stakes_policy,omitempty"`
+
+	// RetroEveryNDone: 每累计 N 张卡进入 done 终态，自动入队一张 haiku 复盘卡
+	// （只读统计归档卡的失败类/修复轮数/成本/复审 verdict/改道事件，**proposal-only 不改配置**）。
+	// 0 = 关闭（默认）；建议 10。计数器持久化在 <root>/retro_counter.json，单写点 = 本二进制。
+	// 不带 omitempty：让 `cardex init` 生成的 config.json 里显式出现这一行，开关可被发现。
+	RetroEveryNDone int `json:"retro_every_n_done"`
+
+	// CodexReviewSandbox 控制本机 codex 只读分析卡(design-review/crosscheck/coordinate 等,
+	// 非 sequence)的沙箱策略——CG-R3(承 BD-36 工具链③终裁 b/BD-39 附记):
+	//
+	//   "worktree-write"(默认): 为目标 dir 建一次性隔离副本(git clone --local --no-hardlinks
+	//     + 应用未提交面 + untracked),codex 以 `--sandbox workspace-write` 跑在副本内。
+	//     副本收工即删,原仓永不受写污染;赋能复审跑测试/写夹具做实证验证。
+	//   "readonly": 沿用旧行为——codex 直接以 `--sandbox read-only` 跑在原仓,不建副本。
+	//     只保留为可配置回退,不建议生产开启(阻断复审多轮动态验证,BD-36 立据的悬置问题)。
+	//
+	// 远端 codex 复审受同键控制:默认放开为 workspace-write(远端镜像本身已是 sync-lane
+	// 分发的隔离副本,原仓保护语义等价);"readonly" 时仍强制 read-only。
+	CodexReviewSandbox string `json:"codex_review_sandbox,omitempty"`
+
+	// ManagerWake is disabled by default. Enabled incomplete configuration fails
+	// closed at delivery/install and is visible in doctor/readback; it never
+	// authorizes a management model turn on its own.
+	ManagerWake *ManagerWakeConfig `json:"manager_wake,omitempty"`
+}
+
+// StakesRule 是一个 stakes 档位的复核深度规则（config.stakes_policy 的值）。
+type StakesRule struct {
+	// Review 决定该档位是否配对抗复审：
+	//   "on"     强制配（高价值卡不许省这一刀）
+	//   "off"    强制不配（低价值卡不烧复审额度）
+	//   "follow" 跟随 -review-after 的显式指定（不干预）
+	//   ""(不写) 继承内置表同档位的值——**不等于 follow**（见 stakesRule）
+	Review string `json:"review,omitempty"`
+	// DefaultEffort 是该档位的思考等级地板：**未显式 -effort 时**，卡上 effort 低于它就抬到它。
+	// 只抬不降——已经是更高档（如类型默认给了 max）的卡不会被这张表拉低。
+	// 不写 = 继承内置表同档位的地板。
+	DefaultEffort string `json:"default_effort,omitempty"`
+	// MaxFixRounds 是该档位的"实现→对抗审核→自动修复"轮次上限，覆盖全局 config.max_fix_rounds。
+	// 0/不写 = 继承内置表同档位的值；内置表里 low/normal 为 0（跟随全局），high 为 1。
+	//
+	// 【为什么高档要多给一轮】retro-77（2026-08-02）样本：10 张高 effort 规格对齐类卡有 9 张撞在
+	// 全局上限 3 上进人裁壳，事后复核均判"壳清、工作在新链继续"——上限对这类卡偏紧，人裁壳只是
+	// 把同一件事换条链重跑，白烧一次派卡与一次人工翻看。低档位不动：低价值卡打转三轮就该停。
+	MaxFixRounds int `json:"max_fix_rounds,omitempty"`
+}
+
+// CrossEngine 描述交叉验证链中一个引擎的执行位置（模型来源可切换的落点）。
+type CrossEngine struct {
+	// Kind 执行器种类：
+	//   "claude"        本机 claude（用 Model+Effort，走本机 claude 账号额度）
+	//   "codex"         本机 codex（钉 runner=codex，用 config.codex_model/codex_reasoning=独立 GPT 额度）
+	//   "remote-claude" SSH 远端 claude（用 Host+Model，走该远端账号额度）
+	//   "remote-codex"  SSH 远端 codex（用 Host，走该远端 GPT 额度）
+	Kind string `json:"kind"`
+	// Model claude 系引擎的 --model 值（如 claude-opus-4-8）。remote-claude 必填（否则被路由到远端 codex）。
+	Model string `json:"model,omitempty"`
+	// Effort 该引擎的思考等级。claude 系→--effort，codex 系→model_reasoning_effort（二者同名同序：
+	// low<medium<high<xhigh<max）。非空即覆盖全局 codex_reasoning；空则 claude 用 CLI 默认、codex 用全局值。
+	Effort string `json:"effort,omitempty"`
+	// Host remote-* 引擎的 remote_hosts 键。
+	Host string `json:"host,omitempty"`
+	// Label 展示名（如 "opus-4.8·max"）；仅用于 CLI/日志，不影响执行。
+	Label string `json:"label,omitempty"`
+}
+
+// CrossProfile 是一条交叉验证链：A 与 B 分别独立作答；Merge 非空时由第三个冻结引擎
+// 合并复审，空时保留历史行为（B 自己承担 C 合并）。
+type CrossProfile struct {
+	A     CrossEngine  `json:"a"`
+	B     CrossEngine  `json:"b"`
+	Merge *CrossEngine `json:"merge,omitempty"`
+}
+
+// XFrozenEngine 是入队时钉死的引擎执行规格——把从 config 解析出的执行参数快照进卡，B/C 直接套用，
+// 不再随链在执行时从当前 config 重解析（防"入队后改 profile/codex_model 静默换引擎"的身份漂移）。
+type XFrozenEngine struct {
+	Model        string `json:"model,omitempty"`
+	Effort       string `json:"effort,omitempty"`
+	PreferRunner string `json:"prefer_runner,omitempty"`
+	RemoteHost   string `json:"remote_host,omitempty"`
+	CodexModel   string `json:"codex_model,omitempty"`  // codex/远端 codex 引擎冻结的具体模型
+	GeminiModel  string `json:"gemini_model,omitempty"` // gemini 引擎冻结的具体模型（kind=gemini）
+	GrokModel    string `json:"grok_model,omitempty"`
+	GrokEffort   string `json:"grok_effort,omitempty"`
+	CursorModel  string `json:"cursor_model,omitempty"`
+	Label        string `json:"label,omitempty"`
+}
+
+// RemoteHostConfig 描述一台远程执行主机（SSH 可达 + 已装 codex）。
+type RemoteHostConfig struct {
+	// CodexBin 远端 codex 可执行名/路径（默认 "codex"）。
+	CodexBin string `json:"codex_bin,omitempty"`
+	// CodexOnly 禁止该主机调用 Claude。命中时即使任务带 claude 模型或属于审核类型，
+	// 也会在派发入口强制改道远端 codex；用于把主机额度边界做成机械约束而非派卡纪律。
+	CodexOnly bool `json:"codex_only,omitempty"`
+	// ClaudeBin 远端 claude 可执行名/路径（默认 "claude"）；跑远程 fable 设计等 claude 模型时用。
+	// 远端 claude 走该主机自己的账号额度，与本机 claude 独立。
+	ClaudeBin string `json:"claude_bin,omitempty"`
+	// Sandbox 远端 codex 沙箱模式；Windows OS 沙箱不可用时用 "danger-full-access"
+	// （靠 prompt 护栏 + 人工审 diff 兜底，不接 live 凭证/不下单）。默认 workspace-write。
+	Sandbox string `json:"sandbox,omitempty"`
+	// TmpDir 远端存放结果文件的目录（如 "D:/tmp"，用正斜杠）；空则用远端 cwd。
+	TmpDir string `json:"tmp_dir,omitempty"`
+	// Shell 远端 shell 类型："cmd"（Windows，默认）用 & 分隔 + type + 反斜杠路径；
+	// "posix" 用 ; 分隔 + cat + 正斜杠路径。
+	Shell string `json:"shell,omitempty"`
+	// Reasoning 透传 -c model_reasoning_effort（空则用 codex 默认）。
+	Reasoning string `json:"reasoning,omitempty"`
+}
+
+// RedlineWindow 是按每日本地时间生效的红线时段（"HH:MM"，跨零点用 from > to 表示）。
+type RedlineWindow struct {
+	From              string `json:"from"`
+	To                string `json:"to"`
+	RedlinePercent    int    `json:"redline_percent,omitempty"`
+	QueueBudgetTokens int64  `json:"queue_budget_tokens,omitempty"`
+}
+
+const (
+	typeReview       = "design-review"
+	typeAssembly     = "prompt-assembly"
+	typeSequence     = "sequence"
+	typeCoordinate   = "coordinate"    // 分工协调：读队列+进度报告，产出任务分工并自动入队
+	typeProgressPull = "progress-pull" // 进度回收：--resume 某会话，让它输出结构化进度报告
+	typeCrossCheck   = "crosscheck"    // 交叉验证：双引擎独立作答→引擎乙拿引擎甲结论对抗式查漏（fable 顶替流）
+)
+
+// CodexReviewSandbox 的合法取值。默认走 worktree-write 走一次性副本（BD-36 终裁 b）。
+const (
+	codexReviewSandboxWorktreeWrite = "worktree-write"
+	codexReviewSandboxReadonly      = "readonly"
+)
+
+// codexSandboxWarnW 是"未知 codex_review_sandbox 取值"的披露出口。包级 var 而非直写 os.Stderr:
+// 测试要能断言"确实披露了、且只披露一次"(见 TestResolvedCodexReviewSandboxUnknownFailsClosed)。
+var codexSandboxWarnW io.Writer = os.Stderr
+
+// codexSandboxWarned 记已披露过的未知值(原始串 → true)。resolvedCodexReviewSandbox 在每次 invoke、
+// 每轮 tick 都会被调,不去重会把 launchd 日志刷成同一行噪声,反而淹没这条本该显眼的权限告警。
+var codexSandboxWarned sync.Map
+
+// resolvedCodexReviewSandbox 返回归一后的策略。取值域是三分而非二分:
+//   - 未设置(cfg==nil / 空串)      → worktree-write(BD-39 终裁的默认策略);
+//   - 显式合法值(两个常量之一)      → 原样;
+//   - 未知值(拼错,如 "readonIy")    → readonly(保守侧)+ 首次遇到时披露一次。
+//
+// 集中一处兜底,避免 invokeCodex/invokeRemoteCodex/清理路径三处各自处理默认值时漂移。
+//
+// 【为什么未知值必须落保守侧】CG-R3b 修 1:旧实现把未知值与空值一并 default 到 worktree-write,
+// 是安全向的 fail-open——委托人本意写 "readonly"(把 codex 关进只读沙箱),大写 I 与小写 l 打错一个
+// 字母就静默拿到"clone 副本 + workspace-write"的更宽权限,且全程无任何提示:配置的收紧意图被拼写
+// 事故反向放大成放宽。权限开关的通用纪律是"解析不了就取最小权限",故未知值一律 readonly。
+// 【为什么空值不算未知】空值语义是"配置里没写这一项"——loadConfig 从 defaultConfig 起手再 unmarshal,
+// 没写就该留默认值;把空值也压到 readonly 会把 BD-39 终裁的默认策略整个翻掉(且默认 config.json
+// 的 omitempty 会让"没改过"的配置正好是空串),那是另一种事故,不是修复。
+func resolvedCodexReviewSandbox(cfg *Config) string {
+	if cfg == nil || cfg.CodexReviewSandbox == "" {
+		return codexReviewSandboxWorktreeWrite
+	}
+	switch cfg.CodexReviewSandbox {
+	case codexReviewSandboxWorktreeWrite:
+		return codexReviewSandboxWorktreeWrite
+	case codexReviewSandboxReadonly:
+		return codexReviewSandboxReadonly
+	default:
+		warnUnknownCodexReviewSandbox(cfg.CodexReviewSandbox)
+		return codexReviewSandboxReadonly
+	}
+}
+
+// warnUnknownCodexReviewSandbox 对每个不同的未知取值披露一次:说清"读到了什么、回落到哪、想要更宽
+// 该写什么"。静默回落是本病的另一半——权限被收紧而人不知情,下一轮复审只能静态阅读却查不出原因。
+func warnUnknownCodexReviewSandbox(raw string) {
+	if _, seen := codexSandboxWarned.LoadOrStore(raw, true); seen {
+		return
+	}
+	fmt.Fprintf(codexSandboxWarnW,
+		"警告: config.codex_review_sandbox=%q 不是合法取值(合法值: %q / %q);"+
+			"按最小权限回落 %q——若本意是可写副本,请把该键改写为 %q。\n",
+		raw, codexReviewSandboxWorktreeWrite, codexReviewSandboxReadonly,
+		codexReviewSandboxReadonly, codexReviewSandboxWorktreeWrite)
+}
+
+// isRemoteMirrorPath 判断远端 dir 是否位于 cfg.RemoteMirrorRoot 之下(sync-lane 分发的一次性镜像)。
+// 【为什么不用 filepath】远端 dir 可能是 Windows 路径("D:/Project/PO-lanes/ClaudeGo")或
+// posix 路径("/mirror/foo"),且路径分隔符可能反斜/正斜混用(config 手写 vs sync 脚本推导)——
+// filepath 会按本机分隔符做判断,跨平台易错。改用纯 / 语义的 path.Clean 归一 + 强制 trailing "/"
+// 边界,消除"/foo" 假匹配"/foo-bar"这类前缀陷阱(见 TestRemoteCodexReviewSandbox 桌面案)。
+// 【为什么要 path.Clean】纯前缀比对不会展开 ".." / "/." 段:
+// "D:/Project/PO-lanes/../OtherRepo" 字面以 "D:/Project/PO-lanes/" 起头会误判为镜像,
+// 真实业务仓就拿到 workspace-write——击穿"严格子孙才是镜像"硬保证(CG-R3 R2 P1-1)。
+// 先归一分隔符再 path.Clean(纯 /,与本机分隔符无关)才能杀掉这类词法绕过。
+func isRemoteMirrorPath(cfg *Config, dir string) bool {
+	if cfg == nil || cfg.RemoteMirrorRoot == "" || dir == "" {
+		return false
+	}
+	normDir := path.Clean(strings.ReplaceAll(dir, `\`, "/"))
+	normRoot := path.Clean(strings.ReplaceAll(cfg.RemoteMirrorRoot, `\`, "/"))
+	// path.Clean("") == ".";空/"." 根不足以确权,保守不算镜像。
+	if normRoot == "" || normRoot == "." {
+		return false
+	}
+	// 等于边缘不是子孙(严格子孙才算镜像);Clean 已把 "root/." 归一为 "root",
+	// 所以这里同时挡住 ".../PO-lanes/." 这类"看着不等实际等"的桩。
+	if normDir == normRoot {
+		return false
+	}
+	return strings.HasPrefix(normDir, normRoot+"/")
+}
+
+// remoteCodexReviewSandbox 返回远端 codex 非 sequence 卡的沙箱模式(CG-R3 R1 P0-1):
+//   - CodexReviewSandbox="readonly" → 强制 read-only(旧行为可配置回落);
+//   - t.Dir 位于 cfg.RemoteMirrorRoot 之下(sync-lane 一次性镜像) → 默认 workspace-write;
+//     若该远端主机显式配置 Sandbox=danger-full-access,则继承它。Windows 上 Codex 的
+//     workspace-write/read-only runner 可能无法建立 pipe-in,而 danger-full-access 不走该
+//     OS sandbox;这里只允许严格镜像子孙继承,真实业务仓仍不得放宽。
+//   - 其余(crosscheck 远端腿/coordinate/progress-pull 远端卡/review divert 回退后的原仓)
+//     → read-only,恢复"原仓字节永不受写污染"的沙箱级硬保证——这些路径 t.Dir 是真实业务仓,
+//     不是一次性镜像,仅 prompt 纪律兜底不够(见 CG-R3 R1 复审 P0-1)。
+//
+// 判据"目录确为一次性镜像"用 isRemoteMirrorPath(cfg.RemoteMirrorRoot 前缀)——它是编排方
+// 通过 sync-lane 分发副本的落地根,严格子孙才算镜像;等于/边缘不算(边界样例见测试)。
+func remoteCodexReviewSandbox(cfg *Config, t *Task) string {
+	if resolvedCodexReviewSandbox(cfg) == codexReviewSandboxReadonly {
+		return "read-only"
+	}
+	if t != nil && isRemoteMirrorPath(cfg, t.Dir) {
+		if cfg != nil {
+			if host, ok := cfg.RemoteHosts[t.RemoteHost]; ok && host.Sandbox == "danger-full-access" {
+				return "danger-full-access"
+			}
+		}
+		return "workspace-write"
+	}
+	return "read-only"
+}
+
+// typeDefaultsFor 取某任务类型的默认执行参数：用户 config 写了该类型条目就用它，
+// **条目内留空的字段逐个回落内置表同类型的值**（见 TypeDefaults 的【覆写合并粒度】）。
+//
+// 【为什么"类型整条缺失"不在这里回落】那是另一种意图："这个类型没配默认参数"。
+// newTask 对缺失类型不烘焙任何参数（reviewdivert_test.go 的远端 codex 实现卡场景就靠这个：
+// type_defaults 无 sequence 条目 → 实现卡 Model 为空）；旧 config 缺新类型的兼容回落由
+// applyLegacyTypeFallback 在更外层单独处理。两种回落粒度不同，不合并。
+// 靶：TestTypeDefaultsAbsentTypeStaysAbsent。
+func typeDefaultsFor(cfg *Config, typ string) (TypeDefaults, bool) {
+	if cfg == nil {
+		return TypeDefaults{}, false
+	}
+	td, ok := cfg.TypeDefaults[typ]
+	if !ok {
+		return TypeDefaults{}, false
+	}
+	base, ok := defaultConfig(cfg.ClaudeBin).TypeDefaults[typ]
+	if !ok {
+		return td, true
+	}
+	if td.PermissionMode == "" {
+		td.PermissionMode = base.PermissionMode
+	}
+	if len(td.AllowedTools) == 0 {
+		// 想"不下发 --allowedTools"应当写 skip_permissions:true（runner.go:344 在该模式下本就忽略
+		// 工具清单），而不是把 allowed_tools 留空——留空与"没写"在 JSON 里不可区分。
+		td.AllowedTools = base.AllowedTools
+	}
+	if td.Model == "" {
+		td.Model = base.Model
+	}
+	if td.Effort == "" {
+		td.Effort = base.Effort
+	}
+	// SkipPermissions 是 bool：JSON 里 false 与"没写"不可区分，做不了字段级回落。
+	// 内置表现在每一档都是 false（靶：TestBuiltinTypeDefaultsSkipPermissionsAllFalse），
+	// 所以"回落它"与"不回落它"结果相同；一旦有人给内置表加 skip_permissions:true，
+	// 那条测试会红，逼人在这里补一个可表达三态的类型（如 *bool）而不是继续默认丢弃。
+	return td, true
+}
+
+func defaultConfig(claudeBin string) *Config {
+	return &Config{
+		ClaudeBin:                  claudeBin,
+		PollIntervalSec:            300,
+		LimitFallbackMin:           30,
+		CooldownMarginSec:          90,
+		StepTimeoutMin:             60,
+		MaxAttempts:                3,
+		RetryBackoffMin:            5,
+		MaxParallel:                1,
+		ResumeFirst:                true,
+		DrainRescanSec:             15,
+		CodexReviewSandbox:         codexReviewSandboxWorktreeWrite,
+		CodexFallbackOpusModel:     "gpt-5.6-sol",
+		CodexFallbackOpusReasoning: "xhigh",
+		CodexTierModels: map[string]string{
+			"fable":  "gpt-5.6-sol",
+			"opus":   "gpt-5.6-sol",
+			"sonnet": "gpt-5.6-luna",
+			"haiku":  "gpt-5.6-luna",
+		},
+		CodexTierReasoning: map[string]string{
+			"fable":  "max",
+			"opus":   "xhigh",
+			"sonnet": "max",
+			"haiku":  "xhigh",
+		},
+		TypeOrder:          []string{typeProgressPull, typeCoordinate, typeReview, typeSequence, typeAssembly},
+		QueueBudgetTokens:  0,
+		RedlinePercent:     0,
+		UsageFeedMaxAgeMin: 90,
+		ModelWeights: map[string]float64{
+			"default": 1, "opus": 5, "sonnet": 1, "haiku": 0.2, "claude-fable-5": 10, "fable": 10,
+		},
+		NoFallbackModels: []string{"claude-fable-5", "fable"},
+		FallbackOrder:    []string{"codex"},
+		StakesPolicy:     defaultStakesPolicy(),
+		RetroEveryNDone:  0,
+		// 交叉验证默认引擎对：设计档模型撞限时，用两个不同引擎独立作答再交叉查漏顶替。
+		// 甲=本机 claude opus（最高档 max）；乙=本机 codex，具体模型/推理档来自全局 codex_model/codex_reasoning
+		// （乙的 Effort=max 覆盖为最高档）。换 profile 即换模型来源，无需改代码；档位改一个 Effort 字段即可。
+		DefaultCrossProfile: "opus-codex",
+		CrossProfiles: map[string]CrossProfile{
+			"opus-codex": {
+				A: CrossEngine{Kind: "claude", Model: "claude-opus-4-8", Effort: "max", Label: "opus·max"},
+				B: CrossEngine{Kind: "codex", Effort: "max", Label: "codex·max"},
+			},
+		},
+		ResumePrompt: "继续。上一条指令因为用量限额被中断，请从中断的地方接着完成当前任务；如果其实已经完成了，请直接说明完成情况。",
+		TypeDefaults: map[string]TypeDefaults{
+			typeReview: {
+				PermissionMode: "default",
+				Model:          "claude-opus-5",
+				Effort:         "max",
+				AllowedTools: []string{
+					"Read", "Grep", "Glob",
+					"Bash(git log:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git status:*)", "Bash(ls:*)",
+				},
+			},
+			typeAssembly: {
+				PermissionMode: "default",
+				Model:          "claude-opus-5",
+				Effort:         "xhigh",
+				AllowedTools: []string{
+					"Read", "Grep", "Glob",
+					"Bash(git log:*)", "Bash(git status:*)", "Bash(ls:*)",
+				},
+			},
+			// 装配/协调/例行审核默认使用 Opus 来源档，按 Owner 的 backend/general 路由解析；
+			// Fable 不作为任何普通卡型默认值，只允许最难裁决显式选择。
+			// 进度回收是机械总结，haiku 即可。
+			typeCoordinate: {
+				PermissionMode: "default",
+				Model:          "claude-opus-5",
+				Effort:         "xhigh",
+				AllowedTools: []string{
+					"Read", "Grep", "Glob",
+					"Bash(git log:*)", "Bash(git status:*)", "Bash(ls:*)",
+				},
+			},
+			typeProgressPull: {
+				PermissionMode: "default",
+				Model:          "haiku",
+				AllowedTools: []string{
+					"Read", "Grep", "Glob",
+					"Bash(git log:*)", "Bash(git status:*)", "Bash(git diff:*)",
+				},
+			},
+			// 交叉验证卡是只读分析（读契约/源码/改动，产出结论，不写业务仓）——模型由引擎对在派卡时套上。
+			typeCrossCheck: {
+				PermissionMode: "default",
+				AllowedTools: []string{
+					"Read", "Grep", "Glob",
+					"Bash(git log:*)", "Bash(git diff:*)", "Bash(git show:*)", "Bash(git status:*)", "Bash(ls:*)",
+				},
+			},
+			typeSequence: {
+				PermissionMode: "acceptEdits",
+				// 普通落地默认用 Sonnet 来源档（Grok/high→eligible Kimi/max）；模糊、长程、跨仓
+				// 或高风险由派卡方显式升为 Opus，最难裁决才显式使用 Fable/max。
+				Model:  "sonnet",
+				Effort: "xhigh",
+				AllowedTools: []string{
+					"Read", "Grep", "Glob", "Edit", "Write", "MultiEdit", "Task",
+					"Bash(git add:*)", "Bash(git commit:*)", "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
+					"Bash(mkdir:*)", "Bash(ls:*)",
+					"Bash(go build:*)", "Bash(go test:*)", "Bash(go vet:*)",
+					"Bash(npm run:*)", "Bash(npm test:*)", "Bash(pnpm run:*)", "Bash(pnpm test:*)",
+					"Bash(python3 -m pytest:*)",
+				},
+			},
+		},
+	}
+}
+
+func configPath(root string) string      { return filepath.Join(root, "config.json") }
+func tasksDir(root string) string        { return filepath.Join(root, "tasks") }
+func progressDir(root string) string     { return filepath.Join(root, "progress") }
+func crosscheckDir(root string) string   { return filepath.Join(root, "crosscheck") }
+func archiveDir(root string) string      { return filepath.Join(root, "archive") }
+func logsDir(root string) string         { return filepath.Join(root, "logs") }
+func templatesDir(root string) string    { return filepath.Join(root, "templates") }
+func cooldownPath(root string) string    { return filepath.Join(root, "cooldown.json") }
+func usagePath(root string) string       { return filepath.Join(root, "usage.json") }
+func lockPath(root string) string        { return filepath.Join(root, ".lock") }
+func taskLogPath(root, id string) string { return filepath.Join(logsDir(root), id+".log") }
+
+// rootDirName / legacyRootDirName 是数据根在 $HOME 下的目录名（BD-44 改名）。
+const (
+	rootDirName       = ".cardex"
+	legacyRootDirName = ".claudego"
+)
+
+// defaultRoot 解析数据根，顺序（-root flag 由 resolveRoot 在更外层优先处理）：
+//
+//	$CARDEX_ROOT > $CLAUDEGO_ROOT(兼容读,提示一次) > ~/.cardex(存在则用) > ~/.claudego(存在则用+提示) > ~/.cardex(全新默认)
+//
+// 【为什么"存在才用"而不是无条件切到 ~/.cardex】改名当天所有人的数据都还在 ~/.claudego。
+// 无条件切新路径会让 cardex 在一个空目录上开张：队列看着一张卡都没有、launchd 照常 tick、
+// 旧根里在跑的活没人管——这是最坏的失败模式（看起来正常，实则整队丢失）。所以新根不存在时
+// 认旧根，并明说"legacy root，建议 cardex migrate"，把切换点交给人。
+//
+// 【为什么两个都不存在时落 ~/.cardex】那是全新装机，没有历史包袱，直接用新名。
+func defaultRoot() string {
+	if v := getenvCompat(envRoot, envRootLegacy); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return rootDirName
+	}
+	root := filepath.Join(home, rootDirName)
+	if isExistingDir(root) {
+		return root
+	}
+	if legacy := filepath.Join(home, legacyRootDirName); isExistingDir(legacy) {
+		warnLegacyRootOnce(legacy)
+		return legacy
+	}
+	return root
+}
+
+func isExistingDir(path string) bool {
+	st, err := os.Stat(path)
+	return err == nil && st.IsDir()
+}
+
+var legacyRootWarnOnce sync.Once
+
+func warnLegacyRootOnce(legacy string) {
+	legacyRootWarnOnce.Do(func() {
+		fmt.Fprintf(os.Stderr, "提示: 正在使用改名前的数据根 %s（legacy root）。迁移到 %s 请运行: cardex migrate\n",
+			legacy, filepath.Join(filepath.Dir(legacy), rootDirName))
+	})
+}
+
+func resolveRoot(flagVal string) string {
+	if flagVal != "" {
+		abs, err := filepath.Abs(flagVal)
+		if err == nil {
+			return abs
+		}
+		return flagVal
+	}
+	return defaultRoot()
+}
+
+func loadConfig(root string) (*Config, error) {
+	data, err := os.ReadFile(configPath(root))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("找不到 %s，请先运行: cardex init", configPath(root))
+		}
+		return nil, err
+	}
+	cfg := defaultConfig("claude")
+	if err := json.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("解析 %s 失败: %w", configPath(root), err)
+	}
+	// 引擎档案的配置面错误在读入时就炸：等到派发/执行时才发现，卡已经在队里静默跳过
+	// 或把额度花错账号（auth_var 注错的表现是 claude CLI 静默用本机订阅跑）。
+	if err := validateEngines(cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath(root), err)
+	}
+	if err := validateGemini(cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath(root), err)
+	}
+	if err := validateOpenCode(cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath(root), err)
+	}
+	if err := validateKimiCLI(cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath(root), err)
+	}
+	if err := validateGrokBuild(cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath(root), err)
+	}
+	if err := validateAntigravity(cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath(root), err)
+	}
+	if err := validateCursor(cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath(root), err)
+	}
+	if err := validateDefaultRunner(cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath(root), err)
+	}
+	if err := validateOwnerRoutingPolicy(cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath(root), err)
+	}
+	if ownerRoutingRequiredByProcess() && !cfg.OwnerRoutingEnforced {
+		return nil, fmt.Errorf("%s: CARDEX_REQUIRE_OWNER_ROUTING=1，但 owner_routing_enforced 未启用", configPath(root))
+	}
+	return cfg, nil
+}
+
+const ownerRoutingRequireEnv = "CARDEX_REQUIRE_OWNER_ROUTING"
+
+func ownerRoutingRequiredByProcess() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(ownerRoutingRequireEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateOpenCode(cfg *Config) error {
+	if cfg == nil || cfg.OpenCodeNightOpus == nil || !cfg.OpenCodeNightOpus.Enabled {
+		return nil
+	}
+	r := cfg.OpenCodeNightOpus
+	if strings.TrimSpace(cfg.OpenCodeBin) == "" {
+		return fmt.Errorf("opencode_night_opus.enabled=true 需要配置 opencode_bin")
+	}
+	if r.StartHour < 0 || r.StartHour > 23 || r.EndHour < 0 || r.EndHour > 23 || r.StartHour == r.EndHour {
+		return fmt.Errorf("opencode_night_opus 时间窗非法: start_hour/end_hour 必须为 0..23 且不能相同")
+	}
+	r.Timezone = strings.TrimSpace(r.Timezone)
+	if r.Timezone == "" {
+		r.Timezone = "Local"
+	}
+	if _, err := time.LoadLocation(r.Timezone); err != nil {
+		return fmt.Errorf("opencode_night_opus.timezone %q 非法: %w", r.Timezone, err)
+	}
+	r.Model = strings.TrimSpace(r.Model)
+	if r.Model == "" {
+		return fmt.Errorf("opencode_night_opus.model 不能为空")
+	}
+	r.Variant = strings.TrimSpace(r.Variant)
+	if r.Variant == "" {
+		return fmt.Errorf("opencode_night_opus.variant 不能为空")
+	}
+	if r.LimitFallbackMin < 0 {
+		return fmt.Errorf("opencode_night_opus.limit_fallback_min 不能为负数")
+	}
+	return nil
+}
+
+func validateKimiCLI(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	cfg.KimiCLIModel = strings.TrimSpace(cfg.KimiCLIModel)
+	cfg.KimiCLIEffort = strings.ToLower(strings.TrimSpace(cfg.KimiCLIEffort))
+	if cfg.KimiCLIEffort != "" && !validEfforts[cfg.KimiCLIEffort] {
+		return fmt.Errorf("kimi_cli_effort %q 非法（可选 low/medium/high/xhigh/max）", cfg.KimiCLIEffort)
+	}
+	r := cfg.KimiCLIOpus
+	if r == nil || !r.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.KimiCLIBin) == "" {
+		return fmt.Errorf("kimi_cli_opus.enabled=true 需要配置 kimi_cli_bin")
+	}
+	r.Model = strings.TrimSpace(r.Model)
+	if r.Model == "" {
+		return fmt.Errorf("kimi_cli_opus.model 不能为空")
+	}
+	r.Effort = strings.ToLower(strings.TrimSpace(r.Effort))
+	if r.Effort == "" || !validEfforts[r.Effort] {
+		return fmt.Errorf("kimi_cli_opus.effort %q 非法（可选 low/medium/high/xhigh/max）", r.Effort)
+	}
+	if r.LimitFallbackMin < 0 {
+		return fmt.Errorf("kimi_cli_opus.limit_fallback_min 不能为负数")
+	}
+	if r.MaxParallel < 0 {
+		return fmt.Errorf("kimi_cli_opus.max_parallel 不能为负数")
+	}
+	if r.MaxParallel == 0 {
+		r.MaxParallel = defaultProviderMaxParallel
+	}
+	if cfg.GrokBuild == nil || !cfg.GrokBuild.Enabled || !cfg.GrokBuild.KimiOpusFallback {
+		return fmt.Errorf("kimi_cli_opus.enabled=true 需要完整启用 Grok 主腿与 Kimi 第二腿（grok_build.enabled=true 且 kimi_opus_fallback=true）")
+	}
+	return nil
+}
+
+func validateGrokBuild(cfg *Config) error {
+	if cfg == nil || cfg.GrokBuild == nil || !cfg.GrokBuild.Enabled {
+		return nil
+	}
+	r := cfg.GrokBuild
+	cfg.GrokBuildBin = strings.TrimSpace(cfg.GrokBuildBin)
+	if cfg.GrokBuildBin == "" {
+		return fmt.Errorf("grok_build.enabled=true 需要配置 grok_build_bin")
+	}
+	r.Model = strings.TrimSpace(r.Model)
+	if r.Model == "" {
+		return fmt.Errorf("grok_build.model 不能为空")
+	}
+	r.Effort = strings.ToLower(strings.TrimSpace(r.Effort))
+	if strings.TrimSpace(r.ReadOnlySandboxProfile) != r.ReadOnlySandboxProfile {
+		return fmt.Errorf("grok_build.read_only_sandbox_profile %q 非法（名称必须精确且不能包含首尾空白）",
+			r.ReadOnlySandboxProfile)
+	}
+	switch r.ReadOnlySandboxProfile {
+	case "", grokBuildReadOnlySandboxDefault, grokBuildReadOnlySandboxMacOSNoopNetwork:
+	default:
+		return fmt.Errorf("grok_build.read_only_sandbox_profile %q 非法（可选 %s/%s）",
+			r.ReadOnlySandboxProfile, grokBuildReadOnlySandboxDefault, grokBuildReadOnlySandboxMacOSNoopNetwork)
+	}
+	// Grok Build 1.0.4 的 grok-4.6 菜单最高只接受 xhigh；max 会在模型调用前退出。
+	if r.Effort == "max" {
+		return fmt.Errorf("grok_build.effort=max 不受当前 Grok 4.6 支持；请使用最高可用档 xhigh")
+	}
+	switch r.Effort {
+	case "low", "medium", "high", "xhigh":
+	default:
+		return fmt.Errorf("grok_build.effort %q 非法（当前 Grok 4.6 可选 low/medium/high/xhigh）", r.Effort)
+	}
+	if r.LimitFallbackMin < 0 {
+		return fmt.Errorf("grok_build.limit_fallback_min 不能为负数")
+	}
+	if r.MaxParallel < 0 {
+		return fmt.Errorf("grok_build.max_parallel 不能为负数")
+	}
+	if r.MaxParallel == 0 {
+		r.MaxParallel = defaultProviderMaxParallel
+	}
+	r.CodexFallbackModel = strings.TrimSpace(r.CodexFallbackModel)
+	r.CodexFallbackEffort = strings.ToLower(strings.TrimSpace(r.CodexFallbackEffort))
+	r.ReviewCodexModel = strings.TrimSpace(r.ReviewCodexModel)
+	r.ReviewCodexEffort = strings.ToLower(strings.TrimSpace(r.ReviewCodexEffort))
+	for name, effort := range map[string]string{
+		"codex_fallback_effort": r.CodexFallbackEffort,
+		"review_codex_effort":   r.ReviewCodexEffort,
+	} {
+		if effort != "" && !validEfforts[effort] {
+			return fmt.Errorf("grok_build.%s %q 非法（可选 low/medium/high/xhigh/max）", name, effort)
+		}
+	}
+	allowedTierRoutes := map[string]bool{"opus_backend": true, "sonnet": true, "haiku": true}
+	for key, route := range r.TierRoutes {
+		if !allowedTierRoutes[key] {
+			return fmt.Errorf("grok_build.tier_routes.%s 未知（可选 opus_backend/sonnet/haiku）", key)
+		}
+		route.Effort = strings.ToLower(strings.TrimSpace(route.Effort))
+		route.CodexFallbackModel = strings.TrimSpace(route.CodexFallbackModel)
+		route.CodexFallbackEffort = strings.ToLower(strings.TrimSpace(route.CodexFallbackEffort))
+		switch route.Effort {
+		case "low", "medium", "high", "xhigh":
+		default:
+			return fmt.Errorf("grok_build.tier_routes.%s.effort %q 非法（当前 Grok 4.6 可选 low/medium/high/xhigh）", key, route.Effort)
+		}
+		if route.CodexFallbackModel == "" && !cfg.OwnerRoutingEnforced {
+			return fmt.Errorf("grok_build.tier_routes.%s.codex_fallback_model 不能为空", key)
+		}
+		if route.CodexFallbackEffort != "" && !validEfforts[route.CodexFallbackEffort] {
+			return fmt.Errorf("grok_build.tier_routes.%s.codex_fallback_effort %q 非法（可选 low/medium/high/xhigh/max）", key, route.CodexFallbackEffort)
+		}
+		if route.CodexFallbackEffort == "" && !cfg.OwnerRoutingEnforced {
+			return fmt.Errorf("grok_build.tier_routes.%s.codex_fallback_effort %q 非法（可选 low/medium/high/xhigh/max）", key, route.CodexFallbackEffort)
+		}
+		r.TierRoutes[key] = route
+	}
+	// Owner routing table is an enforcement contract, not a suggestion that per-host config may
+	// silently weaken. Optional rows may be omitted, but any enabled row must match the exact identity.
+	if cfg.OwnerRoutingEnforced {
+		expectedEfforts := map[string]string{"opus_backend": "xhigh", "sonnet": "high", "haiku": "high"}
+		for key, expected := range expectedEfforts {
+			route, ok := r.TierRoutes[key]
+			if !ok || route.Effort != expected {
+				return fmt.Errorf("owner final matrix requires grok_build.tier_routes.%s.effort=%s", key, expected)
+			}
+		}
+	} else {
+		expectedTierRoutes := map[string]GrokTierRoute{
+			"opus_backend": {Effort: "xhigh", CodexFallbackModel: "gpt-5.6-sol", CodexFallbackEffort: "max"},
+			"sonnet":       {Effort: "high", CodexFallbackModel: "gpt-5.6-luna", CodexFallbackEffort: "max"},
+			"haiku":        {Effort: "high", CodexFallbackModel: "gpt-5.6-luna", CodexFallbackEffort: "xhigh"},
+		}
+		for key, expected := range expectedTierRoutes {
+			if route, ok := r.TierRoutes[key]; ok && route != expected {
+				return fmt.Errorf("grok_build.tier_routes.%s 必须严格为 Grok/%s → %s/%s",
+					key, expected.Effort, expected.CodexFallbackModel, expected.CodexFallbackEffort)
+			}
+		}
+	}
+	if len(r.TierRoutes) > 0 && r.Model != "grok-4.6" {
+		return fmt.Errorf("Owner tier routes must strictly use grok_build.model=grok-4.6")
+	}
+	if r.OpusAdversarialReview && (r.ReviewCodexModel == "" || r.ReviewCodexEffort == "") {
+		return fmt.Errorf("grok_build.opus_adversarial_review=true 需要 review_codex_model/review_codex_effort")
+	}
+	if r.OpusAdversarialReview && (r.ReviewCodexModel != "gpt-5.6-sol" || r.ReviewCodexEffort != "max") {
+		return fmt.Errorf("grok_build Opus 对抗复审必须严格使用 gpt-5.6-sol/max")
+	}
+	if r.KimiOpusFallback && !cfg.OwnerRoutingEnforced {
+		if r.Model != "grok-4.6" || r.Effort != "xhigh" || r.CodexFallbackModel != "gpt-5.6-sol" || r.CodexFallbackEffort != "xhigh" {
+			return fmt.Errorf("Grok→Kimi→Sol 策略必须严格使用 grok-4.6/xhigh → kimi-code/k3/max → gpt-5.6-sol/xhigh")
+		}
+		if cfg.KimiCLIOpus == nil || strings.TrimSpace(cfg.KimiCLIOpus.Model) != "kimi-code/k3" ||
+			strings.ToLower(strings.TrimSpace(cfg.KimiCLIOpus.Effort)) != "max" {
+			return fmt.Errorf("Grok→Kimi→Sol 策略需要 kimi_cli_opus.model=kimi-code/k3 且 effort=max")
+		}
+		for _, key := range []string{"opus_backend", "sonnet", "haiku"} {
+			if _, ok := r.TierRoutes[key]; !ok {
+				return fmt.Errorf("legacy generic Owner compatibility route 启用 Kimi 腿时缺 grok_build.tier_routes.%s", key)
+			}
+		}
+	}
+	if r.KimiOpusFallback && cfg.OwnerRoutingEnforced {
+		if r.Model != "grok-4.6" || r.Effort != "xhigh" {
+			return fmt.Errorf("Owner final matrix requires grok_build grok-4.6/xhigh base identity")
+		}
+		if cfg.KimiCLIOpus == nil || strings.TrimSpace(cfg.KimiCLIOpus.Model) != "kimi-code/k3" ||
+			strings.ToLower(strings.TrimSpace(cfg.KimiCLIOpus.Effort)) != "max" {
+			return fmt.Errorf("Owner final matrix requires kimi_cli_opus kimi-code/k3/max")
+		}
+	}
+	if (r.KimiOpusFallback || r.FableClaudeFallback || r.FableFirstPrinciples || r.OpusAdversarialReview || len(r.TierRoutes) > 0) && strings.TrimSpace(cfg.CodexBin) == "" {
+		return fmt.Errorf("grok_build 接力/复审策略需要配置 codex_bin")
+	}
+	if r.KimiOpusFallback && (cfg.KimiCLIOpus == nil || !cfg.KimiCLIOpus.Enabled) {
+		return fmt.Errorf("grok_build.kimi_opus_fallback=true 需要启用 kimi_cli_opus")
+	}
+	if r.FableFirstPrinciples && !r.FableClaudeFallback {
+		return fmt.Errorf("grok_build.fable_first_principles_review=true 需要启用 fable_claude_fallback")
+	}
+	return nil
+}
+
+func validateAntigravity(cfg *Config) error {
+	if cfg == nil || cfg.Antigravity == nil || !cfg.Antigravity.Enabled {
+		return nil
+	}
+	cfg.AntigravityBin = strings.TrimSpace(cfg.AntigravityBin)
+	if cfg.AntigravityBin == "" {
+		return fmt.Errorf("antigravity.enabled=true 需要配置 antigravity_bin")
+	}
+	r := cfg.Antigravity
+	r.Effort = strings.ToLower(strings.TrimSpace(r.Effort))
+	if r.Effort == "" {
+		r.Effort = "high"
+	}
+	if r.Effort != "low" && r.Effort != "medium" && r.Effort != "high" {
+		return fmt.Errorf("antigravity.effort %q 非法（可选 low/medium/high）", r.Effort)
+	}
+	return nil
+}
+
+func validateDefaultRunner(cfg *Config) error {
+	if cfg == nil {
+		return nil
+	}
+	cfg.DefaultRunner = strings.TrimSpace(strings.ToLower(cfg.DefaultRunner))
+	switch cfg.DefaultRunner {
+	case "", "claude":
+		return nil
+	case "codex":
+		if strings.TrimSpace(cfg.CodexBin) == "" {
+			return fmt.Errorf("default_runner=codex 需要配置 codex_bin")
+		}
+		return nil
+	case "gemini":
+		return fmt.Errorf("default_runner=gemini 已退休；请使用 agy 或其他受支持 runner")
+	case antigravityRunnerName:
+		if !antigravityEnabled(cfg) {
+			return fmt.Errorf("default_runner=agy 需要启用 antigravity/antigravity_bin")
+		}
+		return nil
+	default:
+		return fmt.Errorf("default_runner %q 非法（可选: claude, codex, agy）", cfg.DefaultRunner)
+	}
+}
+
+func saveConfig(root string, cfg *Config) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return atomicWrite(configPath(root), append(data, '\n'))
+}
+
+func atomicWrite(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}

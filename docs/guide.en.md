@@ -1,0 +1,938 @@
+# cardex advanced guide
+
+[中文](guide.md) | **English** · back to [README](../README.en.md)
+
+## Goal mode (give the goal, not every step)
+
+Unlike a fine-grained `sequence` card, a Goal stage is one continuous diagnosis/implementation/test/fix. The operator gives the objective and terminal criteria, not every prompt. The design node is read-only; the execution writer owns the write domain. Existing `model=fable` routing is unchanged; an independent Astra design may be recorded on the design node.
+
+Grok is currently `manual-only`: complete and same-session restart are manually proven; automatic protocol and active pause/resume remain unverified. Copyable:
+
+```bash
+cardex workflow init ... -design-receipt /path/to/design-receipt.json
+cardex workflow writer <id> -mode manual
+cardex workflow goal-run <id> -manual -budget 350000
+# Grok TUI (literal path+digest; do not use $(cat)):
+#   /goal Read and implement the complete stage contract at <abs-path>; verify SHA256 <digest> before any write. --budget 350000
+#   /goal status
+cardex workflow goal-sync <id>
+cardex workflow show <id>
+cardex workflow design-result <id> -design-receipt R -decision stop|input|successor|accept|revise -observation failed|paused|needs-input|budget_limited|complete
+```
+
+Do not treat `grok -p` as goal proof. `goal-sync` does not launch a provider; it does update stage facts. The provider budget is soft; `step_timeout_min` is the hard deadline. The capability matrix is in `workflow show` and [recommended workflows](workflows.en.md). Kimi/Codex/Claude/Cursor/agy/OpenCode are `manual-only`/`unverified`; Gemini stays rejected. Independent design uses a receipt or a completed design task, not a `grok-build` + `gpt-6-astra` tuple.
+
+## Progress pull → coordinate → auto-advance
+
+The orchestration loop when several sessions work in parallel:
+
+**The desktop app is in scope too**: Claude Code's desktop app and the CLI share the `~/.claude/projects` session store and the same subscription quota, so sessions opened in the desktop app can equally be listed, pulled for progress, and taken over with `--resume`.
+
+```bash
+# 0) Find sessions: list a project's recent claude sessions (desktop + CLI share one pool) and grab a session ID
+cardex sessions -dir ~/Projects/myapp
+
+# 1) Pull progress. Interactive sessions (incl. desktop): prints a "summarize progress" prompt; paste it in and the report is written back to ~/.cardex/progress/
+cardex brief -dir ~/Projects/myapp -title auth-refactor
+#    With a session ID (queue tasks / desktop sessions from `sessions`): enqueue a haiku pull task, fully automatic
+cardex brief -id t0705-xxxx -auto
+cardex brief -session <session-id> -dir ~/Projects/myapp -auto
+
+# 2) Divide the work. A coordinate task injects a live queue snapshot + all progress reports at dispatch time,
+#    producing: a plain-English division of labor (what each task does / suggested model / manual-takeover command, kept in the log)
+#    + the split tasks auto-enqueued (with a model field; dependents get higher priority; resumable ones carry a session_id)
+cardex plan -dir ~/Projects/myapp "finish the upload module this week and fill in the tests"
+
+# 3) Auto-advance: launchd/daemon ticks as usual and runs tasks one by one per the model suggestions; inspect and take over anytime
+cardex list                       # see how far the split has progressed (title column shows "title ▸ latest progress")
+cardex log <coordinate-task-id>   # read the plain-English division of labor
+cardex cmd <id>                   # to take over a task by hand: prints the claude command + current-step prompt (hold it first)
+cardex progress                   # progress overview (a "status" column shows where each stands); -show <KEY> for a human-readable render; -in to paste-import
+```
+
+**The board doubles as progress**: `cardex list`'s title column shows each task's "title ▸ latest progress" (preferring the status from a pulled progress report, otherwise falling back to an auto-captured summary of the last step's output); `cardex progress` has a dedicated "status" column, and `progress -show <KEY>` is a human-readable render (goal / in-progress / done / remaining / blockers / key files, with the multi-thousand-word handoff prompt folded by default, `-full` to expand) — so you read *where things stand*, not a static title.
+
+**Model routing**: with `default_runner=codex`, a task's `model` is its source tier and the scheduler resolves
+the final Owner matrix. Explicit Fable uses Cursor→Grok answer→one Sol/ultra reviewer-merger. Non-backend
+Opus uses Grok→eligible Kimi and reaches Sol/xhigh only through a named condition. Ordinary backend uses
+Grok→Kimi review/repair→conditional Sol/xhigh; high-risk backend uses Grok→Kimi second view→mandatory
+Sol/max. Sonnet/Haiku use Grok→eligible Kimi, with no global Codex fallback.
+The coordinator emits explicit tiers along “hardest adjudication→Fable / ambiguous, long-horizon,
+cross-repository, or high-risk→Opus / complex implementation→Sonnet+xhigh / routine
+implementation→Sonnet+xhigh / mechanical→Haiku+high.” Source tier and concrete model are recorded
+separately; only cards explicitly resuming an old Claude session keep the Claude runner.
+
+**Production profile**: assembly, coordination, and routine review retain Opus as their source tier,
+while ordinary `sequence` work defaults to Sonnet. Choose Fable explicitly only for the hardest
+adjudication. The actual model comes from the card's Kimi/Grok/Codex fields and dispatch event;
+`model_weights` still serves Claude/third-party quota accounting.
+
+**In-session sub-layering (sub-agents)**: `sequence` tasks whitelist the Task tool by default, so paired with user-level sub-agents (`~/.claude/agents/deep-reasoner.md` bound to opus, `fast-worker.md` bound to sonnet) an executing session can hand hard reasoning up and push mechanical labor down — routing by task across sessions and by stage within a session, two layers stacked.
+
+### File-based state (`fresh_steps`) and human gating (`-hold`)
+
+Keeping project state in **files** (state.md / TASKS.md, etc.) is recommended so tasks don't depend on session memory:
+
+- `add -fresh`, or `"fresh_steps": true` in the emit JSON: steps don't `--resume` — each step is a brand-new session. The coordinate template bakes in a three-part contract: on start read the state file → make exactly one increment → on finish update the state file and task list.
+- Benefits: you never hit the session-context ceiling ("Prompt is too long" failures vanish), a limit interruption simply re-sends the current step in a fresh session (no resume prompt needed), the codex backup executor can take over **any** step (no longer limited to single-step tasks), and it's audit-friendly (all state changes live in git).
+- `plan -hold` / `assemble -hold`: the split tasks are parked (held) first; after a human review, `cardex release <id>` lets them proceed — the full loop of "split → gate → advance → review → update state".
+
+### Review divert (offload read-only review to a second machine)
+
+Run implementation locally while routing the adversarial review to another `remote_hosts` machine, balancing quota across both sides (review is read-only and therefore freely diverted):
+
+- `add -review-host <host>`: the auto-queued review card after completion runs on this remote host (`remote_hosts` key). The fix chain inherits the declaration — subsequent review rounds keep diverting. If the **sync command fails**, it falls back to local review (the loop stays intact); if the remote review execution itself fails it is treated as an ordinary task failure (retried/backed off), not pulled back locally.
+- `add -review-dir <mirror-path>`: the working directory for the review card on the review host (the directory the review template renders against). Used together with `-review-host`.
+- `add -review-sync <command>`: before dispatching the review card, run this command locally via `sh -c` (e.g. rsync the changes to the review host; 120 s timeout); a non-zero exit code triggers the local-review fallback. Can be used alone (sync only, no divert). **The sync command runs with the implementation card's `dir` as cwd**, so relative paths (e.g. `rsync -a ./ hostb:/mirror/`) are relative to the implementation directory, not the daemon's start directory. The command must **complete in the foreground** (no `&` backgrounding); a zero exit code means sync is done — backgrounding would let the review start before the mirror is ready.
+
+**Global default divert** (config trio — avoids per-card manual specification): when all three keys `default_review_host` / `remote_mirror_root` / `default_review_sync` are set, any local implementation card (`RemoteHost` empty) whose `review_after` review has no explicit `ReviewHost` is automatically diverted to `default_review_host`, with the review directory auto-derived as `<remote_mirror_root>/<impl-card-dirname>` and the sync command inherited from `default_review_sync`. **All three must be set** for the default to apply (any missing key disables it); per-card `-review-host` / `-review-dir` / `-review-sync` explicit values always take precedence; remote implementation cards (`RemoteHost` non-empty) are excluded (they are already reviewed remotely).
+
+### Generic manual cross-verification (two independent engines + adversarial cross-check)
+
+This explicit `cardex cross` tool is not the final Owner Fable automatic fallback. A user may select two **different** engines to answer the same task independently, then have the second engine adversarially inspect the first conclusion for gaps:
+
+```bash
+cardex cross -dir ~/Projects/myapp "rule on the contract semantics of a missing config key"  # default engine pair
+cardex cross -profile my-pair -dir ~/Projects/myapp "..."                                     # switch to a pair you defined in cross_profiles
+cardex cross -list                                                                            # list available pairs
+```
+
+An event-driven three-card chain — you enqueue only A; B/C chain on automatically:
+
+- **A**: engine 甲 answers independently (first-principles + adversarial self-review), producing conclusion A;
+- **B**: auto-dispatched once A finishes; engine 乙 answers independently — its **prompt is identical to A's and contains neither A's conclusion nor any pointer to it**. A's conclusion is parked in an isolation sidecar at `~/.cardex/crosscheck/<chain-id>.a` (read/written only by the orchestrator, deleted once C consumes it); it never enters B's card fields and is **not written to A's or B's log** (A's result log is redacted), and B carries only an opaque chain id unrelated to A's card id. The solo template also instructs B not to read orchestration/state directories. By default B can't reach A because it **isn't given it and is told not to look** — but this is **not a hard sandbox**: honestly, B's card carries the chain id, and the sidecar path is derived deterministically from it, so that id is effectively a pointer to the sidecar; codex `--sandbox read-only` can also read the whole disk, so a deliberately-searching executor could still find it. What this achieves is **passive-exposure minimization + a behavioral guard**; true hard isolation would require restricting the executor's read scope (which this tool does not provide);
+- **C**: auto-dispatched once B finishes; engine 乙 reads A back from the sidecar and, together with B, **adversarially cross-checks** them (what did each miss / adjudicate disagreements / blind spots only one side caught), producing a merged conclusion written to a progress report (`cardex progress -show <chain-id>`, for you to finalize).
+
+**The model source is switchable** via named engine pairs in `config.cross_profiles` (`default_cross_profile` picks the default). The default `opus-codex` = 甲 `claude opus·max` + 乙 `codex·max` (乙's concrete model comes from your `codex_model`; both at their top standard reasoning tier). Each engine's `kind` is one of `claude` / `codex` / `remote-claude` / `remote-codex`:
+
+```jsonc
+"default_cross_profile": "opus-codex",
+"cross_profiles": {
+  "opus-codex": {
+    "a": { "kind": "claude", "model": "claude-opus-4-8", "effort": "max", "label": "opus·max" },
+    "b": { "kind": "codex",  "effort": "max", "label": "codex·max" }
+  }
+}
+```
+
+- An engine's `effort` is the shared thinking level for claude and codex (claude → `--effort`, codex → `model_reasoning_effort`; same names, same order `low<medium<high<xhigh<max`), overriding the global `codex_reasoning` per task;
+- A `claude` engine requires a `model`; a `codex` engine requires `codex_bin` + `codex_model` (otherwise it would run the account/CLI default model, contradicting what the profile advertises — the command errors out, so there's no silent downgrade);
+- Cross cards are **read-only analysis** (read contracts/source/diffs, never write the repo); the **local** codex side by default runs in a one-shot isolated copy + `--sandbox workspace-write` (the copy is built and torn down per card so the source repo is never write-polluted; see the "Sandbox" section on CG-R3 `codex_review_sandbox`); the **remote** codex side only relaxes to `workspace-write` when the directory sits under `remote_mirror_root` (a one-shot mirror distributed by sync-lane), and keeps `--sandbox read-only` as a sandbox-level hard guarantee when running in a real business repo (the normal case when the three cards share a working directory) (CG-R3 R1 P0-1); `-dir` may not be the cardex data root or a subdirectory of it;
+- 甲 and 乙 must share an **execution location** (both local, or both on the same `remote_hosts` host) — the three cards share one working directory, so a cross-machine pair is rejected up front;
+- **Guard rail**: during a claude cooldown, even with `codex_fallback` on, a claude-engine cross card is **never** silently diverted to codex, and a codex-pinned card **never** fails open to claude when codex is unavailable (either would collapse both engines onto one and make the verification a sham) — engine identity is frozen; the card waits for its window. If any step of the chain breaks, the parent card records it (visible in `list`), so a single-leg result never masquerades as the final verdict.
+
+**Known limitations (stated honestly)**: (1) the 甲≠乙 "different engine" check is **textual** best-effort (kind + model name); it won't catch model aliases that point to the same model — profiles are user-authored, so alias-equals-same-engine is a config responsibility; (2) enqueue-time freezing pins engine identity (kind/model/effort), **not infrastructure paths** (codex/ssh binary location, remote sandbox, etc.) — changing those in normal operation is an infra change, not identity drift; (3) the three-card chain is event-driven, not crash-atomic: a single-leg orphan from a crash exactly between "mark done" and "spawn successor" is caught and marked failed by the per-tick `reconcile` (visible), but the narrow combination of "crash + manual `clean` archiving the parent" can slip through. These are rare crash/config edges, not normal-path defects.
+
+### Taking over existing role sessions (the review/assembly/execute sessions you maintained by hand)
+
+When a project folder already hosts a batch of long-lived role sessions, split them by role:
+
+```bash
+cardex sessions -dir ~/Projects/myapp        # Claim them: identify each role session by its first message, grab the ID
+
+# Ones with work in flight (execute/refine sessions) → pull progress first, then decide to resume or restart
+cardex brief -session <ID> -auto             # distill the existing context into a progress report (with next_prompt)
+cardex adopt <ID> -dir ~/Projects/myapp      # take over and resume the unfinished ones directly
+
+# The role sessions themselves → the matching type command + -session to mount, continuing on the old session's accumulation
+cardex review   -session <old-review-session-id> "review this week's changes"
+cardex assemble -session <old-assembly-session-id> "next goal"
+cardex add -type sequence -session <old-execute-session-id> -file next-steps.md
+
+# Or skip mounting: fold the role requirements distilled in the old session into templates/*.md, then start fresh each round (cheaper context)
+```
+
+Note: resuming an existing session in headless mode is a **fork** (a new session id is spun off; the original desktop session is untouched). After a task's first round, later rounds should mount the task's latest `session_id` (visible in `cardex list -json`), or just append steps to the same task. Long-lived session context grows ever more expensive, so the general advice is: sediment knowledge into templates/progress reports, and run execution in short sessions.
+
+## Web board (`board` command)
+
+A live read-only kanban in your local browser.
+
+```bash
+cardex board               # default http://127.0.0.1:8787
+cardex board -port 9000    # custom port
+cardex board -ttl 30       # task-snapshot cache TTL in seconds (default 10)
+```
+
+Three inviolable rules:
+- **Queue data is read-only**: every handler reads `~/.cardex` through `os.ReadFile` / `os.ReadDir` only — `tasks/` / `archive/` / `events/` / task JSON are never written, no task state is ever changed. The board sits on top of live queue data; any write would corrupt the real queue. The single exception is the board's **own view state**: `POST /api/project/archive` writes `~/.cardex/board_archive.json` (project collapse state, see "Project archiving" below) — it takes no part in scheduling, is never read by runner/tick/patrol, and deleting it loses no queue data. Every GET path remains write-free.
+- **127.0.0.1 only**: responses contain full prompt text, directory paths, and quota data. `-addr` can override the bind address, but the default is always the loopback; binding to a non-loopback address prints a warning — not recommended.
+- **TTL cache**: task snapshots and the burndown view each have their own TTL (burndown TTL = task TTL × 3, minimum 30 s), preventing a full disk scan of tasks/ and transcripts on every request. `/api/*` endpoints are gzip-compressed (2.5 MB → 320 KB in practice).
+
+**The overview is a horizontal rail**: one column per project, scroll sideways to switch projects, with all vertical space given to the phase/task list inside a single column (each column scrolls on its own; column height is computed from the rail's actual position, so you never get two nested scrollbars). Projects are parallel to each other, not sequential — stacking them vertically pushes the second project off-screen behind the first one's several hundred cards. Narrow screens (≤720 px) fall back to vertical stacking. Page width **follows the viewport** with no fixed cap — on an ultrawide display every extra pixel reveals a bit more of the next project, so spending that width on margins costs you a whole column.
+
+**Projects are drag-reorderable**: the grip at the left of each column header drags the project to a new position (or focus it and press ←/→ — drag-and-drop is unusable by keyboard, so this is not an optional extra). The order lives in this browser's localStorage: it is a **viewing preference**, not a queue fact, and different machines watch different things, so they have no business overwriting each other (archiving goes server-side because it answers "do I still want to see this project at all" — a different kind of question). While a manual order is active a banner stays pinned with a one-click reset: the default sort carries information (active work first, then most recent activity), so overriding it has to be stated. Projects that appear *after* you set an order go to the **front**, not the end — the rail scrolls horizontally, so the end means several screens of sideways scrolling away, and a brand-new project is exactly the one you want to see; the banner says how many are new.
+
+**Status presentation order**: progress-bar segments, the status legend, and the header status chips all use `canceled → done │ running → queued → limit_paused → held → failed` — settled on the left, increasingly demanding-of-attention toward the right. The progress bar is a **fill gauge** (like a battery meter), so the left portion is "the part you no longer have to think about", which is what makes "everything unfinished is on the right" true. Within the right half the order increases by "how far from done": the first three advance on their own, the last two need a human, so the right end is naturally "look here". The three places share one order because they are three renderings of the same reading — ordering them differently would stop the chips from lining up with the ribbon beneath them. **Kanban column order does not follow** (that lives in the backend's `boardColumnOrder`): a kanban is a workflow board where cards flow left-to-right toward "done", and moving done to the far left would read as the starting point. A fill gauge and a flow board are two different metaphors; each keeps its own convention.
+
+**Status filter (hides lists, never touches readings)**: the row of status-count chips in the page header doubles as a set of toggles — click one to collapse that status's card list (the overview hides task rows; the project page drops the whole column, since a kanban column *is* a status and an empty-but-present column reads as "there are no cards in this status").
+
+One inviolable rule: **filtering never changes any reading**. The chip counts, the progress bars, the five kind buckets and the ETA are all computed over every card, even when none of that status is rendered. If hiding "done" also dropped the progress bar, that wouldn't be filtering — it would be fabricating a snapshot the user then makes decisions from. While a filter is active a banner stays pinned under the page header stating what is hidden and reaffirming that counts are unaffected; "the backend only sent 40 of these" and "I hid some statuses myself" are reported as two separate lines, because merging them reads as the board having lost data. The filter persists in localStorage (with a thousand cards on screen, hiding "done" is routine, and re-setting it on every refresh means nobody would use it) — the pinned banner is what makes that persistence safe.
+
+**Quota is shown as remaining**: the headline reading in both the top quota strip and the burndown page is **remaining quota** (`BurnSource.remaining_percent`, computed server-side and clamped to [0,100]); the burndown curve descends and hitting zero means exhausted. The source data (CodexBar) reports used %, so `used_percent` is preserved verbatim in the response and shown alongside in tooltips / subtitles / the sample table — whenever both appear on screen, which one you're looking at is always labelled. The decision you make on this screen ("can I dispatch another batch?") is a direct function of what's left; "how much has burned" requires a subtraction first.
+
+**Two progress scales (a「实发进度 / 预估进度」segmented control in the page header, sitting in
+the same row as the status filter chips; added 2026-08-02, revised twice the same day)**: the
+default **filed scale**（实发进度）counts cards actually dispatched (9 of 12 done → 75%), but
+cardex's work model keeps spawning cards (review_after reviews, fix rounds, emit output), so
+the filed scale routinely overstates completion. Switching to the **projected scale**（预估进度）
+swaps the denominator to the estimated final card count (the bar gains a hatched "estimated
+remaining" ghost segment at the tail, and the percentage carries a `~` suffix). Two sources:
+- **Planned anchor first**: `projects.<id>.planned_total_cards` in `board.json` (the phase-plan
+  total). Update it when a plan milestone lands or changes — that's the calibration hook; when
+  existing cards exceed the plan, the denominator uses existing and the basis says the plan is stale.
+- **Spawn-coupling model as fallback** (upgraded same-day): with no anchor, the estimate asks a
+  measurable historical question — **how many new cards does each completion spawn on average**
+  (k = system-spawned cards / completions; system-spawned = review cards, fix rounds,
+  cross-chain legs, and emit output / closeout / escalation cards carrying the `emitted_by`
+  lineage stamp). Clearing the current A in-flight cards then spawns A·k/(1−k) more in total
+  (geometric series — **the whole derivation cascade is front-loaded into the estimate at
+  once**). That yields the trend property this revision was about: completing a non-spawning
+  card shrinks the estimated total; completing a spawning card leaves it roughly flat because
+  its offspring were already priced in — every update trends toward completion instead of the
+  denominator drifting away. k≥0.85 marks an expansion phase (an emit wave in progress): the
+  estimate clamps to 0.85 and the basis explicitly calls it a **lower bound**. Recomputed live
+  on every snapshot (self-calibrating, zero quota, no timers); insufficient samples
+  (<5 completions or <3 spawned) fall back to existing-card counts with explicit disclosure —
+  estimates always carry a basis, never an unexplained percentage. Honest limit: a young project
+  that has never emitted will still see its estimate jump on the first wave (no history, no
+  clairvoyance) — use the planned anchor there. Legacy system-spawned cards predate the
+  `emitted_by` stamp, which underestimates k (bias direction: conservative; disclosed in basis).
+
+**A third scale:「工时进度」(work-weighted progress + projected finish)**: card-count scales
+treat every card as one unit, but across this ledger's 1622 done cards the median turns run
+**sequence 57 / design-review 34 / coordinate 8 / progress-pull 2 — a 28× spread**, and
+multi-step cards (112) are 2.7× single-step ones (41). "7 of 10 done = 70%" badly overstates
+progress when the remaining three are all big sequence cards. The work scale weights each card
+by workload and adds a projected completion time:
+
+- **Weight uses turns (round count) as a workload proxy**, not duration — cards carry no
+  execution-duration field, and `updated_at−created_at` is mostly queue waiting (same argument
+  as the ETA section above). Done cards use measured turns; not-yet-run cards are predicted from
+  the historical **median** per (type × single/multi-step) — median rather than mean because
+  turns are heavy-tailed right-skewed, and a mean would let a few outliers inflate every prediction;
+- **Completion time** converts via the measured "wall-clock minutes per unit of work" from the
+  same sample window, which absorbs parallelism, cooldowns, and redline windows. When the sample
+  spans zero time (no derivable rate), it reports the percentage and **no time at all**;
+- **Known gap**: codex / remote / engine cards don't report turns (24% of done cards measured at
+  turns=0); those are filled from the type median, direction of bias unknown — coverage and the
+  gap are printed under the bar and in the basis;
+- Below 12 measured samples the whole scale is marked unavailable and falls back to the filed
+  scale with the reason stated outright;
+- The bar uses the **same status segmentation and status colors** as the other two scales (each
+  segment is "how much work sits in this status", with the same hatched projected-remainder
+  segment at the tail). The segments for not-yet-run cards are median-predicted estimates — that
+  is disclosed by the coverage figure and basis under the bar rather than by dimming the
+  segments: segmentation says "what state this work is in", not "how trustworthy this number
+  is", and cramming both into one visual channel makes neither readable.
+
+**Kind buckets switch with the scale**: on the projected scale, the remainder is distributed
+across the design/impl/fix/review buckets by **historical spawn composition** (if 60% of past
+spawned cards were fixes, the fix bucket gets 60%; largest-remainder rounding, **Σ bucket
+remainders ≡ project remainder** so buckets always reconcile with the total bar); on the work
+scale each bucket carries its own weighted numerator/denominator (existing cards only — the
+projected remainder is borne by the total bar, since distributing it in both places would make
+the two scales' bucket denominators tell different stories). Buckets with no share fall back to
+the filed denominator. Phase bars always stay on the filed scale (phases are execution slices
+with neither spawn composition nor an independent workload baseline). The control lives beside
+the status filter chips on both the overview and project pages — both are "how to read the
+board" view switches, and splitting them across two places would suggest the scale is a per-page
+setting. The preference persists in localStorage.
+
+**Project override `~/.cardex/board.json`**: auto-derived project/phase blurbs are often dry — write a better one by hand if you like; missing file simply falls back to full derivation. Fields allowed inside a project block: `name` / `desc` / `phases.<name>` / `goal` / `kind_rules` / `planned_total_cards`; the file also has a top-level `project_aliases` grouping table (see below).
+
+**`goal` field (CG-8 "landed progress")**: a mechanized "how far from the project goal" view, displayed **alongside** the card-based `progress_percent` (never replacing it). V1 does synthesis only — no history/trend.
+
+> ⚠️ **The `//` lines below are documentation comments only — the actual `board.json` is strict JSON: no comments, no trailing commas.** Strip the `//` before you paste. Break the JSON and the board top strip surfaces a red `board.json invalid` banner (`OverviewResp.board_override_error`). Two degradation shapes — both surface loudly, never silently: **syntax errors** (missing commas, jsonc comments, unclosed braces) cannot be partially recovered, so the entire override drops back to auto-derivation; **field-type typos** (e.g. `"weight":"1"`, `"done_percent":"50%"`) trigger `*json.UnmarshalTypeError` — Unmarshal skips the offending field but keeps filling the rest, so `loadBoardOverride` **preserves the partial result** (other projects' name/desc/phases/goal still take effect) alongside the banner. One typo does not collectively erase the whole override — but any degradation must be surfaced.
+
+```jsonc
+"goal": {
+  "statement": "Ship real usage",
+  "as_of": "2026-07-23",              // human-anchored eval date; drives goal_source=manual@as_of
+  "milestones": [
+    {"id":"M1","title":"Design freeze","weight":1,"done_percent":100,"basis":"REVIEW Go"},
+    {"id":"M4","title":"test-ready gates","weight":1,
+     "evidence": {                     // if present, overrides manual done_percent
+       "path":"/Users/you/.cardex/logs/check.json", // **must be absolute**; relative paths are rejected outright (no CWD/boardRoot fallback)
+       "numerator":"gate_counts.pass",  // dotted path; must resolve to a JSON number
+       "denominator":["gate_counts.pass","gate_counts.blocked"],
+       "max_age_hours": 24              // stale → milestone marked stale + insufficient; negative rejected as config error
+     },
+     "basis":"ops/test-ready/check"}
+  ]
+}
+```
+
+Synthesis: `landed_percent = Σ(weight × done_percent) / Σweight`, shown next to `progress_percent`. Source disclosure is tagged by **what actually landed**, not by config shape (any non-`insufficient` tag below can co-exist with `partial=true` when a subset of same-class milestones failed to land — the tag itself does **not** promise the whole class resolved): `goal_source = manual@as_of` (at least one manual entry landed and no milestone was configured with evidence) / `evidence` (at least one evidence entry landed and no manual entry landed; partial-resolution of the evidence set is disclosed via `partial`) / `mixed@as_of` (both channels landed at least one entry) / `manual+degraded@as_of` (evidence was configured but not a single entry landed — manual milestones carried the synthesis; degradation **is disclosed** rather than misreported as "mixed") / `insufficient` (nothing valid landed).
+
+**Fail-honest guarantees** (non-negotiable):
+- goal missing → the frontend **hides the whole block** (no guessing);
+- weight sum ≤ 0 or any weight < 0 → the whole block is marked "insufficient data", `landed_percent` is `null` (never NaN / Inf / any number); non-finite weights (`NaN`/`±Inf` — e.g. `MaxFloat64` products overflowing, or a `NaN` weight sneaking past the `<0` check because `NaN<0` is `false`) are caught by a pre-synthesis `math.IsNaN`/`IsInf` guard and mapped to the same "insufficient data" outcome (otherwise `round1(Inf)`'s int64 conversion is "implementation-defined" and the frontend renders `0%` or an astronomically negative number — worse than "no data");
+- manual `done_percent` outside `[0, 100]` → that milestone is marked "insufficient data"; never render negative percentages or 250% (lesson: `round1`'s int64 truncation renders `-50` as `-49.9`, which then displays as authoritative "-49.9%");
+- evidence synthesis exceeds 100% (e.g. a misconfigured pointer yields `num=30, den=[10]` → 300%) or yields a negative value (numerator or denominator is negative) → same "insufficient data" treatment; the raw 300% or -30% is never surfaced. The guards sit on the **absolute values** of `num` and `den`: `num<0` rejected, **each `den` component `v<0` rejected** (`{pass:5, blocked:10, adjustment:-3}` sums to 12>0 but the `adjustment` component is negative — sum-only guarding leaks a silent 41.7% reading), `den` sum `≤0` rejected (divide-by-zero + all-zero fallback). Guarding only `pct<0` gets bypassed by "sign cancellation" — e.g. `{pass:-9, blocked:-2}` cancels to `+81.8%`;
+- **evidence.path must be absolute**: relative paths — whether resolved against process CWD or the `board.json` directory — silently fall back to same-named files (e.g. scaffolding under `~/.cardex`), so a misconfiguration reads the wrong file with zero warning. Rejecting relative paths outright is the only way to keep the provenance auditable;
+- evidence file missing / older than `max_age_hours` / pointer does not resolve to a **JSON numeric** (e.g. the field is a string like `"9/21"`) → that milestone is marked "insufficient data"; the composite is computed from remaining milestones only and flagged `partial` — **evidence is exclusive once configured**; failure / staleness / bad pointer means "insufficient", **never a fallback to the manual value** (silently swapping data provenance is a form of fabrication);
+- `board.json` present but syntactically invalid (jsonc comments, trailing commas, unclosed braces) → `OverviewResp.board_override_error` is populated, the red banner stays up, and **the entire override block** drops back to auto-derivation; **field-type typos** (`"weight":"1"` / `"done_percent":"50%"`, i.e. `*json.UnmarshalTypeError`) → the banner is populated too, but **the partial-fill result is preserved** (other projects' unaffected name/desc/phases/goal still apply) — one typo does not collectively erase the whole override. Neither shape is **ever silently swallowed**.
+
+**The board only reads evidence files, never executes commands**: producing that JSON is the job of the orchestration session/card (e.g. `ops/test-ready/check`); the board only consumes what has been written to disk.
+
+### Project attribution: explicit > alias > pattern > heuristic > unclassified
+
+Task cards have **no** project field; the board infers projects from the working directory. Inference holds while each project has one stable directory. Once a lot of cards run in **task-scoped temporary directories** (one directory per card on the remote — `D:/Project/PO-tasks/<taskid>` — dated worktrees like `Trading-<slug>-20260730`, scattered re-review dirs `HB-*`/`S3-*`/`card-*`), every one of those directories becomes its own "project". A real inventory rendered **80 projects where only 9 were real**, which destroys the whole point of "conclusions findable per project".
+
+Attribution runs in five layers; **the first layer that matches wins**:
+
+| Layer | Evidence | Source tag | Lives where |
+|---|---|---|---|
+| 1 | `add -project <name>` explicit pin | `explicit` | on the card (frozen at enqueue) |
+| 2 | first matching rule in top-level `project_aliases` of `board.json` | `alias` | config (one edit applies retroactively to everything) |
+| 3 | the directory's (or any ancestor's) basename starts with a known project name + `-` | `pattern` | built into the code |
+| 4 | working-directory union-find component (mirror pairs / lanes / same basename / ancestor containment) | `heuristic` | built into the code |
+| 5 | nothing matched | `unclassified` | the "未分类" (unclassified) inbox |
+
+**`add -project` (frozen at enqueue)**: whoever dispatches the card knows which project it belongs to; the directory is merely where it happens to land. The field is written onto the card, so later config or alias-table edits can never make it drift (same discipline as `-stakes`). Derived cards — review cards, fix cards, closeout cards, over-round escalations, cross-check B/C, and children emitted by coordinators — **inherit it automatically**; without inheritance, the review card of a `-project`-pinned impl card (running in a mirror directory on the review host) would drop into the inbox.
+
+**`project_aliases` (the mechanism for cleaning up the backlog)**: an ordered rule list, first match wins. Editing this table **touches not a single byte of any task card**; the next snapshot rebuild applies it retroactively to the entire history — that is how you clean up existing wild projects.
+
+```jsonc
+"project_aliases": [
+  {"match": "/Users/you/Projects/PH-lanes/*", "project": "PerlicaHermes"},
+  {"match": "D:/Project/PO-tasks/*", "title": "Hermes", "project": "PerlicaHermes"},
+  {"match": "D:/tmp/qmt-*", "project": "Trading"},
+  {"match": "D:/Project/Trading-docs", "project": "Trading-docs"},  // alias > pattern: stops "Trading-" from folding it into Trading
+  {"match": "/Users/you/Projects", "project": "未分类"}              // the container directory itself goes to the inbox
+]
+```
+
+- A `match` **without wildcards matches that exact directory only**; with `*` `?` `[` it is a glob matched against **the directory or any of its ancestors**, so `X/*` covers X at **any depth**. Matching is case-insensitive throughout (the same remote directory often differs in case between the two machines' cards).
+- **Why a bare path is not a prefix**: writing a prefix rule for a container directory (e.g. `~/Projects`) would swallow every project underneath it into one project, with nothing on screen to show for it. The two mistakes are not symmetric — under-configuring leaves a few directories in the inbox (visible, fixable); over-configuring collapses the whole board. Write `/*` explicitly to cover a subtree.
+- `title` is a case-insensitive substring of the card title. Remote task-scoped directories are named after a random task ID, so **the directory carries no project information at all** and only the title can decide. When written together with `match`, **both** must match (AND) — this keeps a title rule from leaking board-wide.
+- Bad rules (missing `project`, neither `match` nor `title`, invalid glob) are **skipped one by one and disclosed** (`OverviewResp.project_alias_error`, rendered as a yellow banner at the top of the board overview); the remaining rules stay in effect for these three malformed shapes — same discipline as `kind_rules`. Target: `TestAliasBadRulesSkippedAndDisclosed`.
+
+**Built-in pattern rule (layer 3)**: a directory whose basename — or any ancestor's basename — starts with a known project name followed by `-` belongs to that project. This is what tames dated worktrees: `Trading-paper-strategy-envelope-20260730` → `Trading`, `PerlicaHermes-cmp-sol` → `PerlicaHermes`, `Trading-strategy-research-20260726/c-etf-regime` → `Trading` (the evidence sits on the ancestor). "Known project name" = **the representative names of projects that already stand on their own in this batch** + names registered in the alias table + names explicitly pinned on cards; generic directory names (`docs`/`src`/`config`, …) are excluded. When several known names match, the **longest** one wins (`Trading-docs-mirror` goes to `Trading-docs`, not `Trading`).
+
+**Exact match beats prefix**: when a basename is **exactly equal** to a known project name, equality is checked first, so a shorter known name can no longer swallow it via the `-` prefix.
+- An ancestor matching exactly → that name wins directly: `~/Projects/Trading-docs/notes` goes to `Trading-docs`, not `Trading`.
+- The directory **itself** matching exactly, when that name was **declared** (registered in `project_aliases`, or pinned on some card via `-project`) or has **cross-root evidence** (e.g. local `~/Projects/Trading-docs` and remote `D:/Project/mirrors/Trading-docs` — two independent paths with the same name) → handed back to the heuristic, where the same-name/mirror evidence merges it into the right project.
+- The directory itself matching exactly, but the name is merely "some single-directory worktree that happened to accumulate enough cards" → still folded in by prefix (`Alpha-cmp` → `Alpha`). To make such a directory a stable project of its own, pin it once with `-project` or register it in `project_aliases`; until then the directory itself and its subdirectories may land in two different projects (a known asymmetry, filed for design adjudication).
+
+**The "未分类" (unclassified) inbox**: directories that fail attribution **no longer each become a project**; they all land in one project named 未分类 (fixed id `unclassified`, **always shown**, even with 0 cards — an empty inbox is itself information). Two things land there: cards with no working directory, and components that have a single directory and fewer than 3 cards. Components corroborated by a cross-machine mirror (the card carries a `review_dir`) are exempt from the card-count threshold — two mutually corroborating directories are strong evidence on their own.
+
+A genuinely new project's first card **does land in the inbox**: at that moment it truly has no grouping evidence. That is intended, not a defect — the bucket means "to be triaged", and promotion happens via `-project` or an alias registration rather than by accumulating cards (reaching 3 cards also promotes it, but only as a backstop so small projects don't sit in the bucket forever).
+
+**Soft constraint at `add` time**: when a new card would land in 未分类 under the current ledger, `add` prints one line to stderr and **enqueues the card anyway**:
+
+```
+警告: 目录 /Users/you/Projects/NewThing 未匹配任何显式/别名/模式/启发式归组，该卡将落入看板「未分类」；
+      如属既有项目请用 -project 指定，或在 board.json 的 project_aliases 登记。
+```
+
+Not blocking is deliberate: dispatching a legitimately new project should still take one command; a hard gate would force you to edit a config file before you can start work.
+
+### Progress split by kind of work (`Project.kinds`)
+
+A single project progress bar divides done cards by all cards — not wrong, but it averages three completely different kinds of work **weighted by card count**. Review and fix cards are short-lived, so their completion rate is naturally high, and they routinely make up 70%+ of the cards (one real project: 430 `design-review` cards against 800 `sequence` ones). The total bar gets dragged up to ~90% while the cards that actually land the work may be at 40%. **The total bar is optimistic in a specific direction** — exactly the "later-stage work gets underestimated" problem.
+
+So each project also emits `kinds[]`: five buckets — **design / impl / fix / review / coord** — each reporting its own completion using the identical formula as the total (`done ÷ (total − canceled)`). Empty buckets are omitted. The total bar is **kept unchanged**: it is the only reading comparable with historical screenshots, and the one anchor that depends on no classification judgement at all. Real example: a project whose total reads 87.9% splits into design 83.3% / **impl 73.2%** / fix 95.5% / review 100%.
+
+Classification order *is* the priority order — **structural signals first, keywords last** — and every card carries a `kind_source` stating what the verdict was based on:
+
+| Order | Signal | `kind_source` | Bucket |
+|---|---|---|---|
+| 1 | first matching `kind_rules` entry in `board.json` | `override` | as specified |
+| 2 | `x_role=C` / non-empty `review_of` / `type=design-review` / title prefixed 审核:／对抗复审: | `x_role`/`review_of`/`type`/`title` | review |
+| 3 | `fix_round>0` / title prefixed 修复R1: (**colon required**) | `fix_round`/`title` | fix |
+| 4 | `type ∈ {coordinate, progress-pull, prompt-assembly, batch}` / title prefixed 收口:／进度: | `type`/`title` | coord |
+| 5 | title contains 设计/方案/规划/调研/选型/架构/评估/蓝图/草案/立项/盘点 or design/spec/rfc/roadmap/proposal/blueprint/research | `title` | design |
+| 6 | nothing matched | `default` | impl |
+
+Two deliberate, non-negotiable choices:
+- **Review must be decided before fix.** Review cards inherit the reviewed card's `fix_round`; getting the order wrong silently moves hundreds of review cards into the fix bucket — impl progress looks unchanged, the fix bucket doubles out of nowhere, and nothing errors.
+- **Unclassifiable cards go to "impl", not "unclassified"** (the opposite of the phase layer's "unsorted"). The distortion this feature exists to prevent is *underestimating remaining work*, so counting unclassifiable work as work still to land errs on the conservative side; a separate "unclassified" bucket would instead make impl look emptier than it is. `kind_source=default` states this plainly.
+
+Keywords are a heuristic and will misfire; `kind_rules` is the precise escape hatch (more honest than piling more words into the keyword list, which would hurt unrelated projects):
+
+```jsonc
+"kind_rules": [
+  {"match": "HB-",             "kind": "design"},   // title substring, case-insensitive
+  {"match": "t0723-0304-c0d8", "kind": "coord"}     // or a full task ID
+]
+```
+
+Valid `kind` values are only `design` / `impl` / `fix` / `review` / `coord`. Invalid rules are **skipped one by one** (the rest still apply — one typo doesn't take out the whole list), but every skipped rule is reported through `Project.kind_rule_error` and shown as a yellow warning on the project card — silent no-ops are fabricated readings.
+
+### Project archiving (collapse on the overview)
+
+Once you have enough projects, long-finished ones still occupy a column on the overview forever. The "归档 / Archive" button on the project card and project page collapses one away:
+
+- Archive state lives in `~/.cardex/board_archive.json`; **not a single byte of any task card changes**, and scheduling, ETA and status counts are all unaffected. The top status counts still include archived projects' cards, and the page header says so explicitly ("N projects archived — the status counts below still include their cards").
+- Archived projects are not laid out on the overview rail by default; the "已归档 N" toggle in the top right expands them temporarily so you can un-archive in place.
+- **A new card automatically restores the project to active.** Archiving records the (card count, newest `created_at`) at that moment; if the count later grows, or a newer `created_at` appears, the project is judged to have new cards and flips back to active, with a badge and the reason ("auto-restored") on the card — omit the reason and users assume their archive click never registered. The two criteria are OR'd: count alone is fooled by "remove one, add one"; timestamp alone misses cards with a missing `created_at`.
+- **Card status changes do not trigger restoration** (queued→done, running→failed all count as no change). Manual archiving means "I don't want to look at this project for now"; a known card finishing is not new information. Judging by `updated_at` would make archiving a still-running project bounce back on the very next tick.
+- Auto-restoration is a **read-only derivation and is never written back**: the archive record stays put and is re-evaluated on every request. That keeps GET paths write-free and rules out "restoration failed to persist → half-archived state".
+- If the state file cannot be read (corrupted), the error is **surfaced** (`archive_state_error`, yellow banner) and everything renders as un-archived; writes onto a corrupted file are **refused**. Silently treating it as "nothing archived" would make ten hand-collapsed projects reappear at once with zero explanation.
+
+`POST /api/project/archive` is the board's only write endpoint (body `{"id":"<project id>","archived":true}`), behind three gates: POST only; `Content-Type` must be `application/json` (HTML forms cannot produce that type, which blocks cross-site auto-submitting forms); and when an `Origin` header is present its host must equal the request Host (browser cross-site fetches always send Origin). Command-line `curl` sends no Origin and is allowed through — local ops needs to be scriptable.
+
+### One window control, two ledgers (`range=24h|7d|30d|all`)
+
+The window tabs at the top of the burndown page drive **both** the queue task spend and the token curve. They share a window but are **not the same ledger**, and must never be read as the same number:
+
+| | Queue task spend `task_spend` | Token curve `token_series` |
+|---|---|---|
+| Source | `cost_usd` / `turns_used` on task cards | transcripts under `~/.claude/projects` |
+| Scope | **the queue**: one row per card, no interactive sessions | **everything**: interleaved with hand-typed Claude Code sessions |
+| Unit | US dollars (API-equivalent cost) | absolute token throughput (equal-weight) |
+| Cost of widening | zero — the snapshot is already in memory | real disk work: 24h≈104MB / 7d≈419MB / 30d≈1.06GB |
+
+**"Why does the curve so often show only one or two models"** was exactly this distinction going unstated: those 24 hours happened to run only those models, mostly from interactive sessions. Widening to 7 days surfaces 7 models in practice.
+
+**The curve's scan parameters scale with the window** (`tokenScanPlanFor`): buckets coarsen from 15 minutes to 12 hours (otherwise 30 days would plot 2880 points — slow and uninformative), and the byte budget grows from 512 MB to 4 GB (twice the measured volume, since transcripts keep growing and a tight budget would start truncating silently one day). Measured cold-start: 24h/0.6s · 7d/1.3s · 30d/3.1s, with no window hitting truncation. `range=all` is **capped at 90 days** for transcripts and says so in `basis` — that directory has no upper bound, and a window that never finishes is worse than one you can explain.
+
+If the byte gate is ever hit, `token_series` self-reports `truncated` / `files_matched` / `files_scanned` / `bytes_scanned` and the frontend raises a red banner. This is not decoration: **a curve missing its back half looks exactly like "nothing ran during that period"** — silent truncation is a fabricated reading.
+
+`burnCache` is therefore **partitioned by window**: the scan grows from 104 MB to 1 GB across windows, and a shared slot would re-run the most expensive one on every tab switch. An unknown `range` normalizes onto the `24h` slot, so `?range=garbage` cannot blow the cache up.
+
+### Queue task spend (`task_spend`)
+
+Sourced from **the task cards' own `cost_usd` / `turns_used`** (the runner writes back the `total_cost_usd` / `num_turns` reported by the claude CLI when a card finishes). This ledger persists with the cards (including `archive/`), so any window is available at zero extra scanning. It yields: total spend / priced card count / unpriced card count / total turns, a **per-model** breakdown (resolved through `effectiveModel`, so codex-side cards go through `resolveCodexModel`), and a **per-project** breakdown.
+
+**Why per-project rather than per-task**: a 30-day window holds close to a thousand cards, a per-task table can only show the top few dozen rows, and those rows are usually one project's consecutive fix chain — you finish reading and still don't know which line of work the money went to. The project is the granularity at which trade-offs actually get made (which line to stop, which to double down on). Each row carries **both a "priced / total" card count** — with only an amount, "this line spent $3" cannot be distinguished between "little work" and "cost wasn't recorded" (codex reports none) — plus that project's **top model by spend**, answering "which tier is this line's money burning on".
+
+**Two boundaries that must be stated out loud** (`task_spend.basis` is rendered verbatim on the page):
+
+- `cost_usd` is the **API-equivalent cost** reported by the claude CLI. On a subscription it is **not an actual charge** — only "what this work would have cost at API prices". Read as a bill it produces an alarming and wrong number.
+- **codex / remote-codex cards report no cost**, and cards that never ran or were cancelled are likewise empty — in practice 448 of 1423 cards have no cost data. They burn a different quota entirely and are **excluded** from the total; the size of that gap has to be on screen, or "the codex half was free" gets taken as fact.
+
+The time dimension uses each card's **`updated_at` (the moment it finished)**, not `created_at`: the cost is produced and written back when the card completes, so filing it by creation time would push a card queued last week and finished today into last week — that money was spent today. An unknown `range` falls back to `24h` without erroring or guessing. Because the window comes from a request parameter, `task_spend` **does not enter `burnCache`** (that cache holds the window-independent transcript scan; mixing them would give every window its own copy of an expensive scan) and is computed per request instead.
+
+**Burndown view — three sources** (`/api/burn`): of these, `usage-history.jsonl` (= `usage_feed`) is the only source shared with `cardex quota`; `claude.json` and transcript scanning are board-exclusive — `cardex quota` does not read those two sources:
+1. **CodexBar `claude.json`**: per-account session / weekly / opus window percentage time-series for the claude side;
+2. **CodexBar `usage-history.jsonl`** (= `usage_feed`): primary (5 h) / secondary (weekly) percentage time-series for the codex side;
+3. **`~/.claude/projects/*/*.jsonl` transcripts**: absolute token usage from each assistant message (four components summed equally, plus quota-weighted totals).
+
+**"Insufficient data" semantics**: a single sample point has no computable rate; a sample older than the window it describes (e.g. a 5 h window with a 14-hour-old sample); or a reset time that has already passed — all three cases produce `verdict="insufficient data"`, and `burn_rate` / `exhaust_at` remain null. Only points within the current window period (sharing the same `resetsAt` boundary as the latest sample, with a 90 s tolerance) participate in rate fitting; no values are fabricated.
+
+## 5-hour quota redline (reserve headroom)
+
+To leave headroom for bursty/interactive work: when the redline is active the queue stops dispatching (multi-step tasks also yield between steps), and `-force` crosses it. Three channels, inspectable anytime with `cardex quota`:
+
+```jsonc
+// ~/.cardex/config.json
+"queue_budget_tokens": 2000000,  // ① local ledger: max weighted tokens the queue may spend in the sliding 5h window; 0 disables
+"redline_percent": 85,           // ②③ shared redline for percentage channels: stop when any source's usedPercent hits the line; 0 disables
+"usage_feed": "/Users/you/Library/Application Support/CodexBar/usage-history.jsonl",
+"usage_feed_max_age_min": 90,    // ②   a stale sample is treated as unavailable → dispatch allowed (fail-open); **0/negative reverts to default 90 min, never "trust forever"**
+"oauth_usage": true,             // ③   subscription usage endpoint (third source), off by default; endpoint is undocumented
+"oauth_usage_max_age_min": 15,   // ③   also acts as the **process-level cache TTL**: reused inside the 15s tick loop; 0/negative reverts to default 15 min
+"oauth_usage_timeout_sec": 6,    // ③   HTTP timeout (seconds)
+"oauth_usage_creds_path": "",    // ③   when set it is **hard-isolated** — only this file is trusted, no fallback to ~/.claude/keychain (for tests / custom deployments; empty = default lookup order)
+"model_weights": {"default":1,"opus":5,"sonnet":1,"haiku":0.2}   // per-model weighting for the ledger
+```
+
+- ① counts **only cardex's own calls** (desktop consumption is invisible to it); its semantics are a "queue budget ceiling" — your reserve = total quota − queue budget. Run `cardex quota` for a few days to see typical consumption before setting a value.
+- ② is the global view; its sample format is compatible with CodexBar's usage-history.jsonl (enable the Claude-usage probe in CodexBar). Any tool that appends one JSONL line in the same format works too.
+- ③ reads `api.anthropic.com/api/oauth/usage` directly (`anthropic-beta: oauth-2025-04-20` header + reusing the OAuth access token from `~/.claude/.credentials.json` or the macOS keychain), pulling 5h-window utilization. **The endpoint is undocumented and can change without notice** — any anomaly (network / creds / HTTP 4xx-5xx / missing field / ambiguous field value / format drift) is treated as "insufficient data" → fail-open. The implementation trusts **response body only** and never parses response headers (headers are trivially forged/overwritten by intermediaries, and verification has refuted the "response headers carry unified ratelimit numbers" claim). `utilization` is measured as a 0-100 percentage domain taken as-is (real sample: the endpoint returns `31.0`, i.e. 31%, cross-confirmed by `limits[].percent=31`), `used_percent`/`percent` is likewise a 0-100 percentage domain taken as-is — **any auto-normalization is a false-trigger breeding ground** (lesson: the old heuristic turned `utilization:1`→100% and `used_percent:0.8`→80%, both locking the queue); `utilization` values in `(0,1]` are rejected as scale-ambiguous (could be an old fractional-style value or a genuine sub-1% reading — either read is unreliable) → treated as insufficient data, and values `>100` are likewise rejected as out-of-domain. When `oauth_usage_creds_path` is non-empty it is **hard-isolated** — only that file is trusted, no fallback to `~/.claude`/keychain (which avoids Windows `UserHomeDir` sneaking real credentials into what should be an isolated test/deployment). Endpoint results carry a **process-level cache** (TTL = `oauth_usage_max_age_min` or default 15 min): the 15s tick loop reuses it instead of hammering the endpoint (and, on macOS, instead of repeatedly triggering keychain prompts); if a refresh after expiry fails, the stale sample is retained and disclosed as "expired + refresh failed" so `quota` can report honestly.
+- ②③ merge rule = **worst-value-wins** (redline is judged against the highest available percent) — when observations disagree, the worst-case assumption wins over voting or averaging. `cardex quota` prints all three sources side-by-side and flags any spread ≥5%.
+- Genuine exhaustion still has the limit cooldown as a backstop (parse the reset time, resume when it arrives); the redline only yields *early*.
+
+**Time-windowed redline** (`redline_windows`): inside a window, non-zero fields override the global thresholds; outside it they revert; cross midnight with `from > to`. `redline_lead_min` adds a pre-window buffer: for N minutes before a window, no new claude task is launched — a single-step task can't yield once started, so without the buffer a long task that starts right on the line burns into the reserved window (codex-pinned tasks are unaffected). Align a window's `from` with the quota window's real reset moment. A typical use — leave 25% headroom for interaction during the morning trading session, use the queue to the full the rest of the day:
+
+```jsonc
+"queue_budget_tokens": 0, "redline_percent": 0,   // global: unlimited
+"redline_windows": [
+  {"from": "06:50", "to": "11:50", "redline_percent": 75, "queue_budget_tokens": 300000}
+]
+```
+
+## Codex backup executor (no downtime during limit gaps)
+
+The scheduler itself is pure Go and spends no quota — a limit only makes tasks wait, it never takes the system down. But during a cooldown there's no execution capacity. Once you configure the codex CLI, whenever claude is blocked by cooldown or the redline, **single-step tasks with no existing claude session** (coordinate / review / assembly / single-step add — exactly the orchestration links that keep the pipeline moving) are automatically switched to run on `codex exec`:
+
+```jsonc
+"codex_bin": "/opt/homebrew/bin/codex",
+"codex_fallback": true,
+"codex_model": ""        // optional, passed through as -m
+```
+
+- Multi-step tasks that carry a claude session don't switch (context can't continue across CLIs); they resume automatically once the window resets;
+- Codex runs on its own quota: not recorded in the claude ledger, its errors don't write the global cooldown, and its successes don't clear it;
+- Sandboxing narrows by type: `sequence` (code-writing) cards run `--sandbox workspace-write`; read-only cards (design-review/crosscheck/coordinate/progress-pull) by default build a **one-shot isolated copy + `--sandbox workspace-write`** (CG-R3, per BD-36 tool-chain③ final ruling b / BD-39 addendum 2026-07-24) — the copy lands under `<root>/tmp/codex-review-work/<taskID>-<pid>-<nano>/` and carries the dirty+untracked surface so the review can actually run tests and drop fixtures for dynamic verification; the copy is torn down when the card ends, and crash residue is swept by the per-tick reconciliation (dual condition: dead pid **and** taskID not in `activeIDs`); the source repo is never write-polluted (hard semantics). The copy-build phase (probe/clone/apply/copy) runs under its own `min(step_timeout, 10min)` sub-budget (CG-R3b): git subprocesses are process-group-killed on timeout, and the copy leg re-checks the sub-budget **at every file boundary**, stopping the moment it expires — it also **never opens a non-regular file** (FIFOs/sockets/devices are skipped; symlinks are copied as links and never followed — otherwise one untracked link pointing at a writer-less pipe would block `open` forever, wedging the whole lane in a way no cancellation can undo). Whichever leg hangs, the card falls back to `read-only` and keeps going, and the event ledger records `codex_review_prepare_timeout` — degrade rather than wedge the whole lane. Set `"codex_review_sandbox": "readonly"` in `config.json` to roll back to the old read-only behavior (loses dynamic-verification power). Remote codex reviews get the same treatment: the remote mirror is itself an isolated copy, so the default is also relaxed to `workspace-write`.
+- The board and logs label `[codex]` / `runner=codex`, and the emit/progress-parsing pipeline works as usual (coordinate can keep enqueuing splits even during a cooldown);
+- Reasoning effort is tunable via `codex_reasoning` (minimal/low/medium/high/xhigh), passed as `-c model_reasoning_effort=…`.
+
+**Downgrade-specific model and tier rule**: when `codex_fallback` is active, Opus-tier Claude cards
+first use `codex_fallback_opus_model` / `codex_fallback_opus_reasoning` (default
+`gpt-5.6-sol` + `xhigh`, with no automatic downgrade for `stakes=low`), then the
+generic `codex_fallback_model`, and finally the global
+`codex_model`. Explicit card-level `-codex-model` / `-effort` settings still win. These keys apply
+only to the downgrade path (task `runner_pref≠codex` and not remote); codex-primary cards and remote
+codex are unaffected.
+
+`codex_opus_simple_model` / `codex_opus_simple_reasoning` remain available as an explicit opt-in.
+They are empty by default and in production; structured `stakes=low` Opus cards only downgrade if
+both fields are deliberately configured later.
+
+The final Owner matrix resolves role, work surface, and closed risk. Explicit Fable uses Cursor Fable
+5/thinking-max. Only confirmed quota, or an eligible proven quota/transport/stream-incomplete/execution-
+environment presemantic failure, starts one read-only Grok 4.6/xhigh answer followed by the lineage's sole
+fresh Sol/ultra call. That call receives the original problem/evidence and Grok answer, reconstructs goals,
+constraints, risks, and acceptance criteria from first principles, attacks and repairs the proposal, and
+emits the corrected terminal conclusion. Semantic or acceptance failure is not a trigger. There is no blind
+Sol answer B, third Sol/max leg, backend default, or review-of-review; unresolved P0/P1/uncertainty holds for Owner.
+
+Non-backend Opus uses Grok 4.6/xhigh with eligible serial Kimi K3/max fallback/review; Sol/xhigh appears only
+for Grok-Kimi disagreement, failed acceptance, or explicit high-risk escalation. Ordinary backend is Grok
+implementer→fresh Kimi K3/max adversarial review/repair, with Sol/xhigh for deterministic 20% sampling,
+disagreement, or failed acceptance. High-risk backend is Grok implementer→fresh read-only Kimi K3/max second
+view→fresh mandatory Sol/max release gate. Standalone ordinary review uses fresh Kimi K3/max; critical,
+production, or missing-risk review uses fresh independent Sol/max. Sonnet is Grok 4.6/high→eligible Kimi,
+with no automatic Codex. Haiku is Grok 4.6/high, and eligible overflow/fallback is limited to Kimi
+or the already-proven OpenCode Go lightweight lane. `quality_sensitive` remains accepted as compatibility
+metadata under that high baseline and no longer raises effort. Complex
+React/frontend refactoring, accessibility, or fixing sets `specialized_frontend=true` and requires fresh
+Sol/xhigh or Sol/max final review according to risk.
+Ambiguous, long-horizon, cross-repository, or high-risk work is promoted to Opus;
+both routine and well-bounded complex implementation use Sonnet/xhigh; only the hardest adjudication
+sets `effort=max`. Every Codex `dispatched` event records the resolved `codex_model` and
+`codex_reasoning`, so later comparisons group by the model combination that actually ran rather than
+the card's source-tier alias.
+
+**All-day Kimi Code CLI/K3 serial leg**: with `kimi_cli_opus.enabled=true`, the final resolver uses exact
+`kimi-code/k3`/max for eligible non-backend Opus/Sonnet/Haiku fallback, ordinary-backend fresh adversarial
+review/repair, and high-risk-backend fresh read-only second view. Max is injected only into that child
+process through the CLI's official `KIMI_MODEL_THINKING_EFFORT` variable. Kimi CLI and OpenCode Go Kimi K3
+are capacity redundancy rather than independent model opinions; the same semantic Kimi failure cannot be
+replayed through the other provider and counted as review.
+
+With `owner_routing_enforced=true`, every new `sequence` card declares `route_class=backend|general`
+(`-route-class` on the CLI, `route_class` in emitted JSON). Backend also uses a closed `risk_class`: only
+explicit `ordinary` selects ordinary, while missing or ambiguous risk fails closed to high risk. High risk
+includes identity/credential, DB/schema/migration, protocol/network execution, manifest/launchd,
+Control/authority, live cutover, security, and funds. Fable is always rewritten to general; any later product
+implementation is a separate card classified from its own work and risk. Text inference remains only for
+legacy cards missing the fields.
+
+Except for Fable's narrow presemantic trigger, every fallback next leg is queued only for quota, transport failure, stream-incomplete, semantic stall/timeout,
+invalid terminal result, or a presemantic execution-environment error that explicitly identifies the
+`.grok`/`GROK_HOME`/Grok session store, and only after Cardex proves all three conditions: zero semantic/model/tool
+events; an identical pre/post product-worktree fingerprint including exact Git index bytes, pre-existing
+dirty/untracked bytes, modes, empty directories, symbolic HEAD, and linked-worktree Git identity; and no surviving writer/process residue. Missing or mismatched proof follows the existing
+retry/held policy and never falls back. Legs are serial. A cooldown makes the current leg wait; it is not
+provider-availability evidence and cannot skip a leg. Remote cards, cross profiles, established sessions,
+and manual runner/model pins remain outside auto-routing. Only tasks carrying a frozen
+`owner_route_name` + `owner_route_leg` whose provider fields still match continue through the same proof
+gate; `route_reason` alone never revives an old chain or overrides a later explicit pin/session/remote identity.
+Managed launchd units should also set `CARDEX_REQUIRE_OWNER_ROUTING=1`, making removal of the config flag
+fail startup rather than silently restoring legacy policy.
+A card carrying Kimi session state waits for its own lane because that context cannot
+be transferred safely across CLIs. The compatible `opencode_night_opus` route remains available for
+other nighttime OpenCode models only in generic mode; Owner-enforced mode disables that legacy automatic
+branch while preserving explicit `-runner opencode` pins.
+
+Provider legs, serial fallback, zero-residue proof, risk class, and required/completed review are mechanically
+enforced and exposed by resolver/board readback. Each lineage gets at most one automatic Sol call, with no
+Fable exception and no review-of-review. Automatic Codex consumes provider-specific evidence, stops at 65%
+used to preserve about 35%, and fails closed when evidence is unavailable. Only an Owner-pinned critical card
+with a visible durable reason may bypass. Grok/Kimi/direct-Sol targets of 70–80%/15–25%/5–10% are bounded
+reporting policy, never authority to rewrite existing tasks. Fable's first-principles method is enforced by
+prompt, sidecar exposure discipline, and terminal contract rather than separate OS identities; it is not hard
+information isolation.
+
+```json
+"kimi_cli_bin": "/Users/ottoprua/.kimi-code/bin/kimi",
+"kimi_cli_model": "kimi-code/k3",
+"kimi_cli_effort": "max",
+"kimi_cli_opus": {
+  "enabled": true,
+  "exclude_backend": true,
+  "model": "kimi-code/k3",
+  "effort": "max",
+  "limit_fallback_min": 180
+},
+"grok_build_bin": "/Users/ottoprua/.local/bin/grok",
+"grok_build": {
+  "enabled": true,
+  "model": "grok-4.6",
+  "effort": "xhigh",
+  "limit_fallback_min": 180,
+  "kimi_opus_fallback": true,
+  "opus_adversarial_review": false,
+  "tier_routes": {
+    "opus_backend": {"effort": "xhigh"},
+    "sonnet": {"effort": "high"},
+    "haiku": {"effort": "high"}
+  }
+},
+"automatic_codex_budget_stop_percent": 65,
+"owner_provider_targets": {
+  "grok_min_percent": 70, "grok_max_percent": 80,
+  "kimi_min_percent": 15, "kimi_max_percent": 25,
+  "direct_sol_min_percent": 5, "direct_sol_max_percent": 10
+}
+```
+
+Grok Build reuses its authenticated `~/.grok` state; Cardex never reads credential values. Sequence cards
+run under the `workspace` OS sandbox with `auto` permissions, while non-implementation cards are forced
+to `read-only` + `plan`. The currently installed Grok 4.6 menu tops out at `xhigh`; `max` is rejected at
+configuration load. Manual probes can use
+`-runner grok-build -grok-model grok-4.6 -grok-effort xhigh`.
+Before every Grok job, Cardex runs `grok --no-auto-update models`. This validates the live login and required
+model list without opening a model session or sending the task prompt. The first trusted 401 holds the root
+card without consuming attempts and opens a 24-hour engine-wide auth circuit. Concurrent followers return
+to the same Grok queue without another probe or an auth-triggered writer fallback. After login, run
+`cardex doctor`; only a successful live probe clears the auth circuit, and an existing quota cooldown is
+preserved. Production should point `grok_build_bin` at an explicit versioned binary. Both the preflight and
+product invocation pass `--no-auto-update`, preventing an unattended dispatch from changing CLI versions.
+The enforced Owner configuration leaves legacy global `opus_adversarial_review` disabled. The resolver
+creates backend Kimi/Sol gates explicitly by risk. A standalone ordinary `design-review` goes to fresh
+Kimi/max; critical, production, or missing-risk review goes to fresh independent Sol/max. Neither recurses.
+
+**Fable 5 exception**: Fable is source-tier opt-in only and its owner primary is Cursor Fable
+5/thinking-max. The older Claude Fable→Grok→advisory proposal is not an owner auto-route. Existing Claude
+sessions and explicit Claude pins keep their identity. Only the narrow trigger plus unified safety proof
+may create the two-leg continuation below.
+
+### Cursor Fable 5 primary route and one-Sol terminal
+
+The account-specific Cursor model list is authoritative for Fable. The primary remains
+`claude-fable-5-thinking-max`. Fallback-profile A is fixed to Grok 4.6/xhigh; B is fixed to Sol/ultra and
+simultaneously serves as adversarial reviewer, repairer, and terminal merger. The profile must have no third
+`merge` engine.
+
+With `cursor_fable.enabled=true`, explicit fresh single-step Fable cards on the default Codex route
+prefer Cursor Fable 5/thinking-max. An explicit multi-step Fable card, or one whose route configuration
+is incomplete, waits in place and never falls through to generic Codex; dispatchers must express a Fable
+adjudication as one fresh prompt. Only confirmed quota, or an eligible proven quota/transport/stream-
+incomplete/execution-environment presemantic failure, plus the complete three-axis proof atomically converts
+the card into:
+
+1. one read-only Grok Build `grok-4.6/xhigh` answer;
+2. the one fresh Codex `gpt-5.6-sol/ultra` call, receiving the original problem/evidence plus Grok's answer,
+   reconstructing goals, constraints, risks, and acceptance, attacking and repairing the proposal, and
+   directly emitting the corrected terminal conclusion.
+
+Neither leg may write product bytes. Sol/ultra has `review_after=false` and creates no blind Sol answer,
+Sol/max child, ordinary review, or review-of-review. Unresolved P0/P1/uncertainty holds for Owner. Cursor
+auto-review, force, and yolo remain disabled. The cross-profile Codex leg is
+`{kind:"codex", effort:"ultra"}` and freezes global `codex_model="gpt-5.6-sol"`; a profile-level `model` is
+rejected, and profile `merge` must be absent. Board readback is fixed to
+`Grok answer → Sol/ultra adversarial merge → terminal`.
+
+Fable 5 may require the account owner to acknowledge its data-retention policy on first use. Cardex
+does not accept account policy on the owner's behalf; only a presemantic gate satisfying the narrow trigger may continue safely,
+but Fable itself is not considered proven until that acknowledgement is completed.
+
+**All other pinned cards never fail open**: models in `no_fallback_models` (default `["claude-fable-5","fable"]`) are **never downgraded to the codex backup during a claude cooldown/redline — they queue and wait for the claude window to reopen**. Design-tier cards are quality-first; downgrading them violates the layering principle and breaks the engine independence that cross-verification requires (codex-pinned cross cards equally never fail open to claude when codex is unavailable).
+
+## Native Antigravity runner (Gemini is historical only)
+
+Gemini is retired from new cards, defaults, fallback order, workflow pinning, and runtime dispatch.
+Existing fields and tasks remain decodable/displayable; the Gemini material below is retained only as
+migration history, not as current operating instructions.
+
+The supported Google-native entry point is explicit `-runner agy`. With `antigravity_bin` and
+`antigravity.enabled=true`, Cardex runs a value-blind `agy models` preflight with only proxy variables
+and the native HOME. An unpinned task selects the highest actually advertised `claude-opus-*`; no Opus
+means `MODEL_UNAVAILABLE`, never silent Sonnet/Gemini substitution. A model ID containing `thinking`
+does not receive a separate `--effort`. Auth, proxy, rate, transport, and model readiness failures are
+persisted before semantic attempt accounting.
+
+Historical Gemini design follows (read-only migration reference):
+
+Google's `gemini` CLI is a **second heterogeneous executor** alongside codex (its own CLI, its
+own output protocol, its own Google subscription quota; integration follows the official docs,
+verified 2026-08-03; design spec docs/2026-08-03-gemini-executor-design.md):
+
+```jsonc
+"gemini_bin": "/opt/homebrew/bin/gemini",
+"gemini_model": "pro",                    // default when a card has no model; official stable aliases pro/flash/flash-lite
+"gemini_models": {                        // tier slot mapping (unset defaults to this table): looked up by t.Model tier when a claude card diverts
+  "fable": "pro", "opus": "pro", "sonnet": "flash", "haiku": "flash-lite"
+},
+"fallback_order": ["codex", "gemini"]     // gemini joins the fallback chain: once codex is unavailable, gemini is next
+```
+
+Three differences from codex (all borrowed from the engine-profile infrastructure to cover codex's gaps):
+
+- **Has sessions**: `--session-id <uuid>` (cardex-generated, never parsed from output) / `--resume`
+  to continue — pinned cards (`-runner gemini`) support multi-step and limit-interrupt resume,
+  unconstrained by the codexEligible single-step-shape restriction (the divert path is still
+  limited to single-step shapes, same rule as the rest of the chain);
+- **Has a lane cooldown**: `cooldown-gemini.json`. Google's quota is an **account-level daily
+  request count** (OAuth free tier 1000/day, Google AI Pro 1500, AI Ultra 2000, API-key free tier
+  250/day Flash-only — official quota-and-pricing, verified 2026-08-03), so one card hitting the
+  daily cap means the **whole lane** is exhausted — cooling down the lane rather than just that
+  card the way codex does; **auth/eligibility errors likewise cool down the lane for 6 hours**
+  (reason prefixed `auth:`) — a retry can't fix broken credentials, so parking the lane lets the
+  queue self-heal and auto-resume once credentials are fixed; per-minute rate limiting
+  (PerMinute / bare 429) does not cool down the lane and just gets ordinary backoff-and-retry;
+- **Ledger**: `usage.json` entries are tagged `engine:"gemini"` — they don't count against the
+  claude redline budget; the CLI reports tokens, not dollars, so spend is disclosed under
+  Unpriced (same as codex).
+
+**Model mapping uses the official stable aliases** (`pro`/`flash`/`flash-lite`, official
+`models.ts` constants): Google's generation rotations never require a config change. Current
+resolution (verified 2026-08-03): pro → the gemini-3.1-pro-preview line, flash → the
+gemini-3.5-flash line. The top tier slot takes pro as a deliberate call based on the **coding
+cross-signal** (SWE-bench V: pro 80.6% > 3.6-flash 77.5% > 3.5-flash 68.6%, Vals subset); on the
+standard line (AA II v4.1), flash=50 actually beats pro=46 — the displayed tier discloses that
+standard-line reading (pro shows at the top of the lightweight tier), and to rank by the raw
+scoreboard instead, override with `model_tiers`. The `auto` alias was rejected: hitting quota
+would silently swap models, violating "tier drift must be visible".
+
+**Approval mode is the safety boundary**: gemini has no OS-level sandbox the way codex does.
+Non-`sequence` cards (review / coordinate / assembly / cross / progress-pull) **always force
+`--approval-mode plan` (read-only)**, ignoring config; `sequence` cards use
+`gemini_approval_mode` (empty = yolo — the same trust posture as a claude card's acceptEdits,
+where the trust boundary is the task content itself). Gemini therefore doesn't need codex's
+review-copy machinery — plan mode's read-only nature protects the source repo by construction.
+
+**Authentication, three paths** (`cardex doctor` reports "configured/missing", values never
+echoed): the env var named by `gemini_auth_env` (injected as `GEMINI_API_KEY`, the secret itself
+never enters config) > the `GEMINI_API_KEY` environment variable > cached OAuth credentials
+(`~/.gemini/oauth_creds.json`). **Note (verified 2026-08-03)**: the OAuth personal free tier is
+now rejected by gemini-cli 0.42+ (`IneligibleTierError: UNSUPPORTED_CLIENT` — Google requires the
+personal free tier to migrate to Antigravity); the working paths are OAuth under a Google AI
+Pro/Ultra subscription, or an AI Studio API key (free tier 250 requests/day, Flash only). It's
+safe to leave gemini in `fallback_order` even with auth unresolved: the first divert that hits an
+auth error parks the lane, with no further wasted attempts for the next 6 hours.
+
+Cross-verification gets a fifth engine kind (`"kind": "gemini"`): it requires both `gemini_bin`
+and `gemini_model` to be explicitly configured (so identity can be frozen); writing `model` or
+`effort` inside the profile is rejected at load — the model is decided by `gemini_model`, and the
+gemini CLI **has no thinking-effort parameter**, so silently swallowing `effort` would leave the
+impression that engine 乙 was running at max. Example:
+
+```jsonc
+"cross_profiles": {
+  "opus5-gemini": {
+    "a": { "kind": "claude", "model": "claude-opus-5", "effort": "max", "label": "opus5·max" },
+    "b": { "kind": "gemini", "label": "gemini·pro" }
+  }
+}
+```
+
+## Multi-subscription engines (engine profiles: Kimi / GLM / MiniMax / MiMo / OpenCode Go / Ollama Cloud)
+
+Most coding subscriptions besides Claude expose an **Anthropic-compatible endpoint**, so the
+integration is structurally identical: run the same `claude` CLI, inject `ANTHROPIC_BASE_URL` +
+an auth variable + model mappings per task. cardex collapses that difference into **engine
+profiles** (`config.engines`): one config block per subscription, independent cooldowns,
+independent limit parsing, ledger tagging; with no profiles configured, behavior is byte-for-byte
+identical to before. Endpoints/model IDs come from each vendor's official docs (verified
+2026-08-02); model generations churn fast — **your subscription page is the source of truth**,
+presets are just starting values.
+
+Three steps (Kimi as the example):
+
+```bash
+cardex engines add kimi        # merge the built-in preset (no secrets); see `cardex engines` for the list
+export KIMI_API_KEY=sk-...     # keys are referenced via env var names (config stays backup-safe)
+cardex doctor                  # verifies the key resolves (value never echoed)
+```
+
+Two usage modes, freely combined:
+
+```bash
+# ① Pin as primary: this card spends Kimi quota (-model takes tier aliases sonnet/opus, or native IDs like k3)
+cardex add -runner kimi -model sonnet -dir ~/proj "refactor the upload module"
+
+# ② Join the fallback chain for claude cooldown/redline gaps, order is yours:
+#    config.json: "fallback_order": ["codex", "kimi", "glm-cn"]
+```
+
+Built-in presets and the unified capability tiers (rating source: Artificial Analysis
+Intelligence Index, 2026 snapshot **2026-08-02**, anchored to Claude's own scores on the same
+snapshot: Fable 5 = 59.9 / Opus 4.8 = 55.7 / Sonnet 5 = 53.4; cross-checked against SWE-bench
+Verified (Vals AI, 2026-07). **Tiers are positions on one standard line, not each vendor's own
+high/mid/low**; models without a same-snapshot score are marked unrated, never guessed):
+
+| Preset | Plan | Endpoint | Default mapped models (AA score) | Unified tier |
+|---|---|---|---|---|
+| `kimi` | Kimi membership (Kimi Code), ~300–1200 requests per 5h window | api.kimi.com/coding | k3 (57.1; SWE-bench 93.4% vs Fable 5's 95.0%) / kimi-for-coding | **opus tier** (0.9 pts shy of the flagship band; near-flagship on coding evals) |
+| `glm-cn` / `glm-global` | GLM Coding Plan (prompt-counted 5h windows) | open.bigmodel.cn / api.z.ai | glm-5.2 (51.1, 1M context) / glm-4.5-air | **sonnet tier** |
+| `minimax-cn` / `minimax-global` | MiniMax Coding Plan | api.minimaxi.com / api.minimax.io | MiniMax-M3 (44.4, 1M context) | haiku tier |
+| `mimo` | Xiaomi MiMo Token Plan (prepaid metered) | api.xiaomimimo.com | mimo-v2.5-pro (42.2) / mimo-v2-flash | haiku tier |
+| `opencode-go` | OpenCode Go ($12/5h, $30/wk, $60/mo dollar-equivalent; 17 models, one key) | opencode.ai/zen/go/v1 | kimi-k3 / glm-5.2 / deepseek-v4-flash | follows mapped model (opus tier by default) |
+| `ollama` | Ollama Cloud subscription (Free/Pro/Max) | ollama.com | glm-4.7:cloud (33.7) etc. from the `:cloud` catalog | follows mapped model |
+
+Reference scores on the same snapshot: Kimi K2.6 = 44.2, DeepSeek V4 Pro = 44.3, Qwen3.7 Max =
+46.0, GLM-5 = 39.5, GLM-4.7 = 33.7, MiniMax M2.7 = 38.1. **Gemini executor** (AA II v4.1 snapshot
+2026-08-03, anchor cross-checked against the same scale as the table above, no drift):
+gemini-3.5/3.6-flash = 50 (sonnet tier, same band as GLM-5.2), gemini-3.1-pro-preview = 46 (top of
+haiku tier; SWE-bench V 80.6% coding cross-signal leans sonnet), gemini-3.5-flash-lite = 36 /
+gemini-2.5-pro = 26 (haiku tier).
+
+The resulting **recommended fallback chain** (tier-descending; only add plans you actually
+subscribe to): `["codex", "kimi", "opencode-go", "glm-cn", "gemini", "minimax-cn", "mimo", "ollama"]`.
+**Coding cost-effectiveness rule** (2026-08-03 instruction; AA II v4.1 + per-task cost +
+SWE-bench cross-check): the chain only ever runs coding-execution-shaped cards (review seats /
+cross cards / `no_fallback` models never enter the chain — the quality floor naturally scopes it
+to "coding only"), so for coding it ranks gemini ahead of glm: gemini flash's coding cross-signal
+is known (SWE-bench 77.5%) while glm-5.2 is unrated, and the AA main-tier gap is only 1 point
+(51 vs 50); both subscriptions bill per request, so marginal cost is zero either way. The general
+(non-coding) chain still ranks by AA main tier (glm first).
+
+**Behavioral semantics** (the differences vs. the codex backup executor are the point):
+
+- **Sessions work**: engines run the actual claude CLI — pinned cards get SessionIDs, multi-step
+  `--resume`, and limit-resume, all functional (codex has no sessions). Diverted (non-pinned)
+  runs **never write back a session** — otherwise the card would later `--resume` an engine
+  session on claude after the cooldown ends: cross-engine identity drift, same forbidden zone as
+  the cross-chain "engine pinned at enqueue" rule;
+- **Cooldowns are per-engine**: each engine gets its own `cooldown-<name>.json`. Kimi hitting its
+  limit never stalls the claude queue and vice versa; claude's global `cooldown.json` semantics
+  are unchanged. When no reset timestamp can be parsed, the profile-level fallback wait applies
+  (monthly/billing-cycle phrasings auto-raise it to ≥6h);
+- **Separate books**: engine calls never count against claude's 5-hour redline budget (the three
+  redline channels only govern the claude subscription). Vendors expose **no public usage
+  endpoints**, so the board/quota views disclose only "cooldown state + local-ledger window
+  count (lower-bound)" — no burn-down estimates: insufficient data is disclosed, never invented;
+- **Quality floors apply to the whole chain**: `no_fallback_models` pins, cross-check cards, and
+  review slots (design-review / cross-verdict C cards) are never downgraded to **any** engine;
+  engine-pinned cards wait (never fail open to claude) when their engine is cooling or unconfigured;
+- **Credentials, three ways**: `auth_env` (env var name reference, recommended) > `auth_file`
+  (0600 file, for launchd setups) > `auth_value` (plaintext, dummy-value scenarios only).
+  `cardex cmd <id>` prints manual-takeover commands with reference forms only (`$KIMI_API_KEY` /
+  `$(cat file)`), never resolved plaintext; doctor reports resolvability only, never values.
+
+Taking over an engine card manually, `cardex cmd <id>` prints the full env-prefixed command, e.g.
+`ANTHROPIC_BASE_URL=https://api.kimi.com/coding/ ANTHROPIC_API_KEY=$KIMI_API_KEY claude --model kimi-for-coding`.
+
+### Custom tiering (`model_tiers`: fleets without stronger models rank by the cards they hold)
+
+The unified tiers above are an **absolute standard line** (anchored to Claude's own tiers). But
+if your fleet has no stronger subscription — say GLM + MiniMax only — the standard line pins
+your best model at "mid tier" forever, while operationally it *is* your top tier. `model_tiers`
+lets you tier by the hand you actually hold; **custom entries always beat the standard line**:
+
+```jsonc
+// GLM-only fleet: glm-5.2 takes the top tier, minimax-m3 the mid tier
+"model_tiers": {
+  "glm-5.2":    "fable",     // key = model ID (lowercase; prefix match, "glm-4.7" covers "glm-4.7:cloud")
+  "minimax-m3": "sonnet",    // value = tier keyword fable/opus/sonnet/haiku (bad values rejected at load)
+  "glm-4.5-air": "haiku"
+},
+// Pair it with the engine profile's slot map — put your best model in the fable slot so
+// design/review cards (default claude-fable-5) land on it when pinned to this engine,
+// with no "tier fell back" disclosure noise:
+"engines": {
+  "glm-cn": { "models": { "fable": "glm-5.2", "opus": "glm-5.2", "sonnet": "glm-5.2", "haiku": "glm-4.5-air" }, ... }
+}
+```
+
+Where it applies: model tier labels on the board / `cardex list`, engine tiers in
+`cardex engines` / `cardex quota` / the board quota strip (derived from the highest mapped model
+when `tier` isn't set explicitly), the spend page's top-model tier, and the final Owner matrix.
+That matrix selects the concrete execution chain from the resolved fable/opus/sonnet/haiku tier plus
+route/risk/review fields, so a
+mapping change changes dispatch for new unpinned cards; existing sessions, remote/cross identities,
+and explicit runner/model pins remain untouched. The standard-line table stays for unlisted models,
+while entries you list are authoritative for this fleet.
+
+## Per-card stakes tiering (`-stakes` → review-depth lookup table)
+
+"Is this card worth a round of adversarial review? Worth raising the thinking tier?" is a **cost/benefit** judgment. It used to live only in the discipline of whoever filed the card: forget `-review-after` and a high-risk card walks into main unreviewed; add it reflexively and a typo fix burns a full fable review. `-stakes` collapses that judgment into one question — **how much does this card matter** — and lets a table decide the depth:
+
+```bash
+cardex add -stakes low  -dir ~/proj "fix the typo in README"          # no review
+cardex add -stakes high -dir ~/proj "rework session expiry in authz"  # forced review + effort floor at high
+cardex add -dir ~/proj "routine change"                               # default normal: unchanged behavior
+```
+
+The table lives in `config.json`, with defaults for all three tiers:
+
+```jsonc
+"stakes_policy": {
+  "low":    {"review": "off"},                            // never attach a review
+  "normal": {"review": "follow"},                          // follow the explicit -review-after (default tier)
+  "high":   {"review": "on", "default_effort": "high",     // force a review + thinking-tier floor
+             "max_fix_rounds": 1}                          // one auto-fix; then escalate for human judgment
+}
+```
+
+- `review` takes `on` / `off` / `follow` (`follow` = don't interfere; keep whatever `-review-after` said);
+- `default_effort` is a **floor, not an override**: it only applies when `-effort` was not given explicitly, and it only raises — a card whose type default is already `max` is never pulled down to `high`;
+- `max_fix_rounds` overrides the global key of the same name for that tier (the round cap on the
+  implement → adversarial-review → auto-fix loop; the global default is 3). The built-in `high` tier is fixed at
+  **1**: if the review after the first repair still fails, Cardex creates a held human-adjudication card instead of
+  expanding another model loop. `low` and `normal` carry `0`, meaning "follow the global value";
+- automatic review is only eligible for `sequence` implementation cards. Even at high stakes, `design-review`,
+  coordination, assembly, and progress-pull cards have `review_after` cleared at enqueue time, preventing
+  “review the review” chains;
+- an explicit `-effort` always wins over the floor (`-stakes high -effort low` really is `low`): the command line has the final say, otherwise the command line stops being trustworthy;
+- you may specify only some tiers — the rest keep the built-in defaults (keys are merged, the table is not replaced wholesale);
+- **fields you omit inside a tier also fall back to the built-in value for that tier** — JSON merges at key
+  granularity only, so `{"high": {"default_effort": "xhigh"}}` replaces the whole `high` rule with one that has
+  nothing but `default_effort`, leaving `review` an empty string. Were the empty string treated as `follow`,
+  that one line — "I just want to raise the thinking floor" — would also **lift the forced review off every
+  `-stakes high` card**, with no error anywhere. So omitted means inherited, and expressing "don't interfere"
+  requires writing `"review": "follow"` explicitly;
+- known gap: `default_effort` inherits on omission the same way, so "high tier but no thinking floor" cannot be
+  expressed at the `high` tier (there is no literal meaning "no floor"); write a lower tier explicitly instead.
+  `max_fix_rounds` has the same shape — `0` means inherit, so "the `high` tier should follow the global cap"
+  is likewise inexpressible; write the global number into the tier explicitly;
+- a malformed table value (`review: "yes"`, `default_effort: "ultra"`, `max_fix_rounds: -1`) **errors out at `add` time** instead of silently falling back to a default — a misspelled guardrail that silently does nothing is far more expensive than an error.
+
+**Frozen at enqueue (drift protection)**: the lookup runs **exactly once, at `add`**, and the result is baked onto the card (the `review_after` / `effort` / `max_fix_rounds` fields). Nothing is re-read from `config.json` at run time. Otherwise a single edit to `stakes_policy` would silently change the review depth of every queued and running card, with nothing visible on the card itself. The `stakes` field on the card is an audit record only, never a runtime predicate (same discipline as cross-verification freezing engine identity at enqueue).
+
+The round cap is frozen as a **resolved absolute number**, not as the `0` "follow the global" sentinel: otherwise
+a card enqueued with `0` would silently change caps the moment someone edited the global `max_fix_rounds` while
+it was on round 3. With the absolute value pinned, `cardex show` tells you directly how many fix rounds the card
+has left. The field is inherited along the fix chain, by review cards, and by over-round escalation cards —
+without that, a `-stakes high` card would enjoy the widened cap on its first round only and be silently clipped
+back to the global value from round two onward.
+
+### Review-seat quality floor (review cards are never downgraded or rerouted)
+
+`no_fallback_models` is a blocklist **by model name**. It cannot stop this: someone switches the review card's model from fable to opus or sonnet (`type_defaults.design-review.model`, or `-model` at file time) and the guardrail silently stops applying — and the way it fails is that the review still runs and still emits a verdict, just from a different engine, with less depth. **A shallow review is not the same as no review**: the ledger still says pass, the loop still lets the change through, and nothing signals otherwise.
+
+So on top of the model-name blocklist there is a floor **by card role**:
+
+- `design-review` cards (the single quality-adjudication point in the implement → review → fix loop)
+- cross-verification merge/adjudication cards (`x_role = C`, the `crosscheck-merge` template)
+
+These two **never participate in codex divert/downgrade** during a claude cooldown or redline, regardless of which model they carry. The cost is that they queue and wait through a claude gap — which is exactly what this buys: **better a late review than a shallow one**.
+
+## Automatic retrospective cards (`retro_every_n_done`)
+
+After the queue has chewed through a few dozen cards, nobody is doing the books on "which card types keep failing, how many fix rounds they take, which model the money went to, what the reviews actually caught." Nobody voluntarily digs through `archive/` and `events.jsonl`, so the same template defect and the same class of divert incident keep recurring. Flip this switch and "settle the books every N done cards" becomes a mechanical action:
+
+```jsonc
+"retro_every_n_done": 10    // 0 = off (default); 10 is a reasonable starting point
+```
+
+Every N cards that reach the `done` terminal state, a `progress-pull` + `haiku` retrospective card is enqueued automatically (template `templates/retro.md`, editable). Its working directory is pinned to the data root, and it read-only tallies the most recent N archived cards along:
+
+1. Failure-class distribution (reasons on `failed`/`retry` events plus each card's `last_error`)
+2. Fix-round distribution (`fix_round`)
+3. Per-card cost and model distribution (`cost_usd` grouped by `model` / `runner`; cards carrying a `cost_unavailable` marker are counted separately and itemised under `gaps` — never folded into the total as zero)
+4. Review verdict distribution (`design-review` and `x_role=C` outcomes)
+5. Round-limit and divert events (cards escalated past their round cap, `limit_paused` counts, `runner=codex` diverted cards)
+6. **At most 3** actionable recommendations (e.g. "file this card class with `-stakes low`", "template X lacks Y, causing repeated rework")
+
+The report lands in `progress/retro-<watermark>.json`; read it with `cardex progress -show retro-<watermark>`.
+
+**Proposal-only (standing rule D11)**: the retrospective card is **read-only analysis** — it does not touch `config.json`, templates, or any card. Recommendations are consumed by a human or a monitoring session. Letting automation edit automation's own parameters turns a wrong recommendation directly into a wrong production config.
+
+**Idempotent (a crash never double-enqueues)**: the counter lives in `<root>/retro_counter.json` (single writer = this binary; in-process mutex plus the tick single-instance lock). It records two numbers: `done_total` (cumulative terminal cards) and `triggered_at` (**the watermark already triggered**). The watermark is advanced and persisted *before* the retro card is enqueued — so a crash in between costs you **one missing** retro card and can never produce a duplicate. That direction is deliberate: a duplicate retro burns quota, pushes a duplicate report into `progress/`, and pollutes the next retro's own statistics; one missing retro is far cheaper (same discipline as the tombstone mechanism's "better one missed injection than a duplicate one"). While the switch is off (0) the counter **still counts**, so the moment you turn it on there is already a historical baseline — you don't restart from zero. A retrospective card's own completion is not counted.
+
+### Cost telemetry on terminal events (how the retro does its accounting)
+
+The retro tallies cost from the **event ledger**, so every terminal event (`done` / `failed` / `canceled`, and `held`) has to answer "what did this card cost":
+
+- the card has accumulated usage → the event `detail` carries `cost_total` / `turns_total` (the card's **cumulative** usage, which keeps accruing across limit-pause resumes);
+- the card has no usage at all → it carries `cost_unavailable: true` plus `cost_unavailable_reason`. **Silently omitting the fields is not allowed.**
+
+**Why an explicit marker rather than a missing field**: drop the fields and the retro can only guess — "this card cost nothing" and "we don't know whether this card cost anything" become indistinguishable on paper, so the reported total is systematically low by an unknowable amount. In the `retro-77` sample, 9 of 10 cards had no cost recorded: the normal completion path wrote it, but the **early-exit** paths — cancel, over-round escalation, classifier-driven failed/held — wrote only a `reason` and called it done. A silently missing field makes an incomplete tally look complete, which collides head-on with the event ledger's founding discipline: disclose gaps explicitly, never reconstruct a fake complete history by inference.
+
+**Coverage (recomputable — don't memorise a count)**: every terminal-event (`done` / `failed` / `canceled` / `held`) `emitTaskEvent` call site in this repo must wrap its `detail` in `withCostTelemetry`. That universal claim is pinned mechanically by `TestEveryTerminalEmitSiteWrapsCostTelemetry`: it parses the AST of the package's non-test sources and checks each emit site, going red with a `file:line` for any that is missing. Add a new terminal emit site and forget the telemetry, and you find out from the test rather than from a retro that lost the money.
+
+One card may emit `held` and later `failed`, each carrying the cumulative figure as of that moment: when accounting, **count only the last terminal event per card** — summing every event double-counts.
+
+**Chain accounting (`chain_cost_total` / `chain_turns_total`)**: the `held` event of an over-round escalation card additionally carries these two keys. They are the **whole fix chain's** cumulative spend before it hit the wall = the `cost_usd` of the implementation card plus every fix-round card plus every review card. The chain total is inherited round by round through the card fields `chain_cost_usd` / `chain_turns_used` (`handleReviewVerdict` accumulates `previous chain + the reviewed card itself + this round's review card` when it enqueues the next fix card). It is **not** "the last fix card's bill" — fix cards are freshly created and start from zero, so reading only their own `cost_usd` reports a $5.85 chain as $0.50. Target: `TestChainCostAccumulatesAcrossFixRounds`.
+
+Chain accounting's **boundary — do not cite it beyond this scope**: it covers only cards on the implementation → review → fix chain. Closeout cards enqueued after a `pass`, `emit`-derived child cards, and cross-check chains are side branches and are not counted. **Pre-existing cards** (enqueued before this upgrade, with no `chain_cost_usd` on the card) start accruing from the upgrade point; rounds that ran earlier have no chain figure to inherit, so older chains read low. That is a known, deliberately accepted degradation — no numbers are back-filled by inference.
+
+The escalation card itself is a newborn shell (its `cost_unavailable` is a truthful zero, not a ledger defect). The two key groups are kept separate so neither can impersonate the other: sum `cost_total` per card and account for the chain separately, otherwise one expense gets counted once per card on the chain.

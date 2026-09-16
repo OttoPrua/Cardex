@@ -1,0 +1,356 @@
+# cardex 更新记录
+
+**中文** | [English](changelog.en.md) · 返回 [README](../README.md)
+
+## 2026-09-14 · v0.10.18：托管原生 Goal、持久设计会话、Hermes 入站
+
+- `goal-run -hosted` 打开 Cardex 自有 PTY，在 **master** 注入字面 `/goal` 合同路径+SHA256；`--cwd` 与 `GROK_HOME` 进入子进程。交互 `-manual` 仍要求控制 TTY，缺 PTY 记 `pty_missing`，不再无 TTY 空跑。
+- `goal-control -action pause|resume|stop` 只对 `control_owner=cardex-hosted` 展示为可用；确认看原生 post-state，不把 slave 写成功、exit 0、stale active 或 shell kill 当作 pause。外部 Goal 只读 `goal-observe`，不凭 Session ID 编造 attempt，不接管原 TUI。
+- 失败不再笼统 `stream_incomplete`：launch/control 写入 `failure_class`（`pty_ioctl`、`budget_flag_layer`、`approval_denied`、`pause_not_confirmed`、`planning_failed_unknown` 等）。CAL1/R2 的 Planning failed 保持原因未知。
+- workflow 绑定 `design_session` / `manager_session` / `owner_design_entry`（真实 provider/type/id）。`design-request`/`design-collect` 走同一 Grok 会话两次关联判断并可按持久指针恢复；Codex UUID 不得冒充 Hermes session。
+- manager-wake 增加 `provider=hermes` 目的地：持久 inbox + 匹配 ack 才算送达，本地出站收据不够。不调用 `hermes send` 群通道。Board 仍是 `0.0.0.0:8788`。
+
+## 2026-09-13 · v0.10.17：Goal 模式（字面 /goal、successor 设计、终端身份）
+
+- 可复制的原生 `/goal` 改为字面合同绝对路径 + SHA256，不再使用 TUI 不会展开的 `$(cat …)`。冻结合同含最新有效设计路径/摘要/输入身份/决策。
+- 手工子进程在 exec 前设置 `SysProcAttr` Foreground+Ctty，恢复前台进程组并保留错误，不再使用全局 `afterCmdStart`。Darwin PTY 测试调用生产 helper。
+- `design-result` 在既有 admission 锁内持久化新鲜设计与轮次后再发布 successor；`CurrentRound==MaxRounds` 不再创建 writer。Goal `repair` 拒绝快捷入口并引导 `design-result -decision revise`；普通非 Goal repair 不变。
+- 完成设计 Task 不再用 prompt hash 冒充结果；复用 ReviewOutput/result-gate 或有效外部收据。接纳/启动时复验 artifact 与输入漂移。
+- 终端接受要求真实 start/process/workspace 身份并消费冻结 InputDigest；`State=exited` 且 PID 0 不是已启动。保留退出后 hold 恢复。
+
+## 2026-09-13 · Goal 模式 S2：按独立 Astra D3 修复现有 Goal 垂直
+
+- 原生观察改为已证明的 Grok schema：`last_classifier_verdict=achieved`、`status=complete`、`params.update.goal_id`、summary `info.id`/`info.cwd`；`total_verify_rounds=0` 可以是有效完成。发明的 `classifier_verdict`/`evidence_complete` 不能证明 done。`budget_limited`/`not_achieved` 保持非接受。
+- 接受 done/failed 必须有精确 attempt，并走现有 `commitTaskTransition`，让 DAG 看到 `LastCommittedTransitionID` 与 `taskDurablyDone`。缺 attempt 的原生文件不是 done。custody 未释放时不关闭 attempt。
+- Goal writer 在第一次可见前就是完整 Goal 绑定任务。手工 launch 走短 admission（DAG/写域/资源/`max_parallel`），生命周期在 task/process/lease。Grok argv 保留 sandbox/permission/`--no-memory`/`--no-subagents`/`--disable-web-search` 与完整阶段合同 digest。
+- Goal 入场要求已完成的独立 Astra/Fable 设计任务或外部收据。`design-result` 可消费 failed/paused/needs-input/`budget_limited` 做 stop/input/一个 Goal 后继，不制造 done。
+- 普通 `workflow show` JSON 顶层仍是 `id`/`goal`/`status`。能力矩阵：Grok complete+restart 已证明；pause/resume 与自动未验证；Kimi/Codex/Claude/Cursor/agy/OpenCode 为 `manual-only`/`unverified`；Gemini 仍拒绝。`goal-sync` 不启动 provider，但会更新阶段事实。
+
+## 2026-09-13 · Goal 模式 S1：给目标，不是每一步（未接受：budget_limited/not_achieved）
+
+- 在现有 WorkflowRecord / Task / SessionID / admission / attempt / lease 上落地最小完整 Goal 工作流，不另起队列或状态机。`boardgoal.go` 仍是只读看板投影。
+- 设计节点只读（可记录独立 Astra 设计，不改变 `model=fable` 路由）；执行阶段绑 outcome/scope/depends/write-domain/acceptance/provider/session/budget/硬超时/stop。
+- CLI：`workflow init` 可绑定设计节点与 `-select-goal`；`writer -mode manual|native`；`goal-run -manual` 前台启动 Grok `/goal`（先绑 session）；`goal-sync` 只读；`design-repair` 至多一轮且必须消费当前候选与审核结果；`show` 打印真实 session/goal/attempt/status 与能力矩阵。`native` 在自动协议未证明时拒绝。
+- Grok 为 `manual-only`（TUI `/goal` 已证明启动；自动完成证明未完成）。`-p` 不是 goal 证明。Kimi 披露源码级 `print`/`goal.summary` 但未探测配置引擎。Codex/Claude/Cursor/agy headless ongoing-goal 未证明。Gemini 仍拒绝。引擎档案继承真实可执行文件限制。
+- 普通无 `goal` 字段的卡保持原 `eligible()` 语义。manual/active/paused/unknown Goal 不进普通 tick / `limit_paused` 自动续跑。启动前崩溃保持 unstarted；启动后为 unknown 并阻止再派发。
+- `goal-sync` 幂等，拒绝陈旧 revision/别的 session 或 goal/旧 attempt。completed 需 classifier 裁决且进程/lease 已释放才接受 done。取消先撤销调度；无 stop 证据不声称 canceled。设计修复本交付最多一轮。
+
+## 2026-09-11 · v0.10.16：原生完成与审核产物验收
+
+- Grok 支持封闭的 plan 事件和极窄的 `_meta: {synthetic: true}` 合成兼容形式；未知扩展、未闭合工具、异常或迟到终态继续挂起。原生、解析和进程诊断只记录受控类别与计数，保留未知值。
+- Kimi 按已支持版本核对工具调用与最终消息；0.41 legacy 的 resume hint 不推广到其他版本或引擎。OpenCode 的 `tool-calls` 只结束中间回合，最终须为 `stop`。
+- 正常原生终态与后续进程失败分别保留；缺终态或观察不完整不自动重试或接力。无产物合同的普通任务不新增文件或非空正文门槛。
+- 工作流审核绑定本次结果在现有日志中的字节范围、摘要、已关闭 attempt 与冻结候选；集成门回读实际结果，不再从整份日志借用旧 verdict。仅采信最后结论；末尾结论无效时不回退到较早的 pass。缺失、过期、错候选或不可读的审核输出不能放行。旧审核没有绑定证据时保持挂起，不自动补造或重跑。
+
+## 2026-09-04 · v0.10.15：低 Token 管理 Skill 与推荐用法
+
+- 随发行版附带可移植的 `skills/perlica-low-token-manager/`，供长期项目管理 Agent 从耐久指针恢复状态、把有界执行交给 Cardex/新鲜 worker，并只在 material event 时唤醒。
+- README 增加 Codex 安装、其他 Agent 附件加载、推荐入口和使用边界；该 Skill 不进入普通 Writer/Reviewer prompt，也不改变 Cardex 运行时。
+- 明确分开统计 management-session token 与 Cardex/Provider 执行 token，避免把执行消耗藏进管理口径。
+
+## 2026-08-24 · 工作流模式：串联 / 联邦的耐久记录与强制集成门
+
+- **workflow 记录**（workflow.go）：`cardex workflow` 把 `docs/workflows.md` 的两种拓扑落成
+  耐久记录（schema `cardex.workflow.v1`）——`mode` = `serial` | `federated`、module/goal、
+  federated 的 `parent_id`、规范化写域、轮次上限、候选身份，以及 integration / live / cutover
+  三道分离的 effect gate。跨记录写域审计对同一 Git identity 内的 exact/subtree 重叠、重复
+  lineage 与**跨仓**共享的封闭资源 fail closed；terminal 记录释放自己的 claim。
+- **集成门**（workflow_gate.go）：Task 新增 `workflow_id` 与 `integration_gate` 两个 omitempty
+  字段。带门的卡默认 held；tick 派发与 `cardex release` 都**重新**从审核日志解析 verdict，要求
+  `pass` 且 `p0`/`p1` 皆空、候选与冻结记录一致、reviewer 是已终止的独立只读角色且没有第二个
+  active reviewer。durable review `done` 不够。没有该字段的存量卡行为完全不变。
+- **有界循环与耐久 manager hook**（workflow_loop.go）：writer / freeze-candidate / review /
+  ingest-review / repair / try-release-integration / mark 每一步都是显式命令且可安全重放——
+  角色去重不会派出第二个 writer 或 reviewer，重放 ingest/release 不会累积收据。修复轮以
+  `max_rounds` 有界，超轮转 `exhausted`。例行进度只写 `workflows/<id>.progress.json|.md`；
+  只有 `review_passed`、`true_external_dependency`、`owner_choice`、`exhausted_route`
+  会在 `workflows/root-notify/` 留收据。
+- **tick 不推进 workflow**：调度器只读地咨询集成门。Cardex 不长第二套状态机、不做自动重规划。
+- **修复闭环**（runner.go）：`verdict=pass` 但 `p0`/`p1` 非空不再被当作可采信 pass 触发收口。
+- live 与 cutover 在本树没有任何释放路径；手改记录会在加载时被拒。完整的
+  `producerGone` / quiet-window custody 仍是 W2 后续夹具。
+
+## 2026-08-03 · Gemini CLI 备用执行器（第二异构执行器）
+
+- **执行面**（gemini.go）：`gemini -o json` headless 接入（prompt 走 stdin），会话由 cardex
+  生成 UUID 经 `--session-id`/`--resume` 管理——钉定卡（`-runner gemini`）多步/限额续跑可用，
+  这是对 codex 单步限制的补齐；非 sequence 卡恒强制 `--approval-mode plan`（只读硬护栏，
+  gemini 无 OS 沙箱），sequence 卡按 `gemini_approval_mode`（默认 yolo）。
+- **车道冷却**（复用引擎冷却基建 `cooldown-gemini.json`）：Google 配额是账号级每日请求数
+  （官方 quota-and-pricing 核实 2026-08-03：OAuth 免费档 1000/天、AI Pro 1500、AI Ultra
+  2000、API key 免费档 250/天仅 Flash），当日耗尽挂车道而非单卡；**认证/资格错误同挂车道
+  6 小时**（reason 前缀 `auth:`，含实测的 `IneligibleTierError: UNSUPPORTED_CLIENT`——
+  OAuth 个人免费档已被 0.42+ 客户端拒绝、Google 要求迁移 Antigravity），修好认证到点自愈；
+  每分钟限流留给退避重试，不挂车道。判据依据 = CLI 官方源码错误分类（googleQuotaErrors.ts）。
+- **派发面**：钉定绝不 fail-open；`fallback_order` 白名单新增 `"gemini"`，改道五道闸与
+  codex 全量同规 + 车道冷却检查；`engineVia` 排除 gemini（保留字，引擎档案不得占用此名）。
+- **模型映射**：档位槽映射 `gemini_models`（缺省 fable/opus→pro、sonnet→flash、haiku→
+  flash-lite，官方稳定别名——Google 轮换代次不用改配置；高档取 pro 是编码交叉信号
+  SWE-bench 80.6% 的显式取舍）；解析永不落空（空=auto 静默换模型，已否决）；回落/兜底
+  全部披露 note 落任务日志。统一标准线定档（AA II v4.1 快照 2026-08-03，锚点与 2026-08-02
+  表同量表核对）：flash 线 50=sonnet 档、pro 线 46=haiku 档上沿、flash-lite 36/2.5-pro 26。
+- **交叉验证第五种 kind**（`"kind": "gemini"`）：身份冻结进 `XFrozenEngine.GeminiModel`/
+  卡面 `XGeminiModel`；profile 写 `model`/`effort` 载入即拒（gemini CLI 无思考等级参数，
+  静默吞会假装跑在 max）。
+- **账本/看板**：usage.json 打 `engine:"gemini"` 标（不占 claude 红线）；modelTierKeyword/
+  effectiveModel 补 gemini 分支（裸别名精确匹配，不误吃他家 `*-pro`/`*-flash`）；boardspend/
+  boardweight 缺口披露文案并入 gemini。
+- **顺带修复两个 codex 既有缺口**：`cardex cmd` 此前对 codex 钉定卡打出错误的 claude 命令
+  （现打 `codex exec` 形态）；`cardex doctor` 此前从不检查 `codex_bin`（现与 gemini_bin
+  一并检查，gemini 侧另报认证信号三路径与车道冷却状态）。
+- **成功路径修正**：gemini/引擎成功只清自己的车道冷却——修掉「gemini 成功会误清 claude
+  全局冷却」的接线错误（账各归各）。
+- 设计规格 docs/2026-08-03-gemini-executor-design.md；14 个新测试钉桩（槽映射优先序/审批
+  模式强制/限额三分类/车道冷却不写 claude 全局/改道六闸/argv-stdin 契约/交叉冻结/档位）。
+
+## 2026-08-03 · 许可证变更：MIT → PolyForm Noncommercial 1.0.0
+
+个人自用 / 学习研究 / 业余项目 / 慈善教育公共研究机构：直接用，无需联系。
+公司内部生产使用、承接付费项目、把它或衍生品作为产品或服务提供给他人：需另行取得授权
+（开 issue 说明用途）。
+
+两点边界写在 README 与 LICENSE 里：**这不是 OSI 定义的开源许可证**（对商业用途有限制），
+不要按开源依赖走合规清单；**2026-08-03 之前发布的版本（截至提交 `b1ed92b`）仍是 MIT**，
+那部分授权不可撤销，本次变更只对其后的版本生效。
+
+## 2026-08-03 · 看板：刷新保持滚动位置、孤卡归类、第三口径「工时进度」
+
+- **自动刷新不再重置滚动位置**：mount 是全量换 DOM，30 秒一次的刷新把横向轨道与列内纵向
+  位置一并清零，正在看某个项目的进度最多维持 30 秒。改为 mount 前捕获、mount 后恢复；
+  按稳定身份键定位容器（项目列 `data-pid`、kanban 列新增 `data-status`）而非 DOM 顺序
+  ——刷新之间项目会增删换序、状态列会被筛选隐藏，按下标恢复会把 A 的位置塞给 B。
+  捕获点紧贴 mount 之前（含用户在请求期间又滚过的距离）；恢复做两次（同步 + rAF，
+  列高定下来前 scrollTop 会被夹断）；导航态不恢复（切页仍从头看起）。
+- **孤卡自成一个项目（生产账本 12 项目 → 10）**：根因是同一项目按名字裂成两格——一张手打
+  `-project trading`（小写）与启发式派生的 `Trading` 撞 slug，双方各带哈希后缀并排显示；
+  `~/.cardex` 的 7 张复盘卡同理（`.cardex` 撞 `cardex`）。新增名字折叠：slug 相同的名字合并，
+  显示名按权威度挑（别名声明 > 卡上显式钉 > 卡数多 > 字典序）。`Trading-docs` 正确保持独立。
+- **新增 lineage 归组层**（显式 > 别名 > 模式 > 启发式 > **谱系** > 收件箱）：派生卡沿
+  `review_of` / `emitted_by` 上溯父卡归属。复审分流的远端镜像、交叉腿的 scratchpad 都是
+  一卡一目录、天然无归组证据——但一张审核卡审的是谁就属于谁。排在启发式之后＝纯兜底救援，
+  不动任何已有结论的卡；带深度上限与环检测。终态卡本就与活跃卡同等参与归组，补测试钉死。
+- **第三口径「工时进度」**：按每张卡的**工作量**（turns 作代理）加权算占比，并给出预估完成
+  时刻。实测类型间工作量差 28 倍（sequence 中位 57 vs progress-pull 2），"7/10 张完成"在剩下
+  都是大卡时严重高估。未跑的卡按「同类型 × 是否多步」历史中位预测（中位而非均值：turns 重尾
+  右偏）；完成时刻用实测的「每单位工作量耗多少墙钟分钟」换算（吸收并行度/冷却/红线）；
+  实测样本 <12 或算不出换算率时分别回落卡数口径、只给占比不给时间。codex/引擎卡不回报 turns
+  的缺口（实测 24%）在条下与 basis 双处披露。分桶在工时口径下同样给自己的加权分子分母。
+  进度条与另外两个口径**同一套状态分段与状态色**（每段＝多少工作量处于该状态，条尾同为斜纹
+  余量段）；未跑卡那几段是预测值，靠条下的实测覆盖率与 basis 披露，不靠涂淡暗示——分段讲
+  状态、不讲可靠度，混在一个视觉通道里两者都读不准。
+
+## 2026-08-02 · 看板进度双口径（现有卡 / 含预估余量）
+
+- **全局口径切换**：页头「实发进度 / 预估进度」分段控件（与状态筛选芯片同排，总览与项目页
+  都有；偏好存 localStorage）——「实发进度」按已经派出去的卡计分母，维持原口径；
+  「预估进度」把预估还会派生的卡数并入分母，进度条尾部补斜纹「预估余量」幽灵段，
+  百分比带 `~` 后缀。选中态沿用导航/归档钮既有的视觉语言（`--s1` 底色 + 加粗），
+  不自创第二套"当前生效"的表达。
+- **预估两级来源，basis 必带**：`board.json` 的 `projects.<id>.planned_total_cards`
+  计划锚点优先（阶段计划达成/调整时人工更新即校准 hook；被现存量超出时按现存计并提示
+  过期）；无锚点走机械估算，每次快照即时重算（自校准、零额度、无定时任务）。样本不足
+  与无在途卡的项目显式回落现存口径并说明——估算永远带口径披露，绝不给来历不明的百分比。
+- **修正轮（同日，委托人点名"避免预计剩余持续扩大"）**：机械估算从"根卡×膨胀率"换成
+  **派生耦合几何模型**——k = 系统派生卡/完成卡，清完在途 A 张的全部后续 = A·k/(1−k)
+  （等比级数把"派生的派生"一次性前置入账）。趋势性质由测试钉住：完成不派生的卡预估总量
+  必缩减、完成派生类卡不抬升（TestEstimateConvergesTowardCompletion）；k≥0.85 扩张期按
+  0.85 给收敛下限并披露。配套谱系补标：emit 产出/收口卡/超轮限升级卡入队时落
+  `emitted_by`（此前父指针只在事件 detail，卡面无谱系会把装配产出误当人工立项、低估 k；
+  存量卡缺标披露为保守偏差）。**分桶随口径同步切换**：预估余量按历史派生构成分摊进
+  设计/落地/修复/审核桶（最大余数法，Σ 桶余量 ≡ 项目余量），没分到余量的桶回落卡口径；
+  阶段条维持卡口径。
+
+## 2026-08-02 · 多订阅引擎档案（Kimi / GLM / MiniMax / MiMo / OpenCode Go / Ollama Cloud）
+
+- **引擎档案（`config.engines`）**：任何 Anthropic 兼容端点的订阅计划都以"claude CLI +
+  按任务注入环境变量"的方式接入——档案含 base_url、凭据引用（auth_env / auth_file 两种都支持，
+  auth_value 仅限哑值场景）、档位模型映射、extra_env、档案级限额回退。内置 8 个预设
+  （kimi、glm-cn/glm-global、minimax-cn/minimax-global、mimo、opencode-go、ollama），
+  `cardex engines add <名>` 外科式并入 config（不实体化其他默认键、不含密钥）；端点/模型 ID
+  取自各家官方文档（核实 2026-08-02）。设计规格见 docs/2026-08-02-engine-profiles-design.md。
+- **派发**：`-runner <引擎名>` 钉定主跑（有会话、多步可用；引擎冷却/缺配置时等待，绝不
+  fail-open 回 claude）；`fallback_order` 自定义 claude 空窗期的改道顺序（默认 `["codex"]`，
+  行为与旧版一致）。质量地板全量沿用：`no_fallback_models`/交叉卡/复审位对链上每一项同等生效；
+  改道运行不回写会话（防跨引擎 `--resume` 身份漂移）。
+- **冷却与账本分账**：每引擎独立 `cooldown-<名>.json`——Kimi 撞限额不挂 claude 队列，反之
+  亦然；限额判据在 claude 形状的收敛扫描面上追加通用配额措辞（Kimi 官方 429/403 限额文案
+  已被 limitRe 覆盖，403 计费周期先于失败分类命中限额分支，不会误判 permission→held）；
+  月度/计费周期措辞自动把回退等待抬到 ≥6h。`usage.json` 记录加 `engine` 标：引擎调用不占
+  claude 的 5 小时红线预算。
+- **统一能力分级**：以 Artificial Analysis 智能指数 2026 快照（2026-08-02）为评测源、
+  Claude 各档同快照分数为锚点（SWE-bench Verified 交叉核对），把各家模型放入统一档位
+  （K3→opus 档、GLM-5.2→sonnet 档、MiniMax-M3/MiMo 等→haiku 档），看板 modelTier 同表；
+  推荐降级链按档位排序，用户自由指定哪些订阅入链。
+- **披露式接入**：看板额度条与 `cardex quota` 新增引擎行——只披露冷却状态 + 本地账窗口计数
+  （下限口径），各家无公开用量端点，不做燃尽估算；boardspend 把引擎卡归 Unpriced（claude CLI
+  的 cost 数字按 Anthropic 价目算，与订阅真实成本口径不可比）。`cardex cmd` 打印引擎卡的
+  手动接管命令带 env 前缀，密钥只给引用形态（`$VAR` / `$(cat 文件)`），永不解析明文；doctor
+  逐引擎核认证可解析性（值不回显）。
+- **自定义分级（`model_tiers`，同日追加）**：模型 ID → 档位关键字（fable/opus/sonnet/haiku）
+  的自定义表，**优先于内置统一标准线**——无更强模型的机队按牌面定档（GLM-only 机队可把
+  glm-5.2 定为自己的 fable 档），配合引擎档案的 models 槽位映射即可让设计/复审类卡落在手里
+  最强的模型上。精确匹配优先、前缀匹配盖住 `:cloud` 这类变体；键强制全小写、坏值载入即拒；
+  只影响档位展示与引擎档位推导（`cardex engines`/`quota`/看板额度条未显式写 tier 时自动
+  推导），派发路由不吃档位。
+
+## 2026-07-31 · 项目更名 ClaudeGo → cardex
+
+- **改名裁决**：产品由 ClaudeGo 更名为 cardex（裁决 BD-44）。命令名 `claudego` → `cardex`；
+  数据目录默认 `~/.claudego` → `~/.cardex`；环境变量 `CLAUDEGO_ROOT` → `CARDEX_ROOT`。
+- **旧名仍可用**：`make install install-shim` 铺一条 `claudego → cardex` 的兼容软链（过渡期用，
+  收尾后可移除）；`CARDEX_ROOT` 未设时仍兼容读一次 `CLAUDEGO_ROOT` 并提示。
+- **数据搬迁**：新增 `cardex migrate` 子命令，把旧数据根（`tasks`/`events`/`progress`/`archive`）
+  搬到新根，fail-closed（前置不满足即整体不动）+ 零丢失对账（迁移前后逐目录文件数/字节数核对），
+  搬完打印仍需人工完成的后续步骤（重装定时器、旧 symlink、TCC 授权重批准等）。
+- **本条不涉及**：仓内 `.claudego-fingerprint` / `.claudego-scripts` 等跨机指纹/同步工件名一律
+  冻结不改（按裁决 BD-44 §2.2）；本条以上的历史条目原文不改，其中出现的 `claudego`/`~/.claudego`
+  均指改名前的产品/路径。
+
+## 2026-07-26 · token 曲线跟随窗口 + 消耗改按项目维度
+
+- **token 曲线跟随时间窗口**:原来固定 24 小时,现在与「队列任务消耗」共用同一组标签页。
+  扫描参数随窗口伸缩(`tokenScanPlanFor`):桶 15 分钟 → 12 小时(否则 30 天要画 2880 个点),
+  字节预算 512MB → 4GB(取实测体量 2 倍余量)。`range=all` 对 transcript 按 90 天封顶并在
+  basis 说明——那个目录没有上限,给一个跑不完的窗口不如给一个说得清的。
+  实测冷启 24h/0.6s · 7d/1.3s · 30d/3.1s,四个窗口都没触发截断;7 天窗口下 7 个模型全部现形。
+  顺带把逐行预筛从 `strings.Contains(string(line),…)` 换成 `bytes.Contains` —— 前者给**每一行**
+  复制一份字符串,24 小时的 104MB 看不出来,30 天要扫 1.04GB 就是凭空多分配 1GB。
+- **撞闸必自报**:`token_series` 新增 `truncated` / `files_matched` / `files_scanned` /
+  `bytes_scanned`,截断时前端挂红色告警。一条少了后半段的曲线与"那段时间没跑活"在图上
+  长得一模一样,静默截断就是造读数。
+- **burnCache 改按窗口分格**:扫描量随窗口从 104MB 涨到 1GB,共用一格会让每次换标签页都重扫
+  最贵的那个。未知 range 归一到 24h 那格,`?range=乱写` 撑不爆缓存。
+- **消耗从逐卡改为逐项目**:30 天窗口有近千张卡,逐卡表只能截前几十行,而那几十行往往是同一个
+  项目的连续修复链——看完并不知道"钱花在哪条线上"。项目才是实际做取舍的粒度。每行给
+  **「计入 / 全部」两个卡数**(只给金额分不清"活少"还是"花费没记上",codex 侧不回报)
+  + 该项目的**主力模型**(钱主要烧在哪个档位)。
+
+## 2026-07-26 · 队列任务消耗（按时间窗口 + 逐卡）
+
+**起因**：燃尽页"最近 24 小时"的 token 曲线里常常只有一个模型,看着像看板漏了数据。
+查下来既不是 bug 也不是数据丢了——曲线扫的是 `~/.claude/projects` 的 transcript,
+窗口固定 24 小时(实测 30 天的 transcript 有 1.0 GB,而扫描有 512 MB 字节闸,拉长必然
+静默截断——"只读了一半的全月"比不给这个窗口更糟),而一天里往往只跑过一两个模型;
+且那个目录里混着人在 Claude Code 里手敲的交互会话,口径根本不是队列。
+
+**新增 `task_spend`**(`/api/burn?range=24h|7d|30d|all`):换一个源——**任务卡自己的账**
+(`cost_usd` / `turns_used`,runner 在卡跑完时回写)。随卡长期留存(含 archive/),要看多久
+就看多久且零额外扫描(快照已把全部卡读进内存);天然是队列口径。给出合计花费 / 计入卡数 /
+无花费卡数 / 合计轮数、按模型分(经 `effectiveModel` 解析实际生效的模型)、以及按花费降序的
+逐卡表(截 30 行并披露差额)。前端在燃尽页加时间窗口标签页,默认 7 天——24 小时里常常只跑过
+一两个模型,一进来只看到一个会被当成看板漏数据,而真实原因只是窗口太窄。
+
+**两条边界写进 basis 并常驻页面**:①`cost_usd` 是 claude CLI 回报的 **API 等价成本**,
+订阅制下不是实际扣款;②codex / 远端 codex 不回报花费(实测 1423 张卡里 448 张没有花费数据),
+它们烧的是另一套额度、未计入合计,缺口张数必须显示。
+时间按卡的 `updated_at`(跑完那一刻)归档而非 `created_at`——上周入队今天跑完的卡,那笔钱是
+今天花的。`range` 未知值回落 24h;`task_spend` 不进 burnCache(窗口由参数定,混进去会让每个
+窗口各占一份昂贵的 transcript 扫描缓存),改为逐请求现算。
+transcript 那一节同时加了常驻说明,把"为什么这里常常只有一两个模型"当场讲清。
+
+## 2026-07-26 · 项目拖拽排序 + 状态次序按"填充计"重排
+
+- **项目次序可拖拽**：列头手柄拖动调整项目次序（也可聚焦后 ←/→ 移动——拖放对键盘
+  用户完全不可用，这不是可选补充；移动后焦点跟着还回同一个手柄）。次序存 localStorage,
+  是观看偏好不是队列事实。人工次序生效时页头常驻披露条 + 一键恢复默认（默认排序本身
+  带信息量：有活儿的排前面·其次按最近活动）。排序之后新出现的项目**排到最前**而不是
+  最后——轨道横向滚动，末尾意味着要横滚几屏才看得见，而新项目恰恰最该被看见。
+- **状态呈现次序改为 `已取消 → 已完成 │ 进行中 → 排队中 → 限额暂停 → 已挂起 → 失败`**：
+  进度条是一条填充计（像电量条），左边那截就是"已经不用再管的部分","未完成的都堆在
+  右侧"这个直觉才成立。旧次序把 running/queued 放最左、done 放右边第二,读起来是
+  "进度条越长越糟"——与所有人对进度条的默认预期相反。右半段内部按"离完成还有多远"
+  递增(前三档机器自己会往前走,后两档必须人介入)。进度条分段/状态图例/页头芯片三处
+  同序:它们是同一份读数的三种呈现,各排各的会让芯片与它下面那条彩带对不上号。
+  **kanban 列序不跟着变**——工作流看板卡从左往右流向"已完成"是通用惯例,
+  填充计与流程板是两套隐喻,各守各的。
+- 顺带修 `frag.append(null)` 会在页面上插出字面量 "null" 的坑(原生 append 不像自家
+  `h()` 那样跳过空值,两个可选横幅都不显示时页顶会多出一行 "nullnull")；
+  条件区块统一走新的 `appendMaybe()`。
+
+## 2026-07-26 · 看板宽度自适应 + 状态筛选
+
+- **页面宽度跟随视口**：`.app` / `.topbar-inner` 原来钉死 `max-width: 1760px`，
+  超宽屏（2560/3440）上两侧留大片空白、项目轨道被提前截断。项目轨道恰恰是
+  "每多一像素就多露一点下一个项目"的布局，把宽度让给留白等于白白少看一列。
+- **状态筛选（只藏清单，不动读数）**：页头状态计数芯片变成开关，点一下折叠该状态的
+  卡片清单——总览折叠任务行，项目页整列消失（kanban 的列就是状态，列还在却空着
+  会被读成"这个状态一张卡都没有"）。**筛选绝不改任何读数**：芯片数字、进度条、
+  五个分类桶、ETA 一律按全部卡算；生效期间页头常驻披露横幅，"后端只发了 40 条"
+  与"我自己藏了某些状态"两条提示分开写。状态存 localStorage，由常驻横幅兜住。
+
+## 2026-07-26 · 看板显示语义修正
+
+四处**读数方向性失真**的修正——都不是算错，是"算得对但读起来偏乐观／难用"：
+
+- **额度改报剩余**：顶部额度条与燃尽页主读数从"已用 %"翻成"剩余 %"（新增 `BurnSource.remaining_percent`，
+  后端算并钳在 [0,100]——源数据实测出现过 >100 的样本，不钳会算出负剩余、渲染成 0 宽被读成"刚好耗尽"）。
+  燃尽曲线随之翻成真正的燃尽（往下走、触底即耗尽，外推线终点改为剩余归零），纵轴标注 `剩余%`。
+  `used_percent` **原样保留**在响应里，并在悬停/副标题/样本表中并列展示。
+- **进度按工作性质拆分（`Project.kinds`）**：单条总条把设计/落地/修复/审核按**张数等权平均**，
+  而审核+修复卡常占七成且完成率天然高，于是总条被抬到 90% 上下、落地可能才走四成。
+  现在按 设计/落地/修复/审核/协调 五桶各报各的（口径与总条一致），总条保留不动作为可比锚。
+  分类结构信号优先（`review_of`／`fix_round`／`type`）、关键词垫底，每卡带 `kind_source` 交代依据；
+  **审核先于修复判**（审核卡继承被审卡 `fix_round`，顺序写反会把成百张审核卡计进修复桶且零报错）；
+  判不出的落「落地」而非「未分类」（本卡防的是低估剩余工作量，往保守一侧偏）。
+  `board.json` 新增 `kind_rules` 人工出口，坏规则逐条跳过 + `kind_rule_error` 披露。
+- **项目手动归档**：项目卡/项目页「归档」按钮把早已收尾的项目从总览折叠掉。状态写在
+  `~/.claudego/board_archive.json`——**任务卡一个字节不动**，调度与状态计数不受影响。
+  有新卡（卡数变多 或 出现更新的 `created_at`）自动切回活跃并标出原因；**卡状态变化不触发复活**
+  （否则归档一个仍在跑的项目下一拍就弹回来）。自动复活是只读推导、不回写，GET 路径仍零写入。
+  `POST /api/project/archive` 是看板唯一写入端点，三道闸：POST only ／ `Content-Type: application/json`
+  ／ `Origin` host 必须同源。状态文件损坏时落错披露 + 拒绝继续写。
+- **总览改横向轨道**：一个项目一列、左右滚动切项目，纵向空间全给列内的阶段/任务清单（列内独立滚动，
+  列高按轨道实际位置算，不出双滚动条）。项目之间是并列关系，纵向堆叠会让第二个项目被第一个项目的
+  几百张卡顶出屏幕。窄屏（≤720px）退回纵向堆叠。
+
+## 2026-07（v0.10 线，开源首推之后的 56 个提交）
+
+上一次公开推送（PR #1，审核分流）之后的主要变化，按主题归并：
+
+**可观测性 —— 从"状态反推"改成"事件为准"**
+
+- **事件账本（CG-2）**：新增 per-task `events.jsonl`，状态迁移点单写点收敛（不新增写者），归档时同步搬运。
+  Web 看板的活动流改读事件流，**不再由当前状态反推历史**（反推会伪造出从未发生过的时间线）；
+  账本缺口（崩溃残尾、旧任务无账本）在 UI 上**显式披露**而不是静默补全。
+- **幂等墓碑（CG-4）**：per-task `tombstones/<id>.json` 保证续接/回收/release 三处注入**至多一次**，
+  `bound=2` 挡住崩溃-重启风暴；每任务墓碑锁 + 两阶段临界区，`emit` 先于 `saveTask` 消灭"零披露"窗口。
+- **Web 看板（`claudego board`）**：只读看板落地——项目/阶段/任务三层总览 + kanban + 额度燃尽曲线，
+  模型等级分类色、阶段介绍脱离折叠、默认全展开；`board.json` 静态快照机械化为目标锚定进度（CG-8），
+  `goal_source` 按实际入账打标、合成层加非有限数守护、人工 `done_percent` 越界判"数据不足"而非直渲负百分比。
+
+**稳态运行 —— 失败不再变成静默卡死**
+
+- **失败分类分流（CG-3）**：认证/权限失败直接 `held`（重试只会烧额度）、输入超长直接 `failed`、
+  未知类兜底 `retry_backoff`；`classifyFailure` **只吃结果 msg、拒 transcript 污染**，
+  `isLimitHit` 三向收敛挡住自审仓 transcript 的误命中。
+- **drain 内巡逻（CG-5）**：drain 期间独立巡逻，**两个独立信号**才判卡死，marker 文件见证真实退出码；
+  心跳不再独立触发、阈值随配置伸缩。
+- **单实例锁**：`acquireLock` / `acquireEventLock` 原子挂名，防双持锁。
+- **codex 可靠性**：结果在手早收割（远端结果已回、ssh 被孙进程吊住时两拍击杀，不再空挂到超时）；
+  限额识别补 session limit 措辞与**跨天重置**解析；超轮限升级卡继承被审卡 `remote_host`（否则远端链的升级卡被派回本机 cd 失败）。
+
+**额度 —— 第三个用量源与百分域收口**
+
+- **订阅用量端点直读（CG-1）**：`oauth_usage` 打开后直读 `api.anthropic.com/api/oauth/usage` 作为第三用量源，
+  与 CodexBar 两源**分歧时取最保守值**；只信响应 body、**拒解析响应头**（易被中间层伪造）。
+- **百分域语义收口（CG-1b）**：`utilization` / `used_percent` / `percent` 一律按 **0-100 百分域原样取整**，
+  任一自动归一都是假触线温床；落在 `(0,1]` 的取值判为**刻度歧义**、拒判为"数据不足"，`>100` 同拒。
+- **凭据硬隔离**：`oauth_usage_creds_path` 非空时只读该文件，不再兜底 `~/.claude` / keychain。
+
+**审核分流 —— 镜像可信与沙箱收窄**
+
+- **review-sync 工作树洞根修（CG-R1/CG-R2）**：sync 补送**未提交面**并落 fingerprint，
+  自门拦住"镜像过期"空转（此前远端会对着旧镜像出一份看似正常的审核报告）。
+- **codex 复审沙箱（CG-R3/CG-R3b）**：只读分析卡默认建**一次性隔离副本 + `--sandbox workspace-write`**，
+  复审得以跑测试、写夹具做动态验证，副本随卡即建即删、原仓永不受写污染；
+  **远端**只对位于 `remote_mirror_root` 之下的镜像卡放宽（前缀判据加 `path.Clean` 词法归约，消除 `..` / `.` 逃逸），
+  真实业务仓维持 `read-only` 硬保证；`codex_review_sandbox` **取值写错按最小权限回落 `readonly`（fail-closed）**；
+  建副本阶段跑在 `min(step_timeout, 10min)` 独立子预算内（拷贝腿每文件边界查预算），
+  且**从不打开非常规文件**（FIFO/socket/设备跳过、symlink 按本体复制不跟随——一条指向无写端管道的链接就能让 `open` 永久阻塞、占死整条泳道）。
+
+**其他**
+
+- **交叉验证（`claudego cross`）**：双引擎独立作答 → 对抗式交叉查漏的三卡链，含 codex 失败可靠性根修。
+- **卡级 codex 模型钉定**：`-codex-model` 与降级专用 `codex_fallback_model`（档位对等，opus→terra 不降 sol）。
+- **文档与测试**：新增 `docs/specs/` 生态对标三件套（landscape 调研 / CG 卡 / 定位与非目标）；
+  README 配置键名加 `go test` 校验防文档漂移；mock claude 全状态机验收测试覆盖崩溃残尾与账本缺口注入。

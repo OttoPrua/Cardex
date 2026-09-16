@@ -1,0 +1,235 @@
+# cardex
+
+[中文](README.md) | **English**
+
+[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-community-ffb003?logo=discourse&logoColor=white)](https://linux.do)
+
+> This project was formerly named ClaudeGo; renamed to cardex on 2026-07-31 (the old `claudego` command name still works via a compatibility symlink — see "Quick start" below).
+
+**Wring every Claude 5-hour usage window dry.** A local task queue and scheduler: when a task hits the limit it auto-pauses, records the reset time, and at reset reconnects to the *same* session via `--resume` to keep going. A single Go binary, no external dependencies, and **the orchestration itself costs zero quota**.
+
+```bash
+cardex add -title "refactor auth" -dir ~/Projects/myapp -file steps.md   # drop work in the queue
+cardex install-launchd                                                   # it runs itself from here
+```
+
+## What it does for you
+
+| Your situation | What cardex does |
+|---|---|
+| Hit the limit and you have to babysit the window | Auto-pause + remember the reset instant, then resume the same session on time — **the queue runs while you sleep** |
+| One goal means hand-writing a dozen prompts | `assemble`: Claude researches the project first, then decomposes the goal into a prompt sequence that **auto-enqueues** |
+| Several sessions in flight, progress only in your head | `brief` pulls structured progress; `plan` reads a live queue snapshot, splits the work, and enqueues the split tasks |
+| Everything runs on the priciest model | Per-task model routing: haiku for mechanical work, sonnet for regular implementation, the top tier for high-risk work — expensive models only orchestrate and arbitrate |
+| Cooldown means total downtime | During cooldown, single-step orchestration cards divert to `codex exec` (a separate quota), so the pipeline never stalls |
+| Kimi/GLM/MiniMax subscriptions gathering dust | Engine profiles plug them in with one command (`cardex engines add kimi`): pin as primary or add to a custom fallback chain, each with its own cooldown and ledger, ranked on one capability scale |
+| You still have to review the changes yourself | An adversarial review card is auto-dispatched on completion; read-only reviews can even be offloaded to a second machine |
+| "Where is any of this right now?" | `cardex list` + a web board (kanban / quota burndown / landed progress) + a per-task event ledger |
+
+## Quick start
+
+```bash
+make build && make install     # compile and install to /opt/homebrew/bin
+cardex init                    # initialize ~/.cardex (override the data dir with CARDEX_ROOT; the legacy CLAUDEGO_ROOT is still read once, with a warning)
+cardex doctor                  # self-check: claude CLI, directories, config
+```
+
+Still need the old `claudego` command name? `make install install-shim` also lays down a `claudego → cardex` compatibility symlink (`ln -sf`, tracks the binary as it upgrades) — a transition-period aid, removable once the rename is finished.
+
+Three common ways to enqueue — pick one to start:
+
+```bash
+# 1) You already know the steps: split them in steps.md with a lone --- line
+cardex add -title "refactor auth" -dir ~/Projects/myapp -priority 5 -review-after -file steps.md
+
+# 2) You only have a goal: have Claude research first, then auto-generate and enqueue a task sequence
+cardex assemble -dir ~/Projects/myapp "add resumable uploads to the upload module, with tests"
+
+# 3) A session in front of you just got cut off by a limit: take it over and continue
+cardex adopt <session-id> -dir ~/Projects/myapp     # find the id with cardex sessions
+```
+
+Let it run on its own:
+
+```bash
+cardex run                   # run one round manually to verify
+cardex install-launchd       # background scheduling: ticks every 5 min, starts at login (macOS)
+cardex list                  # board; the title column is "title ▸ latest progress"
+cardex log <id>              # detail for one card; cmd <id> prints the manual-takeover command
+cardex board                 # web board at http://127.0.0.1:8787
+```
+
+Not on macOS: run `cardex daemon` as a foreground resident, or have systemd timers / cron / Windows Task Scheduler invoke `cardex run` every 5 minutes. The core is pure Go and builds on all three platforms; the single-instance lock is cross-platform, so scheduled runs won't collide.
+
+## The five task types
+
+| Type | Purpose | Default permissions / model |
+|---|---|---|
+| `design-review` | Design-review session: read-only review of code/architecture, producing P0/P1/P2 graded findings | Read-only; Opus source tier, dispatched through the active Opus route |
+| `prompt-assembly` | Prompt-assembly session: researches the project, then decomposes a goal into a prompt sequence — **the tasks it produces auto-enqueue** | Read-only; Opus source tier, dispatched through the active Opus route |
+| `sequence` | Preset prompt sequence: several steps run in order within the same session (chained via `--resume` for continuous context) | acceptEdits; Sonnet→Grok 4.6/high, with eligible serial Kimi K3/max continuation; complex frontend adds the risk-appropriate Sol final gate |
+| `coordinate` | Coordination session: reads a **live** queue snapshot + per-session progress reports and splits a goal into division-of-labor tasks (with model suggestions) that auto-enqueue | Read-only; Opus source tier, dispatched through the active Opus route |
+| `progress-pull` | Progress-pull session: `--resume` a session and have it emit a structured progress report to disk | Read-only; Haiku→Grok 4.6/high, with eligible continuation limited to Kimi or the already-proven OpenCode Go lightweight lane |
+
+Tasks chain together: `assemble` → emits a `sequence` that enqueues → runs to completion → `review_after` auto-enqueues a `design-review` of the changes just made.
+
+**The desktop app is in scope too**: Claude Code's desktop app and the CLI share the `~/.claude/projects` session store and the same subscription quota, so sessions opened in the desktop app can equally be listed, pulled for progress, and taken over with `--resume`.
+
+## Two recommended workflow modes
+
+- **Direct serial**: advance one bounded goal through design → development → independent review → held integration → an explicit live gate.
+- **Federated management**: a central manager owns the program DAG and final convergence; multiple module managers each run design → development → independent review → held module integration, then join for held system integration and final review.
+
+Both modes use Cardex `depends_on`, normalized write-domain/resource claims, separate reviewers, durable task/event/attempt evidence, and held live gates. Management sessions do not write product bytes or bypass Cardex to create duplicate writers. See [recommended workflows](docs/workflows.en.md). That page documents the custody rule as an operator/policy gate operators must follow: when attempt, producer, and lease state disagree, review acceptance and redispatch must be refused. It is not a claim that current Cardex already machine-rejects those actions. Federated writers share a tick only when `max_parallel` > 1 (default 1). A workflow-managed independent review is not the same path as a `-review-after` / `-stakes high` automatic review child: do not enable automatic review when an independent reviewer already exists. The review terminal JSON is only `pass|concerns|block`, not ACCEPT/HELD.
+
+`cardex workflow` turns either topology into a durable record: it binds `serial`/`federated` mode, the module goal, a write domain, bounded rounds, and candidate identity, and creates a default-held integration card. Both tick dispatch and `cardex release` **re-derive** the independent review `verdict=pass` (empty `p0`/`p1`), candidate agreement, and reviewer custody for a gated card; a durable review `done` is not enough. Every transition is an explicit command — tick consults the integration gate read-only and never advances a workflow. Live and cutover have no release path in this tree.
+
+Goal mode means give the goal, not every step: the design node is read-only (bind a completed independent design task (without a model-brand gate) or external receipt; existing `model=fable` Cursor routing is unchanged), and the execution stage stays on one Task for continuous diagnosis/implementation/test/fix. Grok native `/goal` is `manual-only`: complete and same-session restart are manually proven; the automatic protocol and active pause/resume remain unverified. `grok -p` is a single turn, not goal proof. Kimi/Codex/Claude/Cursor/agy/OpenCode have native candidates but unverified adapters (`manual-only`/`unverified`, not blanket unsupported); Gemini stays rejected. Copyable:
+
+```bash
+cardex workflow init ... -engine grok-build -design-receipt /path/to/design-receipt.json
+cardex workflow writer <id> -mode manual
+cardex workflow goal-run <id> -manual -budget 350000
+# In the Grok TUI (literal path+digest; do not use $(cat); the TUI is not a shell):
+#   /goal Read and implement the complete stage contract at <abs-path>; verify SHA256 <digest> before any write. --budget 350000
+#   /goal status
+cardex workflow goal-sync <id>    # does not launch a provider; does update stage facts
+cardex workflow show <id>         # ordinary records keep top-level id/goal/status; Goal fields are additive
+cardex workflow design-result <id> -design-receipt R -decision stop|input|successor|accept|revise -observation failed|paused|needs-input|budget_limited|complete
+```
+
+The provider budget is soft; `step_timeout_min` is the hard deadline. Active pause/resume is unverified. `goal-sync` accepts done only with native `last_classifier_verdict=achieved`, matching session/goal/attempt, matching frozen InputDigest, and released process/descendant/lease. Goal `repair` is refused. See [recommended workflows · Goal mode](docs/workflows.en.md). Distinguish provider native goal, stage Goal, and board projection.
+
+## Low-token management sessions (optional Skill)
+
+This repository includes [`perlica-low-token-manager`](skills/perlica-low-token-manager/SKILL.md) as a portable attachment for long-lived project-management agents. It does not change the Cardex scheduler, and it should not be injected into ordinary Writer, Reviewer, test, or release cards; execution cards receive only their bounded task contract.
+
+Install it for Codex on this machine:
+
+```bash
+mkdir -p ~/.codex/skills
+cp -R skills/perlica-low-token-manager ~/.codex/skills/
+```
+
+For another agent, attach the whole `skills/perlica-low-token-manager/` directory and have it read `SKILL.md` first. Recommended entry point:
+
+```text
+Use $perlica-low-token-manager to coordinate this project from durable state,
+delegate bounded execution, and wake only on material changes.
+```
+
+The recommended usage is deliberately small: keep only objectives, DAGs, boundaries, and direction decisions in the manager; send long scans, source changes, tests, and independent review to Cardex cards or fresh bounded workers; wake only for material terminals, Owner decisions, or resource conflicts; and report deltas with durable pointers. Measure management-session tokens separately from Cardex/provider execution tokens rather than hiding execution usage inside a lower manager total.
+
+## How it works
+
+```
+                 ┌──────────────────────────────────────────────┐
+   cardex add    │  Task queue  (~/.cardex/tasks)               │
+   assemble ────▶│  queued ──▶ running ──▶ done                 │
+   review  plan  │              │  └──▶ failed (after backoff)  │
+   adopt  brief  │              ▼                               │
+                 │        limit_paused ──(reset reached)──┐     │
+                 └────────────────────────────────────────┼─────┘
+                                                          │
+   launchd / daemon ticks every 5 min ──▶ pick a task ────┘
+                                              │
+                                              ▼
+                  claude -p --model <model> --resume <session> ...
+```
+
+Four things hold the loop together:
+
+1. **Zero-quota orchestration** — the scheduler is pure local Go that only reads and writes JSON under `~/.cardex`; it never calls a model itself. Dispatch, backoff, the board, and the ledgers are all free; `claude -p` runs only when a task actually executes.
+2. **A limit is a recoverable state, not a failure** — on a limit hit the reset timestamp is parsed out of the error and written to a global cooldown (`cooldown.json`); no probe calls are wasted during it. At reset, a resume prompt goes to the *same* session so work continues from the interruption point — the original prompt is never re-sent and the work is never redone.
+3. **Ordered dispatch, safe on disk** — resume first → higher `priority` → type order (review is cheap and returns feedback fast; assembly spawns new work so it goes last) → FIFO within a tier. Every successful step is written atomically, so a killed process loses no progress; a single-instance lock keeps repeated launchd triggers from running concurrently.
+4. **Classified failures instead of blind retries** — auth/permission failures go straight to `held` for a human, over-long input goes straight to `failed` (the same prompt will overflow again), and only the unclassifiable falls back to backoff retries — quota never gets burned on retries that are certain to fail.
+
+## Going further
+
+Once it's running, pick what you need — each of these is covered in full in the [advanced guide](docs/guide.en.md):
+
+- **[Progress pull → coordinate → auto-advance](docs/guide.en.md#progress-pull--coordinate--auto-advance)** — the orchestration loop for parallel sessions: pull progress → a coordinate task reads the live queue and splits the work → tasks advance one by one, with takeover available at any point.
+- **[File-based state and human gating](docs/guide.en.md#file-based-state-fresh_steps-and-human-gating--hold)** — keep state in files and start each step fresh so context limits are never hit; `-hold` parks the produced tasks until a human releases them.
+- **[Review divert](docs/guide.en.md#review-divert-offload-read-only-review-to-a-second-machine)** — implement locally, run the adversarial review on a second machine to balance both quotas; a failed sync falls back to local review so the loop never breaks.
+- **[Cross-verification](docs/guide.en.md#cross-verification-fable-stand-in-two-independent-engines--adversarial-cross-check)** — two different engines answer the same question independently, then cross-check adversarially; the stand-in when the design-tier model hits its weekly limit.
+- **[Web board](docs/guide.en.md#web-board-board-command)** — projects side by side as a horizontal rail, **remaining**-quota burndown, progress split by kind of work (design / impl / fix / review), goal-anchored "landed progress", and dual progress scales (existing cards / estimated-remaining via planned anchor or spawn factor, basis always disclosed); insufficient data is always disclosed rather than estimated, and queue data stays read-only (the only write is the board's own project-collapse state).
+- **[5-hour quota redline](docs/guide.en.md#5-hour-quota-redline-reserve-headroom)** — reserve headroom for interactive work: a local ledger + CodexBar usage feed + the subscription endpoint, taking the most conservative reading when they disagree; time-window redlines supported.
+- **[Codex backup executor](docs/guide.en.md#codex-backup-executor-no-downtime-during-limit-gaps)** — divert single-step orchestration cards to codex during claude cooldown; design-tier models are pinned and never downgraded, so cross-verification's engine independence is never swapped out.
+- **[Gemini CLI fallback executor](docs/guide.en.md#gemini-cli-fallback-executor-second-heterogeneous-executor)** — a second heterogeneous executor: pinned via `-runner gemini` (has sessions, multi-step works), diverts into the fallback chain, a fifth cross-verification engine; account-level daily quota cools down the whole lane, auth failures self-heal; model mapping uses the official stable aliases (pro/flash/flash-lite), tiered on the standard line.
+- **[Multi-subscription engines](docs/guide.en.md#multi-subscription-engines-engine-profiles-kimi--glm--minimax--mimo--opencode-go--ollama-cloud)** — Kimi Code / GLM Coding Plan / MiniMax / Xiaomi MiMo / OpenCode Go / Ollama Cloud plug in via engine profiles: the same claude CLI with per-task env injection, per-engine cooldowns and ledgers, one unified capability scale (anchored to Claude's own tiers), and a user-defined fallback order.
+- **[Taking over existing role sessions](docs/guide.en.md#taking-over-existing-role-sessions-the-reviewassemblyexecute-sessions-you-maintained-by-hand)** — fold hand-maintained review/assembly/execute sessions into the queue by role.
+
+For what happens on the failure paths (full dispatch rules, limit recovery, failure classification, stall patrol, the event ledger, idempotent tombstones, permission boundaries) → [runtime internals](docs/internals.en.md).
+
+## Config quick reference (~/.cardex/config.json)
+
+The keys you'll actually touch; the full table lives in the [configuration reference](docs/config.en.md):
+
+| Key | Default | Description |
+|---|---|---|
+| `poll_interval_sec` | 300 | launchd/daemon polling interval |
+| `limit_fallback_min` | 30 | wait when no reset time can be parsed |
+| `step_timeout_min` | 60 | hard per-step timeout (guards against runaways) |
+| `max_attempts_per_step` | 3 | per-step retry ceiling |
+| `retry_backoff_min` | 5 | base backoff between retries on non-limit errors |
+| `resume_first` | true | interrupted tasks resume before new ones start |
+| `type_order` | progress-pull > coordinate > review > sequence > assembly | type order at equal priority |
+| `type_defaults.*.model` | assembly/coordinate/review Opus; implementation Sonnet; pull Haiku | source tier per type; the Codex primary route maps it to the concrete GPT-5.6 model; Fable is explicit hardest-adjudication only |
+| `max_parallel` | 1 | tasks per tick (writing tasks are serialized per directory; read-only types are exempt). Default 1 means even disjoint federated writers do not share a tick |
+| `default_runner` | "" (legacy Claude) | Primary runner for unpinned new cards. `codex` covers manual cards plus generated reviews, fixes, closeouts, retrospectives, and emitted cards. Explicit Claude session resumes and cross profiles retain their declared identity |
+| `owner_routing_enforced` | `false` | Load-time lock for the final Owner matrix. When `true`, drift in any risk/review branch, exact provider/runner/model/effort, the one-call Fable Sol/ultra terminal, or an explicit Sol gate rejects the config; every new `sequence` card declares `route_class=backend|general`, and backend risk must be explicit or it fails closed to high risk. Managed board/tick units should set `CARDEX_REQUIRE_OWNER_ROUTING=1` so deleting the key fails startup instead of silently downgrading |
+| `automatic_codex_budget_stop_percent` / `owner_provider_targets` | `0` / empty | Final Owner mode requires a provider-specific automatic-Codex stop at 65% used, and missing evidence also holds. Only an Owner-pinned critical card with a visible durable reason may bypass. Reporting-only lineage targets are Grok 70–80%, Kimi/OpenCode 15–25%, and direct Sol 5–10%; they never mutate existing tasks |
+| `queue_budget_tokens` etc. | 0 (off) | 5-hour quota redline — see the [guide](docs/guide.en.md#5-hour-quota-redline-reserve-headroom) |
+| `no_fallback_models` | ["claude-fable-5","fable"] | design-tier models never downgraded to the codex backup — they wait for Claude |
+| `codex_bin` / `codex_fallback` | empty / false | cooldown backup executor — see the [guide](docs/guide.en.md#codex-backup-executor-no-downtime-during-limit-gaps) |
+| `codex_fallback_model` | "" | generic model for non-Opus Claude cards downgraded to Codex; empty falls back to `codex_model` |
+| `codex_fallback_opus_model` / `codex_fallback_opus_reasoning` | `gpt-5.6-sol` / `xhigh` | default model and reasoning effort for Opus-tier Claude cards downgraded to Codex; `stakes=low` does not downgrade by default |
+| `codex_tier_models` / `codex_tier_reasoning` | see built-in map | Used only by explicit manual Codex and legacy generic paths. Final Owner mode removes global Codex fallback; every automatic Sol is an explicit resolver gate and each lineage gets at most one |
+| `grok_build_bin` / `grok_build` | empty / disabled | Final Owner primaries: Fable answer and Opus use Grok 4.6/xhigh, Sonnet uses high, and Haiku uses high. Eligible non-backend Opus/Sonnet/Haiku failure continues serially to Kimi K3/max. Ordinary backend is Grok implementation→fresh Kimi adversarial review/repair, with Sol/xhigh only for deterministic 20% sampling, disagreement, or failed acceptance. High-risk backend is Grok implementation→fresh read-only Kimi second view→fresh mandatory Sol/max release gate. Grok authentication is fail-closed: only the exact one-line bare diagnostic or exact quoted OIDC wrapper may open the circuit, after complete stderr and semantic/model/tool=0/0/0; authentication never authorizes fallback |
+| `cursor_bin` / `cursor_model` / `cursor_fable` | empty / disabled | Explicit Fable runs on `claude-fable-5-thinking-max` as a dedicated general, read-only decision/synthesis role. Only confirmed quota or an eligible proven presemantic failure starts one read-only Grok 4.6/xhigh answer followed by the lineage's sole fresh Sol/ultra call, which receives the original problem/evidence plus Grok's answer, reconstructs and attacks it, repairs it, and emits the terminal conclusion. There is no blind Sol answer B, third Sol/max leg, or review-of-review; unresolved P0/P1/uncertainty holds for Owner |
+| `gemini_bin` / `gemini_model` | empty / "" (built-in pro) | Gemini CLI, the second heterogeneous executor (pinned / fallback chain / cross-verification) — see the [guide](docs/guide.en.md#gemini-cli-fallback-executor-second-heterogeneous-executor) |
+| `gemini_models` | fable/opus→pro, sonnet→flash, haiku→flash-lite | tier slot mapping (official stable aliases); non-`sequence` cards always run read-only `--approval-mode plan` |
+| `engines` | {} (empty) | multi-subscription engine profiles (Kimi/GLM/MiniMax/MiMo/OpenCode Go/Ollama Cloud); merge presets with `cardex engines add <name>` — see the [guide](docs/guide.en.md#multi-subscription-engines-engine-profiles-kimi--glm--minimax--mimo--opencode-go--ollama-cloud) |
+| `fallback_order` | ["codex"] | divert order during claude cooldown/redline (codex/gemini interleaved with engine names; quality floors apply to the whole chain) |
+| `model_tiers` | {} (empty) | custom tier table (model → tier, overrides the built-in standard line): fleets without stronger models rank by the cards they hold |
+| `default_review_host` / `remote_mirror_root` / `default_review_sync` | "" | the review-divert trio: with all three set, auto-review of local impl cards diverts to the remote host by default |
+| `remote_hosts.<name>.codex_only` | false | Host-level quota boundary: when true, the remote host runs Codex only, including automatic reviews |
+
+Prompt templates live in `~/.cardex/templates/*.md` and can be edited directly (`{{GOAL}}` `{{DIR}}` `{{FOCUS}}` are substituted; `{{QUEUE}}` `{{PROGRESS}}` in `coordinate.md` are replaced with a live snapshot **at dispatch time**).
+
+**Permissions stay tight by default**: tasks do **not** use `--dangerously-skip-permissions` — review/assembly get a read-only tool allowlist, and `sequence` defaults to `acceptEdits` plus an allowlist of common build/test commands. Add `-skip-permissions` to a single card when full autonomy is needed; details in [runtime internals · permissions and safety](docs/internals.en.md#permissions-and-safety).
+
+## Documentation
+
+| Doc | Contents |
+|---|---|
+| [Recommended workflows](docs/workflows.en.md) | Direct serial and federated management, path/resource conflict prevention, review custody, evidence gates, and machine-enforcement roadmap |
+| [Advanced guide](docs/guide.en.md) | Coordination loop, file-based state, review divert, cross-verification, web board, quota redline, codex backup executor |
+| [Runtime internals](docs/internals.en.md) | Dispatch rules, limit recovery, failure classification, stall patrol, event ledger, idempotent tombstones, permissions |
+| [Configuration reference](docs/config.en.md) | The full `~/.cardex/config.json` key table + templates |
+| [Changelog](docs/changelog.en.md) | Version changes grouped by theme |
+
+## Testing
+
+```bash
+make test   # a mock claude drives the full state machine: dispatch / limit pause / cooldown / resume / assembly enqueue / failure backoff / model routing / progress pull / coordination
+```
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE) — **free for personal use, commercial use needs a license**.
+
+- **No need to ask**: personal use, study and research, hobby projects, and use by charitable,
+  educational, or public research organizations.
+- **Needs a license**: internal production use at a company, using it to deliver paid client
+  work, or shipping it (or a derivative) as part of a product or service. Open an
+  [issue](https://github.com/OttoPrua/cardex/issues) describing the intended use.
+
+Two caveats: this is **not** an OSI-approved open-source license (it restricts commercial use),
+so don't wave it through your company's dependency compliance as "open source"; and versions
+published before 2026-08-03 (through commit `b1ed92b`) remain MIT — that grant is irrevocable
+for those versions, and this change applies only to what follows. See [LICENSE](LICENSE).
+
+## Acknowledgements
+
+This project is shared with the [LINUX DO](https://linux.do) community — thanks to everyone there for the feedback.

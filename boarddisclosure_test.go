@@ -24,6 +24,9 @@ var disclosureExempt = map[string]string{
 	// runner.go transcriptEvent.IsError：Claude/Codex 会话流水的逐条事件标记，
 	// 落在 transcript 文件里供排障，不进 /api/* 响应，也没有对应的看板控件。
 	"is_error": "transcript 事件字段，不上看板 API",
+	// grok.go grokBuildDiagnostics：过程/wait 分类只随 runner 诊断落盘，不进 /api/overview。
+	"process_error": "Grok 诊断内部过程分类，不上看板 API",
+	"wait_error":    "Grok 诊断内部 wait 分类，不上看板 API",
 }
 
 // jsonTagRe 抓 struct tag 里的 json 键名（`json:"key,omitempty"` → key）。
@@ -85,6 +88,7 @@ func appJSCode(t *testing.T) string {
 // 杀死的突变：给 board.go / boardmodel.go 加一个新的 `*_error` 字段而不接前端；
 // 或把 app.js 里现有的某处消费删掉/改名。两者都立即报红。
 func TestDisclosureFieldsReachUI(t *testing.T) {
+	t.Parallel()
 	code := appJSCode(t)
 	keys := goJSONErrorKeys(t)
 	for key, files := range keys {
@@ -114,6 +118,7 @@ func TestDisclosureFieldsReachUI(t *testing.T) {
 // 光"被读到"还不够，它得像 kind_rule_error 那样渲染成一条可见告警。
 // 杀死的突变：把 app.js 里那段改成只 console.log / 只赋值不 append。
 func TestProjectAliasErrorRendersAsCallout(t *testing.T) {
+	t.Parallel()
 	code := appJSCode(t)
 	i := strings.Index(code, "d.project_alias_error")
 	if i < 0 {

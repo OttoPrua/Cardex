@@ -78,6 +78,7 @@ func syncScriptsRoot(t *testing.T) string {
 // 【R2 追加】.ps1 版本作为 Windows 沙箱兜底,同样纳入清单;.ps1 不检查执行位(靠扩展名调用)。
 // 【杀的突变】把 syncScriptsRoot 的 Skip 逻辑改回"仅 Skip 不看环境变量"→ 此哨兵在 env=1 下仍红。
 func TestSyncScriptsInstalled(t *testing.T) {
+	t.Parallel()
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
@@ -253,6 +254,7 @@ func readFingerprintManifest(t *testing.T, path string) []string {
 // ① 主验收:本地未提交 tracked 改动 + 真正 untracked 文件 → sync → 断言镜像含两者且内容一致,
 // 同时断言 .gitignore 文件(tmp/skipme.bin)不进镜像(.gitignore 由 git ls-files --exclude-standard 保证)。
 func TestSyncCarriesDirtyAndUntrackedAndRespectsGitignore(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	mroot := t.TempDir()
 	out, errOut, code := runSyncLocal(t, src, mroot)
@@ -315,6 +317,7 @@ func TestSyncCarriesDirtyAndUntrackedAndRespectsGitignore(t *testing.T) {
 // 模拟"旧版 sync 只带已提交历史"的破坏。verify-mirror-fingerprint.sh 必须报 exit 1 现场指纹不等。
 // 【杀的突变】把 sync 里的 apply_to_mirror 中 `git apply` 一行删掉 → 镜像仍是 HEAD 原样 → 本用例红。
 func TestVerifyMirrorFingerprintRedOnDirtyRevert(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	mroot := t.TempDir()
 	if _, _, code := runSyncLocal(t, src, mroot); code != 0 {
@@ -337,6 +340,7 @@ func TestVerifyMirrorFingerprintRedOnDirtyRevert(t *testing.T) {
 // verify 必须报 exit 2("镜像过期"),而非静默通过。
 // 【杀的突变】verify 若把"文件缺失"当成"未跑过 sync,可跳过检查"默认放行 → 本用例红。
 func TestVerifyMirrorFingerprintRedOnMissingFingerprintFile(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	mroot := t.TempDir()
 	if _, _, code := runSyncLocal(t, src, mroot); code != 0 {
@@ -358,6 +362,7 @@ func TestVerifyMirrorFingerprintRedOnMissingFingerprintFile(t *testing.T) {
 // ④ 反例:sync 层反向证明——sync 缺 fingerprint 脚本时必须非零退出。
 // 保证 runner.go 的既有 fallback 语义(sync exit 非 0 → 回退本机审)在新 sync 上仍成立。
 func TestSyncFailsWhenFingerprintScriptMissing(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	mroot := t.TempDir()
 	scripts := syncScriptsRoot(t)
@@ -408,6 +413,7 @@ func runVerify(t *testing.T, mirror string) int {
 // ⑤ 反例③:未提交面在源仓被再次修改后,重跑 sync 应把镜像更新到最新 workspace,fingerprint 随更新。
 // 保证"两次 sync 之间源仓再变" 的正确流转,防"缓存跑偏"。
 func TestSyncReflectsFreshWorkspaceOnRerun(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	mroot := t.TempDir()
 	if _, _, code := runSyncLocal(t, src, mroot); code != 0 {
@@ -459,6 +465,7 @@ func TestSyncReflectsFreshWorkspaceOnRerun(t *testing.T) {
 // (.DS_Store + ._.DS_Store + .claudego-fingerprint),两侧永不相等。
 // 【杀的突变】把 sync/workspace-fingerprint 里对 .DS_Store 的过滤删掉 → 本用例红:UNTRACKED_COUNT 变化 / mirror 内出 .DS_Store。
 func TestSyncFiltersDSStoreAndMirrorSideSymmetric(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	// 源仓塞一个 macOS Finder 伪影(现实场景就是这么产生的)。
 	if err := os.WriteFile(filepath.Join(src, ".DS_Store"), []byte("finder-metadata\n"), 0o644); err != nil {
@@ -497,6 +504,7 @@ func TestSyncFiltersDSStoreAndMirrorSideSymmetric(t *testing.T) {
 // 现场场景:Windows tar.exe 解包 xattr → 生成 ._foo 实体文件。fingerprint 若不过滤 ._*,verify 报"过期"空转。
 // 【杀的突变】删掉 workspace-fingerprint 里 ._ 分支 → 本用例红:verify exit 1(镜像 ._ 计数≠源 0)。
 func TestVerifyToleratesAppleDoubleArtifactsOnMirror(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	mroot := t.TempDir()
 	if _, _, code := runSyncLocal(t, src, mroot); code != 0 {
@@ -524,6 +532,7 @@ func TestVerifyToleratesAppleDoubleArtifactsOnMirror(t *testing.T) {
 // 上一轮 CG-R2 复审 exit 3(环境缺陷)根因就是脚本在远端 ~/.claudego 不可达。
 // 【杀的突变】删掉 sync-lane-to-5090.sh 里的 mkdir/cp 段 → 本用例红:in-mirror 脚本缺失。
 func TestSyncBundlesGuardScriptsIntoMirror(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	mroot := t.TempDir()
 	if _, _, code := runSyncLocal(t, src, mroot); code != 0 {
@@ -563,6 +572,7 @@ func TestSyncBundlesGuardScriptsIntoMirror(t *testing.T) {
 // 而非硬绑 $HOME/.claudego(远端沙箱不可达)。做法:切一个假 $HOME,断言 verify 仍能跑通(靠 in-mirror)。
 // 【杀的突变】把 verify 里"首选 in-mirror"逻辑改回"只看 $HOME"→ 本用例红:环境缺陷 exit 3。
 func TestVerifyPrefersInMirrorFingerprintScript(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	mroot := t.TempDir()
 	if _, _, code := runSyncLocal(t, src, mroot); code != 0 {
@@ -594,6 +604,7 @@ func TestVerifyPrefersInMirrorFingerprintScript(t *testing.T) {
 // ⑩ 【R1 P0-1 反例】in-mirror 脚本缺失 & $HOME 也无脚本 → verify 必须报 exit 3(环境缺陷)。
 // 【杀的突变】verify 若在此情形下 exit 0/默认放行 → 本用例红:护栏对"两条路径都失守"未拦。
 func TestVerifyExitsEnvErrorWhenBothScriptPathsMissing(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	mroot := t.TempDir()
 	if _, _, code := runSyncLocal(t, src, mroot); code != 0 {
@@ -641,6 +652,7 @@ func TestVerifyExitsEnvErrorWhenBothScriptPathsMissing(t *testing.T) {
 //
 // 【杀的突变】把 workspace-fingerprint.sh 里的联合改回 dirty/untracked 分开落 → 本用例红。
 func TestVerifyPassesWithStagedButNotCommittedFile(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	// 【核心 setup】git add 一个新文件但不 commit(修复卡守则)。
 	if err := os.WriteFile(filepath.Join(src, "staged_new.go"), []byte("package main\n"), 0o644); err != nil {
@@ -705,6 +717,7 @@ func TestVerifyPassesWithStagedButNotCommittedFile(t *testing.T) {
 // manifest 里出现八进制引号;② 或让 filter 忽略中文 → (c) 变 DELETED;
 // ③ 或 workspace-fingerprint 只按名不按内容判 → 篡改后仍算通过 → (d) 红。
 func TestVerifyPassesWithNonAsciiFilenameAndDetectsMirrorTamper(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	// 中文文件名的 dirty 面(改已提交文件,类型偏一致):塞进 docs 子目录。
 	if err := os.MkdirAll(filepath.Join(src, "docs"), 0o755); err != nil {
@@ -776,6 +789,7 @@ func TestVerifyPassesWithNonAsciiFilenameAndDetectsMirrorTamper(t *testing.T) {
 // 【杀的突变】① sync-lane-to-5090.sh 里删掉 .ps1 cp 段 → 文件不存在,红;
 // ② .ps1 变空文件 / 缺 param → 结构断言红。
 func TestSyncDistributesPowerShellVerifyScript(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	mroot := t.TempDir()
 	if _, _, code := runSyncLocal(t, src, mroot); code != 0 {
@@ -838,6 +852,7 @@ func TestSyncDistributesPowerShellVerifyScript(t *testing.T) {
 // 【杀的突变】① 删掉 Makefile 里 accept-sync 段 → 本用例红;
 // ② 该目标里去掉 CARDEX_REQUIRE_SYNC_SCRIPTS=1 → 关键字缺失红。
 func TestVerifyAcceptSyncMakefileTargetExists(t *testing.T) {
+	t.Parallel()
 	// 定位仓根:测试文件位于 <repo>/reviewsync_workspace_test.go,cwd 就是 <repo>。
 	repoRoot, err := os.Getwd()
 	if err != nil {
@@ -913,6 +928,7 @@ func TestVerifyAcceptSyncMakefileTargetExists(t *testing.T) {
 //   ② 新增一个 TestPrepFooEnvGated 但忘同步 pattern → 本挡红(pattern 覆盖度不足);
 //   ③ 只漂 exec 行 pattern(:27)不动 @echo 展示行(:26) → 两处不一致 → 本挡红(R3 兄弟洞闭合)。
 func TestAcceptSyncMakefilePatternCoversAllEnvGatedTests(t *testing.T) {
+	t.Parallel()
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)
@@ -1041,6 +1057,7 @@ func TestAcceptSyncMakefilePatternCoversAllEnvGatedTests(t *testing.T) {
 //      (与 ⑯ 双杀:⑯ 从"全量一致"角度报,本挡从"exec 行本身要与全量首匹配一致"角度报);
 //   ③ 把 exec 行 recipe 命令换成 @echo(伪装成显示) → 找不到 exec 行 → 本挡红。
 func TestAcceptSyncExecutionLineCarriesRunPattern(t *testing.T) {
+	t.Parallel()
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)
@@ -1110,6 +1127,7 @@ func TestAcceptSyncExecutionLineCarriesRunPattern(t *testing.T) {
 //   ② test/integration.sh:60 grep 改半角(未同步) → 本挡红;
 //   ③ templates/fix-cycle.md 删掉「按类闭合」章节 → 本挡红。
 func TestIntegrationShTemplateRenderContract(t *testing.T) {
+	t.Parallel()
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)
@@ -1167,6 +1185,7 @@ func TestIntegrationShTemplateRenderContract(t *testing.T) {
 // ② 删掉 UTF-8 编码 setter 段 → (b) 红;
 // ③ 删掉伴生文件 sha256 校验 → (c) 红。
 func TestPowerShellVerifyScriptContainsR3Fixes(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	mroot := t.TempDir()
 	if _, _, code := runSyncLocal(t, src, mroot); code != 0 {
@@ -1249,6 +1268,7 @@ func TestPowerShellVerifyScriptContainsR3Fixes(t *testing.T) {
 //
 // 【杀的突变】.ps1 排序回滚到语言学序 → 本用例 Windows 上会红(混大小写 manifest 首行不等)。
 func TestVerifyPowerShellScriptOnMixedCaseAndChineseFixture(t *testing.T) {
+	t.Parallel()
 	pwsh := findPowerShell()
 	if pwsh == "" {
 		t.Skip("跳过:pwsh/powershell 不在 PATH(Mac 开发盒常态,Windows 装机验收流水必须跑到本用例)")
@@ -1332,6 +1352,7 @@ func runPowerShellVerify(t *testing.T, pwsh, mirror string) (int, string) {
 // 【杀的突变】① workspace-fingerprint.sh 里 else 分支不发 DELETED 行 → 联合集 COUNT 少 1 → 红;
 // ② sync 不 rm 镜像端已删的 tracked 文件 → 镜像该路径仍存在 → 一侧 DELETED / 一侧 sha → 首行不等 → 红。
 func TestVerifyPassesWithDeletedTrackedFile(t *testing.T) {
+	t.Parallel()
 	src := mkSyncSourceRepo(t)
 	// 基线 sync 前把 baseline 追踪文件删掉(不 commit,仿"修复卡·workspace 待复审"守则)。
 	if err := os.Remove(filepath.Join(src, "keep.txt")); err != nil {
@@ -1389,6 +1410,7 @@ func TestVerifyPassesWithDeletedTrackedFile(t *testing.T) {
 //   ③ 从 templates/fix-cycle.md 里删掉"提交前机械门"章节 → 内嵌断言红;
 //   ④ 装机侧模板漂移到无自门/无机械门 → env=1 下装机断言红。
 func TestDesignReviewAndFixCycleTemplatesEmbedContractContent(t *testing.T) {
+	t.Parallel()
 	// (a) 内嵌 design-review.md 必含开工自门 + 修 1 剔除清单同源片段。
 	//     用不存在的 root 让 loadTemplate 走 embedded 兜底路径。
 	fakeRoot := filepath.Join(t.TempDir(), "no-such-root")

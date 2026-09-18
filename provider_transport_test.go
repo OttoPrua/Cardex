@@ -34,6 +34,7 @@ func TestProviderChildEnvProjectsOnlyTransportAndNativeHome(t *testing.T) {
 }
 
 func TestProviderPreflightStatesAreClosedAndValueBlind(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		output string
@@ -58,6 +59,7 @@ func TestProviderPreflightStatesAreClosedAndValueBlind(t *testing.T) {
 }
 
 func TestProviderParallelLimitsDefaultAndOverrideIndependently(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{
 		GrokBuild:   &GrokBuildRoute{},
 		KimiCLIOpus: &KimiCLIOpusRoute{},
@@ -79,6 +81,7 @@ func TestProviderParallelLimitsDefaultAndOverrideIndependently(t *testing.T) {
 }
 
 func TestAntigravityPreflightChoosesHighestActuallyAdvertisedOpus(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "agy")
 	script := "#!/bin/sh\nprintf '%s\\n' 'claude-sonnet-4-6' 'claude-opus-4-6-thinking' 'claude-opus-4-10-thinking'\n"
@@ -95,6 +98,7 @@ func TestAntigravityPreflightChoosesHighestActuallyAdvertisedOpus(t *testing.T) 
 }
 
 func TestAntigravityPreflightDoesNotFallBackToSonnet(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "agy")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' 'claude-sonnet-4-6'\n"), 0o755); err != nil {

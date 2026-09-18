@@ -25,6 +25,7 @@ func fakeCodexUsageLimit(t *testing.T) string {
 }
 
 func TestInvokeCodexUsageLimitFlowsToLimitDetector(t *testing.T) {
+	t.Parallel()
 	work := t.TempDir()
 	cfg := defaultConfig("")
 	cfg.CodexBin = fakeCodexUsageLimit(t)
@@ -48,6 +49,7 @@ func TestInvokeCodexUsageLimitFlowsToLimitDetector(t *testing.T) {
 }
 
 func TestRunTaskCodexUsageLimitPausesWithoutAttemptOrClaudeCooldown(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	work := t.TempDir()
 	cfg := defaultConfig("")

@@ -8,6 +8,7 @@ import (
 )
 
 func TestMultiLaneMetricsCountThroughputConflictAndWait(t *testing.T) {
+	t.Parallel()
 	m := NewMultiLaneMetrics()
 	m.AddThroughput(4)
 	m.AddConflicts(2)
@@ -28,6 +29,7 @@ func TestMultiLaneMetricsCountThroughputConflictAndWait(t *testing.T) {
 }
 
 func TestMultiLaneSnapshotIsValueFreeAndTriggersNoModelWork(t *testing.T) {
+	t.Parallel()
 	m := NewMultiLaneMetrics()
 	m.AddThroughput(3)
 	m.AddConflicts(1)
@@ -63,6 +65,7 @@ func TestMultiLaneSnapshotIsValueFreeAndTriggersNoModelWork(t *testing.T) {
 }
 
 func TestMultiLaneMetricsConcurrentAddsAreRaceFree(t *testing.T) {
+	t.Parallel()
 	m := NewMultiLaneMetrics()
 	var wg sync.WaitGroup
 	for i := 0; i < 32; i++ {

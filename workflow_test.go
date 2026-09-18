@@ -179,6 +179,7 @@ func runWorkflowToReview(t *testing.T, root string, wf *WorkflowRecord, body str
 // ---- area 1: review-result gates ----
 
 func TestWorkflowInitDefaultHoldsIntegrationAndAllEffectGates(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	wf := initTestWorkflow(t, root, dir)
 
@@ -206,6 +207,7 @@ func TestWorkflowInitDefaultHoldsIntegrationAndAllEffectGates(t *testing.T) {
 }
 
 func TestReviewResultGateHoldsEveryNonAdmissibleTerminal(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, body, want string
 	}{
@@ -253,6 +255,7 @@ func TestReviewResultGateHoldsEveryNonAdmissibleTerminal(t *testing.T) {
 }
 
 func TestAdmissiblePassReleasesIntegrationButNeverLive(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -290,6 +293,7 @@ func TestAdmissiblePassReleasesIntegrationButNeverLive(t *testing.T) {
 }
 
 func TestGateRefusesWhenCandidateIdentityDrifts(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -310,6 +314,7 @@ func TestGateRefusesWhenCandidateIdentityDrifts(t *testing.T) {
 }
 
 func TestGateRefusesWithoutAnyFrozenCandidate(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -333,6 +338,7 @@ func TestGateRefusesWithoutAnyFrozenCandidate(t *testing.T) {
 }
 
 func TestGateRefusesReviewerThatIsNotAnIndependentReadOnlyRole(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -449,6 +455,7 @@ func TestTickDrainsOrdinaryCardsButNeverAGatedIntegrationCard(t *testing.T) {
 }
 
 func TestHandleReviewVerdictRejectsPassWithOpenFindings(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -466,6 +473,7 @@ func TestHandleReviewVerdictRejectsPassWithOpenFindings(t *testing.T) {
 }
 
 func TestReviewVerdictAdmissiblePassVocabulary(t *testing.T) {
+	t.Parallel()
 	if reviewVerdictIsAdmissiblePass(&reviewVerdict{Verdict: "pass", P0: []string{"x"}}) {
 		t.Fatal("pass with a p0 is not admissible")
 	}
@@ -488,6 +496,7 @@ func TestReviewVerdictAdmissiblePassVocabulary(t *testing.T) {
 // ---- area 2: write-domain conflicts ----
 
 func TestWorkflowWriteDomainConflictsFailClosed(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	_ = initTestWorkflow(t, root, dir)
 
@@ -558,6 +567,7 @@ func TestWorkflowWriteDomainConflictsFailClosed(t *testing.T) {
 }
 
 func TestTerminalWorkflowReleasesItsWriteDomainClaim(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -580,6 +590,7 @@ func TestTerminalWorkflowReleasesItsWriteDomainClaim(t *testing.T) {
 }
 
 func TestFederatedModeBindsParentAndSerialModeRefusesOne(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	parent := initTestWorkflow(t, root, dir)
@@ -647,6 +658,7 @@ func TestFederatedModeBindsParentAndSerialModeRefusesOne(t *testing.T) {
 // ---- area 3: restart/replay idempotence ----
 
 func TestReplayNeverCreatesASecondWriterOrReviewer(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -704,6 +716,7 @@ func TestReplayNeverCreatesASecondWriterOrReviewer(t *testing.T) {
 }
 
 func TestFreezeRefusesWhileTheWriterIsStillLive(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -718,6 +731,7 @@ func TestFreezeRefusesWhileTheWriterIsStillLive(t *testing.T) {
 }
 
 func TestReplayedIngestAndReleaseAreStable(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -757,6 +771,7 @@ func TestReplayedIngestAndReleaseAreStable(t *testing.T) {
 }
 
 func TestReleasedIntegrationIsReHeldWhenEvidenceDisappears(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -801,6 +816,7 @@ func TestReleasedIntegrationIsReHeldWhenEvidenceDisappears(t *testing.T) {
 }
 
 func TestGateRefusesAReviewBoundToNoWriter(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -831,6 +847,7 @@ func TestGateRefusesAReviewBoundToNoWriter(t *testing.T) {
 }
 
 func TestTerminalMarkRefusedWhileTheWorkflowStillHasARunnableCard(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -868,6 +885,7 @@ func TestTerminalMarkRefusedWhileTheWorkflowStillHasARunnableCard(t *testing.T) 
 }
 
 func TestCorruptWorkflowRecordIsSkippedNotFatal(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -884,6 +902,7 @@ func TestCorruptWorkflowRecordIsSkippedNotFatal(t *testing.T) {
 }
 
 func TestWorkflowRecordRejectsWidenedLiveGateOnReload(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -911,6 +930,7 @@ func TestWorkflowRecordRejectsWidenedLiveGateOnReload(t *testing.T) {
 // ---- area 4: bounded loops ----
 
 func TestRepairRoundsAreBoundedAndExhaustionNotifiesRoot(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir) // -max-rounds 2
@@ -973,6 +993,7 @@ func TestRepairRoundsAreBoundedAndExhaustionNotifiesRoot(t *testing.T) {
 }
 
 func TestRepairClearsThePreviousCandidateAndVerdict(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -999,6 +1020,7 @@ func TestRepairClearsThePreviousCandidateAndVerdict(t *testing.T) {
 }
 
 func TestRepairRefusesAfterAnAdmissiblePass(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1012,6 +1034,7 @@ func TestRepairRefusesAfterAnAdmissiblePass(t *testing.T) {
 }
 
 func TestMaxRoundsMustBeAtLeastOne(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	err := cmdWorkflowInit([]string{
 		"-root", root, "-module", "auth", "-goal", "g", "-dir", dir,
@@ -1026,6 +1049,7 @@ func TestMaxRoundsMustBeAtLeastOne(t *testing.T) {
 // ---- area 5: durable manager hooks ----
 
 func TestRoutineProgressIsDurableAndNeverNotifiesRoot(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1079,6 +1103,7 @@ func TestRoutineProgressIsDurableAndNeverNotifiesRoot(t *testing.T) {
 }
 
 func TestOnlyMaterialTransitionsWriteRootReceipts(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ kind, want, status string }{
 		{"external", rootNotifyExternal, workflowStatusExternalBlocked},
 		{"owner", rootNotifyOwner, workflowStatusOwnerChoice},
@@ -1111,6 +1136,7 @@ func TestOnlyMaterialTransitionsWriteRootReceipts(t *testing.T) {
 }
 
 func TestNonMaterialNotifyKindIsRefused(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1127,6 +1153,7 @@ func TestNonMaterialNotifyKindIsRefused(t *testing.T) {
 }
 
 func TestWorkflowEnginesMustBePinnableWithoutFailOpen(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 
@@ -1189,6 +1216,7 @@ func TestWorkflowEnginesMustBePinnableWithoutFailOpen(t *testing.T) {
 // workflow-bound card. The workflow record owns its single independent
 // reviewer; ReviewAfter here would mint a second one for the same candidate.
 func TestGrokOpusAdversarialReviewNeverRegrowsAReviewerOnWorkflowCards(t *testing.T) {
+	t.Parallel()
 	cfg := grokBuildTestConfig(t, "/usr/bin/true")
 
 	writer := &Task{Type: typeSequence, Model: "opus", WorkflowID: "wf0101-0000-aaaaaa"}
@@ -1227,6 +1255,7 @@ func TestGrokOpusAdversarialReviewNeverRegrowsAReviewerOnWorkflowCards(t *testin
 // to workflowActiveRole (a second writer could be admitted onto the same
 // domain) and fail-opens the write-domain audit.
 func TestFixLoopRepairAndEscalationCardsPreserveWorkflowBinding(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1301,6 +1330,7 @@ func TestFixLoopRepairAndEscalationCardsPreserveWorkflowBinding(t *testing.T) {
 // must hold closed instead of skipping it, or a successor module could take
 // paths that a broken-but-real record still owns.
 func TestUnloadableWorkflowRecordHoldsWriteDomainAuditClosed(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	_ = initTestWorkflow(t, root, dir)
 	brokenPath := workflowPath(root, "wf0101-0000-cccccc")
@@ -1338,6 +1368,7 @@ func TestUnloadableWorkflowRecordHoldsWriteDomainAuditClosed(t *testing.T) {
 // would otherwise become the label the integration gate later matches against
 // itself.
 func TestFreezeCandidateVerifiesIdentityAgainstTheRepository(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1394,6 +1425,7 @@ func TestFreezeCandidateVerifiesIdentityAgainstTheRepository(t *testing.T) {
 }
 
 func TestWorkflowRecordDoesNotStoreThePromptBody(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)

@@ -314,6 +314,7 @@ func captureWorkflowShow(t *testing.T, root, id string) map[string]any {
 }
 
 func TestOrdinaryCardsWithoutGoalFieldsRemainEligible(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	queued := &Task{Status: statusQueued, CreatedAt: now.Format(time.RFC3339)}
 	applyControlDefaults(queued)
@@ -336,6 +337,7 @@ func TestOrdinaryCardsWithoutGoalFieldsRemainEligible(t *testing.T) {
 }
 
 func TestManualActivePausedUnknownGoalExcludedFromEligibleAndAutoResume(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	ordinary := &Task{ID: "ord", Status: statusQueued, Priority: 1, CreatedAt: now.Add(-time.Hour).Format(time.RFC3339)}
 	applyControlDefaults(ordinary)
@@ -359,6 +361,7 @@ func TestManualActivePausedUnknownGoalExcludedFromEligibleAndAutoResume(t *testi
 }
 
 func TestDuplicateGoalWriterAdmissionRejected(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -380,6 +383,7 @@ func TestDuplicateGoalWriterAdmissionRejected(t *testing.T) {
 }
 
 func TestNativeWriterRefusedWhenAutomaticUnproven(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -394,6 +398,7 @@ func TestNativeWriterRefusedWhenAutomaticUnproven(t *testing.T) {
 }
 
 func TestGoalWriterRequiresIndependentDesignProof(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -421,6 +426,7 @@ func TestGoalWriterRequiresIndependentDesignProof(t *testing.T) {
 }
 
 func TestGoalWriteDomainsOverlapFailClosedAndDisjointDoNot(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -450,6 +456,7 @@ func TestGoalWriteDomainsOverlapFailClosedAndDisjointDoNot(t *testing.T) {
 }
 
 func TestGoalSyncIdempotentAndRejectsStaleIdentities(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -509,6 +516,7 @@ func TestGoalSyncIdempotentAndRejectsStaleIdentities(t *testing.T) {
 }
 
 func TestD3GenuineAchievedZeroRoundsAcceptedWithAttempt(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -541,6 +549,7 @@ func TestD3GenuineAchievedZeroRoundsAcceptedWithAttempt(t *testing.T) {
 }
 
 func TestD3MissingAttemptMustNotBecomeDone(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -574,6 +583,7 @@ func TestD3MissingAttemptMustNotBecomeDone(t *testing.T) {
 }
 
 func TestD3CorruptTailMustInvalidateNativeEvidence(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	cwd := t.TempDir()
 	sid := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
@@ -596,6 +606,7 @@ func TestD3CorruptTailMustInvalidateNativeEvidence(t *testing.T) {
 }
 
 func TestD3InventedClassifierAliasesDoNotProveDone(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	cwd := t.TempDir()
 	sid := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
@@ -650,6 +661,7 @@ func TestD3InventedClassifierAliasesDoNotProveDone(t *testing.T) {
 }
 
 func TestD3BudgetLimitedNotAchievedIsNotComplete(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -676,6 +688,7 @@ func TestD3BudgetLimitedNotAchievedIsNotComplete(t *testing.T) {
 }
 
 func TestGoalSyncMapsNativeStatesAndDeniesIncompleteTerminals(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -733,6 +746,7 @@ func TestGoalSyncMapsNativeStatesAndDeniesIncompleteTerminals(t *testing.T) {
 }
 
 func TestGoalSyncCompletedLiveLeaseIsNotDone(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -766,6 +780,7 @@ func TestGoalSyncCompletedLiveLeaseIsNotDone(t *testing.T) {
 }
 
 func TestGoalSyncMissingWrongAndFailOpenStayHeldUnknown(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -844,6 +859,7 @@ func TestGoalSyncMissingWrongAndFailOpenStayHeldUnknown(t *testing.T) {
 }
 
 func TestCancelThenLateNativeCompletedIsNotDone(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -879,6 +895,7 @@ func TestCancelThenLateNativeCompletedIsNotDone(t *testing.T) {
 }
 
 func TestGoalSyncDoesNotStartProvider(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	stamp := filepath.Join(t.TempDir(), "stamp")
@@ -906,6 +923,7 @@ func TestGoalSyncDoesNotStartProvider(t *testing.T) {
 }
 
 func TestManualGoalLaunchBindsSessionBeforeEffectAndOmitsDashP(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	argvPath := filepath.Join(t.TempDir(), "argv")
@@ -941,6 +959,7 @@ func TestManualGoalLaunchBindsSessionBeforeEffectAndOmitsDashP(t *testing.T) {
 }
 
 func TestManualGrokArgvPreservesPermissionTupleAndStageDigest(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	argvPath := filepath.Join(t.TempDir(), "argv")
@@ -1036,6 +1055,7 @@ func TestCrashBeforeStartUnstartedCrashAfterStartUnknownBlocksRedispatch(t *test
 }
 
 func TestSameSessionResumePersistsControlEpochBeforeReserve(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	enableManualGrok(t, root, cfg, filepath.Join(t.TempDir(), "argv"))
@@ -1186,6 +1206,7 @@ func extraWorkflowDir(t *testing.T) string {
 }
 
 func TestGoalRunDisjointOverlapAndMissingPredecessor(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	cfg.MaxParallel = 2
@@ -1216,7 +1237,7 @@ func TestGoalRunDisjointOverlapAndMissingPredecessor(t *testing.T) {
 		defer wg.Done()
 		errA = runManualGoalLaunch(t, root, cfg, auth, 0)
 	}()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for {
 		if _, err := os.Stat(argvA); err == nil {
 			break
@@ -1235,7 +1256,7 @@ func TestGoalRunDisjointOverlapAndMissingPredecessor(t *testing.T) {
 		defer wg.Done()
 		errB = runManualGoalLaunch(t, root, &cfgB, bill, 0)
 	}()
-	deadline = time.Now().Add(3 * time.Second)
+	deadline = time.Now().Add(8 * time.Second)
 	for {
 		if _, err := os.Stat(argvB); err == nil {
 			break
@@ -1290,7 +1311,7 @@ func TestGoalRunDisjointOverlapAndMissingPredecessor(t *testing.T) {
 		firstErr = runManualGoalLaunch(t, root2, cfg2, w1, 0)
 		close(done)
 	}()
-	deadline = time.Now().Add(3 * time.Second)
+	deadline = time.Now().Add(8 * time.Second)
 	for {
 		if _, err := os.Stat(argvC); err == nil {
 			break
@@ -1333,6 +1354,7 @@ func TestGoalRunDisjointOverlapAndMissingPredecessor(t *testing.T) {
 }
 
 func TestFreshDesignNodeConsumesCandidateAndUsesWorkflowRounds(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	if err := cmdWorkflowInit([]string{
@@ -1404,6 +1426,7 @@ func TestFreshDesignNodeConsumesCandidateAndUsesWorkflowRounds(t *testing.T) {
 }
 
 func TestDesignResultConsumesNonacceptedAndRefusesDuplicate(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1474,6 +1497,7 @@ func TestDesignResultConsumesNonacceptedAndRefusesDuplicate(t *testing.T) {
 }
 
 func TestNativeGoalCapabilityMatrixHonest(t *testing.T) {
+	t.Parallel()
 	caps := nativeGoalCapabilities()
 	by := map[string]GoalCapability{}
 	for _, c := range caps {
@@ -1524,6 +1548,7 @@ func TestNativeGoalCapabilityMatrixHonest(t *testing.T) {
 }
 
 func TestWorkflowShowReportsBoundGoalIdentity(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1550,6 +1575,7 @@ func TestWorkflowShowReportsBoundGoalIdentity(t *testing.T) {
 }
 
 func TestOrdinaryWorkflowShowJSONTopLevelKeys(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	wf := initTestWorkflow(t, root, dir)
 	first := captureWorkflowShow(t, root, wf.ID)
@@ -1572,12 +1598,14 @@ func TestOrdinaryWorkflowShowJSONTopLevelKeys(t *testing.T) {
 }
 
 func TestGoalRunRequiresManualFlag(t *testing.T) {
+	t.Parallel()
 	if err := cmdWorkflowGoalRun([]string{"-root", t.TempDir(), "wf-nope"}); !errors.Is(err, errGoalManualRequired) {
 		t.Fatalf("goal-run without -manual: %v", err)
 	}
 }
 
 func TestWorkflowFlagsAfterPositionalID(t *testing.T) {
+	t.Parallel()
 	fs := flag.NewFlagSet("goal-run", flag.ContinueOnError)
 	manual := fs.Bool("manual", false, "")
 	budget := fs.Int64("budget", 0, "")
@@ -1591,6 +1619,7 @@ func TestWorkflowFlagsAfterPositionalID(t *testing.T) {
 }
 
 func TestUnsupportedPermissionTupleRejectedBeforeLaunch(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	enableManualGrok(t, root, cfg, filepath.Join(t.TempDir(), "argv"))
@@ -1606,6 +1635,7 @@ func TestUnsupportedPermissionTupleRejectedBeforeLaunch(t *testing.T) {
 }
 
 func TestD3MissingFinalUpdateStatusRejected(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	cwd := t.TempDir()
 	sid := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
@@ -1629,6 +1659,7 @@ func TestD3MissingFinalUpdateStatusRejected(t *testing.T) {
 }
 
 func TestD3EmptySummaryCwdRejected(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1654,6 +1685,7 @@ func TestD3EmptySummaryCwdRejected(t *testing.T) {
 }
 
 func TestReservedAttemptCannotAcceptDone(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1688,6 +1720,7 @@ func TestReservedAttemptCannotAcceptDone(t *testing.T) {
 }
 
 func TestDesignReceiptRejectsReadOnlyFalse(t *testing.T) {
+	t.Parallel()
 	path := writeAstraDesignReceiptWith(t, map[string]any{"read_only": false})
 	if _, err := loadExternalDesignReceipt(path); err == nil {
 		t.Fatal("read_only false must not be rewritten into acceptance")
@@ -1695,6 +1728,7 @@ func TestDesignReceiptRejectsReadOnlyFalse(t *testing.T) {
 }
 
 func TestDesignResultAcceptsCompletedStageWithFreshReceipt(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1738,6 +1772,7 @@ func TestDesignResultAcceptsCompletedStageWithFreshReceipt(t *testing.T) {
 }
 
 func TestDesignResultKeepsActualModelDespiteDisplayLabel(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1765,6 +1800,7 @@ func TestDesignResultKeepsActualModelDespiteDisplayLabel(t *testing.T) {
 }
 
 func TestCopyableNativeGoalIsLiteralPathDigest(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1829,6 +1865,7 @@ func d4SuccessorFixture(t *testing.T) (string, *Config, *WorkflowRecord, *Task, 
 }
 
 func TestD4SuccessorRetainsFreshDesignAndRound(t *testing.T) {
+	t.Parallel()
 	root, cfg, wf, _, receipt := d4SuccessorFixture(t)
 	fresh, err := loadExternalDesignReceipt(receipt)
 	if err != nil {
@@ -1862,6 +1899,7 @@ func TestD4SuccessorRetainsFreshDesignAndRound(t *testing.T) {
 }
 
 func TestD4SuccessorHonorsExhaustedRound(t *testing.T) {
+	t.Parallel()
 	root, cfg, wf, _, receipt := d4SuccessorFixture(t)
 	wf.CurrentRound = wf.MaxRounds
 	if err := persistWorkflow(root, cfg, wf); err != nil {
@@ -1877,6 +1915,7 @@ func TestD4SuccessorHonorsExhaustedRound(t *testing.T) {
 }
 
 func TestGoalRepairRefusedTowardDesignResult(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1895,6 +1934,7 @@ func TestGoalRepairRefusedTowardDesignResult(t *testing.T) {
 }
 
 func TestStaleDesignResultRevisionRefused(t *testing.T) {
+	t.Parallel()
 	root, cfg, wf, tk, _ := d4SuccessorFixture(t)
 	receipt := writeAstraDesignReceiptWith(t, map[string]any{
 		"consumed_task_id":     tk.ID,
@@ -1909,6 +1949,7 @@ func TestStaleDesignResultRevisionRefused(t *testing.T) {
 }
 
 func TestConcurrentGoalRepairAndDesignResultFailClosed(t *testing.T) {
+	t.Parallel()
 	root, cfg, wf, tk, receipt := d4SuccessorFixture(t)
 	wf.Review = &WorkflowReview{TaskID: "rev-1", Verdict: "block", Admissible: false}
 	if err := persistWorkflow(root, cfg, wf); err != nil {
@@ -1944,6 +1985,7 @@ func TestConcurrentGoalRepairAndDesignResultFailClosed(t *testing.T) {
 }
 
 func TestCompletedDesignTaskPromptHashIsNotProof(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	review := newTask(root, cfg, typeReview, "design", dir, []string{"design the auth token vertical as Astra"}, 1)
@@ -1959,6 +2001,7 @@ func TestCompletedDesignTaskPromptHashIsNotProof(t *testing.T) {
 }
 
 func TestDesignArtifactDriftRefusedAtAdmission(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	result := filepath.Join(t.TempDir(), "design.md")
@@ -1982,6 +2025,7 @@ func TestDesignArtifactDriftRefusedAtAdmission(t *testing.T) {
 }
 
 func TestExitedNeverStartedPID0CannotAcceptDone(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -2003,6 +2047,7 @@ func TestExitedNeverStartedPID0CannotAcceptDone(t *testing.T) {
 }
 
 func TestInputDigestMismatchRejected(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -2025,6 +2070,7 @@ func TestInputDigestMismatchRejected(t *testing.T) {
 }
 
 func TestFakeExecutableLaunchExitGoalSyncDoesNotStuffPID(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)

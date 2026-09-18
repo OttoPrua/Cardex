@@ -116,15 +116,28 @@ const (
 	routeReasonGrokHaikuToLuna         = "grok_haiku_to_luna"
 )
 
-const (
-	grokBuildAuthCooldownDuration = 24 * time.Hour
-	grokBuildAuthProbeTimeout     = 20 * time.Second
-)
+const grokBuildAuthCooldownDuration = 24 * time.Hour
 
-// grokBuildAuthProbeMu makes the credential check and breaker transition atomic across workers in
-// one tick. Once the first probe proves expired credentials, later workers observe the persisted
-// circuit instead of each starting another Grok process and multiplying one incident into N retries.
-var grokBuildAuthProbeMu sync.Mutex
+var grokBuildAuthProbeTimeout = 20 * time.Second
+
+func grokBuildStepTimeout(cfg *Config) time.Duration {
+	if cfg != nil && cfg.grokStepTimeout > 0 {
+		return cfg.grokStepTimeout
+	}
+	if cfg == nil || cfg.StepTimeoutMin < 1 {
+		return time.Minute
+	}
+	return time.Duration(cfg.StepTimeoutMin) * time.Minute
+}
+
+// grokBuildAuthProbeLocks serializes the credential check per data root. Production is one
+// process / one root; tests use isolated roots and must not share a process-wide mutex.
+var grokBuildAuthProbeLocks sync.Map
+
+func grokBuildAuthProbeLock(root string) *sync.Mutex {
+	v, _ := grokBuildAuthProbeLocks.LoadOrStore(root, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
 
 type grokBuildAuthProbeError struct {
 	reason      string
@@ -244,6 +257,26 @@ func safeGrokBuildProbeDiagnostic(raw string, runErr error) string {
 
 // runGrokBuildAuthProbe asks the CLI for its model list. This reaches the CLI's authenticated
 // control path without opening a model session, sending a task prompt, or mutating a product repo.
+func resolveGrokLifecycleHome(cfg *Config) (string, error) {
+	if cfg != nil {
+		if home := strings.TrimSpace(cfg.grokLifecycleHome); home != "" {
+			if !filepath.IsAbs(home) {
+				return "", fmt.Errorf("Grok lifecycle-state home must be an absolute path")
+			}
+			return filepath.Clean(home), nil
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve Grok lifecycle-state home: %w", err)
+	}
+	home = strings.TrimSpace(home)
+	if home == "" || !filepath.IsAbs(home) {
+		return "", fmt.Errorf("Grok lifecycle-state home must be an absolute path")
+	}
+	return filepath.Clean(home), nil
+}
+
 func runGrokBuildAuthProbe(ctx context.Context, cfg *Config, model string) error {
 	if !grokBuildEnabled(cfg) {
 		return fmt.Errorf("grok_build_bin/grok_build 未启用")
@@ -251,7 +284,7 @@ func runGrokBuildAuthProbe(ctx context.Context, cfg *Config, model string) error
 	probeCtx, cancel := context.WithTimeout(ctx, grokBuildAuthProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(probeCtx, cfg.GrokBuildBin, "--no-auto-update", "models")
-	home, _ := os.UserHomeDir()
+	home, _ := resolveGrokLifecycleHome(cfg)
 	cmd.Env = providerChildEnv(home, nil)
 	setupProcGroup(cmd)
 	var stdout, stderr bytes.Buffer
@@ -287,8 +320,9 @@ func setGrokBuildAuthCooldown(root, reason string, now time.Time) {
 // expired login produces one real probe; followers remain on the Grok leg and never become fallback
 // writers. A successful probe does not clear quota cooldowns.
 func ensureGrokBuildAuth(ctx context.Context, root string, cfg *Config, model string) error {
-	grokBuildAuthProbeMu.Lock()
-	defer grokBuildAuthProbeMu.Unlock()
+	mu := grokBuildAuthProbeLock(root)
+	mu.Lock()
+	defer mu.Unlock()
 	now := time.Now()
 	if cd := loadEngineCooldown(root, grokBuildCooldownName); grokBuildAuthCooldownActive(cd, now) {
 		return &grokBuildAuthProbeError{reason: grokBuildAuthReason(cd), circuitOpen: true}
@@ -305,8 +339,9 @@ func ensureGrokBuildAuth(ctx context.Context, root string, cfg *Config, model st
 // refreshGrokBuildAuth is used by doctor after a human login. It bypasses only an auth circuit,
 // performs a fresh no-model probe, and clears that circuit on success. Quota cooldowns are preserved.
 func refreshGrokBuildAuth(ctx context.Context, root string, cfg *Config, model string) error {
-	grokBuildAuthProbeMu.Lock()
-	defer grokBuildAuthProbeMu.Unlock()
+	mu := grokBuildAuthProbeLock(root)
+	mu.Lock()
+	defer mu.Unlock()
 	now := time.Now()
 	err := runGrokBuildAuthProbe(ctx, cfg, model)
 	if err != nil {
@@ -1529,15 +1564,10 @@ func invokeGrokBuild(ctx context.Context, root string, cfg *Config, t *Task, pro
 	if effort == "max" {
 		return nil, "", fmt.Errorf("Grok 4.6 不支持 reasoning effort=max；最高可用档为 xhigh")
 	}
-	home, err := os.UserHomeDir()
+	home, err := resolveGrokLifecycleHome(cfg)
 	if err != nil {
-		return nil, "", fmt.Errorf("resolve Grok lifecycle-state home: %w", err)
+		return nil, "", err
 	}
-	home = strings.TrimSpace(home)
-	if home == "" || !filepath.IsAbs(home) {
-		return nil, "", fmt.Errorf("Grok lifecycle-state home must be an absolute path")
-	}
-	home = filepath.Clean(home)
 	if err := probeGrokBuildLifecycleState(t, home); err != nil {
 		return nil, "", err
 	}
@@ -1590,7 +1620,7 @@ func invokeGrokBuild(ctx context.Context, root string, cfg *Config, t *Task, pro
 	}
 	args = append(args, "--prompt-file", promptPath)
 
-	runCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.StepTimeoutMin)*time.Minute)
+	runCtx, cancel := context.WithTimeout(ctx, grokBuildStepTimeout(cfg))
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, cfg.GrokBuildBin, args...)
 	setupProcGroup(cmd)

@@ -5,10 +5,21 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+var managerWakeLaunchdTestMu sync.Mutex
+
+func parallelLaunchd(t *testing.T) {
+	t.Helper()
+	t.Parallel()
+	managerWakeLaunchdTestMu.Lock()
+	t.Cleanup(func() { managerWakeLaunchdTestMu.Unlock() })
+}
 
 func parseManagerWakeProgramArgumentsCLI(t *testing.T, argv []string) (action, root string) {
 	t.Helper()
@@ -60,6 +71,7 @@ func assertManagerWakePlistMatchesCLI(t *testing.T, plist, exe, root string) {
 }
 
 func TestRenderManagerWakePlistWatchPathsAndInterval(t *testing.T) {
+	t.Parallel()
 	root := "/tmp/cardex-wake-root"
 	plist, err := renderManagerWakePlist("/opt/homebrew/bin/cardex", root, 0, "/tmp/wake.log")
 	if err != nil {
@@ -95,6 +107,7 @@ func TestRenderManagerWakePlistWatchPathsAndInterval(t *testing.T) {
 }
 
 func TestRenderManagerWakePlistXMLEscapesText(t *testing.T) {
+	t.Parallel()
 	exe := `/opt/bin/cardex & "tool"`
 	root := `/tmp/cardex & root/<wake>`
 	logOut := `/tmp/wake & <err>.log`
@@ -137,6 +150,7 @@ func TestRenderManagerWakePlistXMLEscapesText(t *testing.T) {
 }
 
 func TestRenderManagerWakePlistControlCharsFailClosed(t *testing.T) {
+	t.Parallel()
 	if _, err := renderManagerWakePlist("/opt/bin/cardex", "/tmp/cardex\x01root", 0, "/tmp/wake.log"); err == nil {
 		t.Fatal("XML control characters must fail closed")
 	} else if err.Error() != "plist_xml_invalid" {
@@ -184,6 +198,7 @@ func TestInstallManagerWakeRestoreErrorSurfaces(t *testing.T) {
 }
 
 func TestTickPlistUnchangedNoWatchPaths(t *testing.T) {
+	t.Parallel()
 	got := renderLaunchdPlist("/opt/homebrew/bin/cardex", "/tmp/cardex-root", 300, "/tmp/cardex.log")
 	if strings.Contains(got, "WatchPaths") {
 		t.Fatalf("tick plist must not gain WatchPaths:\n%s", got)
@@ -197,6 +212,7 @@ func TestTickPlistUnchangedNoWatchPaths(t *testing.T) {
 }
 
 func TestInstallManagerWakeRefusedWhenDisabled(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	if err := installManagerWakeLaunchd(root, nil); err == nil {
 		t.Fatal("disabled config must refuse install")
@@ -274,10 +290,16 @@ esac
 func withFakeLaunchctl(t *testing.T, script string) {
 	t.Helper()
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "launchctl"), []byte(script), 0o755); err != nil {
+	path := filepath.Join(dir, "launchctl.sh")
+	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	orig := launchctlCombinedOutput
+	launchctlCombinedOutput = func(args ...string) ([]byte, error) {
+		cmdArgs := append([]string{path}, args...)
+		return exec.Command("/bin/sh", cmdArgs...).CombinedOutput()
+	}
+	t.Cleanup(func() { launchctlCombinedOutput = orig })
 }
 
 func withFakeLaunchctlCombinedOutput(t *testing.T, output string, exit int) {
@@ -287,11 +309,16 @@ func withFakeLaunchctlCombinedOutput(t *testing.T, output string, exit int) {
 	if err := os.WriteFile(outPath, []byte(output), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	script := fmt.Sprintf("#!/bin/sh\ncat %q >&2\nexit %d\n", outPath, exit)
-	if err := os.WriteFile(filepath.Join(dir, "launchctl"), []byte(script), 0o755); err != nil {
+	path := filepath.Join(dir, "launchctl.sh")
+	script := fmt.Sprintf("cat %q >&2\nexit %d\n", outPath, exit)
+	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	orig := launchctlCombinedOutput
+	launchctlCombinedOutput = func(args ...string) ([]byte, error) {
+		return exec.Command("/bin/sh", path).CombinedOutput()
+	}
+	t.Cleanup(func() { launchctlCombinedOutput = orig })
 }
 
 func assertClosedLaunchctlAdapterError(t *testing.T, err error, want string) {
@@ -345,6 +372,7 @@ func TestDefaultManagerWakeLaunchctlRunNonAbsentStaysFailClosed(t *testing.T) {
 }
 
 func TestObservedLaunchctlAbsentUnitDiagnosticShape(t *testing.T) {
+	t.Parallel()
 	got := fmt.Sprintf("Could not find service %q in domain for user gui: %d", managerWakeLaunchdLabel, 501)
 	if got != observedLaunchctlAbsentUnitDiagnosticUID501 {
 		t.Fatalf("observed print diagnostic shape changed: %q", got)
@@ -362,6 +390,7 @@ func TestObservedLaunchctlAbsentUnitDiagnosticShape(t *testing.T) {
 }
 
 func TestLaunchctlServiceAbsentRejectsBroadSubstrings(t *testing.T) {
+	t.Parallel()
 	for _, s := range []string{
 		"could not find",
 		"no such",

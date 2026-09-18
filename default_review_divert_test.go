@@ -5,6 +5,7 @@ import "testing"
 // applyDefaultReviewDivert：本地实现卡在 config 三件齐备时自动把复审分流到第二台机器，
 // 显式声明/远端卡/配置不全 一律不套——均衡两侧额度的默认路由不得误伤显式意图。
 func TestApplyDefaultReviewDivert(t *testing.T) {
+	t.Parallel()
 	full := &Config{
 		DefaultReviewHost: "qmthost",
 		RemoteMirrorRoot:  "D:/Project/PO-lanes",

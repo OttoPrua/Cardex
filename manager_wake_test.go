@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,15 @@ import (
 	"testing"
 	"time"
 )
+
+var managerWakeQueueTestMu sync.Mutex
+
+func parallelWakeQueue(t *testing.T) {
+	t.Helper()
+	t.Parallel()
+	managerWakeQueueTestMu.Lock()
+	t.Cleanup(func() { managerWakeQueueTestMu.Unlock() })
+}
 
 func fakeCodexQueueBin(t *testing.T, exit int) (bin, logPath string) {
 	t.Helper()
@@ -70,6 +80,7 @@ func countWakeRows(t *testing.T, root string) []managerWakeOutboxRow {
 }
 
 func TestProductionCommittedTransitionWakeSeam(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, _ := fakeCodexQueueBin(t, 0)
 	writeWakeConfig(t, root, bin, "wake-proj", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "mgr", true)
@@ -166,6 +177,7 @@ func TestProductionCommittedTransitionWakeSeam(t *testing.T) {
 }
 
 func TestCrashWindowWakeDedupeDeterministicIdentity(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "crash-window dedupe", "/tmp", []string{"p"}, 5)
@@ -225,7 +237,150 @@ func TestCrashWindowWakeDedupeDeterministicIdentity(t *testing.T) {
 	}
 }
 
+func TestTaskDonePersistsWakeOutboxIdempotentAckable(t *testing.T) {
+	root := testRoot(t)
+	bin, logPath := fakeCodexQueueBin(t, 0)
+	cfg := defaultConfig("claude")
+	cfg.ClaudeBin = fakeClaudeBin(t, mkOKResultJSON("sess-wake"), "", 0)
+	cfg.StepTimeoutMin = 1
+	cfg.MaxAttempts = 3
+	cfg.RetryBackoffMin = 1
+	cfg.CooldownMarginSec = 0
+	cfg.ManagerWake = testWakeCfg(bin, "wake-proj", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "mgr")
+	if err := saveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	task := newTask(root, cfg, typeSequence, "done wake", t.TempDir(), []string{"p"}, 5)
+	task.Project = "wake-proj"
+	if err := saveTask(root, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := runTaskVia(context.Background(), root, cfg, task, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadTask(root, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != statusDone {
+		t.Fatalf("want done, got %+v", got)
+	}
+	rows := countWakeRows(t, root)
+	if len(rows) != 1 || rows[0].EventType != evDone || rows[0].TaskID != got.ID {
+		t.Fatalf("done must persist one outbox row, got %+v", rows)
+	}
+	wantID := rows[0].WakeEventID
+	events, _, err := loadTaskEvents(root, got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doneEv TaskEvent
+	for _, ev := range events {
+		if ev.Type == evDone {
+			doneEv = ev
+		}
+	}
+	if doneEv.Seq == 0 {
+		t.Fatalf("missing done event: %+v", events)
+	}
+	if err := appendManagerWakeFromCommitted(root, got, doneEv); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendManagerWakeFromCommitted(root, got, doneEv); err != nil {
+		t.Fatal(err)
+	}
+	if rows := countWakeRows(t, root); len(rows) != 1 || rows[0].WakeEventID != wantID {
+		t.Fatalf("second emit must not duplicate identity: %+v", rows)
+	}
+
+	if err := os.Remove(managerWakeOutboxPath(root)); err != nil {
+		t.Fatal(err)
+	}
+	orig := tickRunTask
+	t.Cleanup(func() { tickRunTask = orig })
+	tickRunTask = func(ctx context.Context, root string, cfg *Config, tk *Task, via string) error {
+		t.Fatal("lost-wake retry must not drain a new writer")
+		return nil
+	}
+	if err := tick(root, cfg, true, true); err != nil {
+		t.Fatal(err)
+	}
+	recovered := countWakeRows(t, root)
+	if len(recovered) != 1 || recovered[0].WakeEventID != wantID {
+		t.Fatalf("tick must retry lost wake with same identity: %+v", recovered)
+	}
+
+	if err := managerWakeOnce(root, cfg.ManagerWake); err != nil {
+		t.Fatal(err)
+	}
+	if queueThreadCount(logPath) != 1 {
+		t.Fatalf("consumption must queue once, got %d", queueThreadCount(logPath))
+	}
+	if err := managerWakeOnce(root, cfg.ManagerWake); err != nil {
+		t.Fatal(err)
+	}
+	if queueThreadCount(logPath) != 1 {
+		t.Fatalf("acked delivery must be idempotent, got %d", queueThreadCount(logPath))
+	}
+	receipts, class, err := loadManagerWakeReceiptIDs(root, "mgr")
+	if err != nil || class != "" || !receipts[wantID] {
+		t.Fatalf("consumption must be ackable via receipts: class=%q receipts=%v err=%v", class, receipts, err)
+	}
+
+	t.Run("held native contract evidence", func(t *testing.T) {
+		root := testRoot(t)
+		bin, _ := fakeCodexQueueBin(t, 0)
+		via := "opencode"
+		cfg := nativeCompletionConfig(t, via, nativeCompletionPayload(via, "OK"), 0)
+		cfg.ManagerWake = testWakeCfg(bin, "wake-proj", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "mgr")
+		if err := saveConfig(root, cfg); err != nil {
+			t.Fatal(err)
+		}
+		task := newTask(root, cfg, typeSequence, "held wake", t.TempDir(), []string{"Write promised_artifact.go and add tests"}, 1)
+		task.Project = "wake-proj"
+		task.Model, task.PreferRunner, task.RunnerExplicit = "haiku", via, true
+		if err := saveTask(root, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := runTaskVia(context.Background(), root, cfg, task, via); err != nil {
+			t.Fatal(err)
+		}
+		got, err := loadTask(root, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != statusHeld {
+			t.Fatalf("want held, got %+v", got)
+		}
+		rows := countWakeRows(t, root)
+		if len(rows) != 1 || rows[0].EventType != evHeld || rows[0].TaskID != got.ID {
+			t.Fatalf("held must persist one outbox row, got %+v", rows)
+		}
+		wantID := rows[0].WakeEventID
+		events, _, err := loadTaskEvents(root, got.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var heldEv TaskEvent
+		for _, ev := range events {
+			if ev.Type == evHeld {
+				heldEv = ev
+			}
+		}
+		if heldEv.Seq == 0 {
+			t.Fatalf("missing held event: %+v", events)
+		}
+		if err := appendManagerWakeFromCommitted(root, got, heldEv); err != nil {
+			t.Fatal(err)
+		}
+		if rows := countWakeRows(t, root); len(rows) != 1 || rows[0].WakeEventID != wantID {
+			t.Fatalf("second emit must not duplicate identity: %+v", rows)
+		}
+	})
+}
+
 func TestStaleNeedsOwnerSupersededByCommittedTerminal(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "mgr")
@@ -290,6 +445,7 @@ func TestStaleNeedsOwnerSupersededByCommittedTerminal(t *testing.T) {
 }
 
 func TestSemanticCrossValidationAgainstCommittedIdentity(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "cccccccc-cccc-cccc-cccc-cccccccccccc", "mgr")
@@ -322,6 +478,7 @@ func TestSemanticCrossValidationAgainstCommittedIdentity(t *testing.T) {
 }
 
 func TestDurableVisibleOutboxErrors(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "dddddddd-dddd-dddd-dddd-dddddddddddd", "mgr")
@@ -365,6 +522,7 @@ func TestDurableVisibleOutboxErrors(t *testing.T) {
 }
 
 func TestClosedTraversalSafeSubscriptionIDs(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	_ = heldCommittedTask(t, root, "wake-proj", "traversal")
@@ -400,6 +558,7 @@ func TestClosedTraversalSafeSubscriptionIDs(t *testing.T) {
 }
 
 func TestHardWatchdogDeltaZeroNoQueue(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "ffffffff-ffff-ffff-ffff-ffffffffffff", "mgr")
@@ -570,6 +729,7 @@ func TestManagerWakeOnceOverlappingCallsSerialize(t *testing.T) {
 }
 
 func TestAdapterRestartAndCorruption(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	okBin, okLog := fakeCodexQueueBin(t, 0)
 	thread := "22222222-2222-2222-2222-222222222222"
@@ -638,6 +798,7 @@ func TestAdapterRestartAndCorruption(t *testing.T) {
 }
 
 func TestClosedSubscriptionRouting(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "other-proj", "33333333-3333-3333-3333-333333333333", "mgr")
@@ -709,6 +870,7 @@ func TestSecretFreePayloadAndRows(t *testing.T) {
 }
 
 func TestCorruptOutboxFailClosed(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "55555555-5555-5555-5555-555555555555", "mgr")
@@ -731,6 +893,7 @@ func TestCorruptOutboxFailClosed(t *testing.T) {
 }
 
 func TestInvalidThreadFailClosedNoSpawn(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "not-a-uuid", "mgr")
@@ -751,6 +914,7 @@ func TestInvalidThreadFailClosedNoSpawn(t *testing.T) {
 }
 
 func TestManagerWakeDisabledNoSpawn(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	_ = heldCommittedTask(t, root, "wake-proj", "disabled")
@@ -767,6 +931,7 @@ func TestManagerWakeDisabledNoSpawn(t *testing.T) {
 }
 
 func TestUnknownProjectFailClosed(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "no-such-project", "66666666-6666-6666-6666-666666666666", "mgr")
@@ -784,6 +949,7 @@ func TestUnknownProjectFailClosed(t *testing.T) {
 }
 
 func TestUncommittedAndStaleEventNoWake(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "77777777-7777-7777-7777-777777777777", "mgr")
@@ -818,6 +984,7 @@ func TestUncommittedAndStaleEventNoWake(t *testing.T) {
 }
 
 func TestCoalesceOneQueueCall(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "88888888-8888-8888-8888-888888888888", "mgr")
@@ -840,6 +1007,7 @@ func TestCoalesceOneQueueCall(t *testing.T) {
 }
 
 func TestManagerWakeReadbackSecretFree(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, _ := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "mgr")
@@ -1028,6 +1196,7 @@ func TestQueueOkCursorFailRestartNoDuplicateWake(t *testing.T) {
 }
 
 func TestAppendOutboxRowFailureImmediateAndReconcile(t *testing.T) {
+	t.Parallel()
 	blockOutboxWrite := func(t *testing.T, root string) {
 		t.Helper()
 		if err := os.MkdirAll(managerWakeDir(root), 0o755); err != nil {
@@ -1086,6 +1255,7 @@ func TestAppendOutboxRowFailureImmediateAndReconcile(t *testing.T) {
 }
 
 func TestForgedOutboxProjectTypeStatusFailClosed(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		mutate func(*managerWakeOutboxRow)
@@ -1245,6 +1415,7 @@ func assertUncertainNoRetry(t *testing.T, root string, mw *ManagerWakeConfig, lo
 }
 
 func TestQueueNonzeroRetainsInflightNoRetry(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 1)
 	mw := testWakeCfg(bin, "wake-proj", "13131313-1313-1313-1313-131313131313", "mgr")
@@ -1263,6 +1434,7 @@ func TestQueueNonzeroRetainsInflightNoRetry(t *testing.T) {
 }
 
 func TestQueueSignalRetainsInflightNoRetry(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueSignalBin(t)
 	mw := testWakeCfg(bin, "wake-proj", "14141414-1414-1414-1414-141414141414", "mgr")
@@ -1443,6 +1615,7 @@ func TestQueueTimeoutRetainsInflightNoRetry(t *testing.T) {
 }
 
 func TestPreSpawnInflightCrashDeltaZeroFailClosed(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "16161616-1616-1616-1616-161616161616"
@@ -1471,6 +1644,7 @@ func TestPreSpawnInflightCrashDeltaZeroFailClosed(t *testing.T) {
 }
 
 func TestPreSpawnInflightCrashStaleScanFailClosed(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "17171717-1717-1717-1717-171717171717"
@@ -1498,6 +1672,7 @@ func TestPreSpawnInflightCrashStaleScanFailClosed(t *testing.T) {
 }
 
 func TestInflightRecordsFailClosedNoRetry(t *testing.T) {
+	t.Parallel()
 	thread := "18181818-1818-1818-1818-181818181818"
 	otherThread := "19191919-1919-1919-1919-191919191919"
 	cases := []struct {
@@ -1622,6 +1797,7 @@ func TestInflightRecordsFailClosedNoRetry(t *testing.T) {
 }
 
 func TestInflightDirectoryDurability(t *testing.T) {
+	t.Parallel()
 	thread := "1a1a1a1a-1a1a-1a1a-1a1a-1a1a1a1a1a1a"
 	t.Run("create_syncs_inflight_and_manager_wake_parent", func(t *testing.T) {
 		root := testRoot(t)

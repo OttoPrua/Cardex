@@ -59,12 +59,12 @@ type ManagerWakeConfig struct {
 }
 
 var (
-	managerWakeThreadRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	managerWakeThreadRE        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 	managerWakeHermesSessionRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$`)
-	managerWakeSubIDRE  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-	managerWakeReasonRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
-	managerWakeHermesAckHook func(root string, sub ManagerWakeSubscription, ids []string) error
-	managerWakeQueue    = defaultManagerWakeQueue
+	managerWakeSubIDRE         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	managerWakeReasonRE        = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	managerWakeHermesAckHook   func(root string, sub ManagerWakeSubscription, ids []string) error
+	managerWakeQueue           = defaultManagerWakeQueue
 	// managerWakeQueueTimeout is the production enqueue deadline. Tests may
 	// shrink it; it must stay well below managerWakeWatchdogSec.
 	managerWakeQueueTimeout = time.Duration(managerWakeQueueTimeoutSec) * time.Second
@@ -427,6 +427,16 @@ func backfillWakeForTask(root string, t *Task) error {
 
 func appendManagerWakeFromCommitted(root string, t *Task, ev TaskEvent) error {
 	return projectCommittedWake(root, t, ev)
+}
+
+// retryLostManagerWakes rebuilds missing outbox rows from committed done/held
+// events so a lost wake can be retried by the existing tick, not a new daemon.
+// Queue/delivery stays gated on manager_wake.enabled (default disabled).
+func retryLostManagerWakes(root string) {
+	if !managerWakeProjectionEnabled(root) {
+		return
+	}
+	_ = reconcileManagerWakeOutbox(root)
 }
 
 // projectWakeAfterCommitted appends a wake row only after the exact committed

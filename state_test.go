@@ -28,6 +28,7 @@ import (
 // 挂起跨 TTL 唤醒时 A 的 defer release 若无 PID 核, 会删掉强夺者 B 刚 Link 挂的新锁, 让第三写者
 // C 进临界区双跑。核 PID 匹配是最小契约: 内容不可读/不可解析/PID 不匹配都不删。
 func TestReleaseLockRefusesForeignPID(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	path := lockPath(root)
 	// 预置"他人"锁: PID=1 是 init 进程, 存活但绝非本 test 进程. 组合"存在+PID 非自身"触发新
@@ -99,6 +100,7 @@ func TestHelperProcessAcquireLock(t *testing.T) {
 // 竞争者, 无法真实再现"多方同时进强夺"的原子性缺陷. helper-process 模式复用 events_test.go 里
 // 已过审的跨进程测试模板(TestRecordEventCrossProcessNoSeqCollision).
 func TestAcquireLockStealsAtomicallyNoDoubleOccupancy(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 行为未验证, 平台纳入与否待裁(01-BACKLOG §3 #61);当前 CI 只跑 POSIX")
 	}
@@ -197,6 +199,7 @@ func spawnLiveForeignPID(t *testing.T) (int, func()) {
 // 反例注入:把判据里 `li.PID == os.Getpid()` 改成 `li.PID != os.Getpid()` (取反),
 // self 场景会误判 true, 本测试的 case "self PID" 立即报红。
 func TestIsForeignLiveLockClassifies(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	tmpPath := func(name string) string { return lockPath(root) + "." + name }
 
@@ -282,6 +285,7 @@ func TestIsForeignLiveLockClassifies(t *testing.T) {
 //   - 断言 acquireLock 返回 false: 会看到返回 true (双持锁场景);
 //   - 断言锁归属仍是 foreignPID: 会看到 PID 被夺成 self, 反例即红。
 func TestAcquireLockRestoresForeignLiveLockOnStolenRename(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	path := lockPath(root)
 
@@ -329,6 +333,7 @@ func TestAcquireLockRestoresForeignLiveLockOnStolenRename(t *testing.T) {
 // 更硬的 TOCTOU 反例通过 isForeignLiveLock 单元测试 (TestIsForeignLiveLockClassifies) 与 acquire
 // 侧的 TestAcquireLockRestoresForeignLiveLockOnStolenRename 已直接钉住; 本测试守 release 基线契约。
 func TestReleaseLockRestoresLockStolenBetweenReadAndDelete(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	path := lockPath(root)
 

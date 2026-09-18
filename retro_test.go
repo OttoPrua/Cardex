@@ -29,6 +29,7 @@ func retroTestConfig(n int) *Config {
 // TestRetroDefaultOff 复盘默认必须是关的：自动入队的卡会烧额度，
 // 升级不该在用户没表态时就开始自己派卡。
 func TestRetroDefaultOff(t *testing.T) {
+	t.Parallel()
 	if n := defaultConfig("claude").RetroEveryNDone; n != 0 {
 		t.Errorf("retro_every_n_done 默认应为 0(关闭), got %d", n)
 	}
@@ -72,6 +73,7 @@ func retroTasks(t *testing.T, root string) []*Task {
 // 或触发后忘记推进 TriggeredAt，都会在这里报红：触发点从第 3 张漂到第 2/4 张，
 // 或第二轮触发点从第 6 张漂走。
 func TestRetroCounterWatermark(t *testing.T) {
+	t.Parallel()
 	root := retroTestRoot(t)
 	cfg := retroTestConfig(3)
 
@@ -136,6 +138,7 @@ func TestRetroCounterWatermark(t *testing.T) {
 // 模拟"计数器已记下已触发的水位"（等价于崩溃后重启、复盘卡已入队或已丢失），
 // 重复调用不得重复入队。
 func TestRetroIdempotentAfterCrash(t *testing.T) {
+	t.Parallel()
 	root := retroTestRoot(t)
 	cfg := retroTestConfig(10)
 
@@ -175,6 +178,7 @@ func TestRetroIdempotentAfterCrash(t *testing.T) {
 // TestRetroCounterClamp 手工编辑/回滚造成"水位 > 总数"时钳回，
 // 否则差值恒为负、复盘永不再触发（静默失效）。
 func TestRetroCounterClamp(t *testing.T) {
+	t.Parallel()
 	root := retroTestRoot(t)
 	cfg := retroTestConfig(2)
 	if err := saveRetroCounter(root, &retroCounter{DoneTotal: 1, TriggeredAt: 99}); err != nil {
@@ -195,6 +199,7 @@ func TestRetroCounterClamp(t *testing.T) {
 
 // TestRetroDisabledStillCounts 关闭(0)时不入队但继续记账——开关打开那一刻就有历史基数可用。
 func TestRetroDisabledStillCounts(t *testing.T) {
+	t.Parallel()
 	root := retroTestRoot(t)
 	cfg := retroTestConfig(0)
 	for i := 0; i < 5; i++ {
@@ -217,6 +222,7 @@ func TestRetroDisabledStillCounts(t *testing.T) {
 // TestRetroCardNotSelfCounted 复盘卡自身完成时不计数：否则 N 的含义从"N 张业务卡"
 // 漂成"N-1 张业务卡 + 自己"，且 N=1 时会自我循环。
 func TestRetroCardNotSelfCounted(t *testing.T) {
+	t.Parallel()
 	root := retroTestRoot(t)
 	cfg := retroTestConfig(2)
 
@@ -249,6 +255,7 @@ func TestRetroCardNotSelfCounted(t *testing.T) {
 // TestRetroCardShape 钉死自动入队的复盘卡形态：类型/模型/落盘键/只读纪律。
 // 【突变致死】把 -model 换掉、把 EmitProgress 去掉、把 ProgressKey 前缀改了，都会红。
 func TestRetroCardShape(t *testing.T) {
+	t.Parallel()
 	root := retroTestRoot(t)
 	cfg := retroTestConfig(1)
 
@@ -308,6 +315,7 @@ func TestRetroCardShape(t *testing.T) {
 // TestRetroTemplateEmbedded 内置模板必须随二进制发布（新装机没有 templates/retro.md 也能触发复盘），
 // 且必须带齐本代码注入的占位符与 proposal-only 纪律。
 func TestRetroTemplateEmbedded(t *testing.T) {
+	t.Parallel()
 	data, err := embeddedTemplates.ReadFile("templates/" + retroTemplate + ".md")
 	if err != nil {
 		t.Fatalf("内置复盘模板缺失: %v", err)

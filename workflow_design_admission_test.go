@@ -74,6 +74,7 @@ func TestDesignAdmissionCLIHasNoModelBrandGate(t *testing.T) {
 }
 
 func TestDesignAdmissionStillRequiresEvidence(t *testing.T) {
+	t.Parallel()
 	empty := filepath.Join(t.TempDir(), "empty-result.md")
 	if err := os.WriteFile(empty, []byte("  \n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -119,6 +120,7 @@ func TestDesignLegacyMetadataWarnsWithoutInventingIdentity(t *testing.T) {
 }
 
 func TestDesignProducerDriftBlockedBeforeStart(t *testing.T) {
+	t.Parallel()
 	for _, field := range []string{"actual_model", "actual_runner", "identity", "session_id"} {
 		t.Run(field, func(t *testing.T) {
 			root, dir := workflowTestRoot(t)
@@ -143,6 +145,7 @@ func TestDesignProducerDriftBlockedBeforeStart(t *testing.T) {
 }
 
 func TestDesignResultRejectsWriterContextEvenWithDifferentModel(t *testing.T) {
+	t.Parallel()
 	root, cfg, wf, writer, receipt := d4SuccessorFixture(t)
 	writer.SessionID = "writer-context"
 	if err := saveTask(root, writer); err != nil {
@@ -158,6 +161,7 @@ func TestDesignResultRejectsWriterContextEvenWithDifferentModel(t *testing.T) {
 }
 
 func TestDesignWarningsCannotPromoteUnknownExecution(t *testing.T) {
+	t.Parallel()
 	root, cfg, wf, writer, receipt := d4SuccessorFixture(t)
 	writer.Goal.LastNativeStatus = ""
 	if err := saveTask(root, writer); err != nil {

@@ -87,9 +87,26 @@ func waitPTYChild(t *testing.T, cmd *exec.Cmd, master *os.File, wantOK bool) {
 	}
 }
 
+func skipIfGoalPTYUnavailable(t *testing.T) {
+	t.Helper()
+	master, slave, err := openGoalPTY()
+	if err != nil {
+		if ptyStartDenied(err) {
+			t.Skipf("pty unavailable: %v", err)
+		}
+		t.Fatalf("openGoalPTY: %v", err)
+	}
+	master.Close()
+	slave.Close()
+}
+
 func TestManualGoalProcGroupTakesPTYForeground(t *testing.T) {
+	t.Parallel()
 	master, slave, err := openTestPTY()
 	if err != nil {
+		if ptyStartDenied(err) {
+			t.Skipf("pty unavailable: %v", err)
+		}
 		t.Fatalf("pty: %v", err)
 	}
 	defer master.Close()
@@ -129,8 +146,12 @@ func TestManualGoalProcGroupTakesPTYForeground(t *testing.T) {
 }
 
 func TestManualGoalProcGroupWithoutForegroundStopsOnTTIN(t *testing.T) {
+	t.Parallel()
 	master, slave, err := openTestPTY()
 	if err != nil {
+		if ptyStartDenied(err) {
+			t.Skipf("pty unavailable: %v", err)
+		}
 		t.Fatalf("pty: %v", err)
 	}
 	defer master.Close()

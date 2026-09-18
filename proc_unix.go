@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 )
 
 var errWorkspaceExecutionLeaseBusy = errors.New("workspace execution lease is already held")
@@ -130,7 +129,7 @@ func prepareTaskProcessLease(cmd *exec.Cmd, taskID, workspaceDir string) (*taskP
 // WaitDelay 兜底：组内进程若 setsid 逃逸并吊住 stdout 管道，击杀后 10s 强制收尾。
 func setupProcGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.WaitDelay = 10 * time.Second
+	cmd.WaitDelay = procWaitDelay
 	cmd.Cancel = func() error {
 		if cmd.Process == nil {
 			return os.ErrProcessDone

@@ -109,6 +109,7 @@ while True:
 }
 
 func TestHostedGoalInjectPauseStopAndSync(t *testing.T) {
+	skipIfGoalPTYUnavailable(t)
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	home := t.TempDir()
@@ -185,6 +186,7 @@ func TestHostedGoalInjectPauseStopAndSync(t *testing.T) {
 }
 
 func TestInjectHostedControlPrefixesEscBeforePause(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pty-capture")
 	f, err := os.Create(path)
@@ -208,8 +210,12 @@ func TestInjectHostedControlPrefixesEscBeforePause(t *testing.T) {
 }
 
 func TestOpenGoalPTYMatchesShippedHelper(t *testing.T) {
+	t.Parallel()
 	master, slave, err := openGoalPTY()
 	if err != nil {
+		if ptyStartDenied(err) {
+			t.Skipf("pty unavailable: %v", err)
+		}
 		t.Fatalf("openGoalPTY: %v", err)
 	}
 	defer master.Close()
@@ -221,6 +227,7 @@ func TestOpenGoalPTYMatchesShippedHelper(t *testing.T) {
 
 // Exercise the production hosted launcher with real PTY backpressure, no provider.
 func TestHostedGoalDrainsOutputAndDeadline(t *testing.T) {
+	skipIfGoalPTYUnavailable(t)
 	for _, mode := range []string{"exit", "deadline", "broken-output"} {
 		waitForDeadline := mode != "exit"
 		t.Run(mode, func(t *testing.T) {
@@ -326,6 +333,7 @@ else:
 }
 
 func TestUnknownSuccessorRequiresRecoveredCustodyAndRetainsHistory(t *testing.T) {
+	t.Parallel()
 	for _, blocked := range []string{"missing-attempt", "held-lease", "held-lease-failed", "round-limit", "stale-receipt", ""} {
 		t.Run(blocked, func(t *testing.T) {
 			root, cfg, wf, writer, receipt := d4SuccessorFixture(t)

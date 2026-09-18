@@ -46,6 +46,7 @@ func kimiCLITestConfig(t *testing.T, bin string) *Config {
 }
 
 func TestParseKimiCLIJSONL(t *testing.T) {
+	t.Parallel()
 	raw := `{"role":"meta","type":"system.version","version":"0.35.0"}` + "\n" +
 		`{"role":"assistant","content":"OK"}` + "\n" +
 		`{"role":"meta","type":"session.resume_hint","session_id":"session-1"}`
@@ -55,7 +56,36 @@ func TestParseKimiCLIJSONL(t *testing.T) {
 	}
 }
 
+func TestParseKimiCLIJSONLUnknownVersionRecordsResult(t *testing.T) {
+	t.Parallel()
+	for _, version := range []string{"0.42.0", "9.9.9"} {
+		raw := `{"role":"meta","type":"system.version","version":"` + version + `"}` + "\n" +
+			`{"role":"assistant","content":"OK"}`
+		res := parseKimiCLIJSONL(raw)
+		if res.Result != "OK" {
+			t.Fatalf("%s assistant text must land in Result: %+v", version, res)
+		}
+		if res.NativeVersion != version {
+			t.Fatalf("%s must be recorded, got %q", version, res.NativeVersion)
+		}
+		if res.Subtype == kimiCLISubtypeInvalidPostamble {
+			t.Fatalf("%s must not be invalid_completion_postamble: %+v", version, res)
+		}
+		if !runnerNativeTerminalValid(kimiCLIRunnerName, res, nil) {
+			t.Fatalf("%s complete stream must be a valid terminal: %+v", version, res)
+		}
+	}
+	missing := parseKimiCLIJSONL(`{"role":"assistant","content":"OK"}`)
+	if missing.Result != "OK" || missing.Subtype != kimiCLISubtypeProtocolIncomplete {
+		t.Fatalf("missing version + assistant must be protocol_incomplete with Result: %+v", missing)
+	}
+	if missing.Subtype == kimiCLISubtypeInvalidPostamble {
+		t.Fatal("versionCount!=1 must not hard-invalidate nonempty Result as invalid_completion_postamble")
+	}
+}
+
 func TestParseKimiCLIJSONLUnknownMetadataFailsProofClosed(t *testing.T) {
+	t.Parallel()
 	res := parseKimiCLIJSONL(`{"role":"meta","type":"model.started"}`)
 	if res.ObservationComplete {
 		t.Fatalf("unknown metadata must not be assumed presemantic: %+v", res)
@@ -63,6 +93,7 @@ func TestParseKimiCLIJSONLUnknownMetadataFailsProofClosed(t *testing.T) {
 }
 
 func TestKimiCLIOpusSecondLegAvailabilityAndBackendExclusion(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := kimiCLITestConfig(t, "/usr/bin/true")
 	for _, hour := range []int{0, 3, 12, 23} {
@@ -117,6 +148,7 @@ func fakeKimiCLI(t *testing.T, payload string, exitCode int) (bin, argsDump, env
 }
 
 func TestInvokeKimiCLIUsesK3MaxAndVersionCompatibleFlags(t *testing.T) {
+	t.Parallel()
 	payload := `{"role":"meta","type":"system.version","version":"0.35.0"}` + "\n" +
 		`{"role":"assistant","content":"OK"}` + "\n" +
 		`{"role":"meta","type":"session.resume_hint","session_id":"session-ok"}`
@@ -156,6 +188,7 @@ func TestInvokeKimiCLIUsesK3MaxAndVersionCompatibleFlags(t *testing.T) {
 }
 
 func TestInvokeKimiCLIReviewUsesIsolatedConfiguredPlanMode(t *testing.T) {
+	t.Parallel()
 	payload := `{"role":"assistant","content":"REVIEW_OK"}`
 	bin, argsDump, envDump := fakeKimiCLI(t, payload, 0)
 	cfg := kimiCLITestConfig(t, bin)
@@ -187,6 +220,7 @@ func TestInvokeKimiCLIReviewUsesIsolatedConfiguredPlanMode(t *testing.T) {
 }
 
 func TestInvokeKimiCLI0361DoesNotReplayMetadataOnlyColdStart(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "kimi")
 	countPath := filepath.Join(dir, "count")
@@ -217,6 +251,7 @@ func TestInvokeKimiCLI0361DoesNotReplayMetadataOnlyColdStart(t *testing.T) {
 }
 
 func TestValidateKimiCLIOpenFileLimit(t *testing.T) {
+	t.Parallel()
 	if err := validateKimiCLIOpenFileLimit(256); err == nil ||
 		!strings.Contains(err.Error(), "EMFILE") || !strings.Contains(err.Error(), "65536") {
 		t.Fatalf("low launchd ceiling must fail with actionable EMFILE diagnosis: %v", err)
@@ -227,6 +262,7 @@ func TestValidateKimiCLIOpenFileLimit(t *testing.T) {
 }
 
 func TestKimiCLIEMFILEStderrOverridesVersionMetadata(t *testing.T) {
+	t.Parallel()
 	stdout := `{"role":"meta","type":"system.version","version":"0.36.1"}`
 	stderr := "[unexpected] Error: EMFILE: too many open files, watch\n"
 	runErr := errors.New("exit status 1")
@@ -242,6 +278,7 @@ func TestKimiCLIEMFILEStderrOverridesVersionMetadata(t *testing.T) {
 }
 
 func TestInvokeKimiCLI0361PreservesEMFILEStderr(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "kimi")
 	script := "#!/bin/sh\n" +
@@ -265,6 +302,7 @@ func TestInvokeKimiCLI0361PreservesEMFILEStderr(t *testing.T) {
 }
 
 func TestRunTaskKimiCLILimitHoldsWithoutGlobalSolFallback(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	payload := `{"role":"meta","type":"error","content":"HTTP 429: usage limit reached"}`
 	bin, _, _ := fakeKimiCLI(t, payload, 1)
@@ -315,6 +353,7 @@ func TestRunTaskKimiCLILimitHoldsWithoutGlobalSolFallback(t *testing.T) {
 }
 
 func TestKimiCLIBoardShowsActualModelEffortAndRoute(t *testing.T) {
+	t.Parallel()
 	cfg := kimiCLITestConfig(t, "/usr/bin/true")
 	now := time.Now()
 	queued := &Task{ID: "queued", Status: statusQueued, PreferRunner: "codex", Model: "opus", Effort: "xhigh", Type: typeSequence, Prompts: []string{"前端实现"}}
@@ -334,6 +373,7 @@ func TestKimiCLIBoardShowsActualModelEffortAndRoute(t *testing.T) {
 }
 
 func TestValidateKimiCLIConfig(t *testing.T) {
+	t.Parallel()
 	cfg := kimiCLITestConfig(t, "/usr/bin/true")
 	if err := validateKimiCLI(cfg); err != nil {
 		t.Fatalf("合法 Kimi CLI 策略被拒: %v", err)
@@ -350,6 +390,7 @@ func TestValidateKimiCLIConfig(t *testing.T) {
 }
 
 func TestKimiCLIRealCanary(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("CARDEX_KIMI_REAL_CANARY") != "1" {
 		t.Skip("set CARDEX_KIMI_REAL_CANARY=1 for the authenticated integration canary")
 	}
@@ -380,6 +421,7 @@ func TestKimiCLIRealCanary(t *testing.T) {
 }
 
 func TestKimiCLIRealReviewCanary(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("CARDEX_KIMI_REAL_REVIEW_CANARY") != "1" {
 		t.Skip("set CARDEX_KIMI_REAL_REVIEW_CANARY=1 for the authenticated review canary")
 	}

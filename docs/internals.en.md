@@ -18,7 +18,7 @@ Limits are global: whenever any task hits a limit, a global cooldown is written 
 
 - Hitting a limit mid-step: the task is marked `limit_paused` and records `mid_step`. On resume it doesn't replay the original prompt — it sends a resume prompt (config.json's `resume_prompt`) into the **same session** so Claude continues from where it stopped, avoiding duplicate work.
 - Every step is written to disk the moment it succeeds (the task file is written atomically), so no progress is lost even if the process is killed.
-- A single-instance lock (`.lock`) keeps launchd's repeated triggers from running tasks concurrently; the lock is cleared automatically if the holding process dies.
+- A single-instance lock (`.lock`) keeps launchd's repeated triggers from running tasks concurrently; the lock is cleared automatically if the holding process dies. `cardex run -root ROOT ID` must exit nonzero when the lock is held and that ID was not dispatched (the queued card stays queued; this is not silent success). A no-ID tick that loses the lock still skips with exit 0; once it wins the lock it still drains every ready card — starting one card requires the ID.
 - Other errors (network, timeout, etc.) back off and retry per `retry_backoff_min`; past `max_attempts_per_step` the task is marked failed, and `cardex retry <id>` re-enqueues it with session and progress intact.
 
 ## Failure classification triage (CG-3)

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The bounded host probe proved these seven top-level Grok CLI 1.0.5 shapes. It timed out before
@@ -38,6 +39,7 @@ func grok105EndWithAdditiveMetadata(end string) string {
 }
 
 func TestGrokBuild105PublicUsageAndEndCompleteWithoutIdentifierExposure(t *testing.T) {
+	t.Parallel()
 	raw := `{"type":"text","data":"PUBLIC_OK"}` + "\n" + grok105PublicUsage + "\n" + grok105PublicEnd
 	res := parseGrokBuildJSONL(raw)
 	if res == nil || res.IsError || !res.ObservationComplete {
@@ -67,6 +69,7 @@ func TestGrokBuild105PublicUsageAndEndCompleteWithoutIdentifierExposure(t *testi
 }
 
 func TestGrokBuild105PublicEndTicksAreShapeOnly(t *testing.T) {
+	t.Parallel()
 	rawPrefix := `{"type":"text","data":"PUBLIC_OK"}` + "\n" + grok105PublicUsage + "\n"
 	want := parseGrokBuildJSONL(rawPrefix + grok105PublicEnd)
 	got := parseGrokBuildJSONL(rawPrefix + grok105PublicEndWithTicks)
@@ -89,6 +92,7 @@ func TestGrokBuild105PublicEndTicksAreShapeOnly(t *testing.T) {
 }
 
 func TestGrokBuild105PublicEndTicksRejectLegacyAndWrongTypes(t *testing.T) {
+	t.Parallel()
 	legacyWithTicks := strings.TrimSuffix(grokLegacyCleanEnd, "}") + `,"total_cost_usd_ticks":731.125}`
 	if res := parseGrokBuildJSONL(legacyWithTicks); res == nil || !res.IsError || res.ObservationComplete {
 		t.Fatalf("legacy end containing total_cost_usd_ticks must fail closed: %+v", res)
@@ -114,6 +118,7 @@ func TestGrokBuild105PublicEndTicksRejectLegacyAndWrongTypes(t *testing.T) {
 }
 
 func TestGrokBuild105PublicEndTicksRejectExtraOrMissingPublicCoordinate(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		end  string
@@ -141,6 +146,7 @@ func TestGrokBuild105PublicEndTicksRejectExtraOrMissingPublicCoordinate(t *testi
 }
 
 func TestGrokBuild105PublicEndTicksMustBeSingleAndFinal(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		tail string
@@ -162,6 +168,7 @@ func TestGrokBuild105PublicEndTicksMustBeSingleAndFinal(t *testing.T) {
 }
 
 func TestGrokBuild105PublicEndRetainsLegacyOptionalSpendFields(t *testing.T) {
+	t.Parallel()
 	publicEndWithSpend := strings.TrimSuffix(grok105PublicEnd, "}") + `,"total_cost_usd":0.25,"duration_ms":610}`
 	res := parseGrokBuildJSONL(`{"type":"text","data":"OK"}` + "\n" + publicEndWithSpend)
 	if res == nil || res.IsError || !res.ObservationComplete || res.SessionID != "" {
@@ -173,6 +180,7 @@ func TestGrokBuild105PublicEndRetainsLegacyOptionalSpendFields(t *testing.T) {
 }
 
 func TestGrokBuild105PublicUsageEnvelopeRejectsWrongOrMissingFields(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		usage string
@@ -195,6 +203,7 @@ func TestGrokBuild105PublicUsageEnvelopeRejectsWrongOrMissingFields(t *testing.T
 }
 
 func TestGrokBuild105PublicEndEnvelopeRejectsWrongExtraOrMissingCoreFields(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		end  string
@@ -221,6 +230,7 @@ func TestGrokBuild105PublicEndEnvelopeRejectsWrongExtraOrMissingCoreFields(t *te
 }
 
 func TestGrokBuild105PublicEndMustBeSingleFinalEndTurn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		raw  string
@@ -243,6 +253,7 @@ func TestGrokBuild105PublicEndMustBeSingleFinalEndTurn(t *testing.T) {
 }
 
 func TestGrokBuild105PublicFieldsDoNotLoosenLegacyEnvelopes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		raw  string
@@ -261,6 +272,7 @@ func TestGrokBuild105PublicFieldsDoNotLoosenLegacyEnvelopes(t *testing.T) {
 }
 
 func TestGrokBuild105ObservedShapesWithLegacyTerminalComplete(t *testing.T) {
+	t.Parallel()
 	res := parseGrokBuildJSONL(grok105ObservedPrefix + "\n" + grokLegacyCleanEnd)
 	if res == nil || res.IsError || !res.ObservationComplete {
 		t.Fatalf("proved 1.0.5 shapes plus the legacy clean terminal must parse: %+v", res)
@@ -278,6 +290,7 @@ func TestGrokBuild105ObservedShapesWithLegacyTerminalComplete(t *testing.T) {
 }
 
 func TestGrokBuild105ObservedPrefixDoesNotInventTerminal(t *testing.T) {
+	t.Parallel()
 	res := parseGrokBuildJSONL(grok105ObservedPrefix)
 	if res == nil || !res.IsError || res.Subtype != "grok_build_stream_incomplete" ||
 		!res.ObservationComplete || res.TerminalEvents != 0 {
@@ -289,6 +302,7 @@ func TestGrokBuild105ObservedPrefixDoesNotInventTerminal(t *testing.T) {
 }
 
 func TestGrokBuild105StandaloneUsageRequiresProvedEnvelope(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		usage string
@@ -308,6 +322,7 @@ func TestGrokBuild105StandaloneUsageRequiresProvedEnvelope(t *testing.T) {
 }
 
 func TestGrokBuild105UnknownToolLookalikeFailsClosed(t *testing.T) {
+	t.Parallel()
 	res := parseGrokBuildJSONL(`{"type":"tool_call_future","content":["opaque"]}` + "\n" + grokLegacyMinimalEnd)
 	if res == nil || res.ObservationComplete || res.ToolEvents == 0 {
 		t.Fatalf("unknown tool-like content must be counted conservatively and fail closed: %+v", res)
@@ -315,6 +330,7 @@ func TestGrokBuild105UnknownToolLookalikeFailsClosed(t *testing.T) {
 }
 
 func TestGrokBuild105ObservedToolSchemasRejectLookalikes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		event string
@@ -335,6 +351,7 @@ func TestGrokBuild105ObservedToolSchemasRejectLookalikes(t *testing.T) {
 }
 
 func TestGrokBuild105ContentBearingMetadataFailsClosed(t *testing.T) {
+	t.Parallel()
 	res := parseGrokBuildJSONL(`{"commands":[],"data":"hidden work","tools":[],"type":"available_commands"}` + "\n" + grokLegacyMinimalEnd)
 	if res == nil || res.ObservationComplete || res.SemanticEvents == 0 || res.ModelEvents == 0 {
 		t.Fatalf("unparsed content on metadata must block both observation and zero-work proof: %+v", res)
@@ -342,6 +359,7 @@ func TestGrokBuild105ContentBearingMetadataFailsClosed(t *testing.T) {
 }
 
 func TestGrokBuild105TextSchemaLookalikeFailsClosedButCountsWork(t *testing.T) {
+	t.Parallel()
 	res := parseGrokBuildJSONL(`{"content":"hidden","data":"visible","type":"text"}` + "\n" + grokLegacyMinimalEnd)
 	if res == nil || res.ObservationComplete || res.SemanticEvents == 0 || res.ModelEvents == 0 {
 		t.Fatalf("content-bearing text lookalike must remain counted but untrusted: %+v", res)
@@ -349,6 +367,7 @@ func TestGrokBuild105TextSchemaLookalikeFailsClosedButCountsWork(t *testing.T) {
 }
 
 func TestGrokBuildTerminalMustBeSingleFinalEndTurn(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		raw  string
@@ -369,6 +388,7 @@ func TestGrokBuildTerminalMustBeSingleFinalEndTurn(t *testing.T) {
 }
 
 func TestGrokBuildMalformedAndUnknownEventsStayIncomplete(t *testing.T) {
+	t.Parallel()
 	for _, raw := range []string{
 		`{"type":"text","data":"truncated"`,
 		`{"type":"future_event","data":"opaque"}` + "\n" + grokLegacyCleanEnd,
@@ -381,6 +401,7 @@ func TestGrokBuildMalformedAndUnknownEventsStayIncomplete(t *testing.T) {
 }
 
 func TestGrokBuildLegacyEmbeddedUsageStaysAuthoritative(t *testing.T) {
+	t.Parallel()
 	raw := `{"type":"text","data":"A"}` + "\n" +
 		`{"signature":"s","type":"usage","usage":{"input_tokens":1,"output_tokens":1}}` + "\n" +
 		`{"type":"end","stopReason":"end_turn","sessionId":"s","usage":{"input_tokens":9,"output_tokens":7}}`
@@ -394,10 +415,11 @@ func TestGrokBuildLegacyEmbeddedUsageStaysAuthoritative(t *testing.T) {
 }
 
 func TestInvokeGrokBuildAcceptsProved105ShapesAndLegacyTerminal(t *testing.T) {
+	t.Parallel()
 	payload := grok105ObservedPrefix + "\n" + grokLegacyCleanEnd
 	bin, _, _ := fakeGrokBuild(t, payload, "", 0)
 	cfg := grokBuildTestConfig(t, bin)
-	task := &Task{ID: "grok-105-invoke", Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
+	task := &Task{ID: uniqueTaskID("grok-105-invoke"), Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
 	root := admitDirectInvoke(t, "", task)
 	res, _, err := invokeGrokBuild(context.Background(), root, cfg, task, "harmless prompt")
 	if err != nil || res == nil || res.IsError || !res.ObservationComplete {
@@ -422,6 +444,7 @@ func grok105AssertNoOpaqueExposure(t *testing.T, res *claudeResult, values ...st
 }
 
 func TestGrokBuild105AdditiveEndMetadataIsHeldWithoutRetention(t *testing.T) {
+	t.Parallel()
 	rawPrefix := `{"type":"text","data":"PUBLIC_OK"}` + "\n" + grok105PublicUsage + "\n"
 	for _, tc := range []struct {
 		name string
@@ -444,6 +467,7 @@ func TestGrokBuild105AdditiveEndMetadataIsHeldWithoutRetention(t *testing.T) {
 }
 
 func TestGrokBuild105UsageAndMetadataTailsAfterEndAreAcceptedWithoutRetention(t *testing.T) {
+	t.Parallel()
 	publicPrefix := `{"type":"text","data":"PUBLIC_OK"}` + "\n"
 	legacyPrefix := `{"type":"text","data":"OK"}` + "\n"
 	legacyUsage := `{"signature":"signature-legacy-private","type":"usage","usage":{"input_tokens":1,"output_tokens":1}}`
@@ -496,6 +520,7 @@ func TestGrokBuild105UsageAndMetadataTailsAfterEndAreAcceptedWithoutRetention(t 
 }
 
 func TestGrokBuild105RejectsForbiddenTailsAfterEnd(t *testing.T) {
+	t.Parallel()
 	prefix := `{"type":"text","data":"OK"}` + "\n" + grok105PublicEnd + "\n"
 	for _, tc := range []struct {
 		name string
@@ -531,6 +556,7 @@ func TestGrokBuild105RejectsForbiddenTailsAfterEnd(t *testing.T) {
 }
 
 func TestGrokBuild105EndRejectsContentSemanticToolOrErrorShapedFields(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		end  string
@@ -581,7 +607,7 @@ func grok105InvokeWithIO(t *testing.T, stdout, stderr string, exitCode int) (*cl
 	t.Helper()
 	bin, _, _ := fakeGrokBuild(t, stdout, stderr, exitCode)
 	cfg := grokBuildTestConfig(t, bin)
-	task := &Task{ID: "grok-105-io", Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
+	task := &Task{ID: uniqueTaskID("grok-105-io"), Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
 	root := admitDirectInvoke(t, "", task)
 	res, _, err := invokeGrokBuild(context.Background(), root, cfg, task, "harmless prompt")
 	return res, err
@@ -595,6 +621,7 @@ func grok105AssertFailedClosed(t *testing.T, res *claudeResult, err error) {
 }
 
 func TestGrokBuild105CompleteStdoutOmitsAncillaryWarningStderr(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		stdout string
@@ -632,6 +659,7 @@ func TestGrokBuild105CompleteStdoutOmitsAncillaryWarningStderr(t *testing.T) {
 }
 
 func TestGrokBuild105CompleteStdoutStructuredStderrFailsClosed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		stderr string
@@ -662,6 +690,7 @@ func TestGrokBuild105CompleteStdoutStructuredStderrFailsClosed(t *testing.T) {
 }
 
 func TestGrokBuild105IncompleteOrInvalidStdoutKeepsAncillaryStderrFailed(t *testing.T) {
+	t.Parallel()
 	stderr := grok105AncillaryStderr(12)
 	for _, tc := range []struct {
 		name   string
@@ -687,6 +716,7 @@ func TestGrokBuild105IncompleteOrInvalidStdoutKeepsAncillaryStderrFailed(t *test
 }
 
 func TestGrokBuild105NonzeroExitPreservesRootCauseWithAncillaryStderr(t *testing.T) {
+	t.Parallel()
 	t.Run("complete stdout plus warnings", func(t *testing.T) {
 		res, err := grok105InvokeWithIO(t, grok105CompletePublicStdout, grok105AncillaryStderr(11), 1)
 		grok105AssertFailedClosed(t, res, err)
@@ -712,6 +742,7 @@ const grokDiagnosticCanary = "xai-DIAGNOSTIC-PRIVATE-CONTENT-DO-NOT-RETAIN"
 // The task/event readback below runs the real Grok invocation and runner with an offline process.
 // A valid business Result may contain text; only the NEW diagnostic projection must be value-free.
 func TestGrokDiagnosticsTaskEventReadback(t *testing.T) {
+	t.Parallel()
 	text := `{"type":"text","data":"` + grokDiagnosticCanary + `"}`
 	end := grok105PublicEnd
 	valid := text + "\n" + end
@@ -748,6 +779,7 @@ func TestGrokDiagnosticsTaskEventReadback(t *testing.T) {
 		{"stderr adapter scanner loss", valid, strings.Repeat("x", 8*1024*1024), "stderr_scanner_loss", "stderr", "end_turn", 1, 1, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := testRoot(t)
 			bin, calls := fakeGrokBuildCountedStderrFile(t, tc.stdout, tc.stderr, 0)
 			cfg := grokBuildTestConfig(t, bin)
@@ -842,6 +874,7 @@ func grokAssertSafeDiagnostics(t *testing.T, raw []byte) {
 }
 
 func TestGrokDiagnosticsParserAndProcessErrorReadback(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, category string
 		exit           int
@@ -852,6 +885,7 @@ func TestGrokDiagnosticsParserAndProcessErrorReadback(t *testing.T) {
 		{"step timeout", "signal", 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := testRoot(t)
 			payload := `{"type":"text","data":"` + grokDiagnosticCanary + `"}` + "\n" + grok105PublicEnd + "\n" + grok105PublicEnd
 			bin, calls := fakeGrokBuildCounted(t, payload, "", tc.exit)
@@ -860,14 +894,17 @@ func TestGrokDiagnosticsParserAndProcessErrorReadback(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				// The production one-minute step deadline kills this exact fake process group.
-				// exec avoids leaving a shell descendant if the test is interrupted.
+				// Production still uses StepTimeoutMin minutes; tests shrink the grok
+				// seam so this path does not consume the package 180s budget.
 				script = []byte(strings.TrimSuffix(string(script), "exit 0\n") + "exec sleep 70\n")
 				if err := os.WriteFile(bin, script, 0o755); err != nil {
 					t.Fatal(err)
 				}
 			}
 			cfg := grokBuildTestConfig(t, bin)
+			if tc.timeout {
+				cfg.grokStepTimeout = 3 * time.Second
+			}
 			cfg.OwnerRoutingEnforced = true
 			task := ownerBackendGrokTask(t, root, cfg, t.TempDir())
 			task.Attempts = 2
@@ -919,6 +956,7 @@ func TestGrokDiagnosticsParserAndProcessErrorReadback(t *testing.T) {
 }
 
 func TestGrokDiagnosticsUnknownProcessFactsAndClosedValues(t *testing.T) {
+	t.Parallel()
 	res := parseGrokBuildJSONL(`{"type":"end","stopReason":"` + grokDiagnosticCanary + `"}`)
 	d := res.GrokDiagnostics
 	if d.ExitCode != nil || d.Signal != nil || d.TimedOut != nil || d.WaitError != "unknown" || d.ProcessError != "unknown" ||

@@ -45,6 +45,8 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	procWaitDelay = 200 * time.Millisecond
+	managerWakeQueueTimeout = time.Second
 	code := m.Run()
 	if hadHome {
 		err = os.Setenv("HOME", priorHome)
@@ -77,8 +79,8 @@ func grokBuildTestConfig(t *testing.T, bin string) *Config {
 	if err := os.Mkdir(filepath.Join(home, ".grok"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HOME", home)
 	cfg := defaultConfig("")
+	cfg.grokLifecycleHome = home
 	cfg.DefaultRunner = "codex"
 	cfg.CodexBin = "/usr/bin/true"
 	cfg.GrokBuildBin = bin
@@ -108,17 +110,27 @@ func grokBuildTestConfig(t *testing.T, bin string) *Config {
 	return cfg
 }
 
+func isolateGrokLifecycleHome(t *testing.T, cfg *Config) {
+	t.Helper()
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, ".grok"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg.grokLifecycleHome = home
+}
+
 func TestGrokLifecycleProbeFailsBeforeProviderProcess(t *testing.T) {
+	t.Parallel()
 	bin, productCalls := fakeGrokBuildCounted(t, `{"type":"end","stopReason":"end_turn"}`, "", 0)
 	cfg := grokBuildTestConfig(t, bin)
-	stateDir := filepath.Join(os.Getenv("HOME"), ".grok")
+	stateDir := filepath.Join(cfg.grokLifecycleHome, ".grok")
 	if err := os.Remove(stateDir); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(stateDir, []byte("not-a-directory"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	task := &Task{ID: "grok-lifecycle-denied", Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
+	task := &Task{ID: uniqueTaskID("grok-lifecycle-denied"), Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
 	root := admitDirectInvoke(t, "", task)
 	task.LastProviderPreflight = &ProviderPreflightReadback{Runner: grokBuildRunnerName, State: providerReady}
 	if _, _, err := invokeGrokBuild(context.Background(), root, cfg, task, "harmless prompt"); err == nil ||
@@ -133,6 +145,7 @@ func TestGrokLifecycleProbeFailsBeforeProviderProcess(t *testing.T) {
 func TestGrokLifecycleProbeRejectsRelativeHomeBeforeProviderProcess(t *testing.T) {
 	bin, productCalls := fakeGrokBuildCounted(t, `{"type":"end","stopReason":"end_turn"}`, "", 0)
 	cfg := grokBuildTestConfig(t, bin)
+	cfg.grokLifecycleHome = ""
 	t.Setenv("HOME", "relative-home")
 	task := &Task{ID: "grok-relative-home", Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
 	root := admitDirectInvoke(t, "", task)
@@ -147,6 +160,7 @@ func TestGrokLifecycleProbeRejectsRelativeHomeBeforeProviderProcess(t *testing.T
 }
 
 func TestGrokLifecycleProbePassesExactHomeToProvider(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "grok")
 	homeDump := filepath.Join(dir, "home.txt")
@@ -159,11 +173,11 @@ func TestGrokLifecycleProbePassesExactHomeToProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := grokBuildTestConfig(t, bin)
-	wantHome := os.Getenv("HOME")
+	wantHome := cfg.grokLifecycleHome
 	if !filepath.IsAbs(wantHome) {
 		t.Fatalf("test HOME must be absolute: %q", wantHome)
 	}
-	task := &Task{ID: "grok-bound-home", Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
+	task := &Task{ID: uniqueTaskID("grok-bound-home"), Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
 	root := admitDirectInvoke(t, "", task)
 	task.LastProviderPreflight = &ProviderPreflightReadback{Runner: grokBuildRunnerName, State: providerReady}
 	if _, _, err := invokeGrokBuild(context.Background(), root, cfg, task, "harmless prompt"); err != nil {
@@ -186,6 +200,7 @@ func TestGrokLifecycleProbePassesExactHomeToProvider(t *testing.T) {
 }
 
 func TestGrokTierRoutesPinEffortFallbackAndOpusReview(t *testing.T) {
+	t.Parallel()
 	cfg := grokBuildTestConfig(t, "/usr/bin/true")
 	for _, tc := range []struct {
 		name           string
@@ -237,6 +252,7 @@ func TestGrokTierRoutesPinEffortFallbackAndOpusReview(t *testing.T) {
 }
 
 func TestGrokOpusAdversarialReviewPinsIndependentSolMax(t *testing.T) {
+	t.Parallel()
 	cfg := grokBuildTestConfig(t, "/usr/bin/true")
 	parent := &Task{Type: typeSequence, Model: "opus", GrokModel: "grok-4.6", ReviewAfter: true, SolMaxAdversarialReview: true}
 	review := &Task{Type: typeReview, Model: "claude-opus-5", PreferRunner: "codex"}
@@ -252,6 +268,7 @@ func TestGrokOpusAdversarialReviewPinsIndependentSolMax(t *testing.T) {
 }
 
 func TestGrokOpusCompletionSpawnsIndependentSolMaxAdversarialReview(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := grokBuildTestConfig(t, "/usr/bin/true")
 	parent := newTask(root, cfg, typeSequence, "backend implementation", t.TempDir(), []string{"implement"}, 9)
@@ -285,6 +302,7 @@ func TestGrokOpusCompletionSpawnsIndependentSolMaxAdversarialReview(t *testing.T
 }
 
 func TestRunTaskGrokTierLimitQueuesMatchingCodexFallback(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		model      string
@@ -326,6 +344,7 @@ func TestRunTaskGrokTierLimitQueuesMatchingCodexFallback(t *testing.T) {
 }
 
 func TestBoardShowsCurrentGrokTierRoutes(t *testing.T) {
+	t.Parallel()
 	cfg := grokBuildTestConfig(t, "/usr/bin/true")
 	cases := []struct {
 		model      string
@@ -412,6 +431,7 @@ func fakeGrokBuildExpiredAuth(t *testing.T) (bin, probeCalls, productCalls strin
 }
 
 func TestParseGrokBuildStreamingJSON(t *testing.T) {
+	t.Parallel()
 	raw := `{"type":"available_commands","tools":[]}` + "\n" +
 		`{"type":"thought","data":"reasoning is metadata"}` + "\n" +
 		`{"type":"text","data":"GROK_"}` + "\n" +
@@ -439,6 +459,7 @@ func grokBuildArgIndex(argv []string, flag string) int {
 }
 
 func TestInvokeGrokBuildUses46XHighAndSandboxModes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name            string
 		typ             string
@@ -460,13 +481,14 @@ func TestInvokeGrokBuildUses46XHighAndSandboxModes(t *testing.T) {
 		{name: "crosscheck skip-permissions resume", typ: typeCrossCheck, skipPermissions: true, sessionID: "session-grok", sandbox: "read-only", permission: "plan", wantNoPlan: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			payload := `{"type":"text","data":"GROK_OK"}` + "\n" +
 				`{"type":"end","stopReason":"end_turn","sessionId":"session-grok","num_turns":1}`
 			bin, argsDump, promptDump := fakeGrokBuild(t, payload, "", 0)
 			cfg := grokBuildTestConfig(t, bin)
 			cfg.GrokBuild.ReadOnlySandboxProfile = tc.readOnlyProfile
 			task := &Task{
-				ID: "grok-invoke", Type: tc.typ, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName,
+				ID: uniqueTaskID("grok-invoke-" + strings.ReplaceAll(tc.name, " ", "-")), Type: tc.typ, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName,
 				SkipPermissions: tc.skipPermissions, SessionID: tc.sessionID,
 			}
 			if grokBuildWriteCapable(task) != tc.wantNoPlan {
@@ -547,6 +569,7 @@ func TestInvokeGrokBuildUses46XHighAndSandboxModes(t *testing.T) {
 }
 
 func TestRunTaskGrokExpiredAuthHoldsFirstCardAndOpensEngineCircuit(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, probeCalls, productCalls := fakeGrokBuildExpiredAuth(t)
 	cfg := grokBuildTestConfig(t, bin)
@@ -610,6 +633,7 @@ func TestRunTaskGrokExpiredAuthHoldsFirstCardAndOpensEngineCircuit(t *testing.T)
 }
 
 func TestGrokBuildAuthProbeSingleFlightsConcurrentFailure(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, probeCalls, productCalls := fakeGrokBuildExpiredAuth(t)
 	cfg := grokBuildTestConfig(t, bin)
@@ -650,6 +674,7 @@ func TestGrokBuildAuthProbeSingleFlightsConcurrentFailure(t *testing.T) {
 }
 
 func TestRefreshGrokBuildAuthClearsOnlyAuthCircuit(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, _, _ := fakeGrokBuild(t, "", "", 0)
 	cfg := grokBuildTestConfig(t, bin)
@@ -674,6 +699,7 @@ func TestRefreshGrokBuildAuthClearsOnlyAuthCircuit(t *testing.T) {
 }
 
 func TestGrokBuildProbeDiagnosticRedactsSecrets(t *testing.T) {
+	t.Parallel()
 	diagnostic := safeGrokBuildProbeDiagnostic("Authorization: Bearer super-secret-token", nil)
 	if strings.Contains(diagnostic, "super-secret-token") || !strings.Contains(diagnostic, "<redacted>") {
 		t.Fatalf("preflight diagnostic must not expose credentials: %q", diagnostic)
@@ -681,6 +707,7 @@ func TestGrokBuildProbeDiagnosticRedactsSecrets(t *testing.T) {
 }
 
 func TestValidateGrokBuildRejectsUnsupportedMax(t *testing.T) {
+	t.Parallel()
 	cfg := grokBuildTestConfig(t, "/usr/bin/true")
 	if err := validateGrokBuild(cfg); err != nil {
 		t.Fatalf("valid Grok config rejected: %v", err)
@@ -692,6 +719,7 @@ func TestValidateGrokBuildRejectsUnsupportedMax(t *testing.T) {
 }
 
 func TestValidateGrokBuildReadOnlySandboxProfile(t *testing.T) {
+	t.Parallel()
 	cfg := grokBuildTestConfig(t, "/usr/bin/true")
 	cfg.GrokBuild.ReadOnlySandboxProfile = grokBuildReadOnlySandboxMacOSNoopNetwork
 	if err := validateGrokBuild(cfg); err != nil {
@@ -716,6 +744,7 @@ func TestValidateGrokBuildReadOnlySandboxProfile(t *testing.T) {
 }
 
 func TestRunTaskKimiLimitHoldsWithoutGlobalSolFallback(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	kimiBin, _, _ := fakeKimiCLI(t, `{"role":"meta","type":"error","content":"HTTP 429: usage limit reached"}`, 1)
 	cfg := kimiCLITestConfig(t, kimiBin)
@@ -758,6 +787,7 @@ func TestRunTaskKimiLimitHoldsWithoutGlobalSolFallback(t *testing.T) {
 }
 
 func TestRunTaskGrokLimitQueuesKimiSecond(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, _, _ := fakeGrokBuild(t, `{"type":"error","message":"HTTP 429: usage limit reached"}`, "", 1)
 	cfg := policyTestConfig()
@@ -808,6 +838,7 @@ func TestRunTaskGrokLimitQueuesKimiSecond(t *testing.T) {
 }
 
 func TestLegacyClaudeFableLimitDoesNotCreateNewOwnerFallback(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	claudeBin := fakeClaudeBin(t, "You've reached your usage limit", "", 1)
 	grokBin, _, _ := fakeGrokBuild(t, "", "", 0)
@@ -836,6 +867,7 @@ func TestLegacyClaudeFableLimitDoesNotCreateNewOwnerFallback(t *testing.T) {
 }
 
 func TestFableFallbackSpawnsExactlyOneFirstPrinciplesSolAudit(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := grokBuildTestConfig(t, "/usr/bin/true")
 	parent := newTask(root, cfg, typeCoordinate, "关键设计方案", t.TempDir(), []string{"设计"}, 1)
@@ -892,6 +924,7 @@ func TestFableFallbackSpawnsExactlyOneFirstPrinciplesSolAudit(t *testing.T) {
 }
 
 func TestGrokLimitDetectorIgnoresSuccessfulDiscussion(t *testing.T) {
+	t.Parallel()
 	res := &claudeResult{Result: "The design discusses rate limit handling."}
 	if isLimitHitGrokBuild(res, `{"type":"text","data":"rate limit handling"}`) {
 		t.Fatal("successful prose must not be classified as Grok quota")
@@ -906,6 +939,7 @@ func TestGrokLimitDetectorIgnoresSuccessfulDiscussion(t *testing.T) {
 }
 
 func TestGrokBuildBoardShowsActualModelEffortAndRelay(t *testing.T) {
+	t.Parallel()
 	cfg := grokBuildTestConfig(t, "/usr/bin/true")
 	toKimi := &Task{
 		ID: "to-kimi", Status: statusQueued, Runner: grokBuildRunnerName, PreferRunner: kimiCLIRunnerName,
@@ -935,6 +969,7 @@ func TestGrokBuildBoardShowsActualModelEffortAndRelay(t *testing.T) {
 }
 
 func TestGrokNativeRunnerNameIsReservedFromEngineProfiles(t *testing.T) {
+	t.Parallel()
 	if engineVia(grokBuildRunnerName) || engineVia("claude") {
 		t.Fatal("native Grok and explicit Claude sentinels must not be mistaken for engine profiles")
 	}

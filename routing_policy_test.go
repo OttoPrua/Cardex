@@ -54,6 +54,7 @@ func policyTestConfig() *Config {
 }
 
 func TestOwnerRouteResolutionFinalMatrixLock(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	if err := validateOwnerRoutingPolicy(cfg); err != nil {
 		t.Fatalf("final Owner matrix rejected: %v", err)
@@ -71,6 +72,7 @@ func TestOwnerRouteResolutionFinalMatrixLock(t *testing.T) {
 }
 
 func TestStandaloneReviewUsesDirectSolMax(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	task := &Task{Type: typeReview, Model: "opus", RiskClass: riskClassProduction, PreferRunner: "codex", Prompts: []string{"review"}}
 	route, ok := resolveOwnerRoute(cfg, task)
@@ -91,6 +93,7 @@ func TestStandaloneReviewUsesDirectSolMax(t *testing.T) {
 }
 
 func TestOwnerRouteDrivesManualCommandAndBoardForFinalMatrixBranches(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -130,6 +133,7 @@ func TestOwnerRouteDrivesManualCommandAndBoardForFinalMatrixBranches(t *testing.
 }
 
 func TestOwnerEnforcedGrokConfigLocksOrdinaryHaikuHigh(t *testing.T) {
+	t.Parallel()
 	accept := policyTestConfig()
 	haiku := accept.GrokBuild.TierRoutes["haiku"]
 	haiku.Effort = "high"
@@ -178,6 +182,7 @@ func TestOwnerEnforcedGrokConfigLocksOrdinaryHaikuHigh(t *testing.T) {
 }
 
 func TestOwnerRouteLeavesPinnedAndStatefulCardsUntouched(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	base := Task{Type: typeSequence, Model: "opus", RouteClass: routeClassGeneral,
 		PreferRunner: "codex", FreshSteps: true, Prompts: []string{"p"}}
@@ -230,6 +235,7 @@ func TestOwnerRouteLeavesPinnedAndStatefulCardsUntouched(t *testing.T) {
 }
 
 func TestOwnerReadbackRejectsLaterExplicitPin(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	task := &Task{Type: typeSequence, Model: "opus", RouteClass: routeClassGeneral,
 		PreferRunner: "codex", FreshSteps: true, Dir: t.TempDir(), Prompts: []string{"implement"}}
@@ -261,6 +267,7 @@ func TestOwnerReadbackRejectsLaterExplicitPin(t *testing.T) {
 }
 
 func TestPinnedAndRemoteManualCommandsUseFrozenRunnerIdentity(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	cfg.OpenCodeBin = "/usr/bin/opencode"
 	cfg.RemoteHosts = map[string]RemoteHostConfig{
@@ -299,6 +306,7 @@ func TestPinnedAndRemoteManualCommandsUseFrozenRunnerIdentity(t *testing.T) {
 }
 
 func TestManualGrokDispatchCommandWriteCapableNoPlan(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	leg := policyLeg{Runner: grokBuildRunnerName, Model: "grok-4.6", Effort: "xhigh"}
 	prompt := "prompt"
@@ -390,6 +398,7 @@ func TestManualGrokDispatchCommandWriteCapableNoPlan(t *testing.T) {
 }
 
 func TestOwnerRouteConfigRejectsIdentityDrift(t *testing.T) {
+	t.Parallel()
 	base := policyTestConfig()
 	if err := validateGrokBuild(base); err != nil {
 		t.Fatalf("exact owner Grok table rejected: %v", err)
@@ -520,6 +529,7 @@ func TestOwnerRouteConfigRejectsIdentityDrift(t *testing.T) {
 }
 
 func TestBackendClassificationOwnerCategoriesBilingual(t *testing.T) {
+	t.Parallel()
 	if !backendDevelopmentTask(&Task{Type: typeSequence, RouteClass: routeClassBackend, Title: "render a local button"}) {
 		t.Fatal("explicit backend must be authoritative even when text has no compatibility marker")
 	}
@@ -554,6 +564,7 @@ func TestBackendClassificationOwnerCategoriesBilingual(t *testing.T) {
 }
 
 func TestOwnerEnforcementRequiresRouteClassOnNewSequenceCards(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	if err := validateNewTaskRouteClass(cfg, &Task{Type: typeSequence}); err == nil {
 		t.Fatal("new sequence cards must not enter Owner routing without an explicit backend/general classification")
@@ -590,6 +601,7 @@ func TestOwnerEnforcementRequiresRouteClassOnNewSequenceCards(t *testing.T) {
 }
 
 func TestSafeFallbackKindsFollowOnlyResolvedSerialLegsAndNeverGlobalCodex(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	kinds := []fallbackFailureKind{
 		fallbackQuota, fallbackTransport, fallbackStreamIncomplete, fallbackSemanticStall, fallbackInvalidTerminal,
@@ -660,6 +672,7 @@ func TestSafeFallbackKindsFollowOnlyResolvedSerialLegsAndNeverGlobalCodex(t *tes
 }
 
 func TestSafeFallbackProofBlocksEveryUnsafeSignal(t *testing.T) {
+	t.Parallel()
 	base := safeFixtureProof(t)
 	tests := []struct {
 		name string
@@ -690,6 +703,7 @@ func TestSafeFallbackProofBlocksEveryUnsafeSignal(t *testing.T) {
 }
 
 func TestWorkspaceFingerprintIncludesDirtyAndUntrackedBytes(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runGit(t, dir, "init")
 	runGit(t, dir, "config", "user.email", "test@example.com")
@@ -776,6 +790,7 @@ func TestWorkspaceFingerprintIncludesDirtyAndUntrackedBytes(t *testing.T) {
 }
 
 func TestWorkspaceFingerprintSupportsUnbornGitRepository(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runGit(t, dir, "init")
 	if err := os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("staged before first commit\n"), 0o644); err != nil {
@@ -788,6 +803,7 @@ func TestWorkspaceFingerprintSupportsUnbornGitRepository(t *testing.T) {
 }
 
 func TestWorkspaceFingerprintIncludesExactGitIndexFlags(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runGit(t, dir, "init")
 	runGit(t, dir, "config", "user.email", "test@example.com")
@@ -816,6 +832,7 @@ func TestWorkspaceFingerprintIncludesExactGitIndexFlags(t *testing.T) {
 }
 
 func TestWorkspaceFingerprintSeesSkipWorktreeContentChanges(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runGit(t, dir, "init")
 	runGit(t, dir, "config", "user.email", "test@example.com")
@@ -844,6 +861,7 @@ func TestWorkspaceFingerprintSeesSkipWorktreeContentChanges(t *testing.T) {
 }
 
 func TestWorkspaceFingerprintIncludesSymbolicBranchIdentity(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	runGit(t, dir, "init")
 	runGit(t, dir, "config", "user.email", "cardex-test@example.invalid")
@@ -869,6 +887,7 @@ func TestWorkspaceFingerprintIncludesSymbolicBranchIdentity(t *testing.T) {
 }
 
 func TestBackendOpusSolFallbackStillCreatesSeparateSolMaxReview(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := policyTestConfig()
 	parent := newTask(root, cfg, typeSequence, "backend protocol implementation", t.TempDir(), []string{"implement"}, 9)
@@ -925,6 +944,7 @@ func safeFixtureProof(t *testing.T) policyFallbackProof {
 }
 
 func TestFallbackFailureClassifierCoversRequiredTerminalShapes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name, via, combined string
 		res                 *claudeResult
@@ -970,6 +990,7 @@ func TestFallbackFailureClassifierCoversRequiredTerminalShapes(t *testing.T) {
 }
 
 func TestStructuredSemanticEventOnStderrBlocksFallbackProof(t *testing.T) {
+	t.Parallel()
 	stdout := `{"role":"meta","type":"system.version","version":"0.36.1"}`
 	stderr := `{"role":"assistant","type":"message","content":"started work"}` + "\nconnection reset by peer"
 	res := parseKimiCLIJSONL(providerJSONObservation(kimiCLIRunnerName, stdout, stderr))
@@ -987,6 +1008,7 @@ func TestStructuredSemanticEventOnStderrBlocksFallbackProof(t *testing.T) {
 }
 
 func TestMalformedJSONLookingStderrMakesObservationIncomplete(t *testing.T) {
+	t.Parallel()
 	observed := providerJSONObservation(kimiCLIRunnerName, `{"role":"meta","type":"system.version","version":"0.36.1"}`,
 		`{"role":"assistant","content":"truncated"`)
 	res := parseKimiCLIJSONL(observed)
@@ -996,6 +1018,7 @@ func TestMalformedJSONLookingStderrMakesObservationIncomplete(t *testing.T) {
 }
 
 func TestUnknownPlainStderrMakesObservationIncomplete(t *testing.T) {
+	t.Parallel()
 	stdout := `{"role":"meta","type":"system.version","version":"0.36.1"}`
 	observed := providerJSONObservation(kimiCLIRunnerName, stdout, "ordinary prose that may be semantic work")
 	res := parseKimiCLIJSONL(observed)
@@ -1024,6 +1047,7 @@ func TestUnknownPlainStderrMakesObservationIncomplete(t *testing.T) {
 }
 
 func TestWorkspaceFingerprintFramingDistinguishesFormerConcatenationCollision(t *testing.T) {
+	t.Parallel()
 	left := t.TempDir()
 	right := t.TempDir()
 	// The previous raw concatenation encoded these two trees identically:
@@ -1051,6 +1075,7 @@ func TestWorkspaceFingerprintFramingDistinguishesFormerConcatenationCollision(t 
 }
 
 func TestUnsupportedFableManualReadbackCannotFallThroughToCodexPin(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	task := &Task{ID: "manual-fable-wait", Type: typeSequence, Model: "fable", PreferRunner: "codex",
 		FreshSteps: true, Prompts: []string{"one", "two"}, RouteClass: routeClassGeneral}
@@ -1066,6 +1091,7 @@ func TestUnsupportedFableManualReadbackCannotFallThroughToCodexPin(t *testing.T)
 }
 
 func TestInvalidPersistedRouteClassBlocksRemoteManualCommand(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := policyTestConfig()
 	cfg.RemoteHosts = map[string]RemoteHostConfig{"review-host": {CodexBin: "codex", CodexOnly: true}}
@@ -1085,6 +1111,7 @@ func TestInvalidPersistedRouteClassBlocksRemoteManualCommand(t *testing.T) {
 }
 
 func TestGrokReadOnlySessionStoreIsPresemanticExecutionEnvironmentFallback(t *testing.T) {
+	t.Parallel()
 	cases := []string{
 		"EROFS: read-only file system, mkdir '/tmp/fake-home/.grok/sessions/run-1'",
 		"$GROK_HOME/session.db: readonly database",
@@ -1122,6 +1149,7 @@ func TestGrokReadOnlySessionStoreIsPresemanticExecutionEnvironmentFallback(t *te
 }
 
 func TestMandatorySolReviewObligationReconcilesWithoutRerunningImplementation(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := policyTestConfig()
 	parent := newTask(root, cfg, typeSequence, "Opus backend implementation", t.TempDir(), []string{"implement"}, 1)
@@ -1178,6 +1206,7 @@ func TestOwnerRoutingProcessContractRejectsConfigOptOut(t *testing.T) {
 }
 
 func TestCursorErrorTerminalTextIsNotCountedAsModelWork(t *testing.T) {
+	t.Parallel()
 	res := parseCursorJSONL(`{"type":"result","subtype":"error","is_error":true,"result":"connection reset by peer"}`)
 	if !res.IsError || res.SemanticEvents != 0 || res.ModelEvents != 0 {
 		t.Fatalf("error-terminal text is a diagnostic, not model work: %+v", res)
@@ -1185,6 +1214,7 @@ func TestCursorErrorTerminalTextIsNotCountedAsModelWork(t *testing.T) {
 }
 
 func TestPolicyFallbackProofReasonsAreAuditable(t *testing.T) {
+	t.Parallel()
 	proof := safeFixtureProof(t)
 	proof.SemanticEvents = 1
 	_, err := authorizePolicyFallback(proof)
@@ -1194,6 +1224,7 @@ func TestPolicyFallbackProofReasonsAreAuditable(t *testing.T) {
 }
 
 func TestNextWriterQueuesOnlyAfterCompletedProcessResidueCheck(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	task := &Task{Type: typeSequence, Model: "opus", RouteClass: routeClassGeneral,
 		PreferRunner: "codex", FreshSteps: true, Prompts: []string{"p"}}
@@ -1224,6 +1255,7 @@ func TestNextWriterQueuesOnlyAfterCompletedProcessResidueCheck(t *testing.T) {
 }
 
 func TestProcessResidueSurvivesAttemptResetUntilGroupIsDead(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows policy fallback is deliberately fail-closed because descendant liveness is not provable")
 	}

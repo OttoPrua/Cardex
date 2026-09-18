@@ -12,6 +12,7 @@ import (
 )
 
 func TestResolveOpenCodeModel(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 	cfg.OpenCodeModel = "opencode-go/gpt-5.6-luna"
 	cfg.OpenCodeModels = map[string]string{"sonnet": "opencode-go/glm-5.2"}
@@ -24,6 +25,7 @@ func TestResolveOpenCodeModel(t *testing.T) {
 }
 
 func TestParseOpenCodeJSONL(t *testing.T) {
+	t.Parallel()
 	raw := `{"type":"text","sessionID":"ses-1","part":{"text":"OK","time":{"start":10,"end":25}}}` + "\n" +
 		`{"type":"step_finish","sessionID":"ses-1","part":{"reason":"stop","tokens":{"input":7,"output":5},"cost":0.25}}`
 	res := parseOpenCodeJSONL(raw)
@@ -50,6 +52,7 @@ func openCodeNightTestConfig(bin string) *Config {
 }
 
 func TestOpenCodeNightOpusWindowAndGuards(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := openCodeNightTestConfig("/usr/bin/true")
 	loc, err := time.LoadLocation("Asia/Shanghai")
@@ -108,6 +111,7 @@ func TestOpenCodeNightOpusWindowAndGuards(t *testing.T) {
 }
 
 func TestResolveOpenCodeNightRunModelAndVariant(t *testing.T) {
+	t.Parallel()
 	cfg := openCodeNightTestConfig("/usr/bin/true")
 	auto := &Task{Model: "opus", PreferRunner: "codex", Effort: "xhigh"}
 	if got := resolveOpenCodeRunModel(cfg, auto); got != "opencode-go/kimi-k3" {
@@ -126,6 +130,7 @@ func TestResolveOpenCodeNightRunModelAndVariant(t *testing.T) {
 }
 
 func TestPinnedKimiK3CanStartOutsideNightWindow(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := openCodeNightTestConfig("/usr/bin/true")
 	loc, err := time.LoadLocation("Asia/Shanghai")
@@ -146,6 +151,7 @@ func TestPinnedKimiK3CanStartOutsideNightWindow(t *testing.T) {
 }
 
 func TestOpenCodeLimitDetectorUsesOnlyFailedOutput(t *testing.T) {
+	t.Parallel()
 	errJSON := `{"type":"error","sessionID":"s","error":{"name":"APIError","message":"HTTP 429: usage limit reached"}}`
 	res := parseOpenCodeJSONL(errJSON)
 	if !isLimitHitOpenCode(res, errJSON) {
@@ -177,6 +183,7 @@ func fakeOpenCode(t *testing.T, payload string, exitCode int) (bin, argsDump str
 }
 
 func TestInvokeOpenCodeNightUsesKimiMax(t *testing.T) {
+	t.Parallel()
 	payload := `{"type":"text","sessionID":"ses-ok","part":{"text":"OK"}}` + "\n" +
 		`{"type":"step_finish","sessionID":"ses-ok","part":{"reason":"stop","tokens":{"input":7,"output":5},"cost":0.25}}`
 	bin, argsDump := fakeOpenCode(t, payload, 0)
@@ -198,6 +205,7 @@ func TestInvokeOpenCodeNightUsesKimiMax(t *testing.T) {
 }
 
 func TestRunTaskOpenCodeNightLimitQueuesCodexFallback(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	payload := `{"type":"error","sessionID":"ses-limit","error":{"name":"APIError","message":"HTTP 429: usage limit reached"}}`
 	bin, _ := fakeOpenCode(t, payload, 1)
@@ -239,6 +247,7 @@ func TestRunTaskOpenCodeNightLimitQueuesCodexFallback(t *testing.T) {
 }
 
 func TestRunTaskPinnedKimiLimitPreservesExplicitProvider(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	payload := `{"type":"error","error":{"message":"quota exceeded"}}`
 	bin, _ := fakeOpenCode(t, payload, 1)
@@ -272,6 +281,7 @@ func TestRunTaskPinnedKimiLimitPreservesExplicitProvider(t *testing.T) {
 }
 
 func TestOwnerRoutingEnforcedDisablesLegacyOpenCodeAutoFallback(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	payload := `{"type":"error","error":{"message":"quota exceeded"}}`
 	bin, _ := fakeOpenCode(t, payload, 1)
@@ -295,6 +305,7 @@ func TestOwnerRoutingEnforcedDisablesLegacyOpenCodeAutoFallback(t *testing.T) {
 }
 
 func TestRunTaskPinnedKimiNonLimitErrorDoesNotFallback(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	payload := `{"type":"error","error":{"message":"temporary upstream failure"}}`
 	bin, _ := fakeOpenCode(t, payload, 1)
@@ -323,6 +334,7 @@ func TestRunTaskPinnedKimiNonLimitErrorDoesNotFallback(t *testing.T) {
 }
 
 func TestOpenCodeLimitFallbackReasonSurvivesCodexRetries(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := openCodeNightTestConfig("/usr/bin/true")
 	cfg.CodexBin = fakeCodexUsageLimit(t)
@@ -355,6 +367,7 @@ func TestOpenCodeLimitFallbackReasonSurvivesCodexRetries(t *testing.T) {
 }
 
 func TestOpenCodeActualRouteTelemetryAndBoard(t *testing.T) {
+	t.Parallel()
 	cfg := openCodeNightTestConfig("/usr/bin/true")
 	task := &Task{
 		Runner: "opencode", PreferRunner: "codex", Model: "opus", Effort: "xhigh",
@@ -377,6 +390,7 @@ func TestOpenCodeActualRouteTelemetryAndBoard(t *testing.T) {
 }
 
 func TestKimiBoardBriefShowsActualPreferredAndFallbackRoutes(t *testing.T) {
+	t.Parallel()
 	cfg := openCodeNightTestConfig("/usr/bin/true")
 	now := time.Date(2026, 8, 7, 2, 30, 0, 0, time.FixedZone("CST", 8*60*60))
 
@@ -417,6 +431,7 @@ func TestKimiBoardBriefShowsActualPreferredAndFallbackRoutes(t *testing.T) {
 }
 
 func TestKimiBoardFrontendConsumesRunnerVariantAndRoute(t *testing.T) {
+	t.Parallel()
 	code := appJSCode(t)
 	for _, want := range []string{
 		"Kimi K3",
@@ -438,6 +453,7 @@ func TestKimiBoardFrontendConsumesRunnerVariantAndRoute(t *testing.T) {
 }
 
 func TestValidateOpenCodeNightRoute(t *testing.T) {
+	t.Parallel()
 	cfg := openCodeNightTestConfig("/usr/bin/true")
 	if err := validateOpenCode(cfg); err != nil {
 		t.Fatalf("合法夜间策略被拒: %v", err)

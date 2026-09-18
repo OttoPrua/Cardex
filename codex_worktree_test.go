@@ -106,6 +106,7 @@ func snapshotSrcSurface(t *testing.T, src string) map[string]string {
 // TestCodexReviewCopyIsolatesWrites 反例注入①:副本内写新文件 → 原仓面字节不变。
 // 也顺带覆盖正向面(dirty/untracked/gitignored):副本内应有 dirty 修改与 untracked,不应有 ignored。
 func TestCodexReviewCopyIsolatesWrites(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	src := mkCodexReviewSrcRepo(t)
 	before := snapshotSrcSurface(t, src)
@@ -180,6 +181,7 @@ func TestCodexReviewCopyIsolatesWrites(t *testing.T) {
 // 【为什么直接测 argv 而非行为】codex 沙箱语义是 codex CLI 内部约束,单测无法真起沙箱;
 // 但"argv 里带 read-only 且未走副本路径"是回落的可观测证据面——组合等价于"退回旧行为"。
 func TestCodexReviewSandboxRollbackReadonly(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	src := mkCodexReviewSrcRepo(t)
 	capture := filepath.Join(t.TempDir(), "argv.txt")
@@ -226,6 +228,7 @@ func TestCodexReviewSandboxRollbackReadonly(t *testing.T) {
 // TestCleanupCodexReviewOrphansRemovesCrashed 崩溃注入:副本+marker 建齐后,pid 假设已死透
 // 且 taskID 不在 activeIDs → cleanupCodexReviewOrphans 应删除副本并落事件。
 func TestCleanupCodexReviewOrphansRemovesCrashed(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	src := mkCodexReviewSrcRepo(t)
 	cfg := &Config{CodexReviewSandbox: codexReviewSandboxWorktreeWrite}
@@ -286,6 +289,7 @@ func TestCleanupCodexReviewOrphansRemovesCrashed(t *testing.T) {
 // TestCleanupCodexReviewOrphansSkipsActive 反面:taskID 在 activeIDs 里就不动副本
 // (活任务的执行数据不能被对账误清)。
 func TestCleanupCodexReviewOrphansSkipsActive(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	src := mkCodexReviewSrcRepo(t)
 	cfg := &Config{CodexReviewSandbox: codexReviewSandboxWorktreeWrite}
@@ -324,6 +328,7 @@ func TestCleanupCodexReviewOrphansSkipsActive(t *testing.T) {
 //
 // 【杀的突变】把 readCodexWorkMarker 的回落循环改回只读 codexWorkMarkerName → 两段断言都红。
 func TestCleanupCodexReviewOrphansRecognizesLegacyMarker(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	src := mkCodexReviewSrcRepo(t)
 	cfg := &Config{CodexReviewSandbox: codexReviewSandboxWorktreeWrite}
@@ -428,6 +433,7 @@ func argvValueAfter(argv, flag string) string {
 // 若无此测试,cleanup 回归会被 orphan reaper 的"pid 活即跳过"掩盖(codex_worktree.go:336-338):
 // 测试进程 pid 是活的 → reaper 跳过 → 副本残留只在 stat 时才见 → 全套测试仍绿。
 func TestInvokeCodexWorktreeWriteArgvAndCleanup(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	src := mkCodexReviewSrcRepo(t)
 	argvCap := filepath.Join(t.TempDir(), "argv.txt")
@@ -496,6 +502,7 @@ func TestInvokeCodexWorktreeWriteArgvAndCleanup(t *testing.T) {
 // 副本模式下 stdin 前置必含路径映射(原仓路径 + 副本路径 + "复审副本模式"字面量),
 // 且必须在用户 prompt 之前;否则 codex 依 prompt(原仓路径)去写,workspace-write 全废。
 func TestInvokeCodexInjectsCopyPreamble(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	src := mkCodexReviewSrcRepo(t)
 	argvCap := filepath.Join(t.TempDir(), "argv.txt")
@@ -549,6 +556,7 @@ func TestInvokeCodexInjectsCopyPreamble(t *testing.T) {
 // TestInvokeCodexNoCopyPreambleInReadonly 反面:readonly 回落模式(workDir==t.Dir)不注入副本前导。
 // 若这里注入,codex 会被引导去查一个不存在的"副本路径",反而混淆——回落语义就是"跑在原仓,只读"。
 func TestInvokeCodexNoCopyPreambleInReadonly(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	src := mkCodexReviewSrcRepo(t)
 	argvCap := filepath.Join(t.TempDir(), "argv.txt")
@@ -579,6 +587,7 @@ func TestInvokeCodexNoCopyPreambleInReadonly(t *testing.T) {
 // 交叉/协调/回退等真实业务仓路径必须回落 read-only(硬保证:原仓字节永不受写污染)。
 // 若某天有人把 remoteCodexReviewSandbox 又改回"非 sequence 就 workspace-write",本表全红。
 func TestRemoteCodexReviewSandbox(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		cfg  *Config
@@ -705,6 +714,7 @@ func TestRemoteCodexReviewSandbox(t *testing.T) {
 }
 
 func TestLocalCrossCheckNeverRequestsWritableCopy(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("")
 	cfg.CodexReviewSandbox = codexReviewSandboxWorktreeWrite
 	if codexReviewWantsWorktree(cfg, &Task{Type: typeCrossCheck, Dir: t.TempDir()}) {
@@ -725,6 +735,7 @@ func TestLocalCrossCheckNeverRequestsWritableCopy(t *testing.T) {
 // → 下表 4 条未知值用例全红。把 `cfg.CodexReviewSandbox == ""` 的早返回删掉(让空值也压 readonly)
 // → "未设置"两条红(那是另一种事故:BD-39 终裁的默认策略被整个翻掉)。
 func TestResolvedCodexReviewSandboxUnknownFailsClosed(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		cfg  *Config
@@ -757,6 +768,7 @@ func TestResolvedCodexReviewSandboxUnknownFailsClosed(t *testing.T) {
 //
 // 【杀的突变】把 config.go 的 default 分支改回 worktree-write → 两条断言同时红。
 func TestUnknownCodexReviewSandboxDoesNotReachWorktreeWrite(t *testing.T) {
+	t.Parallel()
 	src := mkCodexReviewSrcRepo(t) // 真 git 工作树:排除"因为不是 git 仓库才 false"的假通过
 	bad := &Config{CodexReviewSandbox: "readonIy", RemoteMirrorRoot: "D:/Project/PO-lanes"}
 
@@ -785,6 +797,7 @@ func TestUnknownCodexReviewSandboxDoesNotReachWorktreeWrite(t *testing.T) {
 // 不去重会把 launchd 日志刷成同一行噪声,反而淹没这条本该显眼的权限告警。
 // 【杀的突变】删掉 warnUnknownCodexReviewSandbox 调用 → 首条断言红;删掉 LoadOrStore 去重 → 末条红。
 func TestUnknownCodexReviewSandboxDisclosedOnce(t *testing.T) {
+	t.Parallel()
 	origW := codexSandboxWarnW
 	defer func() {
 		codexSandboxWarnW = origW
@@ -951,6 +964,7 @@ func TestCodexReviewPrepareKilledOnHangingGit(t *testing.T) {
 // 【杀的突变】把任一 README 的契约句改回旧版 → ① 或 ② 红;把 copyUntrackedPath 的 os.Lstat 换回
 // os.Open、或删掉循环里的 ctx.Err() → ③ 红(即便注释还写着也照红)。
 func TestReadmeCopyPhaseContractMatchesImplementation(t *testing.T) {
+	t.Parallel()
 	docs := []struct {
 		file   string
 		anchor string
@@ -1027,6 +1041,7 @@ func stripGoLineComments(t *testing.T, file string) string {
 // 【为什么带正向对照】只断"死 ctx 报错"会被"函数恒报错"这种废实现满足;第二段用活 ctx 跑同一张表,
 // 要求文件确实落地,把恒真解排除掉。
 func TestCopyUntrackedListChecksCtxBeforeFirstCopy(t *testing.T) {
+	t.Parallel()
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("A"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1066,6 +1081,7 @@ func TestCopyUntrackedListChecksCtxBeforeFirstCopy(t *testing.T) {
 // 检测延迟是微秒级、拷贝是毫秒级,量级差三个数量级,不是靠竞速取胜。
 // 【杀的突变】把 ctx 检查从循环体内挪到循环外(只查一次)→ b/c 照样被搬完,末条断言红。
 func TestCopyUntrackedListStopsMidLoop(t *testing.T) {
+	t.Parallel()
 	src := t.TempDir()
 	dst := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "a-big.bin"), make([]byte, 32<<20), 0o644); err != nil {

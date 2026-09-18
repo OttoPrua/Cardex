@@ -32,6 +32,7 @@ func reservedTaskExec(t *testing.T, workspace string) (root, taskID string) {
 }
 
 func TestInheritedProcessLeaseDetectsSetsidDescendant(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("CARDEX_TEST_SETSID_LEASE_CHILD") == "1" {
 		if _, err := syscall.Setsid(); err != nil && !errors.Is(err, syscall.EPERM) {
 			os.Exit(2)
@@ -64,6 +65,7 @@ func TestInheritedProcessLeaseDetectsSetsidDescendant(t *testing.T) {
 }
 
 func TestCompletedLeaseProactivelyLeavesResidueMap(t *testing.T) {
+	t.Parallel()
 	const taskID = "completed-lease-prune"
 	done := make(chan struct{})
 	markTaskLeaseResidue(taskID, done)
@@ -82,6 +84,7 @@ func TestCompletedLeaseProactivelyLeavesResidueMap(t *testing.T) {
 }
 
 func TestWorkspaceLeaseSurvivesMapLossAndBlocksDifferentFallbackTask(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("CARDEX_TEST_WORKSPACE_LEASE_CHILD") == "1" {
 		if _, err := syscall.Setsid(); err != nil && !errors.Is(err, syscall.EPERM) {
 			os.Exit(2)

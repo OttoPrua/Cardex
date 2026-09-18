@@ -141,7 +141,12 @@ func printUsage() {
   cmd <id>                                     # 打印手动接管某任务的 claude 命令与 prompt
 
 调度与执行
-  run       [-force] [-quiet]      # 跑一轮：排空就绪队列，最多 max_parallel 路并行（同目录串行）
+  run       [-root ROOT] [-force] [-quiet] [ID]
+            无 ID：排空就绪队列（tick drain），最多 max_parallel 路并行（同目录串行）。
+            另一实例已持同一 root 时跳过本轮（exit 0）；不要把它当成单卡启动。
+            有 ID：只启动该任务，不排空其余就绪卡（cardex run -root ROOT ID）。
+            同一 root 已持锁且该 ID 未派发则失败（非 0，非静默跳过），排队卡保持 queued；
+            持锁结束后再 run -root ROOT ID 可启动。无 ID tick 仍会排空就绪队列。
   daemon                           # 前台常驻轮询（不装 launchd 时用）
   list                             # 任务看板（-json 机器可读，-all 含已归档状态）
   log <id> [-n 60]                 # 查看任务执行日志
@@ -1767,18 +1772,36 @@ func cmdQuota(args []string) error {
 
 // ---- run / daemon ----
 
+func setCmdRunUsage(fs *flag.FlagSet) {
+	fs.Usage = func() {
+		fmt.Fprintf(fs.Output(), "用法: cardex run [-root ROOT] [-force] [-quiet] [ID]\n")
+		fmt.Fprintln(fs.Output(), "  无 ID：排空就绪队列（tick drain）。另一实例持同一 root 时跳过本轮。")
+		fmt.Fprintln(fs.Output(), "  有 ID：只启动该任务，不排空其余就绪卡（cardex run -root ROOT ID）")
+		fmt.Fprintln(fs.Output(), "        同一 root 已持锁且该 ID 未派发则失败（非静默跳过）；持锁结束后再 run -root ROOT ID")
+		fs.PrintDefaults()
+	}
+}
+
 func cmdRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	setCmdRunUsage(fs)
 	rootFlag := fs.String("root", "", "数据目录")
 	force := fs.Bool("force", false, "忽略限额冷却强行尝试")
 	quiet := fs.Bool("quiet", false, "静默模式（launchd 用）")
 	_ = fs.Parse(args)
+	if fs.NArg() > 1 {
+		return fmt.Errorf("用法: cardex run [-root ROOT] [-force] [-quiet] [ID]")
+	}
 	root := resolveRoot(*rootFlag)
 	cfg, err := loadConfig(root)
 	if err != nil {
 		return err
 	}
-	return tick(root, cfg, *force, *quiet)
+	onlyID := ""
+	if fs.NArg() == 1 {
+		onlyID = strings.TrimSpace(fs.Arg(0))
+	}
+	return tickFilter(root, cfg, *force, *quiet, onlyID)
 }
 
 func cmdDaemon(args []string) error {

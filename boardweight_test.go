@@ -25,6 +25,7 @@ func wcard(status, typ string, turns int, doneAt time.Time, steps int) *Task {
 
 // 样本不足时整个口径不可用：给 available=false + 说明，绝不吐一个没有基准的百分比。
 func TestWeightedUnavailableBelowSampleFloor(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	var ts []*Task
 	for i := 0; i < weightMinSamples-1; i++ {
@@ -45,6 +46,7 @@ func TestWeightedUnavailableBelowSampleFloor(t *testing.T) {
 // 权重表按 (type, 是否多步) 分桶取中位；桶内样本 <3 回落全局中位。
 // 中位而非均值：turns 重尾右偏（实测中位 41、均值 53、max 447），均值会让预测值系统性偏大。
 func TestWeightTableMedianByTypeAndSteps(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	var ts []*Task
 	// sequence 单步：10、20、30、1000（离群）→ 中位 25，均值 265
@@ -90,6 +92,7 @@ func TestWeightTableMedianByTypeAndSteps(t *testing.T) {
 // 主路径：进度按工作量算而不是卡数——这正是本口径存在的理由。
 // 场景刻意构造成"卡数看着快完了、工作量还剩一大半"。
 func TestWeightedProgressDiffersFromCardCount(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	var ts []*Task
 	// 12 张小卡（progress-pull 2 turns）已完成
@@ -130,6 +133,7 @@ func TestWeightedProgressDiffersFromCardCount(t *testing.T) {
 
 // 取消卡不进任何状态段，也不进 Total——与卡数口径"分母排除已取消"一致。
 func TestWeightStatsExcludesCanceled(t *testing.T) {
+	t.Parallel()
 	var s WeightStats
 	s.add(statusDone, 10)
 	s.add(statusCanceled, 999)
@@ -141,6 +145,7 @@ func TestWeightStatsExcludesCanceled(t *testing.T) {
 
 // 预估余量单列 SpawnWeight（画条尾幽灵段），不混进任何状态段——混进去就会被读成真实卡的活。
 func TestWeightedSpawnWeightSeparateFromStats(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	var ts []*Task
 	for i := 0; i < 12; i++ {
@@ -161,6 +166,7 @@ func TestWeightedSpawnWeightSeparateFromStats(t *testing.T) {
 
 // 预估余量按在途卡的平均权重折进总分母（余量卡与在途卡同源）。
 func TestWeightedFoldsEstimateRemaining(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	var ts []*Task
 	for i := 0; i < 12; i++ {
@@ -184,6 +190,7 @@ func TestWeightedFoldsEstimateRemaining(t *testing.T) {
 
 // 实测覆盖缺口（codex/远端/引擎卡不回报 turns）必须披露，不能让补出来的估计值冒充实测。
 func TestWeightedDisclosesMeasurementGap(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	var ts []*Task
 	for i := 0; i < 12; i++ {
@@ -209,6 +216,7 @@ func TestWeightedDisclosesMeasurementGap(t *testing.T) {
 
 // 换算率不可得时只给占比不给时间——编一个完成时刻比不给更糟。
 func TestWeightedNoFinishTimeWithoutThroughput(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	var ts []*Task
 	// 全部完成于同一时刻 → 跨度为 0，算不出换算率
@@ -231,6 +239,7 @@ func TestWeightedNoFinishTimeWithoutThroughput(t *testing.T) {
 
 // 分桶工时：只计已存在的卡（余量由总条承担），取消卡不进分母。
 func TestAnnotateKindWeights(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	var ts []*Task
 	mk := func(id, kind, status string, turns int) *Task {

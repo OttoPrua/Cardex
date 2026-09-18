@@ -12,6 +12,7 @@ import (
 )
 
 func TestPreSpawnClaimedInflightRetriesOnceWithEventIDDedupe(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1"
@@ -46,6 +47,7 @@ func TestPreSpawnClaimedInflightRetriesOnceWithEventIDDedupe(t *testing.T) {
 }
 
 func TestForgedCursorAndReceiptsFailClosedWithoutAdvance(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb1"
@@ -143,6 +145,7 @@ func TestForgedCursorAndReceiptsFailClosedWithoutAdvance(t *testing.T) {
 }
 
 func TestWakeProjectionReadAndAppendFailuresStayRetryable(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	writeWakeConfig(t, root, bin, "wake-proj", "cccccccc-cccc-cccc-cccc-ccccccccccc1", "mgr", true)
@@ -189,6 +192,7 @@ func TestWakeProjectionReadAndAppendFailuresStayRetryable(t *testing.T) {
 }
 
 func TestCanceledTerminalWakesOnceWithSupersession(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "dddddddd-dddd-dddd-dddd-ddddddddddd1"
@@ -241,6 +245,7 @@ func TestCanceledTerminalWakesOnceWithSupersession(t *testing.T) {
 }
 
 func TestInvalidSubscriptionFilterDoesNotConsumeCursor(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeee1"
@@ -260,6 +265,7 @@ func TestInvalidSubscriptionFilterDoesNotConsumeCursor(t *testing.T) {
 }
 
 func TestOverlappingSameThreadSubscriptionsDedupeEventIDs(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "ffffffff-ffff-ffff-ffff-fffffffffff1"
@@ -353,6 +359,7 @@ func TestManagerWakeQueueChildStoppedWithRegisteredGroup(t *testing.T) {
 }
 
 func TestMalformedTaskJSONBlocksWakeReconcile(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "33333333-3333-3333-3333-3333333333a1", "mgr")
@@ -374,6 +381,7 @@ func TestMalformedTaskJSONBlocksWakeReconcile(t *testing.T) {
 }
 
 func TestInvalidDirPrefixAndTaskIDDoNotAck(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "44444444-4444-4444-4444-4444444444a1"
@@ -395,6 +403,7 @@ func TestInvalidDirPrefixAndTaskIDDoNotAck(t *testing.T) {
 }
 
 func TestClaimedInflightForeignIDsStayFailClosed(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "55555555-5555-5555-5555-5555555555a1"
@@ -410,6 +419,7 @@ func TestClaimedInflightForeignIDsStayFailClosed(t *testing.T) {
 }
 
 func TestRunningCancelRecurrenceWakesOnce(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("process-group cancel is POSIX")
 	}

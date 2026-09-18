@@ -89,6 +89,7 @@ func runTaskCfg(t *testing.T, claudeBin string) *Config {
 // ---------- 单元层：事件账本本身 ----------
 
 func TestRecordEventSeqMonotonicAndAppendOnly(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	emitTaskEvent(root, "t1", evQueued, "cli:add", statusQueued, 0, map[string]any{"k": 1})
 	emitTaskEvent(root, "t1", evDispatched, "runner", statusRunning, 0, nil)
@@ -108,6 +109,7 @@ func TestRecordEventSeqMonotonicAndAppendOnly(t *testing.T) {
 }
 
 func TestRecordEventCrashTailToleratedAndSubsequentAppendClean(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// 先正常落两条。
 	emitTaskEvent(root, "t2", evQueued, "cli:add", statusQueued, 0, nil)
@@ -154,6 +156,7 @@ func TestRecordEventCrashTailToleratedAndSubsequentAppendClean(t *testing.T) {
 }
 
 func TestArchiveTaskAlsoArchivesEvents(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "归档", "/tmp", []string{"p"}, 5)
@@ -185,6 +188,7 @@ func TestArchiveTaskAlsoArchivesEvents(t *testing.T) {
 // TestRunTaskEmitsExpectedEventsHappyPath 验证顺利完成路径每个状态迁移恰有一条事件。
 // 两步任务：dispatched → step_ok → step_ok(final) → done。
 func TestRunTaskEmitsExpectedEventsHappyPath(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	claudeBin := fakeClaudeBin(t, mkOKResultJSON("sess-1"), "", 0)
 	cfg := runTaskCfg(t, claudeBin)
@@ -220,6 +224,7 @@ func TestRunTaskEmitsExpectedEventsHappyPath(t *testing.T) {
 
 // TestRunTaskEmitsLimitPausedEvent 验证限额挂起路径生成 limit_paused 事件（带 engine=claude 与 resume_at）。
 func TestRunTaskEmitsLimitPausedEvent(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// fake claude 打限额结果 JSON + 非零退出。isLimitHit 靠 result.IsError + limitRe。
 	future := time.Now().Add(20 * time.Minute).Unix()
@@ -253,6 +258,7 @@ func TestRunTaskEmitsLimitPausedEvent(t *testing.T) {
 
 // TestRunTaskEmitsRetryThenFailed 验证退避重试与 attempts 超限的两阶段事件。
 func TestRunTaskEmitsRetryThenFailed(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// 非限额错误：JSON is_error=true 但内容里不含 limit 关键词。
 	errJSON := `{"type":"result","is_error":true,"subtype":"random_error","result":"some transient hiccup"}`
@@ -296,6 +302,7 @@ func TestRunTaskEmitsRetryThenFailed(t *testing.T) {
 }
 
 func TestTaskMaxAttempts(t *testing.T) {
+	t.Parallel()
 	t.Run("missing_or_zero_inherits_global", func(t *testing.T) {
 		for name, raw := range map[string]string{
 			"missing": `{}`,
@@ -417,6 +424,7 @@ func TestTaskMaxAttempts(t *testing.T) {
 
 // TestCliSetStatusHoldReleaseCancelEvents 验证 CLI 的 hold/release/cancel 各自留一条对应事件。
 func TestCliSetStatusHoldReleaseCancelEvents(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "cli 状态迁移", "/tmp", []string{"p"}, 5)
@@ -455,6 +463,7 @@ func TestCliSetStatusHoldReleaseCancelEvents(t *testing.T) {
 }
 
 func TestCliReleaseRejectsConsumedEpochAndRetryOpensExplicitEpoch(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "consumed release epoch", "/tmp", []string{"p"}, 5)
@@ -506,6 +515,7 @@ func TestCliReleaseRejectsConsumedEpochAndRetryOpensExplicitEpoch(t *testing.T) 
 }
 
 func TestCliHeldRetryRevalidatesIntegrationGate(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	if err := saveConfig(root, defaultConfig("claude")); err != nil {
 		t.Fatal(err)
@@ -542,6 +552,7 @@ func TestCliHeldRetryRevalidatesIntegrationGate(t *testing.T) {
 }
 
 func TestConcurrentConsumedReleaseAndHeldRetriesOpenOneEpoch(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	tk := newTask(root, testCfg(), typeSequence, "concurrent consumed epoch", "/tmp", []string{"p"}, 5)
 	tk.Status = statusHeld
@@ -630,6 +641,7 @@ func TestConcurrentConsumedReleaseAndHeldRetriesOpenOneEpoch(t *testing.T) {
 
 // TestReviewVerdictClosepathEmitsCloseoutAndQueued 验证 pass→closeout 时父卡 closeout + 子卡 queued 双事件。
 func TestReviewVerdictClosepathEmitsCloseoutAndQueued(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -659,6 +671,7 @@ func TestReviewVerdictClosepathEmitsCloseoutAndQueued(t *testing.T) {
 // ---------- 活动流：事件缺口与拒绝状态反推 ----------
 
 func TestBoardActivityShowsGapWhenMiddleEventDeleted(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "gap-target", "/tmp", []string{"p"}, 5)
@@ -686,6 +699,7 @@ func TestBoardActivityShowsGapWhenMiddleEventDeleted(t *testing.T) {
 }
 
 func TestBoardActivityRefusesStatusInferenceWhenNoEventsFile(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	// 只造卡不写事件——旧卡场景/CG-2 前入队的历史卡。
@@ -703,6 +717,7 @@ func TestBoardActivityRefusesStatusInferenceWhenNoEventsFile(t *testing.T) {
 // TestBoardActivityUsesEventsNotStatus 交叉验证：卡当前 Status=failed 但事件流里有 done——
 // 活动流必须按事件流讲"已完成"，绝不按 Status 讲"失败"。这是"事件是唯一真相源"的正向守卫。
 func TestBoardActivityUsesEventsNotStatus(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "truth-source", "/tmp", []string{"p"}, 5)
@@ -780,6 +795,7 @@ func deleteEventBySeq(t *testing.T, path string, seq int64) {
 // 事件流会呈现 dispatched→dispatched 静默断档且无 seq 缺口可测,活动流看不出真历史——
 // "每状态迁移恰一条事件"被绕过。
 func TestBudgetRedlineEmitsRetryEvent(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	claudeBin := fakeClaudeBin(t, mkOKResultJSON("sess-budget"), "", 0)
 	cfg := runTaskCfg(t, claudeBin)
@@ -824,6 +840,7 @@ func TestBudgetRedlineEmitsRetryEvent(t *testing.T) {
 // 盘上是 failed,活动流按事件流讲"已完成"的假历史。反例注入:删掉 runner.go:954 那条 emit,
 // 就能构造事件历史与盘态不一致。
 func TestPostCompleteProgressFailureEmitsFailed(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	// C 卡:XRole=C + EmitProgress=true + 合法 verdict(通过 crossMergeVerdictOK)。
@@ -881,6 +898,7 @@ func TestPostCompleteProgressFailureEmitsFailed(t *testing.T) {
 //
 // 反例注入:把 evStepOK 分支恢复成 ev.Step+1,末步文本会退化为"第 N+1 步·末步",本测试报红。
 func TestDescribeEventStepNumbers(t *testing.T) {
+	t.Parallel()
 	// 派上执行:runner.go:775 dispatched 时 Step 是 0-indexed 待执行序,显示应为"第 Step+1 步"。
 	got := describeEvent(TaskEvent{Type: evDispatched, Step: 0})
 	if got != "派上执行（第 1 步）" {
@@ -906,6 +924,7 @@ func TestDescribeEventStepNumbers(t *testing.T) {
 // 活动流必须显示"事件缺口(缺失 seq 1..1)"。反例注入:恢复 buildActivity 里的 i==0 特判
 // (prevSeq = events[0].Seq - 1),头部剪掉后剩下 [2,3,...] 会被当完整历史,本测试报红。
 func TestBoardActivityShowsGapWhenHeadEventDeleted(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "head-gap", "/tmp", []string{"p"}, 5)
@@ -939,6 +958,7 @@ func TestBoardActivityShowsGapWhenHeadEventDeleted(t *testing.T) {
 // acquireEventLock 因 mutex 仍串行化本测试**不会**报红. 跨进程正确性(文件锁真正的用武之地)由
 // TestRecordEventCrossProcessNoSeqCollision 用 helper-process 子进程模式钉住.
 func TestRecordEventConcurrentWritesNoSeqCollision(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	const workers = 20
 	const perWorker = 5
@@ -985,6 +1005,7 @@ func TestRecordEventConcurrentWritesNoSeqCollision(t *testing.T) {
 // 第二 subtest 覆盖对偶路径:非 cli 触发的 ctx 超时/父上下文取消,盘上没有 cli:cancel 记录,
 // 此时 runner 是取消的第一手记录者,必须由 finalizeCanceled emit 一条(不能因过度去重漏事件)。
 func TestFinalizeCanceledSkipsEmitAfterCliCancel(t *testing.T) {
+	t.Parallel()
 	t.Run("cli_cancel_then_finalize_only_one_event", func(t *testing.T) {
 		root := testRoot(t)
 		cfg := testCfg()
@@ -1103,6 +1124,7 @@ func TestHelperProcessEmit(t *testing.T) {
 // 会撞 seq → 本测试报红. 注:helper-process 用 os/exec 起自身二进制(POSIX 是 fork+exec,Windows 是
 // CreateProcess/spawn),锁语义在 Windows 上未验证——平台纳入与否待裁(01-BACKLOG §3 #61 委托人复审后决).
 func TestRecordEventCrossProcessNoSeqCollision(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 行为未验证, 平台纳入与否待裁(01-BACKLOG §3 #61);当前 CI 只跑 POSIX")
 	}
@@ -1163,6 +1185,7 @@ func TestRecordEventCrossProcessNoSeqCollision(t *testing.T) {
 // 反例注入:把 finalizeCanceled 里的 hasCanceledEvent 换回 diskCanceled(旧法), 盘 canceled+账本空
 // 会命中 alreadyEmitted=true → 跳过 emit → cancelCount=0 → 本测试报红.
 func TestFinalizeCanceledBackfillsWhenLedgerEmpty(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "cli-cancel-emit-lost", "/tmp", []string{"p"}, 5)
@@ -1221,6 +1244,7 @@ func TestFinalizeCanceledBackfillsWhenLedgerEmpty(t *testing.T) {
 // 后 daemon 重启, 新一轮 tick pick 到这张卡走 runTask 顶部 diskCanceled 分支归档"的场景.
 // 反例注入:去掉 runner.go 入口守卫的 hasCanceledEvent 检查+补 emit, 入口归档路径下账本永久空.
 func TestRunTaskEntryGuardBackfillsCanceledEvent(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// 用最小 config——入口守卫在 fake bin 被调用前就命中, 不需要 fakeClaudeBin.
 	cfg := runTaskCfg(t, "/nonexistent")
@@ -1266,6 +1290,7 @@ func TestRunTaskEntryGuardBackfillsCanceledEvent(t *testing.T) {
 // 反例注入:把 nextSeq 改回只读 eventsPath(不看 archivedEventsPath), closeout 事件会 seq=1 重启, 而
 // 头部缺口守卫因 seq 从 1 起算不触发——本测试断言"seq 1..4 密集"会红.
 func TestRecordEventAfterArchivePreservesSeqAndHistory(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "archive-then-emit", "/tmp", []string{"p"}, 5)
@@ -1313,6 +1338,7 @@ func TestRecordEventAfterArchivePreservesSeqAndHistory(t *testing.T) {
 // 反例注入:archiveTaskEvents 改回不抢事件锁的裸 os.Rename, recordEvent 与 archive 交错时会新建
 // 一份 seq=1 起算的活动文件, 与旧账本 seq 重叠 → seen[seq] 撞车报红.
 func TestArchiveConcurrentWithEmitPreservesAllEvents(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "archive-race", "/tmp", []string{"p"}, 5)
@@ -1371,6 +1397,7 @@ func TestArchiveConcurrentWithEmitPreservesAllEvents(t *testing.T) {
 // loadTaskEvents 按 seq 合并去重, 返回完整历史. 极少见的迁移中间态, 但读侧不能因两处并存而漏.
 // 反例注入:把 loadTaskEvents 改回只读 eventsPathAnywhere(活动优先), 归档里的旧历史会被隐匿.
 func TestLoadTaskEventsMergesLiveAndArchived(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// 手工造并存态:归档 [1,2], 活动 [3,4]. 正常流程不会到此(归档后写归档), 但读侧必须兜住.
 	id := "merge-both"
@@ -1428,6 +1455,7 @@ func seqs(events []TaskEvent) []int64 {
 // 用途:防守 bootstrap 竞态回归——即使日后有人把 tmp+Link 改回 O_EXCL 两步式,此判据仍能挡
 // "读到空内容→立即强夺"路径.
 func TestStaleEventLockRefusesStealOnFreshUnparseable(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "l.lock")
 	ttl := 5 * time.Second
@@ -1476,6 +1504,7 @@ func TestStaleEventLockRefusesStealOnFreshUnparseable(t *testing.T) {
 // 改回 return true, 本测试报红. 单实例锁的 bootstrap 竞态窗口比事件锁窄(两个 daemon 同时起概率极低),
 // 但缺陷同类必须一并闭合——留一个兄弟洞下一轮就会被复审续猎.
 func TestStaleLockRefusesStealOnFreshUnparseable(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "l.lock")
 	ttl := 5 * time.Second
@@ -1514,6 +1543,7 @@ func TestStaleLockRefusesStealOnFreshUnparseable(t *testing.T) {
 // 旧的 mtime<=1s 阈值或直接判 stale, acquireEventLock 会立即走 Rename 强夺路径→本测试报红.
 // 组合:两条测试覆盖判据函数+调用者行为,任一层改弱都必红.
 func TestAcquireEventLockWaitsOnFreshEmptyLock(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("包含 500ms 等待, -short 模式跳过")
 	}
@@ -1574,6 +1604,7 @@ func TestAcquireEventLockWaitsOnFreshEmptyLock(t *testing.T) {
 // 归档路径(避免旧代码"影子账本"), src 永远不会被 emit 自然创建. 要制造"两处并存"的残留态只能
 // 用手写模拟.
 func TestArchiveMergesWhenDstExists(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "archive-dst-exists", "/tmp", []string{"p"}, 5)

@@ -53,6 +53,7 @@ func assertCostTelemetry(t *testing.T, ev TaskEvent) (cost float64, unavailable 
 // ---- 单元层：helper 本身的两条分支 ----
 
 func TestWithCostTelemetryBranches(t *testing.T) {
+	t.Parallel()
 	t.Run("有用量: 落累计值", func(t *testing.T) {
 		d := withCostTelemetry(map[string]any{"reason": "x"}, &Task{TurnsUsed: 3, CostUSD: 0.42})
 		if d[evDetailCostTotal] != 0.42 || d[evDetailTurnsTotal] != 3 {
@@ -119,6 +120,7 @@ func fakeClaudeCancelOnNthCall(t *testing.T, root, taskID string, n int) string 
 //
 // 【突变致死】把 runner.go finalizeCanceled 的 withCostTelemetry(detail, t) 换回裸 detail → 报红。
 func TestCanceledMidRunCarriesAccumulatedCost(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	work := t.TempDir()
 	// 先建卡拿到 ID，假 claude 才能定位任务文件。
@@ -163,6 +165,7 @@ func TestCanceledMidRunCarriesAccumulatedCost(t *testing.T) {
 // TestCliCancelBeforeAnyStepMarksUnavailable：卡在产出任何一步之前被 cancel —— 零用量是**真实的**，
 // 但仍必须落显式标记，不许静默省掉字段（否则复盘无法区分"没花钱"与"不知道花没花钱"）。
 func TestCliCancelBeforeAnyStepMarksUnavailable(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "还没开跑就被取消", "/tmp", []string{"p"}, 5)
@@ -193,6 +196,7 @@ func TestCliCancelBeforeAnyStepMarksUnavailable(t *testing.T) {
 // TestCliCancelAfterSpendCarriesCost：cli:cancel 路径（人手动取消一张已烧过钱的卡）同样不许丢账。
 // 【突变致死】把 main.go cmdSetStatus 的 withCostTelemetry 换回裸 map → 报红。
 func TestCliCancelAfterSpendCarriesCost(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "烧过钱再被人取消", "/tmp", []string{"a", "b"}, 5)
@@ -268,6 +272,7 @@ func escalationHeldEvent(t *testing.T, root, escID string) TaskEvent {
 // 本例是**单卡链**（实现卡 2.5 + 审核卡 0.4，无中间修复轮），只钉"壳账 ≠ 链账"这一分列语义；
 // 多轮链的累加口径由 TestChainCostAccumulatesAcrossFixRounds 钉住。
 func TestEscalationHeldSeparatesShellAndChainCost(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -313,6 +318,7 @@ func TestEscalationHeldSeparatesShellAndChainCost(t *testing.T) {
 // 【突变致死】改成 orig.CostUSD → 0.50（红）；漏 t.CostUSD → 5.80（红）；
 // 修复卡不继承 ChainCostUSD → 0.55（红）；漏 orig.CostUSD → 3.85（红）。
 func TestChainCostAccumulatesAcrossFixRounds(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 
@@ -383,6 +389,7 @@ func TestChainCostAccumulatesAcrossFixRounds(t *testing.T) {
 //
 // 【突变致死】把 runner.go 该处的 withCostTelemetry(...) 换回裸 map → 报红（既无数值也无标记）。
 func TestTombstoneExhaustedHeldCarriesAccumulatedCost(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := runTaskCfg(t, fakeClaudeBin(t, mkOKResultJSON("sess-T"), "", 0))
 
@@ -441,6 +448,7 @@ func TestTombstoneExhaustedHeldCarriesAccumulatedCost(t *testing.T) {
 //
 // 【突变致死】把 main.go cli:hold 的 withCostTelemetry(...) 换回 nil → 报红。
 func TestCliHoldAfterSpendCarriesCost(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "撞限额后被人挂起", "/tmp", []string{"a", "b"}, 5)
@@ -477,6 +485,7 @@ func TestCliHoldAfterSpendCarriesCost(t *testing.T) {
 // TestAddHoldMarksUnavailable：add -hold 的新生卡零用量是**真实的**，但仍须落显式标记而非裸
 // reason（同类位点普查，复审 P2-1）。
 func TestAddHoldMarksUnavailable(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	if err := saveConfig(root, defaultConfig("claude")); err != nil {
 		t.Fatal(err)
@@ -519,6 +528,7 @@ func TestAddHoldMarksUnavailable(t *testing.T) {
 // 【它不守什么】它只认 emitTaskEvent 这一条写事件的通道（recordEvent 的唯一调用方就是它，见
 // events.go），也不校验 withCostTelemetry 拿到的是不是"对的那张卡"——后者由上面各条行为测试负责。
 func TestEveryTerminalEmitSiteWrapsCostTelemetry(t *testing.T) {
+	t.Parallel()
 	const evTypeArg, detailArg = 2, 6 // emitTaskEvent/persistTaskEvent(root, id|task, evType, actor, status, step, detail)
 
 	fset := token.NewFileSet()
@@ -576,6 +586,7 @@ func TestEveryTerminalEmitSiteWrapsCostTelemetry(t *testing.T) {
 // TestAllTerminalEventsCarryTelemetry 跑几条真实执行路径，对产出的**每一条**终态事件统一体检。
 // 这是防回归的那道网：以后新增一条终态事件的 emit 点却忘了接遥测，只要它落在这些路径上就报红。
 func TestAllTerminalEventsCarryTelemetry(t *testing.T) {
+	t.Parallel()
 	paths := []struct {
 		name  string
 		build func(t *testing.T, root string) (*Config, *Task)

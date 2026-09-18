@@ -61,6 +61,7 @@ func fakeCursorAgent(t *testing.T, stdout string, stderr string, exit int) (stri
 }
 
 func TestParseCursorJSONLRequiresSemanticCompletion(t *testing.T) {
+	t.Parallel()
 	metaOnly := parseCursorJSONL(`{"type":"system","subtype":"init","session_id":"meta-session","model":"Claude Fable 5"}`)
 	if metaOnly == nil || !metaOnly.IsError || !strings.Contains(metaOnly.Result, "终局") {
 		t.Fatalf("system init metadata must not count as completion: %+v", metaOnly)
@@ -83,6 +84,7 @@ func TestParseCursorJSONLRequiresSemanticCompletion(t *testing.T) {
 }
 
 func TestParseCursorJSONLCountsToolResultInUserEnvelope(t *testing.T) {
+	t.Parallel()
 	res := parseCursorJSONL(strings.Join([]string{
 		`{"type":"user","message":{"content":[{"type":"tool_result","text":"done"}]}}`,
 		`{"type":"error","error":"connection reset"}`,
@@ -93,6 +95,7 @@ func TestParseCursorJSONLCountsToolResultInUserEnvelope(t *testing.T) {
 }
 
 func TestParseCursorJSONLUnknownUserEnvelopeFailsProofClosed(t *testing.T) {
+	t.Parallel()
 	res := parseCursorJSONL(strings.Join([]string{
 		`{"type":"user","message":"unrecognized envelope"}`,
 		`{"type":"error","error":"connection reset"}`,
@@ -103,6 +106,7 @@ func TestParseCursorJSONLUnknownUserEnvelopeFailsProofClosed(t *testing.T) {
 }
 
 func TestInvokeCursorUsesReadOnlyAskAndNeverAutoReview(t *testing.T) {
+	t.Parallel()
 	stream := strings.Join([]string{
 		`{"type":"system","subtype":"init","session_id":"cursor-session"}`,
 		`{"type":"assistant","message":{"content":[{"type":"text","text":"CURSOR_OK"}]},"session_id":"cursor-session"}`,
@@ -139,6 +143,7 @@ func TestInvokeCursorUsesReadOnlyAskAndNeverAutoReview(t *testing.T) {
 }
 
 func TestInvokeCursorFinalOwnerFableSequenceIsReadOnlyAsk(t *testing.T) {
+	t.Parallel()
 	stream := strings.Join([]string{
 		`{"type":"assistant","message":{"content":[{"type":"text","text":"FABLE_OK"}]}}`,
 		`{"type":"result","subtype":"success","result":"FABLE_OK"}`,
@@ -166,6 +171,7 @@ func TestInvokeCursorFinalOwnerFableSequenceIsReadOnlyAsk(t *testing.T) {
 }
 
 func TestValidateCursorFableUsesOnlyProvenEfforts(t *testing.T) {
+	t.Parallel()
 	cfg := cursorTestConfig()
 	if err := validateCursor(cfg); err != nil {
 		t.Fatalf("proven Cursor route should validate: %v", err)
@@ -182,6 +188,7 @@ func TestValidateCursorFableUsesOnlyProvenEfforts(t *testing.T) {
 }
 
 func TestCursorFableFallbackBuildsGrokAnswerAndSingleSolTerminalMerge(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := cursorTestConfig()
 	task := newTask(root, cfg, typeCoordinate, "hard decision", t.TempDir(), []string{"decide from first principles"}, 9)
@@ -231,6 +238,7 @@ func TestCursorFableFallbackBuildsGrokAnswerAndSingleSolTerminalMerge(t *testing
 }
 
 func TestPrepareCursorFableFallbackClearsSkipPermissionsAndGrokAIsReadOnly(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := cursorTestConfig()
 	task := newTask(root, cfg, typeCoordinate, "hard decision", t.TempDir(), []string{"decide from first principles"}, 9)
@@ -262,6 +270,7 @@ func TestPrepareCursorFableFallbackClearsSkipPermissionsAndGrokAIsReadOnly(t *te
 }
 
 func TestCursorFableFallbackAcceptsOnlyQuotaOrEligiblePresemantic(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []fallbackFailureKind{fallbackSemanticStall, fallbackInvalidTerminal} {
 		t.Run(string(kind), func(t *testing.T) {
 			root := testRoot(t)
@@ -288,6 +297,7 @@ func TestCursorFableFallbackAcceptsOnlyQuotaOrEligiblePresemantic(t *testing.T) 
 }
 
 func TestBoardShowsCursorFablePrimaryAndCompleteFallbackRoute(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := cursorTestConfig()
 	task := newTask(root, cfg, typeCoordinate, "hard decision", t.TempDir(), []string{"decide from first principles"}, 9)
@@ -323,6 +333,7 @@ func TestBoardShowsCursorFablePrimaryAndCompleteFallbackRoute(t *testing.T) {
 }
 
 func TestBoardShowsUnsupportedFableAsPolicyWaitNotGenericCodex(t *testing.T) {
+	t.Parallel()
 	for name, fixture := range map[string]struct {
 		cfg  *Config
 		task *Task
@@ -344,6 +355,7 @@ func TestBoardShowsUnsupportedFableAsPolicyWaitNotGenericCodex(t *testing.T) {
 }
 
 func TestCursorQuotaAndPolicyGateAreErrorOnlySignals(t *testing.T) {
+	t.Parallel()
 	success := &claudeResult{Result: "the prose says quota exceeded", IsError: false}
 	if isLimitHitCursor(success, "") || isCursorDataPolicyGate(success, "") {
 		t.Fatal("successful semantic prose must not trigger Cursor fallback")
@@ -358,6 +370,7 @@ func TestCursorQuotaAndPolicyGateAreErrorOnlySignals(t *testing.T) {
 }
 
 func TestRunTaskCursorFableQuotaAtomicallyEntersFallbackChain(t *testing.T) {
+	t.Parallel()
 	bin, _ := fakeCursorAgent(t,
 		`{"type":"system","subtype":"init","session_id":"presemantic","model":"Claude Fable 5 300K Max"}`,
 		"HTTP 429: usage limit reached", 1)
@@ -399,6 +412,7 @@ func TestRunTaskCursorFableQuotaAtomicallyEntersFallbackChain(t *testing.T) {
 }
 
 func TestRunTaskCursorFableSemanticStallStaysHeldWithoutFallback(t *testing.T) {
+	t.Parallel()
 	bin, _ := fakeCursorAgent(t,
 		`{"type":"system","subtype":"init","session_id":"presemantic","model":"Claude Fable 5 300K Max"}`,
 		"semantic timeout", 1)

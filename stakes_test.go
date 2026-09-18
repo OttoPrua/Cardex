@@ -12,6 +12,7 @@ import (
 // high 的地板从 high 掉到 medium、normal 从 follow 变成 on/off）都会在这里报红。
 // 用逐格字面量而不是"遍历表看长度"——后者对值的变化完全不敏感。
 func TestDefaultStakesPolicyTable(t *testing.T) {
+	t.Parallel()
 	p := defaultStakesPolicy()
 	if len(p) != 3 {
 		t.Fatalf("内置查表应恰好三档(low/normal/high), got %d 档: %+v", len(p), p)
@@ -51,6 +52,7 @@ func TestDefaultStakesPolicyTable(t *testing.T) {
 // TestReviewAfterOnlyForImplementationCards 钉死类型级护栏：high 仍可抬审核/协调卡的 effort，
 // 但绝不能再生成“审核: 审核…”或“审核: 协调报告…”的二次复审。
 func TestReviewAfterOnlyForImplementationCards(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 	for _, typ := range []string{typeReview, typeAssembly, typeCoordinate, typeProgressPull} {
 		t.Run(typ, func(t *testing.T) {
@@ -79,6 +81,7 @@ func TestReviewAfterOnlyForImplementationCards(t *testing.T) {
 // TestApplyStakesLookup 覆盖三档 × 显式意图的组合。
 // 【突变致死】每个子用例断言的是"查表落到卡面的确切结果"，任何一格查表值被改都会红。
 func TestApplyStakesLookup(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 
 	cases := []struct {
@@ -125,6 +128,7 @@ func TestApplyStakesLookup(t *testing.T) {
 // TestApplyStakesRejectsBadInput 非法输入必须报错，而不是静默按默认放行——
 // 静默放行会让一张写错的表长期以为在生效（护栏静默失效是最坏的失败模式）。
 func TestApplyStakesRejectsBadInput(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 
 	if err := applyStakes(&Task{}, cfg, "HIGH", false); err == nil {
@@ -148,6 +152,7 @@ func TestApplyStakesRejectsBadInput(t *testing.T) {
 
 // TestStakesRuleFallback 用户表覆盖内置表；缺档回落内置默认（而不是拿到零值静默不查表）。
 func TestStakesRuleFallback(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 	cfg.StakesPolicy = map[string]StakesRule{
 		stakesLow: {Review: stakesReviewOn}, // 用户把 low 改成"也要复审"
@@ -173,6 +178,7 @@ func TestStakesRuleFallback(t *testing.T) {
 // 这依赖 loadConfig "从 defaultConfig 起手再 Unmarshal" + Go 往非 nil map 按键合并的行为。
 // 一旦有人把 StakesPolicy 改成先置 nil 再解析，这里会红。
 func TestLoadConfigMergesStakesPolicy(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	body := `{"claude_bin":"claude","stakes_policy":{"low":{"review":"on"}}}`
 	if err := os.WriteFile(filepath.Join(root, "config.json"), []byte(body), 0o644); err != nil {
@@ -200,6 +206,7 @@ func TestLoadConfigMergesStakesPolicy(t *testing.T) {
 // 断言 design-review 卡不被改道 codex，而同等条件的实现卡照常改道（证明场景本身确实"改道开着"，
 // 否则一个恒 false 的谓词也能骗过测试）。
 func TestQualityFloorNoDivertUnderCooldown(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	now := time.Now()
 	// claude 冷却中：这是触发 codex 改道的前提场景。
@@ -242,6 +249,7 @@ func TestQualityFloorNoDivertUnderCooldown(t *testing.T) {
 
 // TestQualityFloorCard 直接钉住角色判据的取值域：多一个/少一个类型都会红。
 func TestQualityFloorCard(t *testing.T) {
+	t.Parallel()
 	floor := []*Task{
 		{Type: typeReview},
 		{XRole: "C"},
@@ -269,6 +277,7 @@ func TestQualityFloorCard(t *testing.T) {
 
 // TestCodexDivertOKGuards 其余改道前置条件不因新增地板而失守（回归护栏）。
 func TestCodexDivertOKGuards(t *testing.T) {
+	t.Parallel()
 	base := func() *Config {
 		c := defaultConfig("claude")
 		c.CodexBin = "codex"

@@ -18,6 +18,7 @@ import (
 // ---- 模型解析 ----
 
 func TestResolveGeminiModelSlotFallback(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("")
 
 	// 优先序 1：交叉冻结恒最高。
@@ -59,6 +60,7 @@ func TestResolveGeminiModelSlotFallback(t *testing.T) {
 }
 
 func TestValidateGeminiRejectsBadConfigs(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("")
 	cfg.GeminiModels = map[string]string{"turbo": "pro"}
 	if err := validateGemini(cfg); err == nil {
@@ -90,6 +92,7 @@ func TestValidateGeminiRejectsBadConfigs(t *testing.T) {
 // ---- 审批模式（plan 只读是唯一硬护栏）----
 
 func TestGeminiApprovalModePlanForcedOnNonSequence(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("")
 	for _, typ := range []string{typeReview, typeCoordinate, typeAssembly, typeProgressPull, typeCrossCheck} {
 		if got := geminiApprovalModeFor(cfg, &Task{Type: typ}); got != "plan" {
@@ -111,6 +114,7 @@ func TestGeminiApprovalModePlanForcedOnNonSequence(t *testing.T) {
 // ---- 限额 / 认证判据 ----
 
 func TestGeminiSuspendKindDailyAuthTransient(t *testing.T) {
+	t.Parallel()
 	mk := func(errMsg string) (*claudeResult, string) {
 		return &claudeResult{IsError: true, Subtype: "gemini_error", Result: errMsg}, "\n" + errMsg
 	}
@@ -153,6 +157,7 @@ func TestGeminiSuspendKindDailyAuthTransient(t *testing.T) {
 }
 
 func TestGeminiResetEpoch(t *testing.T) {
+	t.Parallel()
 	now := time.Unix(1_700_000_000, 0)
 	cfg := defaultConfig("")
 	cfg.LimitFallbackMin = 30
@@ -182,6 +187,7 @@ func TestGeminiResetEpoch(t *testing.T) {
 // ---- 派发护栏 ----
 
 func TestGeminiDivertOKGuards(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	now := time.Now()
 	cfg := defaultConfig("")
@@ -238,6 +244,7 @@ func TestGeminiDivertOKGuards(t *testing.T) {
 }
 
 func TestPinnedGeminiReadyAndPickDivert(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	now := time.Now()
 	cfg := defaultConfig("")
@@ -271,6 +278,7 @@ func TestPinnedGeminiReadyAndPickDivert(t *testing.T) {
 // ---- JSON 输出解析 ----
 
 func TestParseGeminiJSONAndStats(t *testing.T) {
+	t.Parallel()
 	j := parseGeminiJSON([]byte(`{"response":"答复正文","stats":{"models":{"gemini-3.1-pro-preview":{"tokens":{"prompt":100,"candidates":50,"cached":20,"thoughts":30,"tool":5}}}}}`))
 	if j == nil || j.Response != "答复正文" {
 		t.Fatalf("response 解析失败: %+v", j)
@@ -382,6 +390,7 @@ printf '%s' '{"response":"done ok","stats":{"models":{"m":{"tokens":{"prompt":10
 }
 
 func TestRunTaskGeminiDailyLimitFixtureIsRetiredBeforeInvocation(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := defaultConfig("")
 	cfg.GeminiBin = fakeGemini(t, `printf 'Error: You have exhausted your daily quota on this model.\n' >&2
@@ -420,6 +429,7 @@ exit 1
 }
 
 func TestRunTaskGeminiAuthFixtureIsRetiredBeforeInvocation(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := defaultConfig("")
 	cfg.GeminiBin = fakeGemini(t, `printf 'YOLO mode is enabled. All tool calls will be automatically approved.\n' >&2
@@ -446,6 +456,7 @@ exit 1
 }
 
 func TestRunTaskGeminiSuccessFixtureCannotBypassRetirement(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := defaultConfig("")
 	cfg.GeminiBin = fakeGemini(t, `cat > /dev/null
@@ -482,6 +493,7 @@ printf '%s' '{"response":"完成","stats":{"models":{"m":{"tokens":{"prompt":7,"
 }
 
 func TestRunTaskGeminiDivertDoesNotWriteBackSession(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := defaultConfig("")
 	cfg.GeminiBin = fakeGemini(t, `cat > /dev/null
@@ -506,6 +518,7 @@ printf '%s' '{"response":"完成"}'
 // ---- 历史交叉验证 kind 只保留解码/展示 ----
 
 func TestApplyCrossEngineGemini(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("")
 	cfg.GeminiBin = "/usr/bin/true"
 	cfg.GeminiModel = "pro"
@@ -525,6 +538,7 @@ func TestApplyCrossEngineGemini(t *testing.T) {
 // ---- 看板档位（统一标准线 AA II v4.1 快照 2026-08-03）----
 
 func TestModelTierGeminiStandardLine(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("")
 	for model, want := range map[string]string{
 		"gemini-3.5-flash":       "sonnet", // AA 50
@@ -551,6 +565,7 @@ func TestModelTierGeminiStandardLine(t *testing.T) {
 }
 
 func TestEffectiveModelGeminiSide(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("")
 	m, src := effectiveModel(cfg, &Task{PreferRunner: "gemini", Model: "sonnet"})
 	if m != "flash" || src != "gemini_model" {
@@ -565,6 +580,7 @@ func TestEffectiveModelGeminiSide(t *testing.T) {
 // ---- emit 契约 ----
 
 func TestEnqueueEmittedRunnerGeminiRejected(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := defaultConfig("")
 	parent := newTask(root, cfg, typeCoordinate, "父", t.TempDir(), []string{"p"}, 1)

@@ -2,11 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
+	"strings"
 	"time"
 )
+
+// errRunIDNotDispatched is the fail-closed signal for `cardex run -root ROOT ID`
+// when that ID was not launched. A silent nil would look like success.
+var errRunIDNotDispatched = errors.New("run id not dispatched")
 
 // tickRunTask is the drain launch seam. Tests replace it; production calls runTaskVia.
 var tickRunTask = runTaskVia
@@ -16,8 +22,26 @@ var tickRunTask = runTaskVia
 // 全部跑完或没有可派发任务时才返回。同一工作目录同一时刻只跑一个任务，
 // 避免两个会话并发改同一个仓库。launchd 每隔 poll_interval_sec 调一次兜底。
 func tick(root string, cfg *Config, force, quiet bool) error {
+	return tickFilter(root, cfg, force, quiet, "")
+}
+
+// tickFilter is tick with an optional single-task filter. A nonempty onlyID
+// starts only that card and does not drain other ready tasks. Empty onlyID
+// keeps the existing drain-the-ready-queue behavior.
+//
+// Two `run -root ROOT ID` processes cannot share one root: the instance lock is
+// exclusive. If onlyID is set and the lock is already held, this returns
+// errRunIDNotDispatched instead of nil — exit 0 would pretend the ID started.
+// After the holder releases, `cardex run -root ROOT ID` can start the still-queued
+// card. A no-ID tick that loses the lock still skips (legacy launchd overlap)
+// and, once it wins the lock, still drains every ready card.
+func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) error {
 	killHandlerOnce.Do(installKillHandler) // 子进程自成进程组后，Ctrl-C/SIGTERM 需接管连坐
+	onlyID = strings.TrimSpace(onlyID)
 	if !acquireLock(root, lockTTL(cfg)) {
+		if onlyID != "" {
+			return errRootHeldNotDispatched(onlyID)
+		}
 		if !quiet {
 			fmt.Println("已有另一个 cardex 实例在运行，跳过本轮。")
 		}
@@ -25,6 +49,12 @@ func tick(root string, cfg *Config, force, quiet bool) error {
 	}
 	defer releaseLock(root)
 	reconcileControlPlane(root)
+	retryLostManagerWakes(root)
+	if onlyID != "" {
+		if _, err := findTask(root, onlyID); err != nil {
+			return err
+		}
+	}
 
 	maxPar := cfg.MaxParallel
 	if maxPar < 1 {
@@ -150,6 +180,9 @@ func tick(root string, cfg *Config, force, quiet bool) error {
 						continue
 					}
 					if activeIDs[t.ID] {
+						continue
+					}
+					if onlyID != "" && t.ID != onlyID {
 						continue
 					}
 					if !dagAllowsTask(root, tasks, t.ID) {
@@ -320,6 +353,9 @@ func tick(root string, cfg *Config, force, quiet bool) error {
 
 		// 没有可再派发的：没有在跑的就收工，否则等一个跑完再看。
 		if len(activeIDs) == 0 {
+			if onlyID != "" && launched == 0 {
+				return singleIDNotDispatchedError(root, onlyID, blockReason)
+			}
 			if !quiet {
 				switch {
 				case blockReason != "":
@@ -389,6 +425,25 @@ func noFallback(cfg *Config, model string) bool {
 // 代价是这两类卡在 claude 空窗期只能排队等——这正是本条要买的东西：宁可复审晚做，不要复审做浅。
 func qualityFloorCard(t *Task) bool {
 	return t != nil && (t.Type == typeReview || t.XRole == "C")
+}
+
+func errRootHeldNotDispatched(onlyID string) error {
+	return fmt.Errorf("%w: another cardex instance holds this root; %s was not dispatched", errRunIDNotDispatched, onlyID)
+}
+
+func singleIDNotDispatchedError(root, onlyID, blockReason string) error {
+	status := "unknown"
+	reason := strings.TrimSpace(blockReason)
+	if t, err := findTask(root, onlyID); err == nil && t != nil {
+		status = t.Status
+		if reason == "" && strings.TrimSpace(t.LastError) != "" {
+			reason = t.LastError
+		}
+	}
+	if reason == "" {
+		reason = "blocked this tick"
+	}
+	return fmt.Errorf("%w: %s remains %s (%s)", errRunIDNotDispatched, onlyID, status, reason)
 }
 
 // codexDivertOK 判断 claude 被冷却/红线拦住时，该卡是否允许改道备用执行器 codex。

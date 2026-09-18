@@ -59,6 +59,7 @@ func resolveOne(t *testing.T, res *projectResolver, tk *Task) (string, string) {
 }
 
 func TestProjectPriorityChain(t *testing.T) {
+	t.Parallel()
 	res := newProjectResolver(pbatch(), pAliases())
 
 	cases := []struct {
@@ -87,6 +88,7 @@ func TestProjectPriorityChain(t *testing.T) {
 
 // TestProjectExplicitIgnoresDirEntirely —— 显式字段连"目录压根没出现过"都要压过去。
 func TestProjectExplicitIgnoresDirEntirely(t *testing.T) {
+	t.Parallel()
 	res := newProjectResolver(pbatch(), pAliases())
 	name, src := res.resolve(&Task{Dir: "D:/never/seen/before", Project: "  Alpha  "})
 	if name != "Alpha" || src != projSourceExplicit {
@@ -97,6 +99,7 @@ func TestProjectExplicitIgnoresDirEntirely(t *testing.T) {
 // TestProjectPatternNeedsKnownName —— 模式层只认「当批已知项目名」。
 // 若 Alpha 自己都没站住脚（卡数不够），Alpha-cmp 就不该被拽进一个不存在的项目。
 func TestProjectPatternNeedsKnownName(t *testing.T) {
+	t.Parallel()
 	// Alpha 只有 1 张卡、单目录 → 不够格 → 不进已知名单
 	ts := []*Task{pcard("/work/Alpha", "a")}
 	for i := 0; i < 3; i++ {
@@ -116,6 +119,7 @@ func TestProjectPatternNeedsKnownName(t *testing.T) {
 // TestProjectPatternTakesLongestKnownName —— "Trading" 与 "Trading-docs" 同时已知时，
 // Trading-docs-mirror 必须归给更长的那个，否则 Trading-docs 的子目录会被 Trading 吞掉。
 func TestProjectPatternTakesLongestKnownName(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	for i := 0; i < 3; i++ {
 		n := string(rune('0' + i))
@@ -130,6 +134,7 @@ func TestProjectPatternTakesLongestKnownName(t *testing.T) {
 // TestProjectPatternWalksAncestors —— 日期工作树下面再挂子课题目录时，
 // 证据在**祖先**的 basename 上（Trading-strategy-research-20260726/c-etf-regime）。
 func TestProjectPatternWalksAncestors(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	for i := 0; i < 3; i++ {
 		ts = append(ts, pcard("/w/Trading", "t"+string(rune('0'+i))))
@@ -154,6 +159,7 @@ func TestProjectPatternWalksAncestors(t *testing.T) {
 // TestProjectPatternEqualNameBeatsShorterPrefix —— 祖先 basename 与长已知名等值时，
 // 必须归长的那个，绝不能被短已知名以前缀吞并。
 func TestProjectPatternEqualNameBeatsShorterPrefix(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	for i := 0; i < 3; i++ {
 		n := string(rune('0' + i))
@@ -178,6 +184,7 @@ func TestProjectPatternEqualNameBeatsShorterPrefix(t *testing.T) {
 //  2. 交回启发式后，groupDirs 的「同名目录」证据把它并进正确的项目；
 //  3. 连同名证据都没有时落「未分类」（可见）——而不是被静默判给隔壁项目。
 func TestProjectPatternNewRootWithKnownNameNotSwallowed(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	for i := 0; i < 3; i++ {
 		n := string(rune('0' + i))
@@ -201,6 +208,7 @@ func TestProjectPatternNewRootWithKnownNameNotSwallowed(t *testing.T) {
 // 它的新根与子目录都不得再被更短的已知名前缀吞掉，且两侧结论一致。
 // 这是 matchPattern 注释里给出的规避出口，必须真的可用（否则那句注释就是空头支票）。
 func TestProjectPatternDeclaredRootIsNotSwallowed(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	for i := 0; i < 3; i++ {
 		n := string(rune('0' + i))
@@ -240,6 +248,7 @@ func TestProjectPatternDeclaredRootIsNotSwallowed(t *testing.T) {
 // 现表 {-lanes,-worktrees,-worktree,-lane,-wt} 两两互不为后缀，本用例当前是"守门"性质；
 // 它杀死的突变是"未来新增/重排后缀时把短的写在前面"。
 func TestLaneSuffixesLongestFirst(t *testing.T) {
+	t.Parallel()
 	for i := 0; i < len(laneSuffixes); i++ {
 		for j := i + 1; j < len(laneSuffixes); j++ {
 			a, b := laneSuffixes[i], laneSuffixes[j]
@@ -270,6 +279,7 @@ func TestLaneSuffixesLongestFirst(t *testing.T) {
 // 真正被本用例杀死的突变：把这段父链遍历改写成对 observed 的裸前缀扫描
 // （for o := range observed { if HasPrefix(d, o) { union } }）——一改即红。
 func TestGroupDirsPrefixNeedsSeparator(t *testing.T) {
+	t.Parallel()
 	ts := []*Task{
 		pcard("/w/Trading", "a"),
 		pcard("/w/Trading-docs", "b"),
@@ -290,6 +300,7 @@ func TestGroupDirsPrefixNeedsSeparator(t *testing.T) {
 // 门槛被改成 2 或 5 时用例跟着一起变，照样绿。门槛是对外契约（"第几张卡开始自己成项目"），
 // 契约值必须由测试独立钉死。
 func TestSoloProjectCardThreshold(t *testing.T) {
+	t.Parallel()
 	mk := func(n int) *projectResolver {
 		var ts []*Task
 		for i := 0; i < n; i++ {
@@ -308,6 +319,7 @@ func TestSoloProjectCardThreshold(t *testing.T) {
 // TestMirroredDirQualifiesWithOneCard —— 跨机镜像（review_dir）是强证据：
 // 哪怕只有一张卡，两个互证目录也足以成项目，不该被门槛误杀。
 func TestMirroredDirQualifiesWithOneCard(t *testing.T) {
+	t.Parallel()
 	tk := pcard("/w/Twin", "唯一一张")
 	tk.ReviewDir = "D:/mirror/Twin"
 	res := newProjectResolver([]*Task{tk}, nil)
@@ -319,6 +331,7 @@ func TestMirroredDirQualifiesWithOneCard(t *testing.T) {
 // ---- 别名规则的匹配语义 ----
 
 func TestAliasBarePathIsExactNotPrefix(t *testing.T) {
+	t.Parallel()
 	a := boardProjectAlias{Match: "/Users/me/Projects", Project: "未分类"}
 	if !a.matchesDir("/Users/me/Projects") {
 		t.Fatal("裸路径应命中目录自身")
@@ -330,6 +343,7 @@ func TestAliasBarePathIsExactNotPrefix(t *testing.T) {
 }
 
 func TestAliasGlobCoversSubtreeAndIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
 	a := boardProjectAlias{Match: "D:/Project/PO-tasks/*", Project: "X"}
 	for _, d := range []string{"D:/Project/PO-tasks/abc", "D:/Project/PO-tasks/abc/deep/er", "d:/project/po-tasks/ABC"} {
 		if !a.matchesDir(d) {
@@ -344,6 +358,7 @@ func TestAliasGlobCoversSubtreeAndIsCaseInsensitive(t *testing.T) {
 }
 
 func TestAliasTitleAndDirAreANDed(t *testing.T) {
+	t.Parallel()
 	res := newProjectResolver(nil, []boardProjectAlias{
 		{Match: "D:/tasks/*", Title: "Hermes", Project: "PerlicaHermes"},
 	})
@@ -359,6 +374,7 @@ func TestAliasTitleAndDirAreANDed(t *testing.T) {
 }
 
 func TestAliasBadRulesSkippedAndDisclosed(t *testing.T) {
+	t.Parallel()
 	raw := []boardProjectAlias{
 		{Match: "/w/ok", Project: "Good"},
 		{Match: "/w/x"},                            // 缺 project
@@ -389,6 +405,7 @@ func TestAliasBadRulesSkippedAndDisclosed(t *testing.T) {
 }
 
 func TestAliasFirstMatchWins(t *testing.T) {
+	t.Parallel()
 	res := newProjectResolver(nil, []boardProjectAlias{
 		{Match: "D:/t/*", Title: "Hermes", Project: "PerlicaHermes"},
 		{Match: "D:/t/*", Project: "兜底"},
@@ -437,6 +454,7 @@ func projectByID(snap *boardSnapshot, id string) *Project {
 // TestUnclassifiedAbsorbsOrphanDirs —— 负例：孤儿目录**不再各自成项目**，
 // 而是统一进「未分类」。这是本卡要解决的"80 个野项目"问题的核心断言。
 func TestUnclassifiedAbsorbsOrphanDirs(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	for i := 0; i < 3; i++ {
 		ts = append(ts, pcard("/w/Alpha", "a"+string(rune('0'+i))))
@@ -479,6 +497,7 @@ func TestUnclassifiedAbsorbsOrphanDirs(t *testing.T) {
 // TestUnclassifiedMigratesOutAfterAliasRegistered —— 登记别名后**不动任何卡文件**，
 // 下一次快照重建即把卡迁出收件箱。这是存量整理机制本身的验收。
 func TestUnclassifiedMigratesOutAfterAliasRegistered(t *testing.T) {
+	t.Parallel()
 	ts := []*Task{
 		pcard("D:/Project/PO-tasks/t1", "Hermes runtime truth"),
 		pcard("D:/Project/PO-tasks/t2", "Hermes receipt R2"),
@@ -537,6 +556,7 @@ func taskFileFingerprint(t *testing.T, root string) string {
 
 // TestUnclassifiedAlwaysPresent —— 一张野卡都没有时，收件箱仍要显示（空桶也是信息）。
 func TestUnclassifiedAlwaysPresent(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	for i := 0; i < 3; i++ {
 		ts = append(ts, pcard("/w/Alpha", "a"+string(rune('0'+i))))
@@ -558,6 +578,7 @@ func TestUnclassifiedAlwaysPresent(t *testing.T) {
 // TestExplicitProjectMergesWithDerivedProject —— 显式钉的卡与目录推导出的卡
 // 必须落进**同一个**项目，而不是两个同名项目。
 func TestExplicitProjectMergesWithDerivedProject(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	for i := 0; i < 3; i++ {
 		ts = append(ts, pcard("/w/Alpha", "a"+string(rune('0'+i))))
@@ -585,6 +606,7 @@ func TestExplicitProjectMergesWithDerivedProject(t *testing.T) {
 
 // TestSnapshotSurfacesProjectAliasError —— 坏别名规则必须一路透到 /api/overview。
 func TestSnapshotSurfacesProjectAliasError(t *testing.T) {
+	t.Parallel()
 	root := bootProjectRoot(t, `{"project_aliases":[{"match":"/w/x"}]}`, pcard("/w/x", "卡"))
 	snap, err := buildSnapshot(root, fixedTime())
 	if err != nil {
@@ -601,6 +623,7 @@ func TestSnapshotSurfacesProjectAliasError(t *testing.T) {
 // ---- add -project 与软约束 ----
 
 func TestAddPinsProjectAndWarnsOnUnclassified(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	if err := saveConfig(root, defaultConfig("claude")); err != nil {
 		t.Fatal(err)
@@ -643,6 +666,7 @@ func TestAddPinsProjectAndWarnsOnUnclassified(t *testing.T) {
 
 // TestWarnIfUnclassifiedIsAdvisoryOnly —— 软约束绝不阻断，且判定必须与看板一致。
 func TestWarnIfUnclassifiedIsAdvisoryOnly(t *testing.T) {
+	t.Parallel()
 	root := bootProjectRoot(t, "", pcard("/w/orphan", "野卡"))
 	// 不 panic、不改盘、无返回值：这里断言的是"能安全调用"这条契约。
 	warnIfUnclassified(root, pcard("/w/orphan", "野卡"))
@@ -662,6 +686,7 @@ func TestWarnIfUnclassifiedIsAdvisoryOnly(t *testing.T) {
 // 这张表就是 ~/.cardex/board.json 里写入的那一份（同一个文件内容），
 // 所以它既是回归测试，也是这份配置在仓库内的可复核副本。
 func TestInitialAliasTableClassifiesRealInventory(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile(filepath.Join("testdata", "project_aliases_initial.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -767,6 +792,7 @@ func TestInitialAliasTableClassifiesRealInventory(t *testing.T) {
 // 证据，此前一律落进收件箱。谱系层沿 review_of / emitted_by 上溯：一张审核卡审的是谁，
 // 就属于谁的项目——这比猜目录强得多。
 func TestLineageRescuesDerivedCardsFromInbox(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	for i := 0; i < 3; i++ { // 够格的启发式项目 Alpha
 		ts = append(ts, pcard("/work/Alpha", "a"+string(rune('0'+i))))
@@ -792,6 +818,7 @@ func TestLineageRescuesDerivedCardsFromInbox(t *testing.T) {
 
 // 谱系是**兜底**层：卡自身目录已有结论时不得被父卡的归属顶掉（那是关于这张卡的直接证据）。
 func TestLineageDoesNotOverrideOwnEvidence(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	for i := 0; i < 3; i++ {
 		ts = append(ts, pcard("/work/Alpha", "a"+string(rune('0'+i))))
@@ -809,6 +836,7 @@ func TestLineageDoesNotOverrideOwnEvidence(t *testing.T) {
 
 // 多跳谱系（实现→审核→修复→审核）与断链/成环：都必须停得下来且不误判。
 func TestLineageMultiHopAndBrokenChain(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	for i := 0; i < 3; i++ {
 		ts = append(ts, pcard("/work/Alpha", "a"+string(rune('0'+i))))
@@ -841,6 +869,7 @@ func TestLineageMultiHopAndBrokenChain(t *testing.T) {
 // （别名声明 > 卡上显式钉 > 卡数多 > 字典序）。实测账本里 trading/Trading 与
 // .cardex/cardex 就是这样各带哈希后缀裂成两格的。
 func TestCanonicalProjectNamesFoldsSlugCollisions(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		names   []string
@@ -907,6 +936,7 @@ func TestCanonicalProjectNamesFoldsSlugCollisions(t *testing.T) {
 // 这条钉住的是"终态不被排除"这个事实本身：若哪天有人给归组链加个 !t.terminal() 过滤，
 // 一个做完的项目会整个从看板消失。
 func TestTerminalCardsGroupLikeActiveOnes(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	for i, st := range []string{statusDone, statusCanceled, statusDone} {
 		c := pcard("/work/Gamma", "g"+string(rune('0'+i)))

@@ -27,6 +27,7 @@ stream error: stream disconnected before completion
 `
 
 func TestCodexErrorLineSkipsBanner(t *testing.T) {
+	t.Parallel()
 	got := codexErrorLine(codexFailOutput)
 	// 必须取到真错误,绝不能是横幅。
 	if strings.Contains(got, "Reading additional input") || strings.HasPrefix(got, "OpenAI Codex") {
@@ -43,6 +44,7 @@ func TestCodexErrorLineSkipsBanner(t *testing.T) {
 
 // 老 bug 实证：横幅本身不匹配 transientRe——所以 firstLine 取横幅时,瞬时错误被误判硬失败。
 func TestBannerNotTransient(t *testing.T) {
+	t.Parallel()
 	if transientRe.MatchString("Reading additional input from stdin...") {
 		t.Fatal("横幅不该匹配 transientRe（否则测试构造无意义）")
 	}
@@ -53,6 +55,7 @@ func TestBannerNotTransient(t *testing.T) {
 }
 
 func TestTransientMatchesCodexNetErrors(t *testing.T) {
+	t.Parallel()
 	transient := []string{
 		"stream error: stream disconnected before completion",
 		"error sending request to https://...: connection reset by peer",
@@ -77,6 +80,7 @@ func TestTransientMatchesCodexNetErrors(t *testing.T) {
 // 无 transient/硬错误行时返回 ""，由调用方回退到真实 runErr / "无最终消息"诊断——
 // 绝不回退到横幅或从 transcript 里瞎抓一行。
 func TestCodexErrorLineEmptyWhenNoRealError(t *testing.T) {
+	t.Parallel()
 	onlyNoise := "Reading additional input from stdin...\nOpenAI Codex v0.144.1\n--------\nmodel: x\n"
 	if got := codexErrorLine(onlyNoise); got != "" {
 		t.Fatalf("全噪声应返回 空, got %q", got)
@@ -87,6 +91,7 @@ func TestCodexErrorLineEmptyWhenNoRealError(t *testing.T) {
 // codexErrorLine 绝不能把这类无害审查内容当"错误"上报（旧 bug：报成 "...You cannot rationalize..."，
 // 掩盖真因=superpowers/gsd 框架注入耗尽回合预算的空终稿故障）。
 func TestCodexErrorLineIgnoresReviewProse(t *testing.T) {
+	t.Parallel()
 	prose := `user
 对抗复审 L5.1-b——独立验证 R+2 修复是否真闭。
 我会严格只读，先核对提交/差异。
@@ -101,6 +106,7 @@ appendTombstone 的失败被吞掉，CLI 无条件退 0，这是 invalid 的。
 
 // codexHardErrRe：服务端硬错误（含 OpenAI 网络安全审查闸）必须被清晰上报，别被吞成空。
 func TestCodexErrorLineSurfacesProviderHardErrors(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"网络安全审查闸":  "This request has been flagged for possible cybersecurity risk.",
 		"cloudflare 拦": "Access blocked by Cloudflare",

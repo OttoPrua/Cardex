@@ -21,7 +21,13 @@ var (
 	managerWakeExecutable   = os.Executable
 	managerWakeLaunchctlRun = defaultManagerWakeLaunchctlRun
 	managerWakeWritePlist   = atomicWriteSync
+	launchctlBin            = "launchctl"
+	launchctlCombinedOutput = defaultLaunchctlCombinedOutput
 )
+
+func defaultLaunchctlCombinedOutput(args ...string) ([]byte, error) {
+	return exec.Command(launchctlBin, args...).CombinedOutput()
+}
 
 func defaultManagerWakeLaunchdPlistPath() string {
 	home, err := os.UserHomeDir()
@@ -34,7 +40,7 @@ func defaultManagerWakeLaunchdPlistPath() string {
 func defaultManagerWakeLaunchctlRun(args ...string) error {
 	// launchctl writes the absent-unit diagnostic to stdout/stderr. Run()
 	// would leave only "exit status 113" and misclassify a normal absence.
-	out, err := exec.Command("launchctl", args...).CombinedOutput()
+	out, err := launchctlCombinedOutput(args...)
 	if err == nil {
 		return nil
 	}

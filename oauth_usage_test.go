@@ -318,6 +318,7 @@ func TestBudgetBlockedTakesWorstOfThreeSources(t *testing.T) {
 // ---- 端点响应形态兼容性（既然未文档化，多留几形态测试兜住格式漂移）----
 
 func TestParseOAuthUsageBodyShapes(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	cases := []struct {
 		name string
@@ -396,6 +397,7 @@ func strContains(haystack, needle string) bool {
 // CG-1b 追加:端点实测 utilization 是 0-100 百分比域；(0,1] 区间刻度歧义，拒判为数据不足。
 // 新语义:按字段名硬分派、拒绝任何自动归一、任一歧义值一律"数据不足"拒响应。
 func TestReadPercentFieldsRejectsAmbiguousScales(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name  string
 		node  map[string]any
@@ -501,6 +503,7 @@ func TestOAuthUsageFailOpenOnUsedPercentSubOne(t *testing.T) {
 // CodexBar 死在 99% 样本后队列被永久封锁(正是 CG-1 动机的失效模式)。
 // 修复:maxAge<=0 归位默认 90 分钟,陈旧样本必过期→fail-open。
 func TestUsageFeedFailOpenOnMaxAgeZero(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	feedPath := filepath.Join(dir, "usage-history.jsonl")
 	// 样本 120min 前(> 默认 90min TTL);usedPercent=99(若采信必 block)。
@@ -669,6 +672,7 @@ func TestLoadOAuthAccessTokenHardIsolatesWhenCredsPathSet(t *testing.T) {
 //
 // 另：从 testdata/oauth_usage_fixture.json 读脱敏实样 fixture 作额外回归锚（字段形状照真响应，数值已改）。
 func TestCG1bUtilizationPercentDomain(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 
 	// 单元层（直接走 parseOAuthUsageBody）
@@ -741,6 +745,7 @@ func TestCG1bUtilizationPercentDomain(t *testing.T) {
 //   - 不得再含旧契约短语(证伪:若谁把句子改回旧措辞,本测试报红);
 //   - 必须含新契约的三个关键判据(100 百分域直取 / (0,1] 歧义拒判 / >100 域外拒判)。
 func TestReadmeUtilizationContractMatchesImplementation(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		file          string
 		staleMarkers  []string

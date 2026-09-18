@@ -9,9 +9,22 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+var admissionHookTestMu sync.Mutex
+
+func parallelAdmissionHooks(t *testing.T) {
+	t.Helper()
+	// Sequential: these assign process-wide admissionPreStartHook / PreInvoke
+	// hooks that every task-aware runCmdRegistered fires. t.Parallel() would
+	// park until the package sequential prefix ends, then block unrelated
+	// invoke tests (native done-gate, goal launch) on the hook channels.
+	admissionHookTestMu.Lock()
+	t.Cleanup(func() { admissionHookTestMu.Unlock() })
+}
 
 type dispatchSnapshot struct {
 	task     []byte
@@ -184,6 +197,7 @@ func assertAttemptClosed(t *testing.T, root, taskID, attemptID string) {
 }
 
 func TestPausedReservationZeroMutation(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	withSchedulerLock(t, root)
 	cfg := testCfg()
@@ -200,6 +214,7 @@ func TestPausedReservationZeroMutation(t *testing.T) {
 }
 
 func TestMalformedAdmissionReservationZeroMutation(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	withSchedulerLock(t, root)
 	cfg := testCfg()
@@ -227,6 +242,7 @@ func waitReservedAttempt(t *testing.T, root, id string, timeout time.Duration) *
 }
 
 func TestPauseAfterReservationBeforeLaunchNoProvider(t *testing.T) {
+	parallelAdmissionHooks(t)
 	root := testRoot(t)
 	counter := filepath.Join(t.TempDir(), "calls")
 	cfg := runTaskCfg(t, countingClaudeBin(t, counter, mkOKResultJSON("sess-pause-launch")))
@@ -282,6 +298,7 @@ func TestPauseAfterReservationBeforeLaunchNoProvider(t *testing.T) {
 }
 
 func TestPauseThenResumeAfterReservationOldEpochCannotLaunch(t *testing.T) {
+	parallelAdmissionHooks(t)
 	root := testRoot(t)
 	counter := filepath.Join(t.TempDir(), "calls")
 	cfg := runTaskCfg(t, countingClaudeBin(t, counter, mkOKResultJSON("sess-stale-epoch")))
@@ -352,6 +369,7 @@ func TestPauseThenResumeAfterReservationOldEpochCannotLaunch(t *testing.T) {
 }
 
 func TestPausedOrEpochStalePostCompleteNoFollowOn(t *testing.T) {
+	t.Parallel()
 	payload := "done\n```json\n{\"goal\":\"g\",\"done\":[\"d\"],\"tasks\":[{\"title\":\"emitted-child\",\"prompt\":\"x\"}]}\n```"
 	passReport := "```json\n{\"verdict\":\"pass\",\"p0\":[],\"p1\":[],\"p2\":[],\"summary\":\"过\"}\n```"
 	concerns := reviewReport
@@ -469,6 +487,7 @@ func denyAdmission(t *testing.T, root string, pauseResume bool) {
 }
 
 func TestTickWhilePausedDoesNotReconcileReviewChild(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := runTaskCfg(t, fakeClaudeBin(t, mkOKResultJSON("sess-tick"), "", 0))
 	cfg.DrainRescanSec = 1
@@ -494,6 +513,7 @@ func TestTickWhilePausedDoesNotReconcileReviewChild(t *testing.T) {
 }
 
 func TestForceDoesNotBypassPausedAdmission(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	counter := filepath.Join(t.TempDir(), "calls")
 	cfg := runTaskCfg(t, countingClaudeBin(t, counter, mkOKResultJSON("sess-force")))
@@ -518,6 +538,7 @@ func TestForceDoesNotBypassPausedAdmission(t *testing.T) {
 }
 
 func TestFreshReservationUnderResumedEpochProceeds(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	counter := filepath.Join(t.TempDir(), "calls")
 	cfg := runTaskCfg(t, countingClaudeBin(t, counter, mkOKResultJSON("sess-fresh")))
@@ -564,6 +585,7 @@ func TestFreshReservationUnderResumedEpochProceeds(t *testing.T) {
 }
 
 func TestLegacyMissingAdmissionEpochZeroCompatible(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	withSchedulerLock(t, root)
 	cfg := runTaskCfg(t, fakeClaudeBin(t, mkOKResultJSON("sess-legacy"), "", 0))
@@ -602,6 +624,7 @@ func TestLegacyMissingAdmissionEpochZeroCompatible(t *testing.T) {
 }
 
 func TestPauseBetweenValidationAndStartNoProvider(t *testing.T) {
+	parallelAdmissionHooks(t)
 	root := testRoot(t)
 	counter := filepath.Join(t.TempDir(), "calls")
 	cfg := runTaskCfg(t, countingClaudeBin(t, counter, mkOKResultJSON("sess-pause-prestart")))
@@ -666,6 +689,7 @@ func TestPauseBetweenValidationAndStartNoProvider(t *testing.T) {
 }
 
 func TestPauseBetweenStep1AndStep2NoSecondProvider(t *testing.T) {
+	parallelAdmissionHooks(t)
 	root := testRoot(t)
 	counter := filepath.Join(t.TempDir(), "calls")
 	cfg := runTaskCfg(t, countingClaudeBin(t, counter, mkOKResultJSON("sess-pause-step2")))
@@ -745,6 +769,7 @@ func TestPauseBetweenStep1AndStep2NoSecondProvider(t *testing.T) {
 }
 
 func TestMissingTaskExecRootZeroStart(t *testing.T) {
+	t.Parallel()
 	marker := filepath.Join(t.TempDir(), "started")
 	cmd := exec.CommandContext(context.Background(), "sh", "-c", "printf started > "+shSingleQuote(marker))
 	setupProcGroup(cmd)
@@ -761,6 +786,7 @@ func TestMissingTaskExecRootZeroStart(t *testing.T) {
 }
 
 func TestAttemptSwapZeroStartAndBind(t *testing.T) {
+	parallelAdmissionHooks(t)
 	root := testRoot(t)
 	withSchedulerLock(t, root)
 	cfg := testCfg()
@@ -838,6 +864,7 @@ func TestAttemptSwapZeroStartAndBind(t *testing.T) {
 }
 
 func TestBindWriteFailureReapsProcessAndReleasesLease(t *testing.T) {
+	parallelAdmissionHooks(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("workspace flock is POSIX")
 	}
@@ -888,6 +915,7 @@ func TestBindWriteFailureReapsProcessAndReleasesLease(t *testing.T) {
 }
 
 func TestBindFailureHoldsLaunchGateUntilProcessReaped(t *testing.T) {
+	parallelAdmissionHooks(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("workspace flock is POSIX")
 	}

@@ -11,6 +11,7 @@ import (
 )
 
 func TestClassifyGoalLaunchErrors(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		err  error
 		want string
@@ -34,6 +35,7 @@ func TestClassifyGoalLaunchErrors(t *testing.T) {
 }
 
 func TestCopyableGoalCommandIsNotShellAndBudgetIsGoalFlag(t *testing.T) {
+	t.Parallel()
 	cmd := copyableNativeGoalCommand("/abs/contract.txt", "abc", 12000)
 	if strings.Contains(cmd, "$(cat") {
 		t.Fatal("TUI must not be treated as a shell")
@@ -64,6 +66,7 @@ func containsArg(args []string, name string) bool {
 }
 
 func TestPlanningFailedMapsUnknownNotTimeout(t *testing.T) {
+	t.Parallel()
 	obs := nativeGoalObservation{NativeStatus: "paused", PauseMessage: "Planning failed", UpdatesOK: true}
 	mapped := mapNativeGoalToTask(obs, false, false, false)
 	if mapped.Observation != goalObsHeld {
@@ -78,6 +81,7 @@ func TestPlanningFailedMapsUnknownNotTimeout(t *testing.T) {
 }
 
 func TestExternalObserveDoesNotInventAttempt(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -105,6 +109,7 @@ func TestExternalObserveDoesNotInventAttempt(t *testing.T) {
 }
 
 func TestBindSessionRejectsHermesDisguisedAsCodexUUID(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -245,6 +250,7 @@ func TestHermesWakeRequiresAckNotLocalReceipt(t *testing.T) {
 }
 
 func TestSlaveWriteHelperIsNotControlConfirmation(t *testing.T) {
+	t.Parallel()
 	st := goalHostStatus{LastInject: "/goal pause", ControlConfirmed: false, NativeStatus: "active"}
 	if st.ControlConfirmed || nativeStatusMatchesControl(goalControlPause, st.NativeStatus) {
 		t.Fatal("active after inject is not a confirmed pause")

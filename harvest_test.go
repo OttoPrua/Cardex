@@ -9,13 +9,24 @@ import (
 	"context"
 	"os/exec"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
 
+var harvestTestMu sync.Mutex
+
+func parallelHarvest(t *testing.T) {
+	t.Helper()
+	t.Parallel()
+	harvestTestMu.Lock()
+	t.Cleanup(func() { harvestTestMu.Unlock() })
+}
+
 const harvestResJSON = `{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"s1","num_turns":1}`
 
 func TestHarvestKillsHungPipeAfterResult(t *testing.T) {
+	parallelHarvest(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("依赖 sh")
 	}
@@ -55,6 +66,7 @@ func TestHarvestKillsHungPipeAfterResult(t *testing.T) {
 }
 
 func TestHarvestNormalExitUnaffected(t *testing.T) {
+	parallelHarvest(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("依赖 sh")
 	}
@@ -77,6 +89,7 @@ func TestHarvestNormalExitUnaffected(t *testing.T) {
 }
 
 func TestHarvestNoResultRunsToCompletion(t *testing.T) {
+	parallelHarvest(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("依赖 sh")
 	}

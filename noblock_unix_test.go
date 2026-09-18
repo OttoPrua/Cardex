@@ -55,6 +55,7 @@ func mustReturnWithin(t *testing.T, what string, d time.Duration, fn func()) {
 // 把 fstat 复核删掉:两例返回 err==nil → "必须报 errNotRegularFile" 断言红;
 // 把 O_RDONLY 前的 O_NONBLOCK 去掉:FIFO 两例同样挂死(这才是真正防阻塞的那一位)。
 func TestOpenRegularFileNoBlockRejectsNonRegular(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	reg := filepath.Join(dir, "plain.txt")
 	if err := os.WriteFile(reg, []byte("hello"), 0o644); err != nil {
@@ -127,6 +128,7 @@ func TestOpenRegularFileNoBlockRejectsNonRegular(t *testing.T) {
 // 【杀的突变】改回 os.Open 在前 → 第二子例挂死红;删掉 symlink 分支改成跟随复制 → dangling 子例
 // 报 ENOENT(整个 prepare 就此必败)、链接子例变成普通文件(链接本体断言红)。
 func TestCopyUntrackedPathNeverOpensNonRegular(t *testing.T) {
+	t.Parallel()
 	src := t.TempDir()
 	dst := t.TempDir()
 
@@ -209,6 +211,7 @@ func assertSymlinkTo(t *testing.T, path, want string) {
 // git ls-files 会不会把这些链接列出来(实测:会)。
 // 【杀的突变】copyUntrackedPath 改回先 os.Open → 本测试挂死在 30s 红。
 func TestCodexReviewCopySurvivesUntrackedSymlinkToFifo(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	src := mkCodexReviewSrcRepo(t)
 	mkFifo(t, filepath.Join(src, "realfifo"))
@@ -267,6 +270,7 @@ func TestCodexReviewCopySurvivesUntrackedSymlinkToFifo(t *testing.T) {
 // 变成链接(旧构造只能测到这一层,配不上"永久阻塞"的说法)。指向原仓 FIFO 的**绝对**链接才真的把
 // 无读端管道带进写路径,突变下才会如实挂死。
 func TestCodexReviewCopyGuardsMarkerNamespace(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	src := mkCodexReviewSrcRepo(t)
 	fifo := mkFifo(t, filepath.Join(src, "pipe"))
@@ -317,6 +321,7 @@ func TestCodexReviewCopyGuardsMarkerNamespace(t *testing.T) {
 // os.ReadFile,tick 每轮扫到它就永久阻塞——整条对账线程占死,比被清理的残留严重得多。
 // 【杀的突变】readCodexWorkMarker 改回 os.ReadFile → 本测试挂死在 20s 红。
 func TestCleanupCodexReviewOrphansNeverBlocksOnFifoMarker(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	workRoot := codexWorkRoot(root)
 	copyDir := filepath.Join(workRoot, "crashed-1234-1")
@@ -353,6 +358,7 @@ func TestCleanupCodexReviewOrphansNeverBlocksOnFifoMarker(t *testing.T) {
 // 【杀的突变】把闸门改回 `fi.IsDir()`(不判 IsRegular)→ 第一子例挂死在 20s 红;
 // 把 os.Stat 改成 os.Lstat(过度收紧)→ 第三子例红(指向普通文件的链接被误杀)。
 func TestExtractEmitTasksSkipsNonRegularRescueFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	mkFifo(t, filepath.Join(dir, "pipe"))
 	if err := os.Symlink("pipe", filepath.Join(dir, "_WAVE-1-TASKS.json")); err != nil {
@@ -392,6 +398,7 @@ func TestExtractEmitTasksSkipsNonRegularRescueFile(t *testing.T) {
 // 一条 <id>.jsonl → FIFO 的链接就能让 `cardex sessions` 整条命令挂死。
 // 【杀的突变】sessionTitle 改回 os.Open → 第一子例挂死红;第二子例保证没把功能整条关掉。
 func TestSessionTitleSkipsNonRegular(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	mkFifo(t, filepath.Join(dir, "pipe"))
 	if err := os.Symlink("pipe", filepath.Join(dir, "blocked.jsonl")); err != nil {

@@ -29,6 +29,7 @@ func finalOwnerLeg(runner, model, effort, stage string, readOnly bool) policyLeg
 }
 
 func TestFinalOwnerClosedAuthGrammarRejectsBareMultilineFooter(t *testing.T) {
+	t.Parallel()
 	bareWithFooter := grokOIDCNoAuthContextDiagnostic + "\n" +
 		"Model: grok-4.6\nAuth: Oidc\nVersion: 1.0.5\nAvailable: grok-4.6"
 	if got := grokBuildAuthDiagnosticLine(bareWithFooter); got != "" {
@@ -43,6 +44,7 @@ func TestFinalOwnerClosedAuthGrammarRejectsBareMultilineFooter(t *testing.T) {
 }
 
 func TestFinalOwnerMatrixResolvesEveryEffectiveRow(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	tests := []struct {
 		name string
@@ -130,6 +132,7 @@ func TestFinalOwnerMatrixResolvesEveryEffectiveRow(t *testing.T) {
 }
 
 func TestFinalOwnerFableIsOneCodexReadOnlyTerminalChain(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	task := finalOwnerTask("fable", routeClassBackend, riskClassHigh)
 	route, ok := resolveOwnerRoute(cfg, task)
@@ -168,6 +171,7 @@ func TestFinalOwnerFableIsOneCodexReadOnlyTerminalChain(t *testing.T) {
 }
 
 func TestFinalOwnerBackendRiskAndDeterministicSolGate(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	for _, risk := range []string{"", "ambiguous", riskClassHigh, riskClassCritical, riskClassProduction} {
 		task := finalOwnerTask("opus", routeClassBackend, risk)
@@ -216,6 +220,7 @@ func TestFinalOwnerBackendRiskAndDeterministicSolGate(t *testing.T) {
 }
 
 func TestFinalOwnerKimiProviderRedundancyIsNotIndependentOpinion(t *testing.T) {
+	t.Parallel()
 	kimiCLI := finalOwnerLeg(kimiCLIRunnerName, "kimi-code/k3", "max", routeStageAdversarialReview, true)
 	openCodeGo := finalOwnerLeg("opencode", "opencode-go/kimi-k3", "high", routeStageSecondView, true)
 	if independentModelOpinion(kimiCLI, openCodeGo) {
@@ -227,6 +232,7 @@ func TestFinalOwnerKimiProviderRedundancyIsNotIndependentOpinion(t *testing.T) {
 }
 
 func TestFinalOwnerAutomaticCodexBudgetAndSingleCall(t *testing.T) {
+	t.Parallel()
 	task := finalOwnerTask("opus", routeClassBackend, riskClassHigh)
 	task.AutomaticCodex = true
 	for _, tc := range []struct {
@@ -263,6 +269,7 @@ func TestFinalOwnerAutomaticCodexBudgetAndSingleCall(t *testing.T) {
 }
 
 func TestFinalOwnerAutomaticCodexBudgetReadsOnlyCodexProvider(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "usage-history.jsonl")
 	now := time.Now().UTC()
@@ -304,6 +311,7 @@ func TestFinalOwnerAutomaticCodexBudgetReadsOnlyCodexProvider(t *testing.T) {
 }
 
 func TestFinalOwnerRuntimeRefusesSecondAutomaticSolInvocation(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := policyTestConfig()
 	task := finalOwnerTask("opus", routeClassBackend, riskClassHigh)
@@ -335,6 +343,7 @@ func TestFinalOwnerRuntimeRefusesSecondAutomaticSolInvocation(t *testing.T) {
 }
 
 func TestFinalOwnerLineageRefusesSecondSolReviewChild(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := policyTestConfig()
 	parent := finalOwnerTask("opus", routeClassBackend, riskClassOrdinary)
@@ -358,6 +367,7 @@ func TestFinalOwnerLineageRefusesSecondSolReviewChild(t *testing.T) {
 }
 
 func TestFinalOwnerAdditiveTaskFieldsAreClosed(t *testing.T) {
+	t.Parallel()
 	valid := finalOwnerTask("opus", routeClassBackend, riskClassHigh)
 	valid.OwnerRouteStage = routeStageReleaseGate
 	valid.FallbackReason = string(fallbackSemanticStall)
@@ -394,6 +404,7 @@ func TestFinalOwnerAdditiveTaskFieldsAreClosed(t *testing.T) {
 }
 
 func TestFinalOwnerFrontendGateAndBoardReadback(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	haiku := finalOwnerTask("haiku", routeClassGeneral, riskClassOrdinary)
 	haiku.QualitySensitive = true
@@ -429,6 +440,7 @@ func TestFinalOwnerFrontendGateAndBoardReadback(t *testing.T) {
 }
 
 func TestFinalOwnerBoardExposesCriticalBudgetBypassReason(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	task := finalOwnerTask("opus", routeClassBackend, riskClassHigh)
 	task.OwnerCriticalBypassReason = "Owner-pinned production authentication repair"
@@ -439,6 +451,7 @@ func TestFinalOwnerBoardExposesCriticalBudgetBypassReason(t *testing.T) {
 }
 
 func TestFinalOwnerQueuedBoardReadbackUsesPlanWithoutClaimingExecution(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	task := finalOwnerTask("opus", routeClassBackend, riskClassHigh)
 	task.Status = statusQueued
@@ -453,6 +466,7 @@ func TestFinalOwnerQueuedBoardReadbackUsesPlanWithoutClaimingExecution(t *testin
 }
 
 func TestFinalOwnerEmittedCardEntersDefaultRouteWithoutExplicitPin(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := policyTestConfig()
 	parent := newTask(root, cfg, typeCoordinate, "emit final route", t.TempDir(), []string{"split"}, 5)
@@ -475,6 +489,7 @@ func TestFinalOwnerEmittedCardEntersDefaultRouteWithoutExplicitPin(t *testing.T)
 }
 
 func TestFinalOwnerLegacyTaskReadbackDoesNotRewriteBytesOrState(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	raw := []byte("{\n  \"id\": \"legacy-preserved\",\n  \"title\": \"existing held task\",\n  \"type\": \"sequence\",\n  \"status\": \"held\",\n  \"step\": 0,\n  \"prompts\": [\"existing work\"],\n  \"dir\": \"/tmp/existing\",\n  \"model\": \"sonnet\"\n}\n")
 	path := taskPath(root, "legacy-preserved")
@@ -499,6 +514,7 @@ func TestFinalOwnerLegacyTaskReadbackDoesNotRewriteBytesOrState(t *testing.T) {
 }
 
 func TestFinalOwnerFableRuntimeCreatesDirectTerminalMerger(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := policyTestConfig()
 	task := newTask(root, cfg, typeSequence, "hard decision", t.TempDir(), []string{"decide from evidence"}, 9)
@@ -548,6 +564,7 @@ func TestFinalOwnerFableRuntimeCreatesDirectTerminalMerger(t *testing.T) {
 }
 
 func TestFinalOwnerSerialBackendReviewPlan(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := policyTestConfig()
 	impl := finalOwnerTask("opus", routeClassBackend, riskClassHigh)
@@ -603,6 +620,7 @@ func TestFinalOwnerSerialBackendReviewPlan(t *testing.T) {
 }
 
 func TestFinalOwnerOrdinaryBackendKimiAdversarialReviewCreatesSeparatelyRoutedRepair(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := policyTestConfig()
 	impl := newTask(root, cfg, typeSequence, "ordinary bounded backend", t.TempDir(), []string{"implement bounded backend change"}, 5)

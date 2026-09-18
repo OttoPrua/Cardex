@@ -13,6 +13,7 @@ func v3ProofAuthorization() fallbackAuthorization {
 }
 
 func TestRouteV3ClosureFinalOwnerMatrix(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	tests := []struct {
 		name       string
@@ -43,6 +44,7 @@ func TestRouteV3ClosureFinalOwnerMatrix(t *testing.T) {
 }
 
 func TestRouteV3FableFallbackUsesClosedPresemanticSet(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []fallbackFailureKind{fallbackSemanticStall, fallbackInvalidTerminal} {
 		t.Run(string(kind), func(t *testing.T) {
 			root := testRoot(t)
@@ -67,6 +69,7 @@ func TestRouteV3FableFallbackUsesClosedPresemanticSet(t *testing.T) {
 }
 
 func TestRouteV3GrokAuthDiagnosticRequiresExactTrustedFamily(t *testing.T) {
+	t.Parallel()
 	exact := grokOIDCNoAuthContextDiagnostic
 	if got := grokBuildAuthDiagnosticLine(exact); got != exact {
 		t.Fatalf("exact trusted family not recognized: %q", got)
@@ -111,6 +114,7 @@ func TestRouteV3GrokAuthDiagnosticRequiresExactTrustedFamily(t *testing.T) {
 }
 
 func TestRouteV3GrokAuthCircuitRequiresCompleteZeroWorkObservation(t *testing.T) {
+	t.Parallel()
 	for _, subtype := range []string{"grok_build_auth_preflight", "grok_build_process_auth_exact"} {
 		base := claudeResult{Subtype: subtype, ObservationComplete: true}
 		if !grokBuildExactAuthResult(&base) {
@@ -132,6 +136,7 @@ func TestRouteV3GrokAuthCircuitRequiresCompleteZeroWorkObservation(t *testing.T)
 }
 
 func TestRouteV3GeneralOpusAdvancesGrokThenKimiAndStops(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	task := &Task{Type: typeSequence, Model: "opus", RouteClass: routeClassGeneral,
 		PreferRunner: "codex", FreshSteps: true, Prompts: []string{"implement"}}
@@ -156,6 +161,7 @@ func TestRouteV3GeneralOpusAdvancesGrokThenKimiAndStops(t *testing.T) {
 }
 
 func TestRouteV3DispatchReadbackNamesRequestedAndActualIdentity(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	task := &Task{Type: typeSequence, Model: "opus", RouteClass: routeClassBackend,
 		PreferRunner: "codex", FreshSteps: true, Prompts: []string{"implement"}}
@@ -186,6 +192,7 @@ func TestRouteV3DispatchReadbackNamesRequestedAndActualIdentity(t *testing.T) {
 }
 
 func TestRouteV3GrokAuthenticationNeverAdvancesAnyTierOrStandalonePin(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name       string
 		model      string
@@ -205,6 +212,7 @@ func TestRouteV3GrokAuthenticationNeverAdvancesAnyTierOrStandalonePin(t *testing
 			bin, _, productCalls := fakeGrokBuildExpiredAuth(t)
 			cfg := policyTestConfig()
 			cfg.GrokBuildBin = bin
+			isolateGrokLifecycleHome(t, cfg)
 			task := newTask(root, cfg, typeSequence, tc.name, t.TempDir(), []string{"implement"}, 1)
 			task.Model = tc.model
 			task.RouteClass = tc.routeClass

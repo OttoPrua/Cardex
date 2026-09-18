@@ -89,6 +89,7 @@ func TestInvokeKimiCLIPreservesExplicitCallerEngineOverride(t *testing.T) {
 }
 
 func TestKimi0372LegacyStreamStaysCompatible(t *testing.T) {
+	t.Parallel()
 	// The accepted 0.35/0.36 contracts plus the observed 0.37.2 legacy-engine shape
 	// (assistant semantic event + resume metadata, no version event) must all parse complete.
 	for name, raw := range map[string]string{

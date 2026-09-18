@@ -39,6 +39,7 @@ func findByPrefix(t *testing.T, root, prefix string) *Task {
 // A 完成 → 甲结论落隔离侧车（不进 B 卡）；派引擎乙独立作答的 B 卡：套引擎乙、prompt 与 A 相同。
 // 核心不变式：B 的盘上文件绝不含甲结论（被动暴露最小化，不只是"不进 prompt"）。
 func TestCrossAtoB(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCrossCfg()
 	const aSecret = "甲的机密结论：verdict=通过，理由 XYZ-独有洞"
@@ -99,6 +100,7 @@ func TestCrossAtoB(t *testing.T) {
 
 // B 完成 → 从侧车取甲结论 → 派引擎乙交叉查漏的 C 卡：合并模板注入**完整**甲+乙+TASK；侧车用后删除。
 func TestCrossBtoC(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCrossCfg()
 	b := newTask(root, cfg, typeCrossCheck, "交叉B[opus-codex]: 裁决X", "/tmp/proj", []string{"独立作答"}, 5)
@@ -143,6 +145,7 @@ func TestCrossBtoC(t *testing.T) {
 
 // C 是终点：合规结论（含 verdict json）不再派卡、不留 LastError。
 func TestCrossCTerminal(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	if err := os.MkdirAll(progressDir(root), 0o755); err != nil {
 		t.Fatal(err)
@@ -169,6 +172,7 @@ func TestCrossCTerminal(t *testing.T) {
 
 // B5：C 结论未按合并契约收尾（无 verdict json）→ 在 C 卡 LastError 显式留痕，不冒充有效终局。
 func TestCrossCNonConformingVisible(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	if err := os.MkdirAll(progressDir(root), 0o755); err != nil {
 		t.Fatal(err)
@@ -190,6 +194,7 @@ func TestCrossCNonConformingVisible(t *testing.T) {
 }
 
 func TestCrossMergeVerdictOK(t *testing.T) {
+	t.Parallel()
 	if !crossMergeVerdictOK("分析…\n```json\n{\"verdict\":\"合并结论\",\"confidence\":\"high\"}\n```") {
 		t.Fatal("含 verdict+合法 confidence 应 OK")
 	}
@@ -213,6 +218,7 @@ func TestCrossMergeVerdictOK(t *testing.T) {
 
 // B5 展示面：交叉合并报告在 list 状态行与 progress -show 都要显示,而非落空显 —。
 func TestReportStatusCrossMerge(t *testing.T) {
+	t.Parallel()
 	r := map[string]any{"verdict": "合并通过", "confidence": "high", "summary": "一句话最终结论"}
 	if got := reportStatus(r); !strings.Contains(got, "一句话最终结论") {
 		t.Fatalf("交叉合并报告的 list 状态应显示结论,而非 —, got %q", got)
@@ -221,6 +227,7 @@ func TestReportStatusCrossMerge(t *testing.T) {
 
 // renderTemplate 单遍替换：注入值含字面 {{B}} 不被二次替换（防甲结论把乙顶掉/非确定）。
 func TestRenderTemplateSinglePass(t *testing.T) {
+	t.Parallel()
 	out := renderTemplate("A={{A}} | B={{B}}", map[string]string{"A": "甲含 {{B}} 字样", "B": "乙内容"})
 	if out != "A=甲含 {{B}} 字样 | B=乙内容" {
 		t.Fatalf("注入值被二次替换（单遍失败）: %q", out)
@@ -237,6 +244,7 @@ func TestRenderTemplateSinglePass(t *testing.T) {
 
 // B4：链断裂（profile 缺失等）必须在母卡 LastError 显式留痕，且不产卡——不让单腿结果冒充终局。
 func TestCrossChainBreakVisible(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCrossCfg()
 	a := newTask(root, cfg, typeCrossCheck, "交叉A[opus-codex]: X", "/tmp/proj", []string{"solo"}, 5)
@@ -259,6 +267,7 @@ func TestCrossChainBreakVisible(t *testing.T) {
 }
 
 func TestApplyCrossEngine(t *testing.T) {
+	t.Parallel()
 	cfg := testCrossCfg() // 有 codex_bin + codex_model
 	cfgR := &Config{CodexBin: "c", CodexModel: "m", RemoteHosts: map[string]RemoteHostConfig{"h": {}}}
 
@@ -341,6 +350,7 @@ func TestApplyCrossEngine(t *testing.T) {
 }
 
 func TestCrossEngineLoc(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		eng  CrossEngine
 		want string
@@ -359,6 +369,7 @@ func TestCrossEngineLoc(t *testing.T) {
 
 // 甲乙执行位置不同的 profile 必须在 cmdCross 落卡前被拒绝（否则 B/C 拿错目录被派到错误机器）。
 func TestCmdCrossRejectsCrossLocationProfile(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, d := range []string{"tasks", "logs"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
@@ -379,6 +390,7 @@ func TestCmdCrossRejectsCrossLocationProfile(t *testing.T) {
 
 // B1：-dir 不能是 cardex 数据根（否则交叉卡 cwd 直接含 tasks/，B 一读就见 A）。
 func TestCmdCrossRejectsDataRootDir(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, d := range []string{"tasks", "logs"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
@@ -394,6 +406,7 @@ func TestCmdCrossRejectsDataRootDir(t *testing.T) {
 }
 
 func TestCrossBase(t *testing.T) {
+	t.Parallel()
 	cases := map[string]string{
 		"交叉A[opus-codex]: 裁决X":    "裁决X",
 		"交叉B[opus-codex]: 裁决X":    "裁决X",
@@ -410,6 +423,7 @@ func TestCrossBase(t *testing.T) {
 
 // cmdCross 只铺 A 卡；A 套引擎甲、谱系键**不透明**（非 A 卡 ID）、带原始任务、prompt 由 solo 模板渲染。
 func TestCmdCrossCreatesACard(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, d := range []string{"tasks", "logs"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o755); err != nil {
@@ -453,6 +467,7 @@ func TestCmdCrossCreatesACard(t *testing.T) {
 
 // 甲乙身份判定：同 kind+同模型=同引擎(须拒),否则不同。
 func TestCrossEngineIdentity(t *testing.T) {
+	t.Parallel()
 	cfg := testCrossCfg() // CodexModel=codex-model-x
 	same := func(a, b CrossEngine) bool { return crossEngineIdentity(a, cfg) == crossEngineIdentity(b, cfg) }
 	if !same(CrossEngine{Kind: "codex"}, CrossEngine{Kind: "codex"}) {
@@ -471,6 +486,7 @@ func TestCrossEngineIdentity(t *testing.T) {
 
 // cmdCross 拒绝甲乙同引擎的 profile(单引擎自审)。
 func TestCmdCrossRejectsSameEngine(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, d := range []string{"tasks", "logs"} {
 		os.MkdirAll(filepath.Join(root, d), 0o755)
@@ -486,6 +502,7 @@ func TestCmdCrossRejectsSameEngine(t *testing.T) {
 
 // blocker 2：入队后篡改 config 不得影响 B 的引擎——B 用冻结规格。
 func TestCrossFreezeIgnoresConfigChange(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCrossCfg()
 	a := newTask(root, cfg, typeCrossCheck, "交叉A[opus-codex]: X", "/tmp/proj", []string{"solo"}, 5)
@@ -514,6 +531,7 @@ func TestCrossFreezeIgnoresConfigChange(t *testing.T) {
 
 // blocker 3：崩溃对账——done 的 A 无后继 B → failed + 清侧车；有 B 或 active 的不动。
 func TestReconcileCrossOrphan(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCrossCfg()
 	mk := func(role, key string) *Task {
@@ -559,6 +577,7 @@ func TestReconcileCrossOrphan(t *testing.T) {
 
 // blocker 4：C 不合规必须**发布前**拦——进度报告不得落盘 + C 置 failed。
 func TestCrossCVerdictBeforePublish(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	os.MkdirAll(progressDir(root), 0o755)
 	cfg := testCrossCfg()
@@ -580,6 +599,7 @@ func TestCrossCVerdictBeforePublish(t *testing.T) {
 
 // -dir 不能是数据根的**父目录**(-dir=$HOME → cwd 含 $HOME/<数据根>)。
 func TestCmdCrossRejectsParentDir(t *testing.T) {
+	t.Parallel()
 	base := t.TempDir()
 	root := filepath.Join(base, rootDirName)
 	for _, d := range []string{"tasks", "logs"} {
@@ -593,6 +613,7 @@ func TestCmdCrossRejectsParentDir(t *testing.T) {
 }
 
 func TestApplyCrossEngineEffortValidation(t *testing.T) {
+	t.Parallel()
 	cfg := testCrossCfg()
 	if applyCrossEngine(&Task{Prompts: []string{"x"}}, CrossEngine{Kind: "claude", Model: "m", Effort: "bogus"}, cfg) == nil {
 		t.Fatal("非法 effort 应报错")
@@ -605,6 +626,7 @@ func TestApplyCrossEngineEffortValidation(t *testing.T) {
 // blocker(r5)：空 effort 的 reasoning 冻结必须冻**执行时真正回落的源**——本机 codex 用全局 codex_reasoning，
 // 远端 codex 用该主机的 reasoning（invokeRemoteCodex 的既有契约）。冻错源会正常路径跑错档位。
 func TestFreezeReasoningSource(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{
 		CodexBin: "c", CodexModel: "m", CodexReasoning: "global-r",
 		RemoteHosts: map[string]RemoteHostConfig{"h": {Reasoning: "host-r"}},

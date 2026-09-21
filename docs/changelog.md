@@ -2,6 +2,14 @@
 
 **中文** | [English](changelog.en.md) · 返回 [README](../README.md)
 
+## 2026-09-14 · v0.10.18：托管原生 Goal、持久设计会话、Hermes 入站
+
+- `goal-run -hosted` 打开 Cardex 自有 PTY，在 **master** 注入字面 `/goal` 合同路径+SHA256；`--cwd` 与 `GROK_HOME` 进入子进程。交互 `-manual` 仍要求控制 TTY，缺 PTY 记 `pty_missing`，不再无 TTY 空跑。
+- `goal-control -action pause|resume|stop` 只对 `control_owner=cardex-hosted` 展示为可用；确认看原生 post-state，不把 slave 写成功、exit 0、stale active 或 shell kill 当作 pause。外部 Goal 只读 `goal-observe`，不凭 Session ID 编造 attempt，不接管原 TUI。
+- 失败不再笼统 `stream_incomplete`：launch/control 写入 `failure_class`（`pty_ioctl`、`budget_flag_layer`、`approval_denied`、`pause_not_confirmed`、`planning_failed_unknown` 等）。CAL1/R2 的 Planning failed 保持原因未知。
+- workflow 绑定 `design_session` / `manager_session` / `owner_design_entry`（真实 provider/type/id）。`design-request`/`design-collect` 走同一 Grok 会话两次关联判断并可按持久指针恢复；Codex UUID 不得冒充 Hermes session。
+- manager-wake 增加 `provider=hermes` 目的地：持久 inbox + 匹配 ack 才算送达，本地出站收据不够。不调用 `hermes send` 群通道。Board 仍是 `0.0.0.0:8788`。
+
 ## 2026-09-13 · v0.10.17：Goal 模式（字面 /goal、successor 设计、终端身份）
 
 - 可复制的原生 `/goal` 改为字面合同绝对路径 + SHA256，不再使用 TUI 不会展开的 `$(cat …)`。冻结合同含最新有效设计路径/摘要/输入身份/决策。

@@ -11,6 +11,7 @@ import (
 )
 
 func TestAdmissionMissingDefaultsOpen(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	st, err := loadAdmissionState(root)
 	if err != nil {
@@ -31,6 +32,7 @@ func TestAdmissionMissingDefaultsOpen(t *testing.T) {
 }
 
 func TestAdmissionPausePersistsAndEpochMonotonic(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 
 	paused, err := setAdmissionPaused(root, true, "ops", "drain")
@@ -88,6 +90,7 @@ func TestAdmissionPausePersistsAndEpochMonotonic(t *testing.T) {
 }
 
 func TestAdmissionVersion1RequiresExplicitFields(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		body string
@@ -119,6 +122,7 @@ func TestAdmissionVersion1RequiresExplicitFields(t *testing.T) {
 }
 
 func TestAdmissionPauseDeniesScheduling(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if _, err := setAdmissionPaused(root, true, "ops", "drain"); err != nil {
 		t.Fatalf("pause: %v", err)
@@ -129,6 +133,7 @@ func TestAdmissionPauseDeniesScheduling(t *testing.T) {
 }
 
 func TestAdmissionIdempotentPreservesTransitionMetadata(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	first, err := setAdmissionPaused(root, true, "ops", "drain")
 	if err != nil {
@@ -156,6 +161,7 @@ func TestAdmissionIdempotentPreservesTransitionMetadata(t *testing.T) {
 }
 
 func TestAdmissionClosedV1SchemaRejectsDuplicatesUnknownAndNonObject(t *testing.T) {
+	t.Parallel()
 	const ts = "2026-01-01T00:00:00.000000000Z"
 	cases := []struct {
 		name string
@@ -206,6 +212,7 @@ func TestAdmissionClosedV1SchemaRejectsDuplicatesUnknownAndNonObject(t *testing.
 }
 
 func TestAdmissionRejectsNoncanonicalFieldAliases(t *testing.T) {
+	t.Parallel()
 	const ts = "2026-01-01T00:00:00.000000000Z"
 	cases := []struct {
 		name string
@@ -271,6 +278,7 @@ func TestAdmissionRejectsNoncanonicalFieldAliases(t *testing.T) {
 }
 
 func TestAdmissionRejectsNullActorAndReason(t *testing.T) {
+	t.Parallel()
 	const ts = "2026-01-01T00:00:00.000000000Z"
 	cases := []struct {
 		name string
@@ -309,6 +317,7 @@ func TestAdmissionRejectsNullActorAndReason(t *testing.T) {
 }
 
 func TestAdmissionEmptyActorAndReasonStringsLoad(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(controlDir(root), 0o755); err != nil {
 		t.Fatal(err)
@@ -330,6 +339,7 @@ func TestAdmissionEmptyActorAndReasonStringsLoad(t *testing.T) {
 }
 
 func TestAdmissionCanonicalV1StillLoads(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(controlDir(root), 0o755); err != nil {
 		t.Fatal(err)
@@ -354,6 +364,7 @@ func TestAdmissionCanonicalV1StillLoads(t *testing.T) {
 }
 
 func TestAdmissionMalformedFailsClosed(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(controlDir(root), 0o755); err != nil {
 		t.Fatal(err)
@@ -380,6 +391,7 @@ func TestAdmissionMalformedFailsClosed(t *testing.T) {
 }
 
 func TestAdmissionConcurrentUpdatesSerialized(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	const n = 64
 	start := make(chan struct{})

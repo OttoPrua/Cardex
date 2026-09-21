@@ -320,7 +320,7 @@ cardex workflow freeze-candidate <id> -commit C -tree T  # freeze exact bytes af
 cardex workflow review <id>                              # an independent read-only reviewer bound to that candidate
 cardex workflow ingest-review <id>                       # re-parse the transcript; record verdict and hold reason
 cardex workflow repair <id>                              # ordinary-card bounded repair; Goal cards are refused toward design-result -decision revise
-cardex workflow design-repair <id> -model M -runner R -identity Astra  # at most one design repair; must consume the current candidate and review
+cardex workflow design-repair <id> -design-receipt R  # consume current candidate/review within workflow round limits
 cardex workflow try-release-integration <id>             # only an admissible pass queues the integration card
 cardex workflow mark <id> -kind external|owner|exhausted -summary ...
 cardex workflow list|show <id>                           # ordinary records keep top-level id/goal/status; Goal projection is additive
@@ -328,7 +328,11 @@ cardex workflow list|show <id>                           # ordinary records keep
 
 ### Goal mode: give the goal, not every step
 
-Design and execution stay different roles. A design node is read-only and must bind a completed independent Astra/Fable design task or a governed external receipt (digest + current input + actual model). Caller-supplied model/runner strings are not design proof. Existing `model=fable` Cursor routing is unchanged. The execution stage binds to the same Task: outcome, scope, depends, write-domain, acceptance, provider, session, budget, hard timeout, stop, and return-to-design. A stage is one continuous execution, not per-tool cards. Stages may run in parallel only on disjoint write domains and only when `max_parallel` > 1 (default 1 stays serial). Review still uses `review` / `ingest-review` / `repair` against the exact frozen candidate. Nonaccepted stage observations (`failed`/`paused`/`needs-input`/`budget_limited`) use `design-result` for stop, input, or one Goal-bound successor without manufacturing done. This delivery allows at most one design repair round, then stop.
+Design and execution stay different roles. A design node is read-only and must bind a completed independent design task (without a model-brand gate) or a governed external receipt (digest + current input + actual model). Caller-supplied model/runner strings are not design proof. Existing `model=fable` Cursor routing is unchanged. The execution stage binds to the same Task: outcome, scope, depends, write-domain, acceptance, provider, session, budget, hard timeout, stop, and return-to-design. A stage is one continuous execution, not per-tool cards. Stages may run in parallel only on disjoint write domains and only when `max_parallel` > 1 (default 1 stays serial). Review still uses `review` / `ingest-review` / `repair` against the exact frozen candidate. Nonaccepted stage observations (`failed`/`paused`/`needs-input`/`budget_limited`) use `design-result` for stop, input, or one Goal-bound successor without manufacturing done. Design revisions use the current workflow max-rounds; there is no additional global once-only limit.
+
+Admission does not infer independence from a model brand. Design and execution may use the same model, but independent design requires a different actor/context. Receipt or completed-task identity takes precedence over CLI display labels. A JSON receipt references a nonempty design result with `result_path` and includes `read_only: true`, completed status, known actual model/runner, actor or session, and input paths with SHA256 digests. A Markdown receipt may contain the design result itself. External receipts are caller-supplied execution evidence, not cryptographic model attestation. Missing model/runner/actor metadata warns and remains unreported; identities are not guessed or invented. A known shared execution context or contradiction with the bound producer is still rejected.
+
+Noncritical differences warn on stderr and continue: equivalent role formatting is normalized; omitted `input_identity` is derived from verified input digests; actual model/runner fields take precedence over differing display fields; `successor` on a completed stage becomes `revise`. Rebinding the same `design-repair` result warns without changing state. Missing results, input/result/producer drift, the writer context posing as independent design, duplicate writers, unknown execution outcomes, actual resource conflicts and budget/round limits still block the corresponding effect. Partial/unknown is never reported as success. Existing workflows remain readable and reverify current evidence before launch; sealed terminal records are not rewritten.
 
 Native ongoing-goal capabilities are owned by the runner adapter. `workflow show` prints the same matrix:
 
@@ -341,7 +345,7 @@ Native ongoing-goal capabilities are owned by the runner adapter. `workflow show
 | `gemini` | `unsupported` (rejected) | no | Retired Gemini remains rejected for new workflow/goal work |
 | `config.engines` profiles | `manual-only` | no | Inherit the real executable limits; headless ongoing-goal is unverified |
 
-Copyable manual Grok entry (no proven automatic entry; do not use `-p`). Independent Astra design is bound through a receipt, not a `grok-build` + `gpt-6-astra` tuple:
+Copyable manual Grok entry (no proven automatic entry; do not use `-p`). Independent design is bound through a receipt; report the actual model, runner and actor/context from execution evidence, not a brand assumption:
 
 ```bash
 cardex workflow init -mode serial -module auth -goal-id auth-token-v1 \
@@ -351,7 +355,7 @@ cardex workflow init -mode serial -module auth -goal-id auth-token-v1 \
   -write-domain-id auth-tokens -write-domain-lineage auth-tokens-lineage \
   -write-domain-component auth -write-paths internal/auth \
   -engine grok-build -max-rounds 3 \
-  -design-receipt /absolute/path/to/astra-design.json
+  -design-receipt /absolute/path/to/design-receipt.json
 
 cardex workflow writer <id> -mode manual
 cardex workflow goal-run <id> -manual -budget 350000
@@ -361,13 +365,13 @@ cardex workflow goal-run <id> -manual -budget 350000
 # Active pause/resume is unverified and is not accepted behavior.
 cardex workflow goal-sync <id>
 cardex workflow show <id>
-cardex workflow design-result <id> -design-receipt /absolute/path/to/fresh-astra-result.json \
+cardex workflow design-result <id> -design-receipt /absolute/path/to/fresh-design-result.json \
   -decision accept|revise|stop|input|successor -observation complete|failed|paused|needs-input|budget_limited
 ```
 
 Budget and stop: the provider token budget is soft; Cardex `step_timeout_min` (and the card's `hard_timeout_seconds`) is the hard deadline. A unique `session_id` is bound before launch. Crash before start stays unstarted and may retry on the same writer; crash after start is unknown, blocks redispatch, and does not admit a second writer. `goal-sync` verifies session + `params.update.goal_id` + current attempt/revision and summary `info.id`/`info.cwd`: matched native active → running; verified paused/needs-input → held with same-session explicit continuation; `status=complete` with `last_classifier_verdict=achieved`, released process/descendant/lease, and a durable transition on the exact attempt → done; true failure with custody → failed; `budget_limited`/`not_achieved`, TERM/lost/missing/contradictory terminal, truncated updates, or fail-open completion without `last_classifier_verdict=achieved` → held unknown (no guessed success). Native completed while the TUI/descendants/lease still live is observation only, not accepted done. Cancel revokes eligibility before provider stop and does not claim canceled without stop evidence. Duplicate sync is idempotent; stale revision, other session/goal, or an old attempt is rejected.
 
-One path through design review: `init -design-receipt` → `writer -mode manual` → `goal-run -manual` → operator `/goal` → `goal-sync` until done → `freeze-candidate` → `review` → `ingest-review`. If the stage is `failed`/`paused`/`needs-input`/`budget_limited`, `design-result` may stop, request input, or open one Goal-bound successor (paused/needs-input uses same-session `goal-run`, not a new writer). On review `concerns`/`block`, ordinary-card implementation repair is `repair` (bounded by `max-rounds`); Goal `repair` is refused and must use `design-result -decision revise` with a fresh independent design. A fresh independent design node is `design-repair` (at most once in this delivery) and must consume the current candidate and review results. Distinguish **provider native goal** (Grok TUI `/goal`), **stage Goal** (the Task binding), and **board projection** (`boardgoal.go` is read-only). `try-release-integration` still queues the integration card only on an admissible `pass`; live/cutover remain separate gates.
+One path through design review: `init -design-receipt` → `writer -mode manual` → `goal-run -manual` → operator `/goal` → `goal-sync` until done → `freeze-candidate` → `review` → `ingest-review`. If the stage is `failed`/`paused`/`needs-input`/`budget_limited`, `design-result` may stop, request input, or open one Goal-bound successor (paused/needs-input uses same-session `goal-run`, not a new writer). On review `concerns`/`block`, ordinary-card implementation repair is `repair` (bounded by `max-rounds`); Goal `repair` is refused and must use `design-result -decision revise` with a fresh independent design. A fresh independent design node is `design-repair` (within the current workflow round limit) and must consume the current candidate and review results. Distinguish **provider native goal** (Grok TUI `/goal`), **stage Goal** (the Task binding), and **board projection** (`boardgoal.go` is read-only). `try-release-integration` still queues the integration card only on an admissible `pass`; live/cutover remain separate gates.
 
 Federated mode adds only `-mode federated -parent <program-workflow-id>`; the parent must already exist and load, or init fails closed. `serial` mode rejects `-parent`.
 
@@ -439,3 +443,7 @@ The board may read-only display modules, roles, forks, joins, gates, claim confl
 - [ ] Shared runtime/database/profile/manifest/device/credential/cutover resources are serialized explicitly.
 - [ ] Receipts name exact bytes, tests, review verdict, effects, rollback, and not-integrated/not-live boundaries.
 - [ ] With `cardex workflow`: the candidate was frozen with `freeze-candidate`, the reviewer came from `review` rather than `-review-after`, `max-rounds` is bounded, the integration card is released only through `try-release-integration` or `cardex release`, and live/cutover is a separate held card.
+
+`goal-run -hosted` runs a foreground supervisor and forwards PTY output; it does not detach itself. Short-lived tool callers such as Hermes should use their existing managed background job (for example, `terminal(background=true, notify=true)`), retain its session, and read output and exit status with `process` poll/wait. The Cardex hard deadline still applies; an outer foreground timeout can terminate the supervisor first. Output or successful `/goal` injection does not prove native Goal acceptance. After timeout, the original owner must reconcile processes, descendants, and custody before any authorized retry.
+
+Unknown execution cannot be promoted through `accept` or `revise`. After the original owner reconciles and releases custody, a manager may supply fresh design evidence consuming the exact task/session/attempt/revision and explicitly choose `design-result -decision successor`. Existing round, route, and budget authority still applies: the old writer is retired, its native outcome remains unknown, and the distinct new writer is unstarted. Managers must still honor explicit sealed/no-successor restrictions; this command is not automatic retry authority.

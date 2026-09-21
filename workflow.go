@@ -110,6 +110,9 @@ type WorkflowRecord struct {
 	Status            string                 `json:"status"`
 	MaterialNotify    *WorkflowNotify        `json:"material_notify,omitempty"`
 	DesignLineage     *WorkflowDesignLineage `json:"design_lineage,omitempty"`
+	DesignSession     *PersistentSessionRef  `json:"design_session,omitempty"`
+	ManagerSession    *PersistentSessionRef  `json:"manager_session,omitempty"`
+	OwnerDesignEntry  *PersistentSessionRef  `json:"owner_design_entry,omitempty"`
 	CreatedAt         string                 `json:"created_at"`
 	UpdatedAt         string                 `json:"updated_at"`
 }
@@ -305,6 +308,15 @@ func normalizeWorkflowRecord(cfg *Config, wf *WorkflowRecord) error {
 		if wf.DesignLineage.RepairCount < 0 {
 			return fmt.Errorf("%w: design repair_count", errWorkflowMalformed)
 		}
+	}
+	if err := normalizePersistentSessionRef(wf.DesignSession); err != nil {
+		return err
+	}
+	if err := normalizePersistentSessionRef(wf.ManagerSession); err != nil {
+		return err
+	}
+	if err := normalizePersistentSessionRef(wf.OwnerDesignEntry); err != nil {
+		return err
 	}
 	return nil
 }

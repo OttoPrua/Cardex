@@ -51,6 +51,7 @@ func fakeGrokBuildProbeFailure(t *testing.T, stderr string) string {
 }
 
 func TestGrokAuthPreflightMixedStderrDoesNotOpenCircuit(t *testing.T) {
+	t.Parallel()
 	for name, stderr := range map[string]string{
 		"diagnostic plus prose":       grokOIDCNoAuthContextDiagnostic + "\nanalysis: ordinary wrapper or prompt-carried prose",
 		"bare diagnostic plus footer": grokOIDCNoAuthContextBareFooter,
@@ -72,6 +73,7 @@ func TestGrokAuthPreflightMixedStderrDoesNotOpenCircuit(t *testing.T) {
 }
 
 func TestRunTaskGrokMixedStderrIncompleteObservationOpensNoCircuit(t *testing.T) {
+	t.Parallel()
 	for name, stderr := range map[string]string{
 		"diagnostic plus prose":       grokOIDCNoAuthContextDiagnostic + "\nanalysis: ordinary wrapper or prompt-carried prose",
 		"bare diagnostic plus footer": grokOIDCNoAuthContextBareFooter,
@@ -106,6 +108,7 @@ func TestRunTaskGrokMixedStderrIncompleteObservationOpensNoCircuit(t *testing.T)
 }
 
 func TestRunTaskGrokClosedMetadataAuthIsCompleteAndOpensCircuit(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, _, _ := fakeGrokBuild(t, `{"type":"system.version","version":"1.0.4"}`, grokOIDCNoAuthContextClosedMetadata, 1)
 	cfg := policyTestConfig()
@@ -133,6 +136,7 @@ func TestRunTaskGrokClosedMetadataAuthIsCompleteAndOpensCircuit(t *testing.T) {
 }
 
 func TestGrokSystemVersionOnlyIsCompleteStreamIncompleteMetadata(t *testing.T) {
+	t.Parallel()
 	res := parseGrokBuildJSONL(`{"type":"system.version","version":"1.0.4"}`)
 	if res == nil || !res.IsError || res.Subtype != "grok_build_stream_incomplete" {
 		t.Fatalf("version-only stream must remain stream_incomplete: %+v", res)
@@ -153,6 +157,7 @@ func TestGrokSystemVersionOnlyIsCompleteStreamIncompleteMetadata(t *testing.T) {
 }
 
 func TestRunTaskOwnerGrokOIDCNoAuthContextHoldsSameCardAndOpensCircuit(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, _, _ := fakeGrokBuild(t, `{"type":"system.version","version":"1.0.4"}`, grokOIDCNoAuthContextDiagnostic, 1)
 	cfg := policyTestConfig()
@@ -214,6 +219,7 @@ func TestRunTaskOwnerGrokOIDCNoAuthContextHoldsSameCardAndOpensCircuit(t *testin
 }
 
 func TestGrokOIDCNoAuthContextFallbackFailsClosedOutsideExactProof(t *testing.T) {
+	t.Parallel()
 	t.Run("standalone explicit Grok", func(t *testing.T) {
 		root := testRoot(t)
 		bin, _, _ := fakeGrokBuild(t, `{"type":"system.version","version":"1.0.4"}`, grokOIDCNoAuthContextDiagnostic, 1)
@@ -306,6 +312,7 @@ func TestGrokOIDCNoAuthContextFallbackFailsClosedOutsideExactProof(t *testing.T)
 }
 
 func TestGrokOIDCNoAuthContextProofBlocksWorkspaceAndResidue(t *testing.T) {
+	t.Parallel()
 	versionOnly := parseGrokBuildJSONL(`{"type":"system.version","version":"1.0.4"}`)
 	base := safeFixtureProof(t)
 	base.SemanticEvents = versionOnly.SemanticEvents
@@ -332,6 +339,7 @@ func TestGrokOIDCNoAuthContextProofBlocksWorkspaceAndResidue(t *testing.T) {
 }
 
 func TestGrokOIDCFallbackPatchUsesOnlyNormalPersistenceAPIs(t *testing.T) {
+	t.Parallel()
 	// This source-level guard keeps this narrow policy repair from acquiring a second task writer.
 	// The runtime test above separately proves that the same task ID advances and no clone appears.
 	for _, file := range []string{"grok.go", "routing_policy.go", "runner.go"} {

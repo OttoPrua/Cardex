@@ -1612,6 +1612,13 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 				prompt = injectLiveContext(root, t.ID, prompt)
 			}
 		default:
+			if nativeDoneApplies(via) {
+				prompt := nativeDoneContractPrompt(t, "")
+				if reason := nativeDoneHoldReason(t, collectNativeDoneFactsForPersist(t, prompt, t.LastSummary, nil)); reason != "" {
+					logBlock(lg, "NATIVE_DONE_GATE", reason)
+					return holdNativeContractEvidence(root, t, via, reason)
+				}
+			}
 			t.Status = statusDone
 			t.touch()
 			// 无 prompt 可跑的空转 done(如 retry 后 Step 已越界的兜底路径):也是"终态"必须留事件。
@@ -1856,9 +1863,11 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			return holdNativeExecution(root, t, via, kind, "process_failure")
 		}
 		if (useKimiCLI || useOpenCode) && !runnerNativeTerminalValid(via, res, nil) {
-			// Only an explicit, completely observed presemantic provider error remains eligible
-			// for the existing quota/error policy. Missing completion never authorizes another run.
-			if res == nil || !res.IsError || !res.ObservationComplete || res.SemanticEvents != 0 || res.ModelEvents != 0 || res.ToolEvents != 0 ||
+			// Review/text: protocol_incomplete + nonempty Result is consumable.
+			// Implementation still requires a native terminal (tools closed).
+			if useKimiCLI && nativeReviewTextConsumable(t, res) {
+				// Continue to the success path so the Result can be persisted.
+			} else if res == nil || !res.IsError || !res.ObservationComplete || res.SemanticEvents != 0 || res.ModelEvents != 0 || res.ToolEvents != 0 ||
 				(useKimiCLI && res.Subtype != "kimi_cli_error") || (useOpenCode && res.Subtype != openCodeSubtypeError) {
 				kind := "invalid_terminal_result"
 				if res != nil && res.Subtype != "" {
@@ -1906,8 +1915,13 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			}
 		}
 
-		if useGrokBuild && res != nil && res.Subtype == "grok_build_stream_incomplete" && res.SemanticEvents == 0 && res.ModelEvents == 0 && res.ToolEvents == 0 {
-			return holdNativeExecution(root, t, via, "stream_incomplete", "unknown_outcome")
+		// Proved-complete metadata-only missing-end (0/0/0) cannot authorize fallback, but
+		// must not steal incomplete observation (runner:grok-build) or quota classification.
+		if useGrokBuild && res != nil && res.ObservationComplete && res.Subtype == "grok_build_stream_incomplete" &&
+			res.SemanticEvents == 0 && res.ModelEvents == 0 && res.ToolEvents == 0 {
+			if kind, ok := classifyPolicyFallbackFailure(via, res, combined, runErr); !ok || kind != fallbackQuota {
+				return holdNativeExecution(root, t, via, "stream_incomplete", "unknown_outcome")
+			}
 		}
 
 		// Grok stream_incomplete / invalid_terminal_result with semantic/model/tool activity (or an
@@ -2480,6 +2494,14 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 				clearEngineCooldown(root, engineName)
 			default:
 				clearCooldown(root)
+			}
+		}
+		// Consult contract evidence before Step++ so a held card cannot later
+		// no_more_prompts into done without artifacts.
+		if t.Step+1 >= len(t.Prompts) && nativeDoneApplies(via) {
+			if reason := nativeDoneHoldReason(t, collectNativeDoneFacts(t, nativeDoneContractPrompt(t, prompt), res.Result, res)); reason != "" {
+				logBlock(lg, "NATIVE_DONE_GATE", reason)
+				return holdNativeContractEvidence(root, t, via, reason)
 			}
 		}
 		t.Attempts = 0

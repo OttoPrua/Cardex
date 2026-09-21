@@ -15,6 +15,7 @@ import (
 // ---- P1-1: closed Grok auth grammar rejects extra physical blank lines ----
 
 func TestP1ClosedGrokAuthGrammarRejectsExtraPhysicalBlankLines(t *testing.T) {
+	t.Parallel()
 	bare := grokBuildExactBareAuthDiagnostic
 	for name, stderr := range map[string]string{
 		"leading blank line":              "\n" + bare,
@@ -54,6 +55,7 @@ func TestP1ClosedGrokAuthGrammarRejectsExtraPhysicalBlankLines(t *testing.T) {
 }
 
 func TestP1BlankLinePreflightDoesNotOpenCircuit(t *testing.T) {
+	t.Parallel()
 	for name, stderr := range map[string]string{
 		"leading blank":        "\n" + grokBuildExactBareAuthDiagnostic,
 		"extra trailing blank": grokBuildExactBareAuthDiagnostic + "\n\n",
@@ -75,6 +77,7 @@ func TestP1BlankLinePreflightDoesNotOpenCircuit(t *testing.T) {
 }
 
 func TestP1BlankLineModelPathStaysNonAuthIncompleteObservation(t *testing.T) {
+	t.Parallel()
 	for name, stderr := range map[string]string{
 		"leading blank":        "\n" + grokBuildExactBareAuthDiagnostic,
 		"extra trailing blank": grokBuildExactBareAuthDiagnostic + "\n\n",
@@ -111,6 +114,7 @@ func TestP1BlankLineModelPathStaysNonAuthIncompleteObservation(t *testing.T) {
 // ---- P1-2: mandatory high-risk categories defeat ordinary metadata ----
 
 func TestP1MandatoryHighRiskCategoriesDefeatOrdinaryMetadata(t *testing.T) {
+	t.Parallel()
 	cfg := policyTestConfig()
 	fixtures := map[string]string{
 		"identity/credential":        "轮换生产 OAuth 凭据，修复 token refresh 与密钥轮换",
@@ -201,6 +205,7 @@ func p1CountFableMergers(t *testing.T, root, xkey string) int {
 }
 
 func TestP1FableAnswerReplayCreatesAtMostOneSolMerger(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := cursorTestConfig()
 	task := p1FableAnswerCard(t, root, cfg)
@@ -231,6 +236,7 @@ func TestP1FableAnswerReplayCreatesAtMostOneSolMerger(t *testing.T) {
 }
 
 func TestP1FableCrashBeforeAnswerSaveDoesNotDuplicateMerger(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := cursorTestConfig()
 	task := p1FableAnswerCard(t, root, cfg)
@@ -280,6 +286,7 @@ func p1WriteCodexFeed(t *testing.T, path string, samples ...map[string]any) {
 }
 
 func TestP1FutureCodexUsageSampleFailsClosed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "usage-history.jsonl")
 	now := time.Now().UTC()
@@ -378,6 +385,7 @@ func p1OrdinaryBackendLineage(t *testing.T, root string, cfg *Config) (*Task, *T
 }
 
 func TestP1KimiContradictoryPassProducesDurableDisagreementEscalation(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := policyTestConfig()
 	impl, review := p1OrdinaryBackendLineage(t, root, cfg)
@@ -432,6 +440,7 @@ func TestP1KimiContradictoryPassProducesDurableDisagreementEscalation(t *testing
 }
 
 func TestP1CleanPassAndUnknownVerdictNeverClaimDisagreement(t *testing.T) {
+	t.Parallel()
 	t.Run("clean pass completes without escalation", func(t *testing.T) {
 		root := testRoot(t)
 		cfg := policyTestConfig()
@@ -464,6 +473,7 @@ func TestP1CleanPassAndUnknownVerdictNeverClaimDisagreement(t *testing.T) {
 // ---- P1-6: pre-existing task bytes survive every readback path unchanged ----
 
 func TestP1LegacyTaskBytesSurviveReadbackAndPendingScan(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := policyTestConfig()
 	legacy := func(id, status string) string {

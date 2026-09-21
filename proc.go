@@ -34,6 +34,8 @@ var (
 	killHandlerOnce sync.Once
 	taskExecRoot    sync.Map // taskID -> cardex root, for durable attempt PID bind
 	afterCmdStart   func(*exec.Cmd)
+	// procWaitDelay is the setupProcGroup WaitDelay. Production is 10s; tests may shrink it.
+	procWaitDelay = 10 * time.Second
 )
 
 // taskPGIDs 是"任务→当前活着的执行器 pid 集合"的映射,供 CG-5 巡逻查任务进程组存活。

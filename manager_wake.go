@@ -36,6 +36,9 @@ const (
 type ManagerWakeSubscription struct {
 	ID          string   `json:"id"`
 	ThreadID    string   `json:"thread_id"`
+	Provider    string   `json:"provider,omitempty"`
+	SessionType string   `json:"session_type,omitempty"`
+	Profile     string   `json:"profile,omitempty"`
 	Projects    []string `json:"projects,omitempty"`
 	TaskIDs     []string `json:"task_ids,omitempty"`
 	DirPrefixes []string `json:"dir_prefixes,omitempty"`
@@ -50,15 +53,18 @@ type ManagerWakeSubscription struct {
 type ManagerWakeConfig struct {
 	Enabled       bool                      `json:"enabled"`
 	CodexBin      string                    `json:"codex_bin,omitempty"`
+	HermesBin     string                    `json:"hermes_bin,omitempty"`
 	WatchdogSec   int                       `json:"watchdog_sec,omitempty"`
 	Subscriptions []ManagerWakeSubscription `json:"subscriptions,omitempty"`
 }
 
 var (
-	managerWakeThreadRE = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
-	managerWakeSubIDRE  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
-	managerWakeReasonRE = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
-	managerWakeQueue    = defaultManagerWakeQueue
+	managerWakeThreadRE        = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+	managerWakeHermesSessionRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{7,63}$`)
+	managerWakeSubIDRE         = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+	managerWakeReasonRE        = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	managerWakeHermesAckHook   func(root string, sub ManagerWakeSubscription, ids []string) error
+	managerWakeQueue           = defaultManagerWakeQueue
 	// managerWakeQueueTimeout is the production enqueue deadline. Tests may
 	// shrink it; it must stay well below managerWakeWatchdogSec.
 	managerWakeQueueTimeout = time.Duration(managerWakeQueueTimeoutSec) * time.Second
@@ -423,6 +429,16 @@ func appendManagerWakeFromCommitted(root string, t *Task, ev TaskEvent) error {
 	return projectCommittedWake(root, t, ev)
 }
 
+// retryLostManagerWakes rebuilds missing outbox rows from committed done/held
+// events so a lost wake can be retried by the existing tick, not a new daemon.
+// Queue/delivery stays gated on manager_wake.enabled (default disabled).
+func retryLostManagerWakes(root string) {
+	if !managerWakeProjectionEnabled(root) {
+		return
+	}
+	_ = reconcileManagerWakeOutbox(root)
+}
+
 // projectWakeAfterCommitted appends a wake row only after the exact committed
 // task event exists. Uncommitted or unjournaled state is a no-op. Disabled
 // (default) configuration emits no outbox files.
@@ -718,7 +734,7 @@ func loadManagerWakeReceipt(root, subID string) (*managerWakeReceipt, string, er
 		if strings.TrimSpace(rec.ThreadID) != rec.ThreadID {
 			return nil, "receipt_corrupt", fmt.Errorf("receipt_corrupt")
 		}
-		if _, ok := canonicalManagerWakeThreadID(rec.ThreadID); !ok {
+		if _, ok := closedWakeDestID(rec.ThreadID); !ok {
 			return nil, "receipt_corrupt", fmt.Errorf("receipt_corrupt")
 		}
 	}
@@ -789,8 +805,8 @@ func rememberManagerWakeReceipts(root, subID string, rows []managerWakeOutboxRow
 		if thread == "" {
 			thread = rec.ThreadID
 		} else {
-			a, oka := canonicalManagerWakeThreadID(thread)
-			b, okb := canonicalManagerWakeThreadID(rec.ThreadID)
+			a, oka := closedWakeDestID(thread)
+			b, okb := closedWakeDestID(rec.ThreadID)
 			if !oka || !okb || a != b {
 				return fmt.Errorf("delivery_uncertain")
 			}
@@ -1249,8 +1265,49 @@ func closedManagerWakeSubscription(sub ManagerWakeSubscription) (ManagerWakeSubs
 		return sub, "invalid_subscription_id"
 	}
 	sub.ID = id
-	if !managerWakeThreadRE.MatchString(strings.TrimSpace(sub.ThreadID)) {
-		return sub, "invalid_thread_id"
+	sub.Provider = strings.ToLower(strings.TrimSpace(sub.Provider))
+	sub.SessionType = strings.ToLower(strings.TrimSpace(sub.SessionType))
+	sub.Profile = strings.TrimSpace(sub.Profile)
+	if sub.Provider == "" {
+		sub.Provider = "codex"
+	}
+	switch sub.Provider {
+	case "codex":
+		if sub.SessionType == "" {
+			sub.SessionType = sessionTypeCodex
+		}
+		if sub.SessionType != sessionTypeCodex {
+			return sub, "invalid_session_type"
+		}
+		if !managerWakeThreadRE.MatchString(strings.TrimSpace(sub.ThreadID)) {
+			return sub, "invalid_thread_id"
+		}
+	case "hermes":
+		if sub.SessionType == "" {
+			sub.SessionType = sessionTypeHermes
+		}
+		if sub.SessionType != sessionTypeHermes {
+			return sub, "invalid_session_type"
+		}
+		id := strings.TrimSpace(sub.ThreadID)
+		if managerWakeThreadRE.MatchString(id) {
+			return sub, "hermes_session_not_codex_uuid"
+		}
+		if !managerWakeHermesSessionRE.MatchString(id) {
+			return sub, "invalid_thread_id"
+		}
+	case "grok":
+		if sub.SessionType == "" {
+			sub.SessionType = sessionTypeGrok
+		}
+		if sub.SessionType != sessionTypeGrok {
+			return sub, "invalid_session_type"
+		}
+		if !managerWakeThreadRE.MatchString(strings.TrimSpace(sub.ThreadID)) {
+			return sub, "invalid_thread_id"
+		}
+	default:
+		return sub, "invalid_wake_provider"
 	}
 	sub.ThreadID = strings.TrimSpace(sub.ThreadID)
 	if len(sub.Projects) == 0 && len(sub.TaskIDs) == 0 && len(sub.DirPrefixes) == 0 {
@@ -1329,7 +1386,11 @@ func diagnoseManagerWake(root string, mw *ManagerWakeConfig) []string {
 		if _, class := closedManagerWakeSubscription(sub); class != "" {
 			out = append(out, class)
 		}
-		if !managerWakeThreadRE.MatchString(strings.TrimSpace(sub.ThreadID)) {
+		if _, class := closedManagerWakeSubscription(sub); class == "invalid_thread_id" || class == "hermes_session_not_codex_uuid" {
+			out = append(out, class)
+		} else if class == "" {
+			// destination identity already closed
+		} else if strings.TrimSpace(sub.ThreadID) == "" {
 			out = append(out, "invalid_thread_id")
 		}
 		if len(sub.Projects) == 0 && len(sub.TaskIDs) == 0 && len(sub.DirPrefixes) == 0 {
@@ -1871,11 +1932,22 @@ func canonicalManagerWakeThreadID(thread string) (string, bool) {
 	return strings.ToLower(thread), true
 }
 
+func closedWakeDestID(thread string) (string, bool) {
+	if key, ok := canonicalManagerWakeThreadID(thread); ok {
+		return key, true
+	}
+	thread = strings.TrimSpace(thread)
+	if managerWakeHermesSessionRE.MatchString(thread) && !strings.Contains(thread, "/") && !strings.Contains(thread, "..") {
+		return thread, true
+	}
+	return "", false
+}
+
 func seedDestinationEventIDs(dest map[string]map[string]bool, thread string, ids []string) bool {
 	if dest == nil {
 		return false
 	}
-	key, ok := canonicalManagerWakeThreadID(thread)
+	key, ok := closedWakeDestID(thread)
 	if !ok {
 		return false
 	}
@@ -1969,7 +2041,7 @@ func scanInflightDestinationInventory(root string, dest map[string]map[string]bo
 		if rec.Phase != inflightPhaseStarting && rec.Phase != inflightPhaseSpawned {
 			return "delivery_uncertain", fmt.Errorf("delivery_uncertain")
 		}
-		if _, ok := canonicalManagerWakeThreadID(rec.ThreadID); !ok {
+		if _, ok := closedWakeDestID(rec.ThreadID); !ok {
 			return "delivery_uncertain", fmt.Errorf("delivery_uncertain")
 		}
 		receipts, rclass, rerr := loadManagerWakeReceiptIDs(root, id)
@@ -2039,8 +2111,8 @@ func seedPersistedWakeReceipt(dest map[string]map[string]bool, rec *managerWakeR
 	if thread == "" {
 		thread = configThread
 	} else if configThread != "" {
-		a, oka := canonicalManagerWakeThreadID(thread)
-		b, okb := canonicalManagerWakeThreadID(configThread)
+		a, oka := closedWakeDestID(thread)
+		b, okb := closedWakeDestID(configThread)
 		if !oka || !okb || a != b {
 			return "delivery_uncertain", fmt.Errorf("delivery_uncertain")
 		}
@@ -2279,16 +2351,18 @@ func queueWakeRows(root string, sub ManagerWakeSubscription, delta []managerWake
 		if _, err := canonicalOutgoingWakeTaskIDs(delta); err != nil {
 			return failOutgoingTaskIdentity(root, metrics)
 		}
-		if strings.TrimSpace(bin) == "" {
-			metrics.LastErrorClass = "missing_codex_bin"
-			noteManagerWakeError(root, metrics, "missing_codex_bin")
-			return fmt.Errorf("missing_codex_bin")
-		}
-		if _, err := os.Stat(bin); err != nil {
-			if _, lookErr := exec.LookPath(bin); lookErr != nil {
+		if !isHermesWake(sub) {
+			if strings.TrimSpace(bin) == "" {
 				metrics.LastErrorClass = "missing_codex_bin"
 				noteManagerWakeError(root, metrics, "missing_codex_bin")
 				return fmt.Errorf("missing_codex_bin")
+			}
+			if _, err := os.Stat(bin); err != nil {
+				if _, lookErr := exec.LookPath(bin); lookErr != nil {
+					metrics.LastErrorClass = "missing_codex_bin"
+					noteManagerWakeError(root, metrics, "missing_codex_bin")
+					return fmt.Errorf("missing_codex_bin")
+				}
 			}
 		}
 		receipts, class, err := loadManagerWakeReceiptIDs(root, sub.ID)
@@ -2302,7 +2376,7 @@ func queueWakeRows(root string, sub ManagerWakeSubscription, delta []managerWake
 		}
 		var already map[string]bool
 		if destSeen != nil {
-			if key, ok := canonicalManagerWakeThreadID(sub.ThreadID); ok {
+			if key, ok := closedWakeDestID(sub.ThreadID); ok {
 				already = destSeen[key]
 			}
 		}
@@ -2358,7 +2432,10 @@ func queueWakeRows(root string, sub ManagerWakeSubscription, delta []managerWake
 			startFailed bool
 			qerr        error
 		)
-		if usingDefaultManagerWakeQueue() {
+		if isHermesWake(sub) {
+			qerr = deliverHermesWake(root, sub, toSend, msg)
+			startFailed = isDefiniteWakeQueueStartFailure(qerr)
+		} else if usingDefaultManagerWakeQueue() {
 			child, err := beginDefaultManagerWakeQueue(bin, sub.ThreadID, msg)
 			qerr = err
 			startFailed = isDefiniteWakeQueueStartFailure(err)

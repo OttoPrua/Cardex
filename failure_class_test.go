@@ -27,6 +27,7 @@ import (
 // TestClassifyFailure_Enumerations 每类各挑代表性真实措辞验判据命中;反例段确保限额相似文本
 // 不会被误分类(核心反例注入,与 limitRe 严格互斥)。
 func TestClassifyFailure_Enumerations(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		msg     string
@@ -93,6 +94,7 @@ func TestClassifyFailure_Enumerations(t *testing.T) {
 // timeout)误判 permission → 直接 held;修后命中 msg 里的 timeoutClassRe → 判 timeout → 走
 // retry_backoff。旧版跑此测试必红,新版必绿。
 func TestClassifyFailure_CombinedIgnored_TranscriptDoesNotPoisonMsg(t *testing.T) {
+	t.Parallel()
 	// 用户要求的核心证伪:超时 + transcript 尾部裸 Permission denied。
 	msgTimeout := "codex_error: 步骤超时(60 分钟)"
 	transcriptWithPermDenied := strings.Repeat("some agent reasoning line noise. ", 100) +
@@ -139,6 +141,7 @@ func TestClassifyFailure_CombinedIgnored_TranscriptDoesNotPoisonMsg(t *testing.T
 // TestPolicyForFailureClass_MutationKill 断言策略表——把任何一条终态策略改动(如 auth→无限重试)
 // 都必须报红。这是 mutation-kill 验收:策略表不能被静默改动。
 func TestPolicyForFailureClass_MutationKill(t *testing.T) {
+	t.Parallel()
 	// 认证/权限必须 held(升级人工),不烧 attempts
 	if p := policyFor(failureAuth); p.Terminal != statusHeld || p.ConsumesAttempt {
 		t.Fatalf("auth 策略必须 held+不烧 attempts,got=%+v (mutation-kill:改成无限重试即被本断言捕获)", p)
@@ -164,6 +167,7 @@ func TestPolicyForFailureClass_MutationKill(t *testing.T) {
 // TestRunTaskAuthClass_HeldWithoutBurningAttempts spec 验收 #1:
 // 注入 mock 认证失败文本 → 不消耗 max_attempts_per_step 重试,直接 held 且事件记明类别。
 func TestRunTaskAuthClass_HeldWithoutBurningAttempts(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// fake claude 打 401 认证失败(is_error=true + result 含 401 unauthorized)。
 	authJSON := `{"type":"result","is_error":true,"subtype":"api_error","result":"401 Unauthorized: invalid api key"}`
@@ -220,6 +224,7 @@ func TestRunTaskAuthClass_HeldWithoutBurningAttempts(t *testing.T) {
 // 【回归基线】未知类必须走 retry_backoff 分支,行为(attempts++、not_before=now+backoff、
 // LastError 不带前缀、事件 evRetry 带 attempts/not_before 字段)与旧版逐字节一致。
 func TestRunTaskUnknownClass_RegressionBaseline(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// 未知乱码错误:不含任何分类枚举关键词,也不含 limitRe 特征。
 	unknownJSON := `{"type":"result","is_error":true,"subtype":"weird","result":"xhrjnvkl frobnicated the widget"}`
@@ -291,6 +296,7 @@ func TestRunTaskUnknownClass_RegressionBaseline(t *testing.T) {
 // 分类器绝不吃 limit 类;哪怕文本"看起来像"限额(带 quota/cap 措辞但无 limitRe 关键词),
 // 也必须回落 unknown。否则会出现"限额相似的正常错误被写全局冷却→整队停发"的最严重回归。
 func TestRunTaskLimitLike_NotClassifiedAsLimit(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// 反例文本:含 quota / cap 之类"限额相似"词,但**不匹配 limitRe**(无 "usage limit"/"limit reached"/
 	// "hit your limit"/"limit will reset"/"out of credits"/"session limit" 等特征)。
@@ -347,6 +353,7 @@ func TestRunTaskLimitLike_NotClassifiedAsLimit(t *testing.T) {
 // TestRunTaskInputTooLong_DirectFailedNoRetry 输入超长:直接 failed,不烧 attempts。
 // 补齐 spec"输入超长"策略的验收——重试同样超长必然再失败,首次即失败节省额度。
 func TestRunTaskInputTooLong_DirectFailedNoRetry(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// prompt too long 措辞。
 	longJSON := `{"type":"result","is_error":true,"subtype":"api_error","result":"prompt is too long for this model context"}`
@@ -396,6 +403,7 @@ func TestRunTaskInputTooLong_DirectFailedNoRetry(t *testing.T) {
 // TestClassifyFailure_AuthNotShadowLimit 补充断言:即便 auth 文本里恰好含 "limit" 词,
 // 也必须先判 auth(判据顺序:auth 早于任何 limit-like 判定;而且分类器本就不认 limit 类)。
 func TestClassifyFailure_AuthNotShadowLimit(t *testing.T) {
+	t.Parallel()
 	// 极端拼装:"401 Unauthorized (per-key rate limit config)"——含 rate limit 也含 401。
 	// 判据顺序 auth 早于任何 limit-like,且分类器不认 limit 类,故必判 auth。
 	got := classifyFailure("401 Unauthorized (per-key rate limit config)", "", nil, nil)
@@ -411,6 +419,7 @@ func TestClassifyFailure_AuthNotShadowLimit(t *testing.T) {
 // mutation-kill——若未来有人把"回归基线仅止 unknown"的旧逻辑反悔改回来,timeout/executor_crash
 // 分支即报红。
 func TestAnnotatedError_PrefixOnlyForTerminalClasses(t *testing.T) {
+	t.Parallel()
 	raw := "some random error message"
 
 	// 终态类:必须加前缀(README 契约的三类)
@@ -461,6 +470,7 @@ func TestAnnotatedError_PrefixOnlyForTerminalClasses(t *testing.T) {
 // 【mutation-kill】把 classificationFromTranscript 改成永远返回 false → 任一 want=true 分支即红;
 // 改成永远返回 true → path 1 未打标(claude 结构化 JSON)分支即红。
 func TestClassificationFromTranscript_ByErrorSummaryPath(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		res    *claudeResult
@@ -541,6 +551,7 @@ func fakeCodexTranscriptAuth(t *testing.T) string {
 // attempts=1)而非 held。回退验证:把 invokeCodex 里 res.ResultFromTranscript=true 那行去掉,本测试
 // 必红(策略侧无法区分 transcript 来源 → 走 auth → held → status=held/attempts=0/前缀 [auth])。
 func TestRunTaskCodexTranscriptDerivedAuth_SoftenedToRetry(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	work := t.TempDir()
 
@@ -608,6 +619,7 @@ func TestRunTaskCodexTranscriptDerivedAuth_SoftenedToRetry(t *testing.T) {
 // "403 forbidden" 引用行(permissionClassRe 命中,policy 落 held)。同理应降级 retry。
 // 覆盖 codexHardErrRe∩permissionClassRe 的第二个交集点 (前一个是 auth 的 401 unauthorized)。
 func TestRunTaskCodexTranscriptDerivedPermission_SoftenedToRetry(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	work := t.TempDir()
 	dir := t.TempDir()
@@ -661,6 +673,7 @@ func TestRunTaskCodexTranscriptDerivedPermission_SoftenedToRetry(t *testing.T) {
 // 【为什么这条对照必要】softening 若过宽,会把 claude 真 401(res.IsError=true, ResultFromTranscript=false)
 // 也降级 retry_backoff——把不可重试的凭据错误重复烧 attempts,与 CG-3 立卡动机(直接 held 省额度)相悖。
 func TestRunTaskClaudeStructuredAuth_StillHeld(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	authJSON := `{"type":"result","is_error":true,"subtype":"api_error","result":"401 Unauthorized: invalid api key"}`
 	claudeBin := fakeClaudeBin(t, authJSON, "", 1)
@@ -734,6 +747,7 @@ func fakeCodexTerminalMessageWithAuthRef(t *testing.T) string {
 // 修法:在 case runErr!=nil 里给 res.Result != "" 的 else 分支同样打
 // ResultFromTranscript=true。回退验证:去掉该 else 分支即分类走 auth→held,本测试即红。
 func TestRunTaskCodexAgentTerminalMessageWithAuthRef_SoftenedToRetry(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	work := t.TempDir()
 
@@ -803,6 +817,7 @@ func TestRunTaskCodexAgentTerminalMessageWithAuthRef_SoftenedToRetry(t *testing.
 // 由 ResultFromTranscript 决定,path 2/3 恒 true。回退验证:把 path 3 分支(res==nil 时的
 // return true)去掉则重现 held,本测试即红。
 func TestRunTaskClaudeParseFailNonJSONWithPermissionRef_SoftenedToRetry(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// 非 JSON 首行含 "permission denied"——parseClaudeJSON 会返回 nil。**不含** limitRe 特征词
 	// 避免走限额分支。

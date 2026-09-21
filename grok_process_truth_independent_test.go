@@ -91,6 +91,7 @@ func cprocFailClosedProbes() map[string]string {
 // hardest case behind a fully valid in-window transport diagnostic that would
 // otherwise type the terminal.
 func TestCPROCFullStreamFailClosedEvidenceAtExtremeDistance(t *testing.T) {
+	t.Parallel()
 	// 2000 lines is 250x the 8-line bound and ~75x the 2048-byte bound, which is
 	// far enough to distinguish a full-stream scan from a windowed one. Going
 	// further only multiplies race-detector cost for no extra discrimination.
@@ -154,6 +155,7 @@ func TestCPROCFullStreamFailClosedEvidenceAtExtremeDistance(t *testing.T) {
 // equally long stream that carries no fail-closed evidence must still be typed,
 // otherwise the fail-closed proof would be vacuous.
 func TestCPROCFarNoiseAloneStaysClassifiable(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		first string
@@ -182,6 +184,7 @@ func TestCPROCFarNoiseAloneStaysClassifiable(t *testing.T) {
 // the bounded window. Every stream the old in-window rule would have rejected
 // must still be rejected now, so the change can only ever be more fail-closed.
 func TestCPROCBoundedWindowEvidenceImpliesFullStreamFailClosed(t *testing.T) {
+	t.Parallel()
 	var corpus []string
 	for _, probe := range cprocFailClosedProbes() {
 		for pos := 0; pos < 10; pos++ {
@@ -224,6 +227,7 @@ func TestCPROCBoundedWindowEvidenceImpliesFullStreamFailClosed(t *testing.T) {
 // promote a partially-read stream to a typed terminal. Scanning 8 MiB under the
 // race detector is expensive, so this stays a single targeted case.
 func TestCPROCScannerLossIsFailClosed(t *testing.T) {
+	t.Parallel()
 	stderr := "connection reset by peer\n" + strings.Repeat("a", grokBuildStderrScanMaxToken+4096)
 	if !grokBuildProcessStderrHasFailClosedEvidence(stderr) {
 		t.Fatal("scanner loss must count as fail-closed evidence")
@@ -405,6 +409,7 @@ func cprocRunHeld(t *testing.T, stderr string, exitCode int, killSignal bool) (r
 	cfg := policyTestConfig()
 	cfg.GrokBuildBin = bin
 	cfg.MaxAttempts = 3
+	isolateGrokLifecycleHome(t, cfg)
 	task := ownerBackendGrokTask(t, root, cfg, t.TempDir())
 	if err := saveTask(root, task); err != nil {
 		t.Fatal(err)
@@ -502,6 +507,7 @@ func cprocAssertTruthfulHold(t *testing.T, root string, got *Task, productCalls 
 // TestCPROCPersistentStateNeverRetainsRawStderrOrCredentials is the leak proof.
 // Every file under the state root is read back, including the per-task log.
 func TestCPROCPersistentStateNeverRetainsRawStderrOrCredentials(t *testing.T) {
+	t.Parallel()
 	for _, tc := range cprocProcessCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			root, got, productCalls := cprocRunHeld(t, tc.stderr, tc.exitCode, false)
@@ -522,8 +528,10 @@ func TestCPROCPersistentStateNeverRetainsRawStderrOrCredentials(t *testing.T) {
 // that a real CLI can produce, including the shell's 126/127 and the 128+signal
 // range, and proves each one keeps a truthful held/no-retry/no-fallback card.
 func TestCPROCZeroSemanticNonzeroExitsHoldTruthfully(t *testing.T) {
+	t.Parallel()
 	for _, exitCode := range []int{1, 2, 3, 4, 5, 7, 64, 65, 70, 126, 127, 128, 130, 137, 254, 255} {
 		t.Run("exit_"+strconv.Itoa(exitCode), func(t *testing.T) {
+			t.Parallel()
 			stderr := "connection reset by peer\ncontext " + cprocBearerSecret
 			root, got, productCalls := cprocRunHeld(t, stderr, exitCode, false)
 			cprocAssertTruthfulHold(t, root, got, productCalls,
@@ -537,6 +545,7 @@ func TestCPROCZeroSemanticNonzeroExitsHoldTruthfully(t *testing.T) {
 // where there is no ordinary exit status to report. The hold must still be
 // truthful and value-free rather than falling back to a fabricated class.
 func TestCPROCSignalKilledZeroEventHoldsTruthfully(t *testing.T) {
+	t.Parallel()
 	stderr := "connection refused\ncontext " + cprocAPIKeySecret
 	root, got, productCalls := cprocRunHeld(t, stderr, 0, true)
 	cprocAssertTruthfulHold(t, root, got, productCalls, grokBuildProcessClassTransport, "-1")
@@ -547,8 +556,10 @@ func TestCPROCSignalKilledZeroEventHoldsTruthfully(t *testing.T) {
 // the classifier proof: stderr carrying stall or JSON evidence past the window
 // must not reach the closed process-hold path at all.
 func TestCPROCFailClosedEvidenceNeverBecomesAProcessHold(t *testing.T) {
+	t.Parallel()
 	for probeName, probe := range cprocFailClosedProbes() {
 		t.Run(probeName, func(t *testing.T) {
+			t.Parallel()
 			stderr := "connection reset by peer\n" +
 				strings.Join(cprocNoise(200), "\n") + "\n" + probe + "\ncontext " + cprocBearerSecret
 			root, got, _ := cprocRunHeld(t, stderr, 1, false)
@@ -576,6 +587,7 @@ func TestCPROCFailClosedEvidenceNeverBecomesAProcessHold(t *testing.T) {
 // roots and requires byte-identical process-truth fields, so the recorded class
 // cannot depend on map iteration order, timing or scan position.
 func TestCPROCProcessHoldIsDeterministic(t *testing.T) {
+	t.Parallel()
 	stderr := "connection reset by peer\npermission denied opening " + cprocHomePathSecret +
 		"\ninvalid option --token=" + cprocBearerSecret
 	type snapshot struct{ status, lastError, class, kind string }
@@ -608,6 +620,7 @@ func TestCPROCProcessHoldIsDeterministic(t *testing.T) {
 // process classes must not capture streams that the pre-existing auth and quota
 // paths already own.
 func TestCPROCAuthAndQuotaPrecedenceUnchanged(t *testing.T) {
+	t.Parallel()
 	for name, stderr := range map[string]string{
 		"quota in window":      "quota exceeded",
 		"quota past window":    strings.Join(cprocNoise(50), "\n") + "\nrate limit",

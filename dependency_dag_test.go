@@ -7,6 +7,7 @@ import (
 )
 
 func TestAnalyzeDependencyDAGReadinessIsDeterministic(t *testing.T) {
+	t.Parallel()
 	nodes := []DependencyNode{
 		{ID: "cutover", Lineage: "cutover-lineage", DependsOn: []string{"migrate", "auth-tokens"}},
 		{ID: "auth-tokens", Lineage: "auth-tokens-lineage"},
@@ -36,6 +37,7 @@ func TestAnalyzeDependencyDAGReadinessIsDeterministic(t *testing.T) {
 }
 
 func TestAnalyzeDependencyDAGDiagnosesCyclesAndMissingDependencies(t *testing.T) {
+	t.Parallel()
 	nodes := []DependencyNode{
 		{ID: "alpha", Lineage: "alpha-lineage", DependsOn: []string{"beta"}},
 		{ID: "beta", Lineage: "beta-lineage", DependsOn: []string{"gamma"}},
@@ -75,6 +77,7 @@ func TestAnalyzeDependencyDAGDiagnosesCyclesAndMissingDependencies(t *testing.T)
 }
 
 func TestAnalyzeDependencyDAGWithholdsReadyWhenDisjointNodeCoexistsWithAuditFailure(t *testing.T) {
+	t.Parallel()
 	disjoint := DependencyNode{ID: "ready", Lineage: "ready-lineage"}
 
 	t.Run("cycle", func(t *testing.T) {
@@ -125,6 +128,7 @@ func assertEmptyReadyOnAudit(t *testing.T, got DAGDiagnosis, err error, want err
 }
 
 func TestAnalyzeDependencyDAGRejectsMalformedAndDuplicateIdentifiers(t *testing.T) {
+	t.Parallel()
 	valid := DependencyNode{ID: "auth-tokens", Lineage: "auth-tokens-lineage"}
 	cases := []struct {
 		name  string
@@ -156,6 +160,7 @@ func TestAnalyzeDependencyDAGRejectsMalformedAndDuplicateIdentifiers(t *testing.
 }
 
 func TestBindDependencyDomainsFailClosedOnUnknownDomain(t *testing.T) {
+	t.Parallel()
 	nodes := []DependencyNode{
 		{ID: "auth-tokens", Lineage: "auth-tokens-lineage", DomainID: "auth-tokens"},
 		{ID: "docs", Lineage: "docs-lineage"},

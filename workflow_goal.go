@@ -52,22 +52,19 @@ const (
 	goalDecisionAccept    = "accept"
 	goalDecisionRevise    = "revise"
 
-	workflowDesignRepairLimit = 1
-
 	goalStopSoftBudget = "provider budget is soft; existing step timeout is the hard deadline"
 )
 
 var (
-	errGoalSyncRejected              = errors.New("workflow goal-sync rejected")
-	errGoalRedispatchBlocked         = errors.New("workflow goal redispatch blocked")
-	errGoalManualRequired            = errors.New("workflow goal-run requires -manual")
-	errGoalCapability                = errors.New("workflow native-goal capability")
-	errWorkflowDesignRepairExhausted = errors.New("workflow design repair exhausted")
-	errGoalLaunchUnstarted           = errors.New("workflow goal launch did not start")
-	errGoalDesignProof               = errors.New("workflow goal design proof")
-	errGoalDesignResult              = errors.New("workflow goal design-result")
-	errGoalAttemptRequired           = errors.New("workflow goal requires the exact existing attempt")
-	errGoalUnsupportedTuple          = errors.New("workflow goal unsupported execution tuple")
+	errGoalSyncRejected      = errors.New("workflow goal-sync rejected")
+	errGoalRedispatchBlocked = errors.New("workflow goal redispatch blocked")
+	errGoalManualRequired    = errors.New("workflow goal-run requires -manual or -hosted")
+	errGoalCapability        = errors.New("workflow native-goal capability")
+	errGoalLaunchUnstarted   = errors.New("workflow goal launch did not start")
+	errGoalDesignProof       = errors.New("workflow goal design proof")
+	errGoalDesignResult      = errors.New("workflow goal design-result")
+	errGoalAttemptRequired   = errors.New("workflow goal requires the exact existing attempt")
+	errGoalUnsupportedTuple  = errors.New("workflow goal unsupported execution tuple")
 )
 
 // Test-only seam: production leaves this nil. A non-nil error is a crash
@@ -149,6 +146,15 @@ type TaskGoalBinding struct {
 	Continuation      string `json:"continuation,omitempty"`
 	Started           bool   `json:"started,omitempty"`
 	InputDigest       string `json:"input_digest,omitempty"`
+	Hosted            bool   `json:"hosted,omitempty"`
+	External          bool   `json:"external,omitempty"`
+	ControlOwner      string `json:"control_owner,omitempty"`
+	LastControl       string `json:"last_control,omitempty"`
+	LastControlAt     string `json:"last_control_at,omitempty"`
+	ControlConfirmed  bool   `json:"control_confirmed,omitempty"`
+	FailureClass      string `json:"failure_class,omitempty"`
+	PauseMessage      string `json:"pause_message,omitempty"`
+	GrokHome          string `json:"grok_home,omitempty"`
 }
 
 // GoalCapability is owned by this adapter file. supported requires actual
@@ -194,6 +200,7 @@ type grokNativeGoalStateFile struct {
 	LastClassifierVerdict string          `json:"last_classifier_verdict"`
 	TotalVerifyRounds     int             `json:"total_verify_rounds"`
 	TotalWorkerRounds     int             `json:"total_worker_rounds"`
+	PauseMessage          string          `json:"pause_message,omitempty"`
 	History               []grokGoalEvent `json:"history"`
 }
 
@@ -320,7 +327,7 @@ func nativeGoalCapabilities() []GoalCapability {
 			Runner:       grokBuildRunnerName,
 			Level:        goalCapManualOnly,
 			Verified:     true,
-			Reason:       "Grok TUI native /goal is manually proven for complete and same-session restart. Automatic protocol and active pause/resume remain unverified. grok -p/--single is a single turn and is not goal proof.",
+			Reason:       "Grok TUI native /goal is proven for complete and same-session restart. Cardex-hosted PTY injects a literal /goal on the master. Active pause/resume is offered only for hosted Goals after native post-state confirms; write-to-slave, exit 0, stale active, and shell kill are not pause. grok -p/--single is a single turn and is not goal proof.",
 			CandidateAPI: "/goal <objective> [--budget <tokens>]; /goal status|pause|resume|clear",
 		},
 		{
@@ -434,8 +441,13 @@ func normalizeDesignNode(node *WorkflowDesignNode) error {
 	if node == nil {
 		return nil
 	}
-	if strings.TrimSpace(node.Role) == "" {
-		node.Role = goalDesignRole
+	role := strings.ToLower(strings.TrimSpace(node.Role))
+	if role == "" {
+		role = goalDesignRole
+	}
+	if node.Role != role {
+		fmt.Fprintf(os.Stderr, "warning: design role %q normalized to %q\n", node.Role, role)
+		node.Role = role
 	}
 	if node.Role != goalDesignRole {
 		return fmt.Errorf("%w: design node role must be %q", errWorkflowMalformed, goalDesignRole)
@@ -443,42 +455,7 @@ func normalizeDesignNode(node *WorkflowDesignNode) error {
 	if !node.ReadOnly {
 		return fmt.Errorf("%w: design node must already be read-only; a false claim is not rewritten into acceptance", errGoalDesignProof)
 	}
-	if strings.TrimSpace(node.Model) == "" && strings.TrimSpace(node.ActualModel) == "" {
-		return fmt.Errorf("%w: design node needs model", errWorkflowMalformed)
-	}
-	if strings.TrimSpace(node.Runner) == "" && strings.TrimSpace(node.ActualRunner) == "" {
-		return fmt.Errorf("%w: design node needs runner", errWorkflowMalformed)
-	}
 	return nil
-}
-
-func fictionalAstraGrokBuild(model, runner string) bool {
-	m := strings.ToLower(strings.TrimSpace(model))
-	r := strings.ToLower(strings.TrimSpace(runner))
-	return strings.Contains(m, "astra") && r == grokBuildRunnerName
-}
-
-func independentDesignModelOK(actualModel string) bool {
-	m := strings.ToLower(strings.TrimSpace(actualModel))
-	if m == "" {
-		return false
-	}
-	if m == "gpt-6-astra" || strings.HasPrefix(m, "gpt-6-astra") {
-		return true
-	}
-	if m == "claude-fable-5" || strings.HasPrefix(m, "claude-fable-5") || m == "claude-fable-5-thinking-max" {
-		return true
-	}
-	return false
-}
-
-func independentDesignQualified(node *WorkflowDesignNode) bool {
-	if node == nil {
-		return false
-	}
-	// Qualify on the proven actual model only. Identity/runner display text
-	// containing "astra" is not independent-design proof.
-	return independentDesignModelOK(node.ActualModel)
 }
 
 func designProofComplete(node *WorkflowDesignNode) error {
@@ -494,14 +471,11 @@ func designProofComplete(node *WorkflowDesignNode) error {
 	if strings.TrimSpace(node.Digest) == "" || strings.TrimSpace(node.InputIdentity) == "" {
 		return fmt.Errorf("%w: design node needs digest and current input identity", errGoalDesignProof)
 	}
-	if strings.TrimSpace(node.ActualModel) == "" && strings.TrimSpace(node.Model) == "" {
-		return fmt.Errorf("%w: design node needs actual model", errGoalDesignProof)
+	if strings.TrimSpace(node.ActualModel) == "" || strings.TrimSpace(node.ActualRunner) == "" {
+		fmt.Fprintln(os.Stderr, "warning: design model/runner metadata is incomplete; preserving reported identity without guessing")
 	}
-	if fictionalAstraGrokBuild(firstNonBlank(node.ActualModel, node.Model), firstNonBlank(node.ActualRunner, node.Runner)) {
-		return fmt.Errorf("%w: independent Astra design is not a grok-build tuple", errGoalDesignProof)
-	}
-	if !independentDesignQualified(node) {
-		return fmt.Errorf("%w: independent design requires actual Fable/Astra identity", errGoalDesignProof)
+	if strings.TrimSpace(node.Identity) == "" && strings.TrimSpace(node.DesignSessionID) == "" && strings.TrimSpace(node.DesignTaskID) == "" {
+		fmt.Fprintln(os.Stderr, "warning: design actor/context metadata is missing; independence remains caller-attested, not inferred from a model name")
 	}
 	switch node.Provenance {
 	case goalDesignProvenanceTask, goalDesignProvenanceExt, goalDesignProvenanceRepair:
@@ -513,6 +487,21 @@ func designProofComplete(node *WorkflowDesignNode) error {
 	}
 	if node.Provenance == goalDesignProvenanceExt && strings.TrimSpace(node.ReceiptPath) == "" && strings.TrimSpace(node.DesignSessionID) == "" {
 		return fmt.Errorf("%w: external design receipt or session required", errGoalDesignProof)
+	}
+	return nil
+}
+
+// Independence is about producers, not model diversity. Compare the producer
+// coordinates we actually have; never infer a producer from a model label.
+func designProducerDistinct(node *WorkflowDesignNode, writer *Task) error {
+	if node == nil || writer == nil {
+		return nil
+	}
+	actor, session := strings.TrimSpace(node.Identity), strings.TrimSpace(node.DesignSessionID)
+	writerSession := strings.TrimSpace(writer.SessionID)
+	if strings.TrimSpace(node.DesignTaskID) == writer.ID || actor == writer.ID ||
+		(writerSession != "" && (session == writerSession || actor == writerSession)) {
+		return fmt.Errorf("%w: design and writer must have distinct actor/context identities", errGoalDesignProof)
 	}
 	return nil
 }
@@ -529,6 +518,15 @@ func reverifyGoalDesignProof(root string, wf *WorkflowRecord) error {
 		return err
 	}
 	node := wf.DesignLineage.LatestValid
+	if wf.WriterTaskID != "" {
+		writer, err := workflowWriterTask(root, wf)
+		if err != nil {
+			return err
+		}
+		if err := designProducerDistinct(node, writer); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(node.ReceiptPath) != "" {
 		fresh, err := loadExternalDesignReceipt(node.ReceiptPath)
 		if err != nil {
@@ -539,6 +537,10 @@ func reverifyGoalDesignProof(root string, wf *WorkflowRecord) error {
 		}
 		if strings.TrimSpace(fresh.InputIdentity) == "" || fresh.InputIdentity != node.InputIdentity {
 			return fmt.Errorf("%w: design input identity drifted since bind", errGoalDesignProof)
+		}
+		if fresh.ActualModel != node.ActualModel || fresh.ActualRunner != node.ActualRunner ||
+			fresh.Identity != node.Identity || fresh.DesignSessionID != node.DesignSessionID {
+			return fmt.Errorf("%w: design producer identity drifted since bind", errGoalDesignProof)
 		}
 		return designProofComplete(fresh)
 	}
@@ -562,6 +564,10 @@ func reverifyGoalDesignProof(root string, wf *WorkflowRecord) error {
 		}
 		if again.InputIdentity != node.InputIdentity {
 			return fmt.Errorf("%w: design task input identity drifted since bind", errGoalDesignProof)
+		}
+		if again.ActualModel != node.ActualModel || again.ActualRunner != node.ActualRunner ||
+			(node.DesignSessionID != "" && again.DesignSessionID != node.DesignSessionID) {
+			return fmt.Errorf("%w: design task producer identity drifted since bind", errGoalDesignProof)
 		}
 	}
 	if strings.TrimSpace(node.Digest) == "" || strings.TrimSpace(node.InputIdentity) == "" {
@@ -606,6 +612,9 @@ func bindInitialDesignProof(wf *WorkflowRecord, req designBindRequest) error {
 	if err := designProofComplete(node); err != nil {
 		return err
 	}
+	if req.Model != "" || req.Runner != "" || req.ActualModel != "" || req.ActualRunner != "" || req.Identity != "" {
+		fmt.Fprintln(os.Stderr, "warning: design receipt/task identity is authoritative; CLI identity labels are ignored")
+	}
 	wf.DesignLineage = &WorkflowDesignLineage{Initial: node, LatestValid: node, RepairCount: 0}
 	return nil
 }
@@ -629,10 +638,16 @@ func loadExternalDesignReceipt(path string) (*WorkflowDesignNode, error) {
 	if st == "" {
 		return nil, fmt.Errorf("%w: receipt status must be completed", errGoalDesignProof)
 	}
-	resultPath := firstNonBlank(rec.ResultPath, path)
+	resultPath := strings.TrimSpace(rec.ResultPath)
+	if resultPath == "" {
+		return nil, fmt.Errorf("%w: receipt has no result artifact; identity metadata is not a design result", errGoalDesignProof)
+	}
 	resultRaw, err := os.ReadFile(resultPath)
 	if err != nil {
 		return nil, fmt.Errorf("%w: result artifact: %v", errGoalDesignProof, err)
+	}
+	if len(bytes.TrimSpace(resultRaw)) == 0 {
+		return nil, fmt.Errorf("%w: design result artifact is empty", errGoalDesignProof)
 	}
 	sum := sha256.Sum256(resultRaw)
 	digest := hex.EncodeToString(sum[:])
@@ -644,12 +659,20 @@ func loadExternalDesignReceipt(path string) (*WorkflowDesignNode, error) {
 	}
 	inputID := strings.TrimSpace(rec.InputIdentity)
 	if inputID == "" {
-		return nil, fmt.Errorf("%w: receipt needs input_identity bound to current source, not a path default", errGoalDesignProof)
+		var parts []string
+		for _, in := range rec.Inputs {
+			parts = append(parts, strings.ToLower(strings.TrimSpace(in.SHA256)))
+		}
+		inputID = strings.Join(parts, "|")
+		fmt.Fprintln(os.Stderr, "warning: design input_identity derived from verified input digests")
 	}
 	actualModel := firstNonBlank(rec.ActualModel, rec.Model)
 	actualRunner := firstNonBlank(rec.ActualRunner, rec.Runner)
-	if fictionalAstraGrokBuild(actualModel, actualRunner) {
-		return nil, fmt.Errorf("%w: independent Astra design is not a grok-build tuple", errGoalDesignProof)
+	if rec.ActualModel == "" || rec.ActualRunner == "" {
+		fmt.Fprintln(os.Stderr, "warning: design receipt uses legacy model/runner fields for reported execution identity")
+	}
+	if (rec.Model != "" && rec.Model != actualModel) || (rec.Runner != "" && rec.Runner != actualRunner) {
+		fmt.Fprintln(os.Stderr, "warning: design display model/runner differs from actual identity; preserving actual identity")
 	}
 	node := &WorkflowDesignNode{
 		Role:                firstNonBlank(rec.Role, goalDesignRole),
@@ -726,13 +749,14 @@ func parseMarkdownDesignReceipt(path, body string) (designReceiptFile, error) {
 			rec.Role = val
 		case "actual_model":
 			rec.ActualModel = val
-		case "actual_runner", "actual_agent_identity":
-			if rec.ActualRunner == "" {
-				rec.ActualRunner = val
-			}
-			if key == "actual_agent_identity" && rec.Identity == "" {
-				rec.Identity = val
-			}
+		case "model":
+			rec.Model = val
+		case "runner":
+			rec.Runner = val
+		case "actual_runner":
+			rec.ActualRunner = val
+		case "actual_agent_identity":
+			rec.Identity = val
 		case "identity":
 			rec.Identity = val
 		case "read_only":
@@ -757,16 +781,6 @@ func parseMarkdownDesignReceipt(path, body string) (designReceiptFile, error) {
 		case "consumed_observation":
 			rec.ConsumedObservation = val
 		}
-	}
-	if rec.ActualRunner == "" {
-		rec.ActualRunner = "astra"
-	}
-	if rec.InputIdentity == "" && len(rec.Inputs) > 0 {
-		var parts []string
-		for _, in := range rec.Inputs {
-			parts = append(parts, in.SHA256)
-		}
-		rec.InputIdentity = strings.Join(parts, "|")
 	}
 	rec.ResultPath = path
 	if rec.ReadOnly == nil && ro {
@@ -849,22 +863,29 @@ func loadCompletedDesignTask(root, id string) (*WorkflowDesignNode, error) {
 	runner := observedDesignRunner(t)
 	sum := sha256.Sum256([]byte(result))
 	node := &WorkflowDesignNode{
-		Role:          goalDesignRole,
-		Model:         model,
-		Runner:        runner,
-		ActualModel:   model,
-		ActualRunner:  runner,
-		ReadOnly:      true,
-		At:            firstNonBlank(t.UpdatedAt, time.Now().Format(time.RFC3339)),
-		DesignTaskID:  t.ID,
-		Digest:        hex.EncodeToString(sum[:]),
-		InputIdentity: inputID,
-		Provenance:    goalDesignProvenanceTask,
+		Role:            goalDesignRole,
+		Model:           model,
+		Runner:          runner,
+		ActualModel:     model,
+		ActualRunner:    runner,
+		ReadOnly:        true,
+		At:              firstNonBlank(t.UpdatedAt, time.Now().Format(time.RFC3339)),
+		DesignTaskID:    t.ID,
+		DesignSessionID: t.SessionID,
+		Digest:          hex.EncodeToString(sum[:]),
+		InputIdentity:   inputID,
+		Provenance:      goalDesignProvenanceTask,
 	}
 	return node, nil
 }
 
 func bindWorkflowDesignRepair(root string, cfg *Config, wf *WorkflowRecord, receiptPath string) error {
+	return withTaskControlLock(root, "workflow-admit:"+wf.ID, func() error {
+		return bindWorkflowDesignRepairLocked(root, cfg, wf, receiptPath)
+	})
+}
+
+func bindWorkflowDesignRepairLocked(root string, cfg *Config, wf *WorkflowRecord, receiptPath string) error {
 	if err := refreshWorkflow(root, cfg, wf); err != nil {
 		return err
 	}
@@ -874,8 +895,8 @@ func bindWorkflowDesignRepair(root string, cfg *Config, wf *WorkflowRecord, rece
 	if wf.Review == nil || strings.TrimSpace(wf.Review.TaskID) == "" {
 		return fmt.Errorf("%w: design repair must consume the current review results", errWorkflowMalformed)
 	}
-	if wf.DesignLineage != nil && wf.DesignLineage.RepairCount >= workflowDesignRepairLimit {
-		return fmt.Errorf("%w: at most %d design repair round", errWorkflowDesignRepairExhausted, workflowDesignRepairLimit)
+	if wf.CurrentRound >= wf.MaxRounds {
+		return fmt.Errorf("%w: %d/%d", errWorkflowRoundsExceeded, wf.CurrentRound, wf.MaxRounds)
 	}
 	node, err := loadExternalDesignReceipt(receiptPath)
 	if err != nil {
@@ -888,6 +909,24 @@ func bindWorkflowDesignRepair(root string, cfg *Config, wf *WorkflowRecord, rece
 	node.ConsumedReviewTask = wf.Review.TaskID
 	if err := designProofComplete(node); err != nil {
 		return err
+	}
+	writer, err := workflowWriterTask(root, wf)
+	if err != nil {
+		return err
+	}
+	if err := designProducerDistinct(node, writer); err != nil {
+		return err
+	}
+	if wf.DesignLineage != nil && wf.DesignLineage.LatestValid != nil {
+		old := wf.DesignLineage.LatestValid
+		if old.Digest == node.Digest && old.InputIdentity == node.InputIdentity &&
+			old.ActualModel == node.ActualModel && old.ActualRunner == node.ActualRunner &&
+			old.Identity == node.Identity && old.DesignSessionID == node.DesignSessionID &&
+			old.ConsumedCommit == node.ConsumedCommit && old.ConsumedTree == node.ConsumedTree &&
+			old.ConsumedReviewTask == node.ConsumedReviewTask {
+			fmt.Fprintln(os.Stderr, "warning: design-repair receipt already bound; no state change")
+			return nil
+		}
 	}
 	if wf.DesignLineage == nil {
 		wf.DesignLineage = &WorkflowDesignLineage{}
@@ -1066,6 +1105,14 @@ func withWorkflowSchedulerLock(root string, cfg *Config, fn func() error) error 
 }
 
 func launchManualWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int64) error {
+	return launchWorkflowGoal(root, cfg, wf, budget, false)
+}
+
+func launchHostedWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int64) error {
+	return launchWorkflowGoal(root, cfg, wf, budget, true)
+}
+
+func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int64, hosted bool) error {
 	if err := refreshWorkflow(root, cfg, wf); err != nil {
 		return err
 	}
@@ -1119,7 +1166,7 @@ func launchManualWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budg
 	}
 	defer releaseAdmission()
 
-	if err := admitManualGoalLaunchLocked(root, cfg, wf, t, budget); err != nil {
+	if err := admitManualGoalLaunchLocked(root, cfg, wf, t, budget, hosted); err != nil {
 		return err
 	}
 	releaseAdmission()
@@ -1143,13 +1190,28 @@ func launchManualWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budg
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	args := manualGrokGoalArgs(cfg, t, model, effort, sandbox, permission)
-	cmd := exec.CommandContext(ctx, cfg.GrokBuildBin, args...)
-	cmd.Dir = t.Dir
+	grokHome := firstNonBlank(t.Goal.GrokHome, defaultGrokHome())
+	t.Goal.GrokHome = grokHome
+	args := manualGrokGoalArgs(cfg, t, model, effort, sandbox, permission, grokHome)
+	contractPath := filepath.Join(workflowsDir(root), wf.ID+".stage-contract.txt")
+	if hosted {
+		return runHostedGrokGoal(root, cfg, wf, t, ctx, args, grokHome, contractPath, t.Goal.InputDigest)
+	}
+
 	stdin := os.Stdin
 	if goalLaunchStdin != nil {
 		stdin = goalLaunchStdin
 	}
+	if goalLaunchStdin == nil && !fileIsTerminal(stdin) {
+		t.Goal.FailureClass = goalFailPTYMissing
+		_ = saveTask(root, t)
+		_ = withWorkflowSchedulerLock(root, cfg, func() error {
+			return abandonUnstartedGoalAttempt(root, t)
+		})
+		return fmt.Errorf("%s: interactive -manual requires a controlling TTY; use -hosted for Cardex-owned PTY", goalFailPTYMissing)
+	}
+	cmd := exec.CommandContext(ctx, cfg.GrokBuildBin, args...)
+	cmd.Dir = t.Dir
 	cmd.Stdin = stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -1166,12 +1228,23 @@ func launchManualWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budg
 		}
 	}
 	home, _ := os.UserHomeDir()
-	cmd.Env = providerChildEnv(home, nil)
+	cmd.Env = providerChildEnv(home, map[string]string{"GROK_HOME": grokHome, "GROK_WORKFLOWS": "1"})
 
 	taskExecRoot.Store(t.ID, root)
 	defer taskExecRoot.Delete(t.ID)
 
 	runErr := runCmdRegisteredForTaskWorkspace(cmd, t.ID, t.Dir)
+	if runErr != nil {
+		class := classifyGoalLaunchError(runErr)
+		t.Goal.FailureClass = class
+		_ = saveTask(root, t)
+		if class == goalFailPTYIoctl || class == goalFailPTYMissing {
+			_ = withWorkflowSchedulerLock(root, cfg, func() error {
+				return abandonUnstartedGoalAttempt(root, t)
+			})
+			return fmt.Errorf("%s: %w", class, runErr)
+		}
+	}
 	restoreErr := restore()
 	finalErr := withWorkflowSchedulerLock(root, cfg, func() error {
 		return finalizeManualGoalLaunch(root, wf, t, ctx, runErr)
@@ -1185,7 +1258,7 @@ func launchManualWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budg
 	return nil
 }
 
-func admitManualGoalLaunchLocked(root string, cfg *Config, wf *WorkflowRecord, t *Task, budget int64) error {
+func admitManualGoalLaunchLocked(root string, cfg *Config, wf *WorkflowRecord, t *Task, budget int64, hosted bool) error {
 	fresh, err := loadTask(root, t.ID)
 	if err != nil {
 		return err
@@ -1273,11 +1346,17 @@ func admitManualGoalLaunchLocked(root string, cfg *Config, wf *WorkflowRecord, t
 	if err := writeGoalStageContract(root, wf.ID, contract); err != nil {
 		return err
 	}
-	printManualGoalInstructions(root, wf, t, contract, digest)
-
 	t.Status = statusRunning
 	t.Goal.Observation = goalObsRunning
-	t.Goal.ObservationNote = "manual Grok TUI; /goal is typed by the operator"
+	if hosted {
+		t.Goal.Hosted = true
+		t.Goal.ControlOwner = goalControlOwnerHosted
+		t.Goal.ObservationNote = "cardex-hosted PTY will inject literal /goal on the master"
+	} else {
+		t.Goal.ControlOwner = goalControlOwnerInteractive
+		t.Goal.ObservationNote = "manual Grok TUI; /goal is typed by the operator; pause is not claimed from stdin write"
+	}
+	printManualGoalInstructions(root, wf, t, contract, digest)
 	t.Runner = grokBuildRunnerName
 	t.touch()
 	if err := reserveDispatchAttempt(root, t); err != nil {
@@ -1439,7 +1518,7 @@ func resolveManualGrokTuple(cfg *Config, t *Task) (sandbox, permission string, e
 	return sandbox, permission, nil
 }
 
-func manualGrokGoalArgs(cfg *Config, t *Task, model, effort, sandbox, permission string) []string {
+func manualGrokGoalArgs(cfg *Config, t *Task, model, effort, sandbox, permission, grokHome string) []string {
 	args := []string{
 		"--no-auto-update",
 		"--model", model,
@@ -1451,7 +1530,13 @@ func manualGrokGoalArgs(cfg *Config, t *Task, model, effort, sandbox, permission
 	if grokBuildWriteCapable(t) && permission != "plan" {
 		args = append(args, "--no-plan")
 	}
-	sessionDir := grokGoalSessionDir(defaultGrokHome(), t.Dir, t.SessionID)
+	if t != nil && strings.TrimSpace(t.Dir) != "" {
+		args = append(args, "--cwd", t.Dir)
+	}
+	if grokHome == "" {
+		grokHome = defaultGrokHome()
+	}
+	sessionDir := grokGoalSessionDir(grokHome, t.Dir, t.SessionID)
 	if _, err := os.Stat(sessionDir); err == nil && t.SessionID != "" {
 		args = append(args, "--resume", t.SessionID)
 	} else if t.SessionID != "" {
@@ -1550,7 +1635,11 @@ func printManualGoalInstructions(root string, wf *WorkflowRecord, t *Task, contr
 	fmt.Printf("Copyable native command (literal path+digest; TUI is not a shell):\n")
 	fmt.Printf("  %s\n", copyableNativeGoalCommand(contractPath, digest, budget))
 	fmt.Printf("  /goal status\n")
-	fmt.Printf("Active pause/resume is unverified and is not accepted behavior.\n")
+	if t != nil && t.Goal != nil && t.Goal.Hosted {
+		fmt.Printf("Cardex hosts this Goal: /goal is injected on the PTY master. pause/resume/stop require native post-state confirmation.\n")
+	} else {
+		fmt.Printf("Interactive TUI owner types /goal. Slave writes and exit 0 are not pause. Hosted control is a separate -hosted launch.\n")
+	}
 	fmt.Printf("grok -p is a single turn and is not goal proof.\n")
 	fmt.Printf("After the TUI returns: cardex workflow goal-sync %s\n", wf.ID)
 	fmt.Printf("goal-sync does not launch a provider; it updates stage facts.\n")
@@ -1711,6 +1800,9 @@ func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSync
 	}
 
 	grokHome := strings.TrimSpace(req.GrokHome)
+	if grokHome == "" && t.Goal != nil {
+		grokHome = strings.TrimSpace(t.Goal.GrokHome)
+	}
 	if grokHome == "" {
 		grokHome = defaultGrokHome()
 	}
@@ -1732,7 +1824,15 @@ func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSync
 		return t, fmt.Errorf("%w: other goal_id", errGoalSyncRejected)
 	}
 	if t.Goal.NativeGoalID != "" && obs.GoalID != "" && obs.GoalID != t.Goal.NativeGoalID {
+		t.Goal.FailureClass = goalFailStaleIdentity
+		_ = saveTask(root, t)
 		return t, fmt.Errorf("%w: other goal_id", errGoalSyncRejected)
+	}
+	applyPlanningFailedMapping(t, obs)
+	if processExited, custody := goalAttemptStarted(root, t) && !taskHasLiveWriterProof(root, t), goalCustodyReleased(root, t); true {
+		if class := classifyNativeObservationGap(obs, processExited, custody); class != "" && t.Goal.FailureClass == "" {
+			t.Goal.FailureClass = class
+		}
 	}
 	if obs.ObservedCWD == "" || !samePath(obs.ObservedCWD, cwd) {
 		if obs.NativeStatus == "complete" {
@@ -1865,6 +1965,7 @@ type nativeGoalObservation struct {
 	Contradictory   bool
 	BudgetLimited   bool
 	NotAchieved     bool
+	PauseMessage    string
 }
 
 type mappedGoal struct {
@@ -1900,6 +2001,7 @@ func observeNativeGrokGoal(grokHome, cwd, sessionID, expectedGoalID string) (nat
 	out.GoalID = strings.TrimSpace(st.GoalID)
 	out.NativeStatus = strings.ToLower(strings.TrimSpace(st.Status))
 	out.Classifier = strings.TrimSpace(st.LastClassifierVerdict)
+	out.PauseMessage = strings.TrimSpace(st.PauseMessage)
 	if out.NativeStatus == "budget_limited" {
 		out.BudgetLimited = true
 	}
@@ -2047,12 +2149,16 @@ func mapNativeGoalToTask(obs nativeGoalObservation, custodyReleased, cancelReque
 	switch st {
 	case "active":
 		return mappedGoal{Status: statusRunning, Observation: goalObsRunning, Note: "matched native active"}
-	case "paused", "needs-input":
+	case "paused", "user_paused", "needs-input":
+		note := "verified paused/needs-input; same-session explicit continuation"
+		if planningFailedUnknown(obs.PauseMessage) {
+			note = "native paused with Planning failed; cause unspecified; not accepted complete; not auto-resumed"
+		}
 		return mappedGoal{
 			Status:       statusHeld,
 			Observation:  goalObsHeld,
 			Continuation: "same-session",
-			Note:         "verified paused/needs-input; same-session explicit continuation; active pause/resume is unverified",
+			Note:         note,
 		}
 	case "failed":
 		if custodyReleased {
@@ -2166,6 +2272,9 @@ func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecor
 	if t.Goal == nil {
 		return nil, fmt.Errorf("%w: stage is not a Goal writer", errGoalDesignResult)
 	}
+	if err := designProducerDistinct(fresh, t); err != nil {
+		return nil, err
+	}
 	currentObs := t.Goal.Observation
 	native := t.Goal.LastNativeStatus
 	if observation == "" {
@@ -2192,6 +2301,23 @@ func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecor
 		wf.DesignLineage.LastConsumedTaskID == t.ID && wf.DesignLineage.LastConsumedRevision == t.Revision {
 		return nil, fmt.Errorf("%w: duplicate/stale design result", errGoalDesignResult)
 	}
+	doneStage := t.Status == statusDone || currentObs == goalObsDone
+	if decision == goalDecisionAccept || decision == goalDecisionSuccessor || decision == goalDecisionRevise {
+		if doneStage && (!taskDurablyDone(root, t) || currentObs != goalObsDone || !goalCustodyReleased(root, t)) {
+			return nil, fmt.Errorf("%w: completed stage requires durable terminal and released producer custody", errGoalDesignResult)
+		}
+		if !doneStage && currentObs == goalObsUnknown && native != "budget_limited" {
+			// A fresh explicit successor decision may retire an unknown attempt
+			// after custody recovery. It never makes the old result acceptable.
+			if decision != goalDecisionSuccessor || !goalCustodyReleased(root, t) {
+				return nil, fmt.Errorf("%w: unknown execution outcome cannot be accepted or revised; explicit successor requires released custody and fresh design evidence", errGoalDesignResult)
+			}
+		}
+	}
+	if doneStage && decision == goalDecisionSuccessor {
+		fmt.Fprintln(os.Stderr, "warning: completed stage successor normalized to revise; existing round and custody limits still apply")
+		decision = goalDecisionRevise
+	}
 
 	now := time.Now().Format(time.RFC3339)
 	if wf.DesignLineage == nil {
@@ -2207,7 +2333,6 @@ func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecor
 	wf.DesignLineage.LastConsumedRevision = t.Revision
 	wf.DesignLineage.LastConsumedAt = now
 
-	doneStage := t.Status == statusDone || currentObs == goalObsDone
 	switch decision {
 	case goalDecisionAccept:
 		if !doneStage {
@@ -2234,11 +2359,8 @@ func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecor
 		}
 		return t, persistWorkflow(root, cfg, wf)
 	default: // successor or revise
-		if observation == "paused" || observation == "needs-input" {
+		if observation == "paused" || observation == "user_paused" || observation == "needs-input" {
 			return nil, fmt.Errorf("%w: paused/needs-input uses same-session goal-run, not a successor writer", errGoalDesignResult)
-		}
-		if doneStage && decision == goalDecisionSuccessor {
-			return nil, fmt.Errorf("%w: completed stage uses accept|revise|stop, not successor", errGoalDesignResult)
 		}
 		if wf.CurrentRound >= wf.MaxRounds {
 			wf.Status = workflowStatusExhausted
@@ -2247,10 +2369,10 @@ func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecor
 			}
 			return nil, fmt.Errorf("%w: %d/%d", errWorkflowRoundsExceeded, wf.CurrentRound, wf.MaxRounds)
 		}
+		if !doneStage && !goalCustodyReleased(root, t) {
+			return nil, fmt.Errorf("%w: cannot open a successor while custody is held", errGoalDesignResult)
+		}
 		if !doneStage && t.Status != statusFailed {
-			if !goalCustodyReleased(root, t) {
-				return nil, fmt.Errorf("%w: cannot open a successor while custody is held", errGoalDesignResult)
-			}
 			if t.ActiveAttemptID == "" && t.Goal.BoundAttemptID != "" {
 				t.ActiveAttemptID = t.Goal.BoundAttemptID
 			}
@@ -2269,7 +2391,12 @@ func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecor
 			}
 			t.Status = statusFailed
 			t.Goal.Observation = goalObsFailed
-			t.Goal.ObservationNote = "nonaccepted stage retired for one Goal-bound successor; not manufactured done"
+			if currentObs == goalObsUnknown {
+				t.Goal.Observation = goalObsUnknown
+			}
+			t.Goal.CustodyReleased = true
+			t.Goal.EvidenceComplete = false
+			t.Goal.ObservationNote = "nonaccepted stage retired for one explicit Goal-bound successor; prior native outcome preserved; not manufactured done"
 			if err := commitTaskTransition(root, t, transitionRequest{
 				EventType:            evFailed,
 				Actor:                "workflow:design-result",
@@ -2303,7 +2430,7 @@ func stageObservationMatches(t *Task, observation string) bool {
 		return t.Status == statusDone || currentObs == goalObsDone
 	case goalObsFailed:
 		return currentObs == goalObsFailed || t.Status == statusFailed
-	case "paused", "needs-input":
+	case "paused", "user_paused", "needs-input":
 		return currentObs == goalObsHeld && t.Goal.Continuation == "same-session"
 	case "budget_limited":
 		return native == "budget_limited"

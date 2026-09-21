@@ -1,5 +1,13 @@
 # cardex changelog
 
+## 2026-09-14 · v0.10.18: hosted native Goal, durable design session, Hermes inbound
+
+- `goal-run -hosted` opens a Cardex-owned PTY and injects a literal `/goal` contract path+SHA256 on the **master**; `--cwd` and `GROK_HOME` are passed to the child. Interactive `-manual` still requires a controlling TTY; missing PTY is `pty_missing` rather than a headless empty run.
+- `goal-control -action pause|resume|stop` is offered only for `control_owner=cardex-hosted`. Confirmation is native post-state; slave writes, exit 0, stale active, and shell kill are not pause. External Goals are observe-only (`goal-observe`); a Session ID does not invent a Cardex attempt and does not take over the original TUI.
+- Launch/control faults keep a `failure_class` on the attempt (`pty_ioctl`, `budget_flag_layer`, `approval_denied`, `pause_not_confirmed`, `planning_failed_unknown`, …) instead of a bare `stream_incomplete`. CAL1/R2 Planning failed stays cause-unknown.
+- Workflow records bind `design_session` / `manager_session` / `owner_design_entry` with real provider/type/id. `design-request`/`design-collect` do two related judgments on one Grok session and recover from the durable pointer. A Codex UUID cannot masquerade as a Hermes session.
+- manager-wake accepts `provider=hermes` destinations: durable inbox plus a matching ack is delivery; a local outbox receipt is not. `hermes send` group channels are not used. Board listen address stays `0.0.0.0:8788`.
+
 ## 2026-09-13 · v0.10.17: Goal mode (literal /goal, successor design, terminal identity)
 
 - The copyable native `/goal` is a literal contract absolute path + SHA256. Do not use `$(cat …)`; the TUI is not a shell. The frozen contract includes the latest valid design path/digest/input identity/decision.

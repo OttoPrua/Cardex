@@ -251,6 +251,10 @@ type Config struct {
 	// grok_build 为空/disabled 时完全保留旧 Kimi→Codex 与 Claude 限额行为。
 	GrokBuildBin string          `json:"grok_build_bin,omitempty"`
 	GrokBuild    *GrokBuildRoute `json:"grok_build,omitempty"`
+	// grokLifecycleHome isolates Grok ~/.grok probes in tests. Empty uses UserHomeDir.
+	grokLifecycleHome string
+	// grokStepTimeout overrides StepTimeoutMin for tests. Zero uses StepTimeoutMin minutes.
+	grokStepTimeout time.Duration
 
 	// Antigravity is the supported Google migration route. It is opt-in until the user completes
 	// OAuth. New Gemini tasks are retired; historical Gemini task fields remain decodable.

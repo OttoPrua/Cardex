@@ -21,6 +21,7 @@ import (
 // 逼人对它做同一套"部分覆写会不会静默解除护栏"的判定，而不是让它默默长在类之外。
 // 它也是"已登记 N 处"这句话的唯一凭据——N 由本表现算，不是记忆。
 func TestConfigMapTablesRegistered(t *testing.T) {
+	t.Parallel()
 	registry := map[string]string{
 		// 命中本类，已做字段级回落：
 		"stakes_policy": "命中: 档内留空字段由 stakesRule 回落内置表(TestStakesRuleFieldLevelFallback)",
@@ -73,6 +74,7 @@ func TestConfigMapTablesRegistered(t *testing.T) {
 // 【突变致死】把 stakesRule 改回"用户规则整条返回"(不做字段级回落) → 子用例
 // "只抬 high 的思考地板: 强制复审不得被顺带解除" 立即红(ReviewAfter 变 false)。
 func TestStakesRuleFieldLevelFallback(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		policy     map[string]StakesRule
@@ -152,6 +154,7 @@ func TestStakesRuleFieldLevelFallback(t *testing.T) {
 // TestLoadConfigPartialHighTierKeepsForcedReview 走真实 config.json → loadConfig → add 的整条路，
 // 用的就是审查报告里那段 JSON 字面量。单测 stakesRule 只证函数，这条证"用户真这么写"时护栏还在。
 func TestLoadConfigPartialHighTierKeepsForcedReview(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	body := `{"claude_bin":"claude","stakes_policy":{"high":{"default_effort":"xhigh"}}}`
 	if err := os.WriteFile(filepath.Join(root, "config.json"), []byte(body), 0o644); err != nil {
@@ -184,6 +187,7 @@ func TestLoadConfigPartialHighTierKeepsForcedReview(t *testing.T) {
 // 本测试红。这一条比 stakes 那条更贵：runner.go:92 是 len(AllowedTools)>0 才下发 --allowedTools，
 // 工具清单消失时卡面看不出差别。
 func TestTypeDefaultsFieldLevelFallback(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	body := `{"claude_bin":"claude","type_defaults":{"design-review":{"model":"opus"}}}`
 	if err := os.WriteFile(filepath.Join(root, "config.json"), []byte(body), 0o644); err != nil {
@@ -215,6 +219,7 @@ func TestTypeDefaultsFieldLevelFallback(t *testing.T) {
 
 // TestTypeDefaultsUserFieldsWin 反向护栏：回落只补空字段，不得把用户明写的值顶回内置值。
 func TestTypeDefaultsUserFieldsWin(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 	cfg.TypeDefaults[typeReview] = TypeDefaults{
 		PermissionMode: "plan",
@@ -236,6 +241,7 @@ func TestTypeDefaultsUserFieldsWin(t *testing.T) {
 // reviewdivert 的远端 codex 实现卡场景依赖它：type_defaults 无 sequence 条目时实现卡 Model 必须为空。
 // 【突变致死】若有人把 typeDefaultsFor 改成"缺条目也回落内置表"，这里立刻红。
 func TestTypeDefaultsAbsentTypeStaysAbsent(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	cfg := &Config{TypeDefaults: map[string]TypeDefaults{typeReview: {Model: "opus"}}}
 	if _, ok := typeDefaultsFor(cfg, typeSequence); ok {
@@ -253,6 +259,7 @@ func TestTypeDefaultsAbsentTypeStaysAbsent(t *testing.T) {
 // 【突变致死】给内置表任一档加 skip_permissions:true → 这里红，逼人把该字段改成可表达三态的类型，
 // 而不是让"跳过权限"这类高危位继续走一条无法回落的通道。
 func TestBuiltinTypeDefaultsSkipPermissionsAllFalse(t *testing.T) {
+	t.Parallel()
 	for typ, td := range defaultConfig("claude").TypeDefaults {
 		if td.SkipPermissions {
 			t.Errorf("内置 type_defaults[%s].skip_permissions = true: "+
@@ -266,6 +273,7 @@ func TestBuiltinTypeDefaultsSkipPermissionsAllFalse(t *testing.T) {
 // 【突变致死】把 boardmodel.go 的 typeDefaultsFor 换回裸查表 → 部分覆写时看板显示"无模型"、
 // 实际卡跑的是内置模型，展示与执行分叉，本测试红。
 func TestEffectiveModelUsesMergedTypeDefault(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 	cfg.TypeDefaults[typeReview] = TypeDefaults{PermissionMode: "default"} // 用户只覆写 permission_mode
 	model, source := effectiveModel(cfg, &Task{Type: typeReview})
@@ -284,6 +292,7 @@ func TestEffectiveModelUsesMergedTypeDefault(t *testing.T) {
 // 【突变致死】若有人给 applyCrossEngine 的未知 kind 加一条"默认按本机 claude 跑"的兜底，
 // 这里立刻红：那一改会把本位点拖进本类（单腿冒充交叉验证且无声）。
 func TestCrossProfilePartialOverrideFailsLoudly(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	body := `{"claude_bin":"claude","codex_bin":"codex","codex_model":"gpt-x",
 	          "cross_profiles":{"opus-codex":{"a":{"kind":"claude","model":"claude-opus-5","effort":"max"}}}}`
@@ -307,6 +316,7 @@ func TestCrossProfilePartialOverrideFailsLoudly(t *testing.T) {
 // 内置表不预置任何主机，条目全部由用户自写，没有"内置值被部分覆写截断"这回事。
 // 【突变致死】哪天给 defaultConfig 加了内置 remote_hosts 条目，这里红，逼人重新做分类判定。
 func TestDefaultConfigShipsNoBuiltinRemoteHosts(t *testing.T) {
+	t.Parallel()
 	if n := len(defaultConfig("claude").RemoteHosts); n != 0 {
 		t.Errorf("defaultConfig 现在预置了 %d 个 remote_hosts: "+
 			"remote_hosts 此前按'无内置值可被截断'判为不属'覆写截断'类, 该判据已失效, 请重新判定并补字段级回落", n)
@@ -317,6 +327,7 @@ func TestDefaultConfigShipsNoBuiltinRemoteHosts(t *testing.T) {
 // 值是标量、没有"条目内字段"可被截断；键整表被打成 nil 时 modelWeight 有硬兜底 1，不会算出 0
 // （算出 0 会让加权用量恒为 0、预算红线永不触发——那才会是同类的静默失效）。
 func TestModelWeightSurvivesTruncatedTable(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 	cfg.ModelWeights = nil
 	if w := modelWeight(cfg, "opus"); w != 1 {
@@ -331,6 +342,7 @@ func TestModelWeightSurvivesTruncatedTable(t *testing.T) {
 // TestConfigJSONRoundTripKeepsMergedShape 兜一条实际链路：init 写盘的 config.json 里
 // 两张已修位点的表都必须是**写全字段**的（用户照着改一格时不会踩到本类洞的最坏情形）。
 func TestConfigJSONRoundTripKeepsMergedShape(t *testing.T) {
+	t.Parallel()
 	data, err := json.Marshal(defaultConfig("claude"))
 	if err != nil {
 		t.Fatal(err)

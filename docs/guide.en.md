@@ -9,7 +9,7 @@ Unlike a fine-grained `sequence` card, a Goal stage is one continuous diagnosis/
 Grok is currently `manual-only`: complete and same-session restart are manually proven; automatic protocol and active pause/resume remain unverified. Copyable:
 
 ```bash
-cardex workflow init ... -design-receipt /path/to/astra-design.json
+cardex workflow init ... -design-receipt /path/to/design-receipt.json
 cardex workflow writer <id> -mode manual
 cardex workflow goal-run <id> -manual -budget 350000
 # Grok TUI (literal path+digest; do not use $(cat)):
@@ -20,7 +20,7 @@ cardex workflow show <id>
 cardex workflow design-result <id> -design-receipt R -decision stop|input|successor|accept|revise -observation failed|paused|needs-input|budget_limited|complete
 ```
 
-Do not treat `grok -p` as goal proof. `goal-sync` does not launch a provider; it does update stage facts. The provider budget is soft; `step_timeout_min` is the hard deadline. The capability matrix is in `workflow show` and [recommended workflows](workflows.en.md). Kimi/Codex/Claude/Cursor/agy/OpenCode are `manual-only`/`unverified`; Gemini stays rejected. Independent Astra design uses a receipt or a completed design task, not a `grok-build` + `gpt-6-astra` tuple.
+Do not treat `grok -p` as goal proof. `goal-sync` does not launch a provider; it does update stage facts. The provider budget is soft; `step_timeout_min` is the hard deadline. The capability matrix is in `workflow show` and [recommended workflows](workflows.en.md). Kimi/Codex/Claude/Cursor/agy/OpenCode are `manual-only`/`unverified`; Gemini stays rejected. Independent design uses a receipt or a completed design task, not a `grok-build` + `gpt-6-astra` tuple.
 
 ## Progress pull → coordinate → auto-advance
 

@@ -38,6 +38,7 @@ func mkTask(id, title, typ string) *Task {
 // ================== 一、剩余额度口径 ==================
 
 func TestRemainingPercentClampsBothEnds(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		used, want float64
 		why        string
@@ -59,6 +60,7 @@ func TestRemainingPercentClampsBothEnds(t *testing.T) {
 // TestBurnSourceCarriesRemainingPercent —— 契约：remaining_percent 必须真的进 JSON。
 // 前端拿不到这个键会回落到自己做 100−used 的兜底，钳位逻辑就绕过去了。
 func TestBurnSourceCarriesRemainingPercent(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	samples := []rawSample{
 		{at: now.Add(-40 * time.Minute), pct: 20, resetsAt: "2026-07-26T17:00:00Z"},
@@ -90,6 +92,7 @@ func TestBurnSourceCarriesRemainingPercent(t *testing.T) {
 // TestKindReviewBeatsFix —— 承重反例：审核卡会继承被审卡的 fix_round，
 // 判定顺序写反就会把审核卡整体计进修复桶（实测某项目 430 张审核卡）。
 func TestKindReviewBeatsFix(t *testing.T) {
+	t.Parallel()
 	tk := mkTask("t1", "审核: 修复R3: TA-3 WAL 窗口读路径P0", typeReview)
 	tk.ReviewOf = "t0"
 	tk.FixRound = 3
@@ -103,6 +106,7 @@ func TestKindReviewBeatsFix(t *testing.T) {
 }
 
 func TestKindStructuralSignals(t *testing.T) {
+	t.Parallel()
 	xc := mkTask("t-x", "交叉查漏", typeSequence)
 	xc.XRole = "C"
 	fixCard := mkTask("t-f", "修复R1: 门括号轴按类闭合", typeSequence)
@@ -138,6 +142,7 @@ func TestKindStructuralSignals(t *testing.T) {
 // TestKindFixNeedsColon —— 反例：不带冒号的"修复"在正文里太常见，
 // 放宽成任意位置匹配会把实现卡整片吃进修复桶。
 func TestKindFixNeedsColon(t *testing.T) {
+	t.Parallel()
 	tk := mkTask("t-n", "OC-ARC-R5 恒真门修复方案落地", typeSequence)
 	if got := deriveTaskKind(tk, nil); got.Kind == kindFix {
 		t.Fatalf("正文里的「修复」二字不构成修复卡，got %+v", got)
@@ -145,6 +150,7 @@ func TestKindFixNeedsColon(t *testing.T) {
 }
 
 func TestKindOverrideRules(t *testing.T) {
+	t.Parallel()
 	rules := []boardKindRule{
 		{Match: "HB-", Kind: kindDesign},
 		{Match: "t-exact", Kind: kindCoord},
@@ -169,6 +175,7 @@ func TestKindOverrideRules(t *testing.T) {
 // TestParseKindRulesSkipsBadOnesAndDiscloses —— 坏规则逐条跳过而非整块拒，
 // 但被跳过的必须出现在披露串里：静默失效即造读数。
 func TestParseKindRulesSkipsBadOnesAndDiscloses(t *testing.T) {
+	t.Parallel()
 	raw := []boardOverrideKindRule{
 		{Match: "好规则", Kind: kindDesign},
 		{Match: "  ", Kind: kindImpl},
@@ -191,6 +198,7 @@ func TestParseKindRulesSkipsBadOnesAndDiscloses(t *testing.T) {
 // ---- 分桶聚合 ----
 
 func TestBuildKindProgressBucketsAndOrder(t *testing.T) {
+	t.Parallel()
 	mk := func(id, title, typ, status string) *Task {
 		return &Task{ID: id, Title: title, Type: typ, Status: status}
 	}
@@ -250,6 +258,7 @@ func TestBuildKindProgressBucketsAndOrder(t *testing.T) {
 
 // TestBuildKindProgressOmitsEmptyBuckets —— 从没派过修复卡的项目不该显示"修复 0/0"。
 func TestBuildKindProgressOmitsEmptyBuckets(t *testing.T) {
+	t.Parallel()
 	ts := []*Task{{ID: "i1", Title: "落地一步", Type: typeSequence, Status: statusDone}}
 	marks := map[string]kindMark{"i1": deriveTaskKind(ts[0], nil)}
 	kinds := buildKindProgress(ts, marks)
@@ -308,6 +317,7 @@ func findProject(t *testing.T, snap *boardSnapshot, id string) *Project {
 // TestSnapshotKindsPresentAndTotalUnchanged —— 拆分是"只加不改"：
 // 总条 progress_percent / stats 必须与拆分前一字不差，否则历史读数全部失去可比性。
 func TestSnapshotKindsPresentAndTotalUnchanged(t *testing.T) {
+	t.Parallel()
 	root := bootKindRoot(t, "")
 	snap, err := buildSnapshot(root, fixedTime())
 	if err != nil {
@@ -358,6 +368,7 @@ func TestSnapshotKindsPresentAndTotalUnchanged(t *testing.T) {
 }
 
 func TestSnapshotKindRulesFromBoardJSON(t *testing.T) {
+	t.Parallel()
 	root := bootKindRoot(t, `{
   "projects": {
     "kindproj": {
@@ -444,6 +455,7 @@ func projectFromOverview(t *testing.T, ov map[string]any, id string) map[string]
 }
 
 func TestArchiveRoundTrip(t *testing.T) {
+	t.Parallel()
 	root := bootKindRoot(t, "")
 	now := fixedTime()
 	s := newTestBoardServer(t, root, now)
@@ -500,6 +512,7 @@ func TestArchiveRoundTrip(t *testing.T) {
 // 手动归档表达的是"这个项目我暂时不看了"，已知卡跑完并不构成"有新东西要看"；
 // 若按 updated_at 判复活，归档一个仍在跑的项目下一次 tick 就会自己弹回来。
 func TestArchiveSurvivesStatusChange(t *testing.T) {
+	t.Parallel()
 	root := bootKindRoot(t, "")
 	now := fixedTime()
 	s := newTestBoardServer(t, root, now)
@@ -537,6 +550,7 @@ func TestArchiveSurvivesStatusChange(t *testing.T) {
 
 // TestArchiveRevivesOnNewCard —— 有新卡即自动切回活跃，并说明原因。
 func TestArchiveRevivesOnNewCard(t *testing.T) {
+	t.Parallel()
 	root := bootKindRoot(t, "")
 	now := fixedTime()
 	s := newTestBoardServer(t, root, now)
@@ -573,6 +587,7 @@ func TestArchiveRevivesOnNewCard(t *testing.T) {
 // TestArchiveRevivesOnSwapNoCountChange —— 删一张加一张：张数没变但出现了更新的 created_at，
 // 只看张数会被骗过去，必须靠 max_created_at 这条判据兜住。
 func TestArchiveRevivesOnSwapNoCountChange(t *testing.T) {
+	t.Parallel()
 	root := bootKindRoot(t, "")
 	now := fixedTime()
 	s := newTestBoardServer(t, root, now)
@@ -601,6 +616,7 @@ func TestArchiveRevivesOnSwapNoCountChange(t *testing.T) {
 // TestArchiveStateCorruptIsDisclosed —— 状态文件损坏时必须落错披露，
 // 而不是静默当成"没有任何项目被归档"（那会让用户折叠的项目集体冒出来且零提示）。
 func TestArchiveStateCorruptIsDisclosed(t *testing.T) {
+	t.Parallel()
 	root := bootKindRoot(t, "")
 	if err := os.WriteFile(boardArchivePath(root), []byte("{ 这不是 JSON"), 0o644); err != nil {
 		t.Fatal(err)
@@ -627,6 +643,7 @@ func TestArchiveStateCorruptIsDisclosed(t *testing.T) {
 
 // TestArchiveEndpointGuards —— 这是看板唯一的写入端点，三道闸缺一不可。
 func TestArchiveEndpointGuards(t *testing.T) {
+	t.Parallel()
 	root := bootKindRoot(t, "")
 	s := newTestBoardServer(t, root, fixedTime())
 
@@ -667,6 +684,7 @@ func TestArchiveEndpointGuards(t *testing.T) {
 }
 
 func TestSameOriginHost(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		origin, host string
 		want         bool
@@ -689,6 +707,7 @@ func TestSameOriginHost(t *testing.T) {
 // TestArchiveDoesNotTouchQueueFiles —— 归档只写 board_archive.json，
 // tasks/ 目录的内容与修改时间必须原封不动（看板对队列数据只读的底线）。
 func TestArchiveDoesNotTouchQueueFiles(t *testing.T) {
+	t.Parallel()
 	root := bootKindRoot(t, "")
 	s := newTestBoardServer(t, root, fixedTime())
 
@@ -767,6 +786,7 @@ func spendFor(t *testing.T, root string, key string, now time.Time) TaskSpend {
 }
 
 func TestTaskSpendWindowAndUnpriced(t *testing.T) {
+	t.Parallel()
 	now := fixedTime()
 	root := bootSpendRoot(t, now)
 	sp := spendFor(t, root, "24h", now)
@@ -794,6 +814,7 @@ func TestTaskSpendWindowAndUnpriced(t *testing.T) {
 }
 
 func TestTaskSpendAllRangeIncludesEverything(t *testing.T) {
+	t.Parallel()
 	now := fixedTime()
 	root := bootSpendRoot(t, now)
 	sp := spendFor(t, root, "all", now)
@@ -810,6 +831,7 @@ func TestTaskSpendAllRangeIncludesEverything(t *testing.T) {
 }
 
 func TestTaskSpendByModelSortedAndDeterministic(t *testing.T) {
+	t.Parallel()
 	now := fixedTime()
 	root := bootSpendRoot(t, now)
 	first := spendFor(t, root, "24h", now)
@@ -840,6 +862,7 @@ func TestTaskSpendByModelSortedAndDeterministic(t *testing.T) {
 // TestTaskSpendByProjectAggregates —— 项目维度：金额/轮数按项目合并，
 // 卡数给「计入 / 全部」两个，主力模型取项目内花得最多的那个。
 func TestTaskSpendByProjectAggregates(t *testing.T) {
+	t.Parallel()
 	now := fixedTime()
 	root := bootSpendRoot(t, now)
 	sp := spendFor(t, root, "24h", now)
@@ -871,6 +894,7 @@ func TestTaskSpendByProjectAggregates(t *testing.T) {
 // TestTaskSpendByProjectSeparatesProjects —— 不同目录的卡必须落进不同项目行，
 // 否则"钱花在哪条线上"这个问题根本答不出来。
 func TestTaskSpendByProjectSeparatesProjects(t *testing.T) {
+	t.Parallel()
 	now := fixedTime()
 	root := testRoot(t)
 	if err := saveConfig(root, defaultConfig("claude")); err != nil {
@@ -907,6 +931,7 @@ func TestTaskSpendByProjectSeparatesProjects(t *testing.T) {
 // TestTaskSpendBasisDisclosesCaveats —— 两条边界必须出现在披露串里：
 // 花的是 API 等价成本（不是扣款）、有多少张卡没有花费数据。
 func TestTaskSpendBasisDisclosesCaveats(t *testing.T) {
+	t.Parallel()
 	now := fixedTime()
 	root := bootSpendRoot(t, now)
 	sp := spendFor(t, root, "24h", now)
@@ -918,6 +943,7 @@ func TestTaskSpendBasisDisclosesCaveats(t *testing.T) {
 }
 
 func TestResolveSpendRangeFallsBackTo24h(t *testing.T) {
+	t.Parallel()
 	for _, k := range []string{"", "90d", "../etc", "ALL"} {
 		if got := resolveSpendRange(k); got.Key != "24h" {
 			t.Errorf("未知窗口 %q 应回落 24h，got %q", k, got.Key)
@@ -932,6 +958,7 @@ func TestResolveSpendRangeFallsBackTo24h(t *testing.T) {
 
 // TestBurnEndpointCarriesTaskSpend —— 契约：/api/burn 必须带 task_spend，且 range 参数生效。
 func TestBurnEndpointCarriesTaskSpend(t *testing.T) {
+	t.Parallel()
 	now := fixedTime()
 	root := bootSpendRoot(t, now)
 	s := newTestBoardServer(t, root, now)
@@ -965,6 +992,7 @@ func TestBurnEndpointCarriesTaskSpend(t *testing.T) {
 }
 
 func TestRound2KeepsCents(t *testing.T) {
+	t.Parallel()
 	cases := []struct{ in, want float64 }{
 		{0.044, 0.04}, {0.045, 0.05}, {12.3456, 12.35}, {0, 0}, {1234.567, 1234.57},
 	}
@@ -981,6 +1009,7 @@ func TestRound2KeepsCents(t *testing.T) {
 // 桶不变粗则 30 天要画 2880 个点（卡且无信息）；预算不跟上则必然截断，
 // 而"扫了一半的全月"是造读数。实测体量：24h≈104MB / 7d≈419MB / 30d≈1.06GB。
 func TestTokenScanPlanScalesWithRange(t *testing.T) {
+	t.Parallel()
 	prev := tokenScanPlanFor("24h")
 	if prev.LookbackHours != 24 || prev.BucketMinutes != 15 {
 		t.Fatalf("24h 计划应为 24 小时/15 分钟桶，got %+v", prev)
@@ -1011,6 +1040,7 @@ func TestTokenScanPlanScalesWithRange(t *testing.T) {
 // TestTokenSeriesCarriesScanDisclosure —— 契约：曲线必须自报窗口与扫描完整性。
 // 少了 truncated，一条读了一半的曲线与"那段时间没跑活"在图上无法区分。
 func TestTokenSeriesCarriesScanDisclosure(t *testing.T) {
+	t.Parallel()
 	ts := buildTokenSeries(testCfg(), fixedTime(), "7d")
 	if ts.Range != "7d" {
 		t.Fatalf("曲线应回吐自己的窗口，got %q", ts.Range)
@@ -1032,6 +1062,7 @@ func TestTokenSeriesCarriesScanDisclosure(t *testing.T) {
 // TestBurnCacheIsPerRange —— 反例：窗口共用一格缓存的话，
 // 每次切标签页都会重扫最贵的那个窗口（30 天要读 1 GB）。
 func TestBurnCacheIsPerRange(t *testing.T) {
+	t.Parallel()
 	root := bootSpendRoot(t, fixedTime())
 	c := &burnCache{ttl: time.Hour}
 	now := fixedTime()

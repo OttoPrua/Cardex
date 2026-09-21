@@ -14,6 +14,7 @@ import (
 const tasksJSON = `{"tasks":[{"title":"实现 任务甲","type":"sequence","priority":7,"prompt":"做甲"}]}`
 
 func TestExtractFencedJSONTagged(t *testing.T) {
+	t.Parallel()
 	out := "说明文字\n```json\n" + tasksJSON + "\n```\n收尾"
 	tasks, err := extractEmitTasks(out, "")
 	if err != nil || len(tasks) != 1 || tasks[0].Title != "实现 任务甲" {
@@ -22,6 +23,7 @@ func TestExtractFencedJSONTagged(t *testing.T) {
 }
 
 func TestExtractFencedBare(t *testing.T) {
+	t.Parallel()
 	// 模型漏写 json 标签，裸围栏。
 	out := "第四批排卡已产出，清单如下：\n```\n" + tasksJSON + "\n```"
 	tasks, err := extractEmitTasks(out, "")
@@ -31,6 +33,7 @@ func TestExtractFencedBare(t *testing.T) {
 }
 
 func TestExtractLastFenceWins(t *testing.T) {
+	t.Parallel()
 	// 前面是解说用的示例块，最后才是操作块。
 	out := "示例：\n```json\n{\"tasks\":[]}\n```\n正式：\n```json\n" + tasksJSON + "\n```"
 	tasks, err := extractEmitTasks(out, "")
@@ -40,6 +43,7 @@ func TestExtractLastFenceWins(t *testing.T) {
 }
 
 func TestExtractUnfencedBalancedScan(t *testing.T) {
+	t.Parallel()
 	// 无围栏，JSON 直接混在中文叙述里（历史 'å' 失败形状）。
 	out := "上一批核实完成，本波不放量。产出如下 " + tasksJSON + " 以上请核对。"
 	tasks, err := extractEmitTasks(out, "")
@@ -49,6 +53,7 @@ func TestExtractUnfencedBalancedScan(t *testing.T) {
 }
 
 func TestExtractUnfencedNestedPrefix(t *testing.T) {
+	t.Parallel()
 	// "tasks" 前还有别的键（最近的 '{' 属于嵌套对象），需外推回溯。
 	out := `结论如下 {"meta":{"wave":4},"tasks":[{"title":"卡A","prompt":"做A"}]} 完`
 	tasks, err := extractEmitTasks(out, "")
@@ -58,6 +63,7 @@ func TestExtractUnfencedNestedPrefix(t *testing.T) {
 }
 
 func TestExtractBareArray(t *testing.T) {
+	t.Parallel()
 	out := "```json\n[{\"title\":\"卡B\",\"prompt\":\"做B\"}]\n```"
 	tasks, err := extractEmitTasks(out, "")
 	if err != nil || len(tasks) != 1 || tasks[0].Title != "卡B" {
@@ -66,6 +72,7 @@ func TestExtractBareArray(t *testing.T) {
 }
 
 func TestExtractFileRescue(t *testing.T) {
+	t.Parallel()
 	// 模型只把清单写进任务目录下的文件、输出纯叙述（模型只写文件不回显的实战失败形状）。
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "plans", "cards")
@@ -83,6 +90,7 @@ func TestExtractFileRescue(t *testing.T) {
 }
 
 func TestExtractFileRescueRejectsTraversal(t *testing.T) {
+	t.Parallel()
 	// 越界路径（../）绝不读取。
 	parent := t.TempDir()
 	dir := filepath.Join(parent, "proj")
@@ -99,6 +107,7 @@ func TestExtractFileRescueRejectsTraversal(t *testing.T) {
 }
 
 func TestExtractPureNarrativeFails(t *testing.T) {
+	t.Parallel()
 	// 纯叙述必须报错（而不是 mojibake panic 或误解析）。
 	out := "本批排卡已完成核实，本波不放量，详见文档。"
 	if tasks, err := extractEmitTasks(out, ""); err == nil {
@@ -107,6 +116,7 @@ func TestExtractPureNarrativeFails(t *testing.T) {
 }
 
 func TestExtractTasksInsidePromptString(t *testing.T) {
+	t.Parallel()
 	// 合法外层 JSON 的 prompt 字符串里也出现 "tasks" 字样，不应干扰解析。
 	out := "产出：\n```json\n{\"tasks\":[{\"title\":\"卡C\",\"prompt\":\"读 tasks JSON 后执行\"}]}\n```"
 	tasks, err := extractEmitTasks(out, "")

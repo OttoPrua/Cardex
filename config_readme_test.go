@@ -61,6 +61,7 @@ func readmeConfigSectionKeys(content string) []string {
 //  2. Every config key cited in each README's config-reference section actually exists in config.go.
 //  3. The four required config keys also exist in config.go (guards against drift in config.go itself).
 func TestReadmeConfigKeys(t *testing.T) {
+	t.Parallel()
 	cfgKeys := configStructKeys(t)
 
 	// Terms that MUST appear in both READMEs after this commit.
@@ -125,6 +126,7 @@ func TestReadmeConfigKeys(t *testing.T) {
 // and that such a key is correctly absent from config.go — proving the main test WOULD fail red
 // if someone introduced that typo into a real README's config-reference section.
 func TestReadmeConfigKeys_FakeKey(t *testing.T) {
+	t.Parallel()
 	cfgKeys := configStructKeys(t)
 
 	// Minimal fixture: a config-reference section containing a deliberately misspelled key.

@@ -26,6 +26,7 @@ func codexPrimaryTestConfig() *Config {
 }
 
 func TestGeneratedChildUsesLatestConfigWithoutChangingParentRun(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	oldCfg := codexPrimaryTestConfig()
 	oldCfg.TypeDefaults[typeReview] = TypeDefaults{Model: "claude-fable-5", Effort: "high"}
@@ -54,6 +55,7 @@ func TestGeneratedChildUsesLatestConfigWithoutChangingParentRun(t *testing.T) {
 }
 
 func TestDefaultRunnerCodexBakedIntoNewTask(t *testing.T) {
+	t.Parallel()
 	cfg := codexPrimaryTestConfig()
 	task := newTask(testRoot(t), cfg, typeReview, "审核", t.TempDir(), []string{"审"}, 1)
 
@@ -72,6 +74,7 @@ func TestDefaultRunnerCodexBakedIntoNewTask(t *testing.T) {
 }
 
 func TestDefaultRunnerCodexCoversAutomaticReview(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := codexPrimaryTestConfig()
 	impl := newTask(root, cfg, typeSequence, "实现", t.TempDir(), []string{"实现"}, 1)
@@ -97,6 +100,7 @@ func TestDefaultRunnerCodexCoversAutomaticReview(t *testing.T) {
 }
 
 func TestLegacyReviewCardWithReviewAfterDoesNotSpawnReviewOfReview(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := codexPrimaryTestConfig()
 	review := newTask(root, cfg, typeReview, "人工独立审核", t.TempDir(), []string{"审核"}, 1)
@@ -114,6 +118,7 @@ func TestLegacyReviewCardWithReviewAfterDoesNotSpawnReviewOfReview(t *testing.T)
 }
 
 func TestDefaultRunnerCodexCoversAutomaticFix(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := codexPrimaryTestConfig()
 	orig := newTask(root, cfg, typeSequence, "实现", t.TempDir(), []string{"实现"}, 1)
@@ -149,6 +154,7 @@ func TestDefaultRunnerCodexCoversAutomaticFix(t *testing.T) {
 }
 
 func TestSessionResumeOverridesOnlyDefaultCodexRunner(t *testing.T) {
+	t.Parallel()
 	cfg := codexPrimaryTestConfig()
 	task := newTask(testRoot(t), cfg, typeSequence, "续跑", t.TempDir(), []string{"继续"}, 1)
 	task.SessionID = "claude-session"
@@ -160,6 +166,7 @@ func TestSessionResumeOverridesOnlyDefaultCodexRunner(t *testing.T) {
 }
 
 func TestSessionResumeOverridesOnlyDefaultAntigravityRunner(t *testing.T) {
+	t.Parallel()
 	cfg := codexPrimaryTestConfig()
 	cfg.DefaultRunner = antigravityRunnerName
 	cfg.AntigravityBin = "agy"
@@ -174,6 +181,7 @@ func TestSessionResumeOverridesOnlyDefaultAntigravityRunner(t *testing.T) {
 }
 
 func TestLegacyPendingCardsKeepRunnerIdentityThroughReadback(t *testing.T) {
+	t.Parallel()
 	// P1-6: new defaults reach task bytes only through the explicit creation path. Pre-existing
 	// cards — queued, held, limit-paused, failed, or cross/session identities — must pass through
 	// load, resolver, and board readback with their runner identity and bytes untouched.
@@ -210,6 +218,7 @@ func TestLegacyPendingCardsKeepRunnerIdentityThroughReadback(t *testing.T) {
 }
 
 func TestValidateDefaultRunner(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{DefaultRunner: " CODEX ", CodexBin: "codex"}
 	if err := validateDefaultRunner(cfg); err != nil {
 		t.Fatalf("有效 Codex 默认路由不应报错: %v", err)

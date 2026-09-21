@@ -89,3 +89,25 @@ func ioctlSetForegroundPgrp(fd, pgid int) error {
 	}
 	return nil
 }
+
+func openGoalPTY() (*os.File, *os.File, error) {
+	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := grantUnlockPTY(master); err != nil {
+		master.Close()
+		return nil, nil, err
+	}
+	name, err := ptySlaveName(master)
+	if err != nil {
+		master.Close()
+		return nil, nil, err
+	}
+	slave, err := os.OpenFile(name, os.O_RDWR|syscall.O_NOCTTY, 0)
+	if err != nil {
+		master.Close()
+		return nil, nil, err
+	}
+	return master, slave, nil
+}

@@ -19,6 +19,7 @@ import (
 // ---- 配置校验 ----
 
 func TestValidateEnginesRejectsBadConfigs(t *testing.T) {
+	t.Parallel()
 	base := func() *Config {
 		cfg := defaultConfig("claude")
 		cfg.Engines = map[string]EngineProfile{}
@@ -60,6 +61,7 @@ func TestValidateEnginesRejectsBadConfigs(t *testing.T) {
 // 内置预设必须全部能过校验——预设表改坏（typo 的 auth_var、非法档位键）要在测试层拦住，
 // 不能等用户 engines add 之后 loadConfig 才炸。
 func TestEnginePresetsAllValid(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 	cfg.Engines = enginePresets()
 	if err := validateEngines(cfg); err != nil {
@@ -84,6 +86,7 @@ func TestEnginePresetsAllValid(t *testing.T) {
 // 【突变致死】哪天把 enginePresets 直接烘进 defaultConfig，这里红，逼人重做分类判定
 // （那时部分覆写 engines.kimi 会把内置预设的 models/auth_var 打成零值）。
 func TestDefaultConfigShipsNoBuiltinEngines(t *testing.T) {
+	t.Parallel()
 	if n := len(defaultConfig("claude").Engines); n != 0 {
 		t.Errorf("defaultConfig 现在预置了 %d 个 engines 条目: "+
 			"engines 此前按'无内置值可被截断'判为不命中覆写截断类, 该判据已失效, 请重新判定并补字段级回落", n)
@@ -94,6 +97,7 @@ func TestDefaultConfigShipsNoBuiltinEngines(t *testing.T) {
 // 用户手写 engines 条目时漏掉可选字段，每个缺口的运行时语义都必须是保守侧——
 // 静默放宽（如 auth_var 拼错静默用错凭据槽、缺认证静默改用本机订阅跑）才是本类事故。
 func TestEngineProfileZeroFieldsFailClosed(t *testing.T) {
+	t.Parallel()
 	// auth_var 缺省 → AUTH_TOKEN（合法枚举内的保守默认，非猜测）。
 	if v := engineAuthVar(EngineProfile{}); v != "ANTHROPIC_AUTH_TOKEN" {
 		t.Errorf("auth_var 缺省应落 ANTHROPIC_AUTH_TOKEN, got %q", v)
@@ -167,6 +171,7 @@ func TestEngineAuthRefNeverContainsSecret(t *testing.T) {
 // ---- 模型解析 ----
 
 func TestResolveEngineModelMapping(t *testing.T) {
+	t.Parallel()
 	p := EngineProfile{
 		Models:       map[string]string{"opus": "k3", "sonnet": "kimi-for-coding"},
 		DefaultModel: "kimi-for-coding",
@@ -261,6 +266,7 @@ func TestBuildEngineEnvScrubsAndInjects(t *testing.T) {
 // invokeEngine 认证未就绪的错误必须落 auth 类（held 等人工），不许烧 attempts 空转——
 // 凭据不会因重试自动出现。
 func TestEngineAuthErrorClassifiesAsAuth(t *testing.T) {
+	t.Parallel()
 	msg := "invalid api key: 引擎 kimi 认证未就绪——auth_env 指定的环境变量 KIMI_API_KEY 为空"
 	if cls := classifyFailure(msg, "", nil, errors.New(msg)); cls != failureAuth {
 		t.Fatalf("引擎认证错误应归 auth 类, got %s", cls)
@@ -270,6 +276,7 @@ func TestEngineAuthErrorClassifiesAsAuth(t *testing.T) {
 // ---- 限额判据 ----
 
 func TestIsLimitHitEngineKimiPhrasings(t *testing.T) {
+	t.Parallel()
 	mk := func(text string) *claudeResult {
 		return &claudeResult{Type: "result", IsError: true, Result: text}
 	}
@@ -302,6 +309,7 @@ func TestIsLimitHitEngineKimiPhrasings(t *testing.T) {
 }
 
 func TestLimitHitForRunnerRoutesEngine(t *testing.T) {
+	t.Parallel()
 	// 差异化输入：engineQuotaRe 独有措辞（limitRe 不含"配额已用尽"）——引擎判据 true，
 	// claude/codex 判据 false，路由拿错立刻红。
 	res := &claudeResult{Type: "result", IsError: true, Result: "配额已用尽"}
@@ -321,6 +329,7 @@ func TestLimitHitForRunnerRoutesEngine(t *testing.T) {
 }
 
 func TestEngineResetEpochFallbacks(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{LimitFallbackMin: 30, CooldownMarginSec: 90}
 	now := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
 
@@ -352,6 +361,7 @@ func TestEngineResetEpochFallbacks(t *testing.T) {
 // ---- 冷却分账 ----
 
 func TestEngineCooldownRoundtrip(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	now := time.Now()
 	if loadEngineCooldown(root, "kimi").active(now) {
@@ -376,6 +386,7 @@ func TestEngineCooldownRoundtrip(t *testing.T) {
 // ---- 派发护栏 ----
 
 func TestEngineDivertGuards(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	now := time.Now()
 	cfg := defaultConfig("claude")
@@ -413,6 +424,7 @@ func TestEngineDivertGuards(t *testing.T) {
 }
 
 func TestPickDivertRunnerOrder(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	now := time.Now()
 	cfg := defaultConfig("claude")
@@ -450,6 +462,7 @@ func TestPickDivertRunnerOrder(t *testing.T) {
 }
 
 func TestPinnedEngineReady(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	now := time.Now()
 	cfg := defaultConfig("claude")
@@ -472,6 +485,7 @@ func TestPinnedEngineReady(t *testing.T) {
 // 见 engines.go 预设注释与 docs/guide.md。表改动（如 glm-5.2 升档）必须连这里一起改——
 // 分级是委托人指定的交付物，不许静默漂移。无自定义表（默认配置）时行为=纯标准线。
 func TestModelTierUnifiedStandard(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 	cases := map[string]string{
 		"k3": "高", "k3-256k": "高", "kimi-k3": "高", // AA 57.1，opus 档
@@ -491,6 +505,7 @@ func TestModelTierUnifiedStandard(t *testing.T) {
 // 自定义分级表（model_tiers）：无更强模型的机队按牌面定档——手里最强的模型就是自己的
 // fable 档。自定义恒优先于内置标准线；前缀匹配盖住变体后缀；未列条目回落标准线。
 func TestModelTiersCustomOverride(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 	cfg.ModelTiers = map[string]string{
 		"glm-5.2": "fable",  // GLM-only 机队：5.2 顶最强档（标准线里它是 sonnet 档）
@@ -521,6 +536,7 @@ func TestModelTiersCustomOverride(t *testing.T) {
 
 // model_tiers 坏值载入即拒（fail fast）——档位写错静默当"未知"会让自定义分级悄悄失效。
 func TestModelTiersValidation(t *testing.T) {
+	t.Parallel()
 	bad := []map[string]string{
 		{"glm-5.2": "flagship"}, // 不是档位关键字
 		{"GLM-5.2": "fable"},    // 键必须全小写（防影子条目）
@@ -543,6 +559,7 @@ func TestModelTiersValidation(t *testing.T) {
 // 引擎展示档位推导：显式 tier 优先；缺省时从最高档映射模型经自定义表/标准线推导——
 // 多模型订阅换映射即换档，不须手动同步 tier 字段。
 func TestEngineDisplayTierDerived(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 	// 显式 tier 恒优先。
 	if got := engineDisplayTier(cfg, EngineProfile{Tier: "opus", Models: map[string]string{"opus": "glm-4.5-air"}}); got != "opus" {
@@ -566,6 +583,7 @@ func TestEngineDisplayTierDerived(t *testing.T) {
 // 引擎卡的看板模型还原：卡面 Model 是档位别名时，看板必须显示映射后的供应商模型——
 // 展示与实际执行分叉是 TestEffectiveModelUsesMergedTypeDefault 同类的静默事故。
 func TestEffectiveModelResolvesEngineMapping(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 	cfg.Engines = map[string]EngineProfile{
 		"kimi": {BaseURL: "https://api.kimi.com/coding/", Models: map[string]string{"sonnet": "kimi-for-coding"}},
@@ -593,6 +611,7 @@ func TestEffectiveModelResolvesEngineMapping(t *testing.T) {
 
 // 额度条披露行：冷却状态与本地账计数两个事实，无引擎配置时不占地。
 func TestEngineQuotaRowsDisclosure(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	now := time.Now()
 	cfg := defaultConfig("claude")

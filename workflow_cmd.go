@@ -11,7 +11,7 @@ import (
 
 func cmdWorkflow(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("用法: cardex workflow init|list|show|writer|goal-run|goal-sync|design-result|design-repair|freeze-candidate|review|ingest-review|repair|try-release-integration|mark ...")
+		return fmt.Errorf("用法: cardex workflow init|list|show|writer|goal-run|goal-sync|goal-control|goal-observe|bind-session|design-request|design-collect|design-result|design-repair|freeze-candidate|review|ingest-review|repair|try-release-integration|mark ...")
 	}
 	switch args[0] {
 	case "init":
@@ -26,6 +26,16 @@ func cmdWorkflow(args []string) error {
 		return cmdWorkflowGoalRun(args[1:])
 	case "goal-sync":
 		return cmdWorkflowGoalSync(args[1:])
+	case "goal-control":
+		return cmdWorkflowGoalControl(args[1:])
+	case "goal-observe":
+		return cmdWorkflowGoalObserve(args[1:])
+	case "bind-session":
+		return cmdWorkflowBindSession(args[1:])
+	case "design-request":
+		return cmdWorkflowDesignRequest(args[1:])
+	case "design-collect":
+		return cmdWorkflowDesignCollect(args[1:])
 	case "design-result":
 		return cmdWorkflowDesignResult(args[1:])
 	case "design-repair":
@@ -160,7 +170,7 @@ func cmdWorkflowInit(args []string) error {
 	designRunner := fs.String("design-runner", "", "设计节点 runner（只读角色；须配合收据或已完成设计任务）")
 	designActualModel := fs.String("design-actual-model", "", "设计节点实际模型")
 	designActualRunner := fs.String("design-actual-runner", "", "设计节点实际 runner")
-	designIdentity := fs.String("design-identity", "", "独立设计身份（Astra/Fable）")
+	designIdentity := fs.String("design-identity", "", "设计者 actor/context 展示标识（实际身份以设计收据或任务为准）")
 	designReceipt := fs.String("design-receipt", "", "已完成独立设计的外部收据 JSON")
 	designTask := fs.String("design-task", "", "已完成的独立只读设计 Task ID")
 	if err := parseWorkflowFlags(fs, args); err != nil {
@@ -349,19 +359,167 @@ func cmdWorkflowWriter(args []string) error {
 func cmdWorkflowGoalRun(args []string) error {
 	fs := flag.NewFlagSet("workflow goal-run", flag.ContinueOnError)
 	rootFlag := fs.String("root", "", "数据目录")
-	manual := fs.Bool("manual", false, "前台启动交互式 Grok /goal（必填；-p 不是 goal 证明）")
-	budget := fs.Int64("budget", 0, "软 token 预算，写入 /goal --budget")
+	manual := fs.Bool("manual", false, "前台交互式 Grok TUI（操作者自己输入 /goal）")
+	hosted := fs.Bool("hosted", false, "前台运行 Cardex 自有 PTY 并转发输出；长期运行请用调用方受管后台任务；控制走 goal-control")
+	budget := fs.Int64("budget", 0, "软 token 预算，写入 /goal --budget（不是 grok 顶层 flag）")
 	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
-	if !*manual {
+	if *manual == *hosted {
 		return fmt.Errorf("%w", errGoalManualRequired)
 	}
-	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow goal-run <id> -manual [-budget N]")
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow goal-run <id> -manual|-hosted [-budget N]")
 	if err != nil {
 		return err
 	}
+	if *hosted {
+		return launchHostedWorkflowGoal(root, cfg, wf, *budget)
+	}
 	return launchManualWorkflowGoal(root, cfg, wf, *budget)
+}
+
+func cmdWorkflowGoalControl(args []string) error {
+	fs := flag.NewFlagSet("workflow goal-control", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	action := fs.String("action", "", "pause、resume 或 stop")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow goal-control <id> -action pause|resume|stop")
+	if err != nil {
+		return err
+	}
+	if err := requestGoalControl(root, cfg, wf, *action, ""); err != nil {
+		return err
+	}
+	fmt.Printf("workflow %s control=%s\n", wf.ID, *action)
+	return nil
+}
+
+func cmdWorkflowGoalObserve(args []string) error {
+	fs := flag.NewFlagSet("workflow goal-observe", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	session := fs.String("session", "", "原生 Grok session UUID")
+	cwd := fs.String("cwd", "", "原生 session 的 cwd")
+	home := fs.String("grok-home", "", "GROK_HOME")
+	goalID := fs.String("goal-id", "", "可选 native goal id")
+	attach := fs.Bool("attach", false, "只读关联到该 workflow 的 writer；不创建 attempt")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	grokHome := firstNonBlank(*home, defaultGrokHome())
+	if fs.NArg() < 1 {
+		obs, err := observeExternalGrokGoal(grokHome, *cwd, *session, *goalID)
+		if err != nil && obs.GoalID == "" {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]any{
+			"control_owner": "external",
+			"takeover":      false,
+			"session_id":    obs.SessionID,
+			"goal_id":       obs.GoalID,
+			"native_status": obs.NativeStatus,
+			"classifier":    obs.Classifier,
+			"pause_message": obs.PauseMessage,
+			"note":          "observe-only; no Cardex attempt invented from Session ID",
+		})
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow goal-observe [-session S -cwd C] [<id> -attach]")
+	if err != nil {
+		return err
+	}
+	if !*attach {
+		return fmt.Errorf("goal-observe <id> requires -attach for read-only association")
+	}
+	t, err := workflowWriterTask(root, wf)
+	if err != nil {
+		return err
+	}
+	_ = cfg
+	if err := attachExternalGoalObservation(root, t, grokHome, firstNonBlank(*cwd, t.Dir), firstNonBlank(*session, t.SessionID), *goalID); err != nil {
+		return err
+	}
+	fmt.Printf("workflow %s observe-only session=%s goal_id=%s control_owner=external\n", wf.ID, t.SessionID, orDash(t.Goal.NativeGoalID))
+	return nil
+}
+
+func cmdWorkflowBindSession(args []string) error {
+	fs := flag.NewFlagSet("workflow bind-session", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	role := fs.String("role", "", "design 或 manager")
+	provider := fs.String("provider", "", "grok、codex 或 hermes")
+	sessType := fs.String("type", "", "grok_session、codex_thread 或 hermes_session")
+	sessionID := fs.String("session-id", "", "真实 session id，不能拿 Codex UUID 冒充 Hermes")
+	profile := fs.String("profile", "", "Hermes profile，如 yvonne")
+	owner := fs.Bool("owner-entry", false, "原设计对话指针，不是执行消费者")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow bind-session <id> -role design|manager -provider grok|codex|hermes -type TYPE -session-id ID")
+	if err != nil {
+		return err
+	}
+	ref := PersistentSessionRef{
+		Role:        *role,
+		Provider:    *provider,
+		SessionType: *sessType,
+		SessionID:   *sessionID,
+		Profile:     *profile,
+		OwnerEntry:  *owner,
+	}
+	if err := bindWorkflowSession(root, cfg, wf, ref); err != nil {
+		return err
+	}
+	fmt.Printf("workflow %s bound %s %s:%s\n", wf.ID, ref.Role, ref.Provider, ref.SessionID)
+	return nil
+}
+
+func cmdWorkflowDesignRequest(args []string) error {
+	fs := flag.NewFlagSet("workflow design-request", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	file := fs.String("file", "", "最小设计上下文文件")
+	digest := fs.String("input-digest", "", "当前输入 digest")
+	candidate := fs.String("candidate", "", "当前候选 commit")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow design-request <id> -file PATH [-input-digest D] [-candidate C]")
+	if err != nil {
+		return err
+	}
+	prompt, err := os.ReadFile(*file)
+	if err != nil {
+		return err
+	}
+	req, err := submitWorkflowDesignRequest(root, cfg, wf, string(prompt), *digest, *candidate)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("workflow %s design-request=%s session=%s reply_id=%s context_version=%d\n",
+		wf.ID, req.RequestID, req.SessionID, orDash(req.ReplyID), req.ContextVer)
+	return nil
+}
+
+func cmdWorkflowDesignCollect(args []string) error {
+	fs := flag.NewFlagSet("workflow design-collect", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	requestID := fs.String("request-id", "", "design-request id")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow design-collect <id> [-request-id R]")
+	if err != nil {
+		return err
+	}
+	reply, err := collectWorkflowDesignReply(root, cfg, wf, *requestID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("workflow %s design-reply request=%s reply_id=%s session=%s\n",
+		wf.ID, reply.RequestID, reply.ReplyID, reply.SessionID)
+	return nil
 }
 
 func cmdWorkflowGoalSync(args []string) error {
@@ -417,7 +575,7 @@ func cmdWorkflowDesignResult(args []string) error {
 		id = t.ID
 	}
 	fmt.Printf("workflow %s design-result=%s observation=%s task=%s status=%s\n",
-		wf.ID, *decision, *observation, orDash(id), wf.Status)
+		wf.ID, wf.DesignLineage.LastResultDecision, wf.DesignLineage.LastConsumedObservation, orDash(id), wf.Status)
 	return nil
 }
 

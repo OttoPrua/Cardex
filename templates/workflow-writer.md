@@ -9,7 +9,7 @@
 纪律：
 
 1. 只改本卡声明的写域内路径。未声明的路径、凭证、设备、live/cutover 一律不碰。
-2. 不要自行开第二个写者，也不要自审。独立审核由 workflow 控制面另派只读卡。
+2. 不要自行开第二个写者。按本卡完成标准执行作者检查或对抗式自审，并如实标注；本卡明确要求独立审核时，仍由指定独立审核者完成。
 3. 收尾给出精确 base/candidate commit 与 tree、changed paths、focused/full 测试结果与
    external-effect counters；这些是审核与集成门的输入，不能省。
 4. 不得声明集成完成或 live。集成卡默认 held，live 与 cutover 是另外的门。

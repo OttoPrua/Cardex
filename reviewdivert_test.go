@@ -29,6 +29,7 @@ func findReviewCard(t *testing.T, root string) *Task {
 
 // ① 分流成功：审核卡带审核主机与镜像目录，模板 {{DIR}} 用镜像目录渲染。
 func TestReviewDivertToRemoteHost(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -62,6 +63,7 @@ func TestReviewDivertToRemoteHost(t *testing.T) {
 // P0-1 类闭合：远端 typeReview 默认命中远端 claude；但 runner_pref=codex 是用户显式钉定，
 // 必须优先于 type/model 默认值。remoteUsesClaude 是 runTask 远端分支的选择判据。
 func TestRemoteReviewRoutesToClaudeNotCodex(t *testing.T) {
+	t.Parallel()
 	// 空 Model 的远程审核卡:必须走远端 claude(平衡 claude 额度),绝不走烧 GPT 额度的远端 codex。
 	if !remoteUsesClaude(&Task{Type: typeReview, RemoteHost: "remotehost"}) {
 		t.Fatal("空 Model 的远程审核卡应走远端 claude，而非远端 codex")
@@ -88,6 +90,7 @@ func TestRemoteReviewRoutesToClaudeNotCodex(t *testing.T) {
 }
 
 func TestCodexOnlyRemoteHostOverridesReviewClaudeDefaults(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{
 		CodexModel: "gpt-5.6-sol",
 		RemoteHosts: map[string]RemoteHostConfig{
@@ -118,6 +121,7 @@ func TestCodexOnlyRemoteHostOverridesReviewClaudeDefaults(t *testing.T) {
 }
 
 func TestCodexOnlyRemoteHostPreservesTierMapping(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{
 		CodexModel: "gpt-5.6-sol",
 		CodexTierModels: map[string]string{
@@ -140,6 +144,7 @@ func TestCodexOnlyRemoteHostPreservesTierMapping(t *testing.T) {
 // 分流审核卡不得被无条件覆写抹成空串——须保留 newTask 从 typeDefaults 烘焙的审核模型,否则远端审核落到
 // 账号默认模型、质量静默降级(相对 origin/main 的回归)。杀的突变:'if reviewHost!="" { rv.Model = t.Model }'。
 func TestReviewDivertKeepsConfigReviewModelWhenImplModelEmpty(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// 审核类型默认模型 opus;实现类型无默认模型(远端 codex 实现卡 Model 为空)。
 	cfg := &Config{TypeDefaults: map[string]TypeDefaults{
@@ -173,6 +178,7 @@ func TestReviewDivertKeepsConfigReviewModelWhenImplModelEmpty(t *testing.T) {
 // 未钉 cmd.Dir 时命令在 daemon 进程 cwd 跑,用户写相对路径命令(rsync ./ ...)会静默同步启动目录。
 // 用哨兵文件+相对路径直击该陷阱:只有 cmd.Dir==t.Dir 时 'cat sentinel.txt' 才命中;并用 pwd -P 二次钉住。
 func TestReviewSyncRunsInTaskDir(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	work := t.TempDir()
 	if err := os.WriteFile(filepath.Join(work, "sentinel.txt"), []byte("MARK"), 0o644); err != nil {
@@ -208,6 +214,7 @@ func TestReviewSyncRunsInTaskDir(t *testing.T) {
 // P1-1：远程实现卡(-host hostA)+分流(-review-host hostB)+sync 失败：回退不得抹掉 t.RemoteHost。
 // 应回到 hostA 的 t.Dir 跑(远程卡远程审),而非被拉回本机以 hostA 的远端路径当本地目录(必失败)。
 func TestReviewSyncFailKeepsRemoteImplHost(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -241,6 +248,7 @@ func TestReviewSyncFailKeepsRemoteImplHost(t *testing.T) {
 // setupProcGroup 的 WaitDelay(10s)必须强制收尾。构造:sh 立即 exit 0,但后台 sleep 继承管道写端。
 // 未打防线时 Wait 会阻塞到 sleep 结束(此处 40s);有 WaitDelay 时 ~10s 内返回。
 func TestReviewSyncDoesNotHangOnPipeHoldingChild(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	impl := &Task{ID: "impl-sync-hang", Dir: "/tmp", ReviewSync: "sleep 40 & exit 0"}
 	lg, err := os.Create(taskLogPath(root, impl.ID))
@@ -276,6 +284,7 @@ func TestReviewSyncDoesNotHangOnPipeHoldingChild(t *testing.T) {
 // 断言 rescueWaitDelay 救回 nil。杀的突变:救援返回原 err。（Success() 守卫按 Go 契约在
 // ErrWaitDelay 场景恒真——该错误仅在进程 exit 0 后等管道超时才产生,删守卫测试仍绿,不作杀测靶。）
 func TestRescueWaitDelayOnPipeHoldingChild(t *testing.T) {
+	t.Parallel()
 	cmd := exec.CommandContext(context.Background(), "sh", "-c", "sleep 20 & exit 0")
 	setupProcGroup(cmd)
 	var buf bytes.Buffer
@@ -306,6 +315,7 @@ func TestRescueWaitDelayOnPipeHoldingChild(t *testing.T) {
 // 模型必须保留烘焙的 opus(配置的审核模型),绝不被实现卡的 haiku 覆写(否则本地审核用 opus、远程审核
 // 用 haiku,配置审核模型被静默降级)。杀的突变:'if reviewHost!="" && t.Model!="" { rv.Model = t.Model }'。
 func TestReviewDivertKeepsConfigReviewModelOverImplModel(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := &Config{TypeDefaults: map[string]TypeDefaults{
 		typeReview: {Model: "opus"},
@@ -331,6 +341,7 @@ func TestReviewDivertKeepsConfigReviewModelOverImplModel(t *testing.T) {
 
 // ② ReviewSync 失败：回退本机审核（Dir=实现卡 Dir、无 RemoteHost），且任务日志含回退记录。
 func TestReviewSyncFailFallsBackLocal(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -368,6 +379,7 @@ func TestReviewSyncFailFallsBackLocal(t *testing.T) {
 
 // ③ concerns → 修复卡完整继承分流三字段（下一轮审核继续分流）。
 func TestReviewDivertInheritsThroughFix(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -396,6 +408,7 @@ func TestReviewDivertInheritsThroughFix(t *testing.T) {
 
 // ④ 超轮限：held 升级卡 Dir 用实现卡 Dir，而非（远程审核的）镜像目录。
 func TestReviewDivertEscalationUsesOrigDir(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg() // MaxFixRounds=0 → 默认 3
 	impl := mkImplTask(t, root, cfg)
@@ -432,6 +445,7 @@ func TestReviewDivertEscalationUsesOrigDir(t *testing.T) {
 // 【杀的突变】把 runReviewSync 回退到只看 ctx.Err()/rescueWaitDelay 的旧代码 → sh 主体成功但
 // 孙进程吊管 → 返回"同步命令超时"→本测试立刻红。
 func TestReviewSyncMarkerSavesSuccessDespitePipeHoldRace(t *testing.T) {
+	t.Parallel()
 	origTO := reviewSyncTimeout
 	origPoll := reviewSyncMarkerPoll
 	// ctx 800ms、sleep 100ms:主体在 ~200ms 完成 → marker 见证 ec=0 → watcher 立即整组击杀。
@@ -470,6 +484,7 @@ func TestReviewSyncMarkerSavesSuccessDespitePipeHoldRace(t *testing.T) {
 // 【杀的突变】把 runReviewSync 里的 registerTaskInvoke/unregisterTaskInvoke 移除(回退到只登记
 // procGroups) → anyTaskProcAlive 返回 false → 本测试红。
 func TestReviewSyncRegistersTaskPGDuringExecution(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// 同步命令写"看得见 anyTaskProcAlive 结果"的哨兵:sh 里 sleep 1s 保持进程活着,主 goroutine
 	// 期间轮询 anyTaskProcAlive 应真;sh 退出后应假(defer 里 unregister)。
@@ -524,6 +539,7 @@ func TestReviewSyncRegistersTaskPGDuringExecution(t *testing.T) {
 // 永久静默回退本机审,恰是本卡立项要救的故障被另一形态重新引入。
 // 【杀的突变】把 wrapped 改回旧的 "( %s )" 单行 → 本测试 sh 报语法错、runReviewSync 返回非 nil → 红。
 func TestReviewSyncSupportsCommandWithTrailingComment(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// 命令以 '#' 注释结尾——生产里 rsync 命令带尾注释是常见写法。
 	impl := &Task{ID: "impl-sync-trailing-comment", Dir: "/tmp", ReviewSync: "true # trailing comment note"}
@@ -542,6 +558,7 @@ func TestReviewSyncSupportsCommandWithTrailingComment(t *testing.T) {
 // 若 wrapped 仍是 "( %s )" 单行,heredoc 内部第一行会把 ')' 挡到 heredoc 定界符外之外的诸多副作用
 // (最典型:heredoc 未闭合前 ')' 位置错乱)。用最简 heredoc 触发同类风险面。
 func TestReviewSyncSupportsHeredocCommand(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// heredoc:cat 读取 <<EOF...EOF,输出"ok",exit 0。
 	impl := &Task{ID: "impl-sync-heredoc", Dir: "/tmp", ReviewSync: "cat <<EOF\nok\nEOF"}
@@ -566,6 +583,7 @@ func TestReviewSyncSupportsHeredocCommand(t *testing.T) {
 
 // ⑤ -review-host 指向未配置主机 → add 报错。
 func TestAddReviewHostUnconfiguredErrors(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "tasks"), 0o755); err != nil {
 		t.Fatal(err)
@@ -592,6 +610,7 @@ func TestAddReviewHostUnconfiguredErrors(t *testing.T) {
 
 // ⑤b -review-host 与 -review-dir 未成对 → add 报错。
 func TestAddReviewHostDirMustPair(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "tasks"), 0o755); err != nil {
 		t.Fatal(err)

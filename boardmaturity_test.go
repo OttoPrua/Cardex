@@ -23,6 +23,7 @@ func loadReferenceMaturityFixture(t *testing.T) maturityContract {
 
 // 历史回归锚：这不是当前实时状态，而是确保插件永远不会重新滑回 Cardex done 率。
 func TestPerlicaReferenceMaturityFixture(t *testing.T) {
+	t.Parallel()
 	c := loadReferenceMaturityFixture(t)
 	now := time.Date(2026, 8, 9, 23, 33, 0, 0, time.FixedZone("CST", 8*3600))
 	want := map[string]struct {
@@ -126,6 +127,7 @@ func TestPerlicaReferenceMaturityFixture(t *testing.T) {
 }
 
 func TestMaturityEffortWeightIsIndependentIndex(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	w3, w1 := 3.0, 1.0
 	c := minimalMaturityContract(now)
@@ -147,6 +149,7 @@ func TestMaturityEffortWeightIsIndependentIndex(t *testing.T) {
 }
 
 func TestMaturityFreshReviewDowngradeIsAllowedAndReconciled(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	c := minimalMaturityContract(now)
 	c.Denominator = maturityDenominator{Version: "rollback-v1", CapabilitySlices: 1, MaxPoints: 4}
@@ -170,6 +173,7 @@ func TestMaturityFreshReviewDowngradeIsAllowedAndReconciled(t *testing.T) {
 }
 
 func TestMaturityV2RequiresStableKindButV1RemainsReadable(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	c := minimalMaturityContract(now)
 	c.Projects[0].Slices[0].Kind = ""
@@ -187,6 +191,7 @@ func TestMaturityV2RequiresStableKindButV1RemainsReadable(t *testing.T) {
 }
 
 func TestBuildProjectMaturityRejectsStaleAndRelativeSource(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	if got := buildProjectMaturity(&boardMaturitySource{Path: "relative.json"}, "Demo", now); got == nil || got.Available {
 		t.Fatalf("相对路径必须 fail-honest，got=%+v", got)

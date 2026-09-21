@@ -6,6 +6,7 @@ import (
 )
 
 func TestAntigravityThinkingModelOmitsEffort(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("")
 	cfg.Antigravity = &AntigravityRoute{Enabled: true, Effort: "high"}
 	argv := antigravityArgs(cfg, &Task{Type: typeSequence}, "claude-opus-4-6-thinking", "harmless")
@@ -19,6 +20,7 @@ func TestAntigravityThinkingModelOmitsEffort(t *testing.T) {
 }
 
 func TestParseAntigravityJSONFailsClosedWithoutTerminal(t *testing.T) {
+	t.Parallel()
 	missing := parseAntigravityJSON([]byte(`{}`))
 	if missing == nil || !missing.IsError || !missing.ObservationComplete {
 		t.Fatalf("valid JSON without terminal must be a complete fail-closed observation: %+v", missing)
@@ -30,6 +32,7 @@ func TestParseAntigravityJSONFailsClosedWithoutTerminal(t *testing.T) {
 }
 
 func TestEnqueueEmittedRunnerAntigravity(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := defaultConfig("")
 	cfg.AntigravityBin = "agy"

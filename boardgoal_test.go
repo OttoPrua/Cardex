@@ -62,12 +62,14 @@ func backdateFile(t *testing.T, path string, hoursAgo float64) {
 // ---- 单元层：buildProjectGoal 的六个承重分支 ----
 
 func TestGoalNilOverrideReturnsNil(t *testing.T) {
+	t.Parallel()
 	if got := buildProjectGoal(nil, "", fixedTime()); got != nil {
 		t.Fatalf("nil override 必须返回 nil（前端契约：不显示该区块），got=%+v", got)
 	}
 }
 
 func TestGoalFullManualSnapshot(t *testing.T) {
+	t.Parallel()
 	ov := &boardOverrideGoal{
 		Statement: "落地实际使用",
 		AsOf:      "2026-07-23",
@@ -123,6 +125,7 @@ func TestGoalFullManualSnapshot(t *testing.T) {
 }
 
 func TestGoalEvidencePercentComputed(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "gates.json")
 	// 命中路径：gate_counts.{pass,blocked}
@@ -164,6 +167,7 @@ func TestGoalEvidencePercentComputed(t *testing.T) {
 }
 
 func TestGoalEvidenceFileMissingMarksInsufficientAndPartial(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "gates.json")
 	writeJSONFile(t, fx, map[string]any{
@@ -224,6 +228,7 @@ func TestGoalEvidenceFileMissingMarksInsufficientAndPartial(t *testing.T) {
 // fixture 顶层 gate_counts 是**字符串** "9/21"（不是 map）；
 // 若 pointer 解析器"贴心"把字符串 parse 成数字，测试报红。
 func TestGoalEvidenceStringFieldRefuses(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "gates.json")
 	writeJSONFile(t, fx, map[string]any{
@@ -269,6 +274,7 @@ func TestGoalEvidenceStringFieldRefuses(t *testing.T) {
 // 权重和 0 若被"回退均权"或"直接给 0%"都是造读数——必须整块标数据不足，
 // 且 landed_percent 是 null（JSON 不得出现 NaN/Infinity 或任何百分比数字）。
 func TestGoalWeightSumZeroInsufficient(t *testing.T) {
+	t.Parallel()
 	ov := &boardOverrideGoal{
 		AsOf: "2026-07-23",
 		Milestones: []boardOverrideMilestone{
@@ -297,6 +303,7 @@ func TestGoalWeightSumZeroInsufficient(t *testing.T) {
 }
 
 func TestGoalNegativeWeightInsufficient(t *testing.T) {
+	t.Parallel()
 	ov := &boardOverrideGoal{
 		Milestones: []boardOverrideMilestone{
 			{ID: "M1", Title: "正权重", Weight: 1, DonePercent: floatPtr(100)},
@@ -313,6 +320,7 @@ func TestGoalNegativeWeightInsufficient(t *testing.T) {
 }
 
 func TestGoalEvidenceStaleMarksStaleAndInsufficient(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "gates.json")
 	writeJSONFile(t, fx, map[string]any{
@@ -347,6 +355,7 @@ func TestGoalEvidenceStaleMarksStaleAndInsufficient(t *testing.T) {
 }
 
 func TestGoalMixedManualAndEvidenceGoalSource(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "gates.json")
 	writeJSONFile(t, fx, map[string]any{
@@ -402,6 +411,7 @@ func bootBoardRoot(t *testing.T, boardJSON string) string {
 }
 
 func TestBuildSnapshotOmitsGoalWhenNotConfigured(t *testing.T) {
+	t.Parallel()
 	root := bootBoardRoot(t, "") // 无 board.json
 	snap, err := buildSnapshot(root, fixedTime())
 	if err != nil {
@@ -421,6 +431,7 @@ func TestBuildSnapshotOmitsGoalWhenNotConfigured(t *testing.T) {
 }
 
 func TestBuildSnapshotIncludesGoalWhenConfigured(t *testing.T) {
+	t.Parallel()
 	boardJSON := `{
   "projects": {
     "goalproj": {
@@ -473,6 +484,7 @@ func TestBuildSnapshotIncludesGoalWhenConfigured(t *testing.T) {
 // TestProgressPercentUnchangedByGoal —— 回归：progress_percent 是「卡片进度」，
 // 不因 goal 的存在与否而改变。CG-8 明确「只加不改」。
 func TestProgressPercentUnchangedByGoal(t *testing.T) {
+	t.Parallel()
 	noGoal := bootBoardRoot(t, "")
 	withGoal := bootBoardRoot(t, `{
   "projects": {
@@ -516,6 +528,7 @@ func TestProgressPercentUnchangedByGoal(t *testing.T) {
 // 强证据：把 fixture 写到 boardRoot 下能被找到的位置，evidence.path 仍用相对串——
 // 若代码回归到 filepath.Join(boardRoot, ev.Path) 会读到这份并算出 42.9%，测试报红。
 func TestGoalEvidenceRelativePathRejected(t *testing.T) {
+	t.Parallel()
 	boardRoot := t.TempDir()
 	sub := filepath.Join(boardRoot, "subdir")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -555,6 +568,7 @@ func TestGoalEvidenceRelativePathRejected(t *testing.T) {
 // 若代码回归到 os.Stat(相对路径) 会命中 CWD 里的同名文件，测试报红。
 // round-3 后：相对路径直接拒绝，CWD 和 boardRoot 都不参与解析。
 func TestGoalEvidenceRelativePathDoesNotWalkCWD(t *testing.T) {
+	t.Parallel()
 	cwdDir := t.TempDir()
 	fake := filepath.Join(cwdDir, "gates.json")
 	writeJSONFile(t, fake, map[string]any{
@@ -598,6 +612,7 @@ func TestGoalEvidenceRelativePathDoesNotWalkCWD(t *testing.T) {
 // TestGoalEvidenceRelativePathRejectedWhenBoardRootEmpty boardRoot 为空 + 相对路径 →
 // 依然 insufficient（round-3 起相对路径策略与 boardRoot 是否为空无关）。
 func TestGoalEvidenceRelativePathRejectedWhenBoardRootEmpty(t *testing.T) {
+	t.Parallel()
 	ov := &boardOverrideGoal{
 		Milestones: []boardOverrideMilestone{
 			{
@@ -624,6 +639,7 @@ func TestGoalEvidenceRelativePathRejectedWhenBoardRootEmpty(t *testing.T) {
 // TestGoalEvidenceAbsolutePathAccepted 绝对路径的 happy path 必须仍然成功——
 // 承重契约的另一半：strict abs-only 不能把合法配置误杀。
 func TestGoalEvidenceAbsolutePathAccepted(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir() // t.TempDir 返回绝对路径
 	fx := filepath.Join(dir, "gates.json")
 	writeJSONFile(t, fx, map[string]any{
@@ -657,6 +673,7 @@ func TestGoalEvidenceAbsolutePathAccepted(t *testing.T) {
 // TestGoalManualDonePercentNegativeRejected 人工值负数必须拒绝（教训：round1 的 int64
 // 截断对 -50 会算出 -49.9，前端把"-49.9%"当权威渲染；类似地 250 展示 250%）。
 func TestGoalManualDonePercentNegativeRejected(t *testing.T) {
+	t.Parallel()
 	ov := &boardOverrideGoal{
 		Milestones: []boardOverrideMilestone{
 			{ID: "M1", Title: "越界负", Weight: 1, DonePercent: floatPtr(-50)},
@@ -677,6 +694,7 @@ func TestGoalManualDonePercentNegativeRejected(t *testing.T) {
 }
 
 func TestGoalManualDonePercentAbove100Rejected(t *testing.T) {
+	t.Parallel()
 	ov := &boardOverrideGoal{
 		Milestones: []boardOverrideMilestone{
 			{ID: "M1", Title: "越界超", Weight: 1, DonePercent: floatPtr(250)},
@@ -694,6 +712,7 @@ func TestGoalManualDonePercentAbove100Rejected(t *testing.T) {
 
 // TestGoalManualDonePercentBoundaryAccepts 边界值 0 与 100 必须被接受。
 func TestGoalManualDonePercentBoundaryAccepts(t *testing.T) {
+	t.Parallel()
 	ov := &boardOverrideGoal{
 		Milestones: []boardOverrideMilestone{
 			{ID: "M1", Title: "0", Weight: 1, DonePercent: floatPtr(0)},
@@ -712,6 +731,7 @@ func TestGoalManualDonePercentBoundaryAccepts(t *testing.T) {
 // TestGoalEvidencePercentAbove100Rejected pointer 配错让 evidence 折算超 100%
 // （num=30, den=[10] → 300%）必须拒绝，不得直出"300%"。
 func TestGoalEvidencePercentAbove100Rejected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "bad.json")
 	writeJSONFile(t, fx, map[string]any{
@@ -743,6 +763,7 @@ func TestGoalEvidencePercentAbove100Rejected(t *testing.T) {
 // TestGoalEvidencePercentJustAt100Accepted num=den 时因浮点尾巴可能算成 100.0000001，
 // 但语义就是 100%，必须接受不误杀。
 func TestGoalEvidencePercentJustAt100Accepted(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "full.json")
 	writeJSONFile(t, fx, map[string]any{"num": 3, "den": 3})
@@ -773,6 +794,7 @@ func TestGoalEvidencePercentJustAt100Accepted(t *testing.T) {
 // 必须拒绝——与 manual done_percent<0 对称。若代码回归"只拒 >100 不拒 <0"，测试报红。
 // 教训：负百分比是"坏配置产出的编造读数"的一种，前端渲染 -30% 比"数据不足"糟糕得多。
 func TestGoalEvidencePercentNegativeRejected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "bad-neg.json")
 	// num=-3, den=10 → -30%
@@ -813,6 +835,7 @@ func TestGoalEvidencePercentNegativeRejected(t *testing.T) {
 // {pass:-9, blocked:-2}，num=-9/den=-11=+81.8%，看起来是合理读数。round-3 前的代码
 // 只挡 pct<0/den==0，两负相消的正数直接入账；round-3 起 num<0/den<=0 各自单挡，此路封死。
 func TestGoalEvidenceDoubleNegativeSneakThroughRejected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "double-neg.json")
 	writeJSONFile(t, fx, map[string]any{
@@ -851,6 +874,7 @@ func TestGoalEvidenceDoubleNegativeSneakThroughRejected(t *testing.T) {
 // 命中路径变为分量级"为负值"(blocked=-5),但 sum-level 兜底仍在——双层防线都在。
 // 断言接受任一命中(分量级"为负值" 或 求和级"≤ 0"),都不许下沉到 pct<0 兜底。
 func TestGoalEvidenceZeroNumeratorNegativeDenominatorRejected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "zero-num-neg-den.json")
 	writeJSONFile(t, fx, map[string]any{
@@ -886,6 +910,7 @@ func TestGoalEvidenceZeroNumeratorNegativeDenominatorRejected(t *testing.T) {
 // pct<0 兜底也能拦；但按分类闭合，num<0 应在自己的检查点上就报出）。
 // 强证据：insufficient_reason 必须指向 numerator，而不是 pct。
 func TestGoalEvidenceNegativeNumeratorRejected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "neg-num.json")
 	writeJSONFile(t, fx, map[string]any{
@@ -919,6 +944,7 @@ func TestGoalEvidenceNegativeNumeratorRejected(t *testing.T) {
 //   拦下报"≤ 0"；R2 起加了分量级 v<0 挡(见 boardgoal.go 分母循环),先命中报"为负值"。
 // 双层防线都在 → 断言接受任一命中路径(避免下沉到 pct<0 兜底就算过关的坏消息)。
 func TestGoalEvidenceNegativeDenominatorSumRejected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "neg-den.json")
 	// den = a + b = 3 + (-8) = -5,单分量 b 也为负
@@ -958,6 +984,7 @@ func TestGoalEvidenceNegativeDenominatorSumRejected(t *testing.T) {
 //   三闸(num、den-sum、pct)全过,零告警渗出 41.7%(真值 5/(5+10)=33.3%,adjustment 是坏配置)。
 // 若删掉分母循环内的 v<0 挡(boardgoal.go 分量级守护),此测试必须报红——这是本按类闭合的杀手证据。
 func TestGoalEvidenceNegativeDenominatorComponentRejectedSumPositive(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "component-neg-den.json")
 	// den = 5 + 10 + (-3) = 12 > 0——sum-level 挡不住
@@ -1004,6 +1031,7 @@ func TestGoalEvidenceNegativeDenominatorComponentRejectedSumPositive(t *testing.
 // (如 {a:0,b:0})——分量级 v<0 挡不到,只能靠 sum-level den<=0 挡。这是双层防线中
 // sum-level 闸门独占的攻击面,证明求和级检查在分量级基础上仍是必需(不是冗余)。
 func TestGoalEvidenceZeroSumAllNonNegativeDenominatorRejected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "zero-sum-den.json")
 	// 所有分量均 0 → sum=0,分量级 v<0 挡不到,必须由 sum-level 挡
@@ -1034,6 +1062,7 @@ func TestGoalEvidenceZeroSumAllNonNegativeDenominatorRejected(t *testing.T) {
 // TestGoalEvidencePercentZeroAccepted 边界值 0%（num=0/den>0）必须接受——
 // 这是"刚开工"的合法值。若代码把 0 也拒了就是误杀 fail-honest 的合法零。
 func TestGoalEvidencePercentZeroAccepted(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "zero.json")
 	writeJSONFile(t, fx, map[string]any{"num": 0, "den": 10})
@@ -1064,6 +1093,7 @@ func TestGoalEvidencePercentZeroAccepted(t *testing.T) {
 // 前置约束：每个 done_percent 已被两个入口卡在 [0,100]，权重 >=0；因此合成必落在 [0,100]。
 // 这条测试用双端极值输入锁死"合成层不会因未来的 round1/权重换算改动而漂移出界"。
 func TestGoalLandedPercentBoundedByInputs(t *testing.T) {
+	t.Parallel()
 	ov := &boardOverrideGoal{
 		Milestones: []boardOverrideMilestone{
 			{ID: "M1", Title: "low", Weight: 1, DonePercent: floatPtr(0)},
@@ -1088,6 +1118,7 @@ func TestGoalLandedPercentBoundedByInputs(t *testing.T) {
 // ---- P1-2 兄弟位点：max_age_hours < 0 也是"配错但沉默生效"，拒绝 ----
 
 func TestGoalEvidenceNegativeMaxAgeRejected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "gates.json")
 	writeJSONFile(t, fx, map[string]any{
@@ -1123,6 +1154,7 @@ func TestGoalEvidenceNegativeMaxAgeRejected(t *testing.T) {
 // 若代码回归到"evidence 失败回落到人工值"，会得到 DonePercent==80。这条测试**杀死**
 // 未来任何"贴心回退"型改动。
 func TestGoalEvidenceFailDoesNotFallbackToManual(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "does-not-exist.json")
 	ov := &boardOverrideGoal{
@@ -1157,6 +1189,7 @@ func TestGoalEvidenceFailDoesNotFallbackToManual(t *testing.T) {
 // TestGoalEvidenceStaleDoesNotFallbackToManual 同上，超龄 evidence 也不得落回人工值。
 // 教训：超龄意味着「机械口径已过期」，人工值往往更旧，静默换掉 = 读数含义漂移。
 func TestGoalEvidenceStaleDoesNotFallbackToManual(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "gates.json")
 	writeJSONFile(t, fx, map[string]any{
@@ -1190,6 +1223,7 @@ func TestGoalEvidenceStaleDoesNotFallbackToManual(t *testing.T) {
 // TestGoalEvidencePointerFailDoesNotFallbackToManual 补 pointer 取不到数值这条通道
 // （不是文件缺失、不是超龄，是取数失败）——同样绝不回退。
 func TestGoalEvidencePointerFailDoesNotFallbackToManual(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fx := filepath.Join(dir, "gates.json")
 	writeJSONFile(t, fx, map[string]any{
@@ -1221,6 +1255,7 @@ func TestGoalEvidencePointerFailDoesNotFallbackToManual(t *testing.T) {
 // TestLoadBoardOverrideReportsParseError 写坏 JSON（jsonc 注释）→ 返回空 override
 // **且**错误串非空；调用方必须能看到这个错误。
 func TestLoadBoardOverrideReportsParseError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	// jsonc 风格的注释——标准 JSON 不接受，encoding/json 会返回 syntax error
 	bad := `{
@@ -1251,6 +1286,7 @@ func TestLoadBoardOverrideReportsParseError(t *testing.T) {
 
 // TestLoadBoardOverrideMissingIsNotError 文件不存在 = 未配置，不是错。
 func TestLoadBoardOverrideMissingIsNotError(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	ov, errMsg, errKind := loadBoardOverride(root)
 	if ov == nil {
@@ -1267,6 +1303,7 @@ func TestLoadBoardOverrideMissingIsNotError(t *testing.T) {
 // TestBuildSnapshotSurfacesBoardOverrideError 快照层必须把错误串挂到 BoardOverrideError，
 // 供 handler 塞进 OverviewResp。
 func TestBuildSnapshotSurfacesBoardOverrideError(t *testing.T) {
+	t.Parallel()
 	root := bootBoardRoot(t, `{"projects": {`) // 断裂 JSON
 	snap, err := buildSnapshot(root, fixedTime())
 	if err != nil {
@@ -1289,6 +1326,7 @@ func TestBuildSnapshotSurfacesBoardOverrideError(t *testing.T) {
 // TestBuildSnapshotBoardOverrideOkNoError 正常 board.json → BoardOverrideError 为空，
 // 契约字段 omitempty 序列化时消失。
 func TestBuildSnapshotBoardOverrideOkNoError(t *testing.T) {
+	t.Parallel()
 	root := bootBoardRoot(t, `{
   "projects": {"goalproj": {"name": "Ok"}}
 }`)
@@ -1315,6 +1353,7 @@ func TestBuildSnapshotBoardOverrideOkNoError(t *testing.T) {
 // **强证据**：milestone.weight 写成字符串（*json.UnmarshalTypeError 场景），
 // 若代码回归"任何错就返空 override"，这条测试会红——因为 desc 覆盖不会生效。
 func TestLoadBoardOverrideTypeErrorPreservesOtherFields(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	// goal.milestones[0].weight 是字符串（高概率手误），触发 *json.UnmarshalTypeError
 	bad := `{
@@ -1373,6 +1412,7 @@ func TestLoadBoardOverrideTypeErrorPreservesOtherFields(t *testing.T) {
 // TestBuildSnapshotTypeErrorSurfacesErrorAndKeepsOverride 集成层：类型错也必须
 // 挂 BoardOverrideError 供前端披露，同时其它字段仍生效（不连坐蒸发）。
 func TestBuildSnapshotTypeErrorSurfacesErrorAndKeepsOverride(t *testing.T) {
+	t.Parallel()
 	bad := `{
   "projects": {
     "goalproj": {
@@ -1413,6 +1453,7 @@ func TestBuildSnapshotTypeErrorSurfacesErrorAndKeepsOverride(t *testing.T) {
 // TestLoadBoardOverrideSyntaxErrorDropsAll 语法错（如括号不闭合、抄了 jsonc 注释）
 // 无法部分保留，必须整块丢弃 + 披露。这条测试锁死"语法错也保留部分"这种误改。
 func TestLoadBoardOverrideSyntaxErrorDropsAll(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	// 断裂 JSON——语法错，非类型错
 	bad := `{"projects": {"foo": {"name":"Foo"`
@@ -1438,6 +1479,7 @@ func TestLoadBoardOverrideSyntaxErrorDropsAll(t *testing.T) {
 // TestLoadBoardOverrideCommentErrorDropsAll 常见坑：委托人抄 README jsonc 示例——
 // 单行注释 `//` 是 JSON 语法错。必须整块丢 + 披露，且提示串要含"注释/尾逗号"帮助自诊。
 func TestLoadBoardOverrideCommentErrorDropsAll(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	bad := `{
   // 这行注释是 jsonc，不是 JSON——常见抄示例的坑
@@ -1475,6 +1517,7 @@ func TestLoadBoardOverrideCommentErrorDropsAll(t *testing.T) {
 // 让绕过 error_kind 的消费方(日志 grep、监控告警等)仍可辨识两态。
 // 反例:若某次误改删掉「部分生效」前缀,前端在旧版不识 error_kind 时会误报"全部失效"。
 func TestLoadBoardOverrideTypeErrorMsgSelfDescribes(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	bad := `{
   "projects": {
@@ -1505,6 +1548,7 @@ func TestLoadBoardOverrideTypeErrorMsgSelfDescribes(t *testing.T) {
 // TestLoadBoardOverrideSyntaxErrorMsgSelfDescribes 语法错 msg 必须自描述"整块失效"。
 // 反证:若误改让语法错 msg 也混入"部分生效",委托人会误以为部分覆盖生效,查错方向反了。
 func TestLoadBoardOverrideSyntaxErrorMsgSelfDescribes(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "board.json"), []byte(`{"projects": {`), 0o644); err != nil {
 		t.Fatal(err)
@@ -1535,6 +1579,7 @@ func TestLoadBoardOverrideSyntaxErrorMsgSelfDescribes(t *testing.T) {
 // 反证:把 board.go 里 BoardOverrideErrorKind 的 JSON tag 从 board_override_error_kind
 // 改成任何别名,此测试立即报红。
 func TestOverviewHandlerBoardOverrideErrorKindJSONContract(t *testing.T) {
+	t.Parallel()
 	t.Run("type_error_surfaces_kind_type_in_json", func(t *testing.T) {
 		// 类型错场景 board.json
 		bad := `{"projects": {"goalproj": {"name":"N","goal":{"milestones":[{"id":"M1","title":"x","weight":"1"}]}}}}`
@@ -1661,6 +1706,7 @@ func TestOverviewHandlerBoardOverrideErrorKindJSONContract(t *testing.T) {
 // milestone 独撑合成 → goal_source 必须是 "manual+degraded@as_of",不得虚报 "mixed@as_of"。
 // 反例注入:老逻辑按配置形态打标,evidence 一条没入账仍会标 mixed,用户被误导以为"混合来源"。
 func TestGoalEvidenceAllFailedDegradesGoalSource(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dead := filepath.Join(dir, "never-existed.json") // 不创建 → 文件缺失
 	ov := &boardOverrideGoal{
@@ -1716,6 +1762,7 @@ func TestGoalEvidenceAllFailedDegradesGoalSource(t *testing.T) {
 // (无 manual milestone 兜底)→ 无有效入账,goal_source 必须标 "insufficient",不得
 // 仍标 "evidence"(老代码按配置形态打标会这样)。此时 LandedPercent 必为 nil。
 func TestGoalOnlyEvidenceAllFailedGoalSourceInsufficient(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	dead := filepath.Join(dir, "gone.json")
 	ov := &boardOverrideGoal{
@@ -1749,6 +1796,7 @@ func TestGoalOnlyEvidenceAllFailedGoalSourceInsufficient(t *testing.T) {
 // 反例:老代码只判 validWeightSum>0,不判 Inf → round1(Inf) 把 Inf 转成任意 int64,
 // 前端渲染出天文级数字或负数——比"数据不足"糟糕得多。
 func TestGoalLandedPercentInfWeightGuarded(t *testing.T) {
+	t.Parallel()
 	huge := math.MaxFloat64
 	ov := &boardOverrideGoal{
 		AsOf: "2026-07-23",
@@ -1784,6 +1832,7 @@ func TestGoalLandedPercentInfWeightGuarded(t *testing.T) {
 // 反例:若无 NaN 守护,round1(NaN) 转 int64 是"实现相关"(通常 0 或 int64.min),
 // 前端会渲染出 0% 或诡异负数——两者都是造读数。
 func TestGoalLandedPercentNaNWeightGuarded(t *testing.T) {
+	t.Parallel()
 	ov := &boardOverrideGoal{
 		AsOf: "2026-07-23",
 		Milestones: []boardOverrideMilestone{
@@ -1821,6 +1870,7 @@ func TestGoalLandedPercentNaNWeightGuarded(t *testing.T) {
 // resolved」即虚述——此测试直接造出「evidence 部分入账」的合法分支,让 README 契约文案的虚假完整性
 // 主张变得可证伪(README 若回退到虚述,复审重跑本测试通过、但文档与实测语义分叉即被识破)。
 func TestGoalEvidencePartialLandsAsEvidenceWithPartial(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	fxA := filepath.Join(dir, "gates-a.json") // 真实存在,evidence 会入账
 	writeJSONFile(t, fxA, map[string]any{

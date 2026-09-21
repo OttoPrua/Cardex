@@ -124,6 +124,7 @@ func lateTypesAfterHold(events []TaskEvent) []string {
 }
 
 func TestLegacyTaskJSONLoadableFailClosed(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	legacy := []byte(`{
   "id": "t0101-0001-aaaa",
@@ -200,6 +201,7 @@ func TestLegacyTaskJSONLoadableFailClosed(t *testing.T) {
 }
 
 func TestCLIHoldRejectsLateRunnerRetryWriteback(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	gate := filepath.Join(t.TempDir(), "gate")
 	cfg := runTaskCfg(t, gatedClaudeBin(t, gate, mkOKResultJSON("sess-late")))
@@ -391,6 +393,7 @@ func TestDetachedDescendantBlocksHeldUntilGone(t *testing.T) {
 }
 
 func TestStalePostCompleteDoesNotPublishFollowOn(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("process-group custody is POSIX")
 	}
@@ -453,6 +456,7 @@ func TestStalePostCompleteDoesNotPublishFollowOn(t *testing.T) {
 }
 
 func TestRestartNeverRebindsPersistedAttempt(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	withSchedulerLock(t, root)
 	cfg := runTaskCfg(t, fakeClaudeBin(t, mkOKResultJSON("sess-rebind"), "", 0))
@@ -586,6 +590,7 @@ func TestPIDReuseNeverSignaled(t *testing.T) {
 }
 
 func TestOptimizeHeldSeq5RejectsLateSeq6To11(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	ws := t.TempDir()
 	first := runTaskCfg(t, fakeClaudeBin(t, mkOKResultJSON("sess-opt-1"), "", 0))
@@ -646,6 +651,7 @@ func TestOptimizeHeldSeq5RejectsLateSeq6To11(t *testing.T) {
 }
 
 func TestLiveSchedulerLockNotStolenByTTL(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX lock")
 	}
@@ -678,6 +684,7 @@ func TestLiveSchedulerLockNotStolenByTTL(t *testing.T) {
 }
 
 func TestFormerOwnerCannotWriteAfterLockLoss(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX lock")
 	}
@@ -714,6 +721,7 @@ func TestFormerOwnerCannotWriteAfterLockLoss(t *testing.T) {
 }
 
 func TestSchedulerWriteDeniedWithoutLockFile(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	if !schedulerWriteAllowed(root) {
 		t.Fatal("CLI/tests that never acquired may write when no lock file is present")
@@ -734,6 +742,7 @@ func TestSchedulerWriteDeniedWithoutLockFile(t *testing.T) {
 }
 
 func TestUnreadableLockDeniesRunnerWrites(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	if err := os.MkdirAll(filepath.Dir(lockPath(root)), 0o755); err != nil {
 		t.Fatal(err)
@@ -747,6 +756,7 @@ func TestUnreadableLockDeniesRunnerWrites(t *testing.T) {
 }
 
 func TestDeadOwnerLockStillRecoverable(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	path := lockPath(root)
 	info, _ := json.Marshal(lockInfo{PID: 999999, At: time.Now().Format(time.RFC3339)})
@@ -766,6 +776,7 @@ func TestDeadOwnerLockStillRecoverable(t *testing.T) {
 }
 
 func TestTwoRunInstancesSingleLockOwner(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX lock")
 	}
@@ -783,6 +794,7 @@ func TestTwoRunInstancesSingleLockOwner(t *testing.T) {
 }
 
 func TestTransitionJournalCrashReplayOnce(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "journal replay", "/tmp", []string{"p"}, 5)
@@ -859,6 +871,7 @@ func TestTransitionJournalCrashReplayOnce(t *testing.T) {
 }
 
 func TestJournalFailureDoesNotExposeExitedAttempt(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	withSchedulerLock(t, root)
 	cfg := testCfg()
@@ -906,6 +919,7 @@ func TestJournalFailureDoesNotExposeExitedAttempt(t *testing.T) {
 }
 
 func TestTerminalizeIdempotent(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "idempotent hold", "/tmp", []string{"p"}, 5)
@@ -931,6 +945,7 @@ func TestTerminalizeIdempotent(t *testing.T) {
 }
 
 func TestReservePersistsAttemptIdentity(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	withSchedulerLock(t, root)
 	cfg := testCfg()
@@ -958,6 +973,7 @@ func TestReservePersistsAttemptIdentity(t *testing.T) {
 }
 
 func TestTwoDispatchersSingleAttempt(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	withSchedulerLock(t, root)
 	cfg := testCfg()
@@ -998,6 +1014,7 @@ func TestTwoDispatchersSingleAttempt(t *testing.T) {
 }
 
 func TestAttemptEpochGuardUsesDurableRecordUnderTaskLock(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "attempt epoch guard", "/tmp", []string{"p"}, 5)
@@ -1026,6 +1043,7 @@ func TestAttemptEpochGuardUsesDurableRecordUnderTaskLock(t *testing.T) {
 }
 
 func TestRunnerTerminalFailureClosesAttempt(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := runTaskCfg(t, fakeClaudeBin(t, "", "boom", 1))
 	cfg.MaxAttempts = 1
@@ -1083,6 +1101,7 @@ func TestRunnerTerminalFailureClosesAttempt(t *testing.T) {
 }
 
 func TestProcessStartIdentityStable(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX process identity")
 	}
@@ -1306,6 +1325,7 @@ func assertRecoveredTerminalDone(t *testing.T, root string, tk *Task, tid string
 }
 
 func TestTerminalCrashPointDiskStatesRecover(t *testing.T) {
+	t.Parallel()
 	points := []string{
 		transitionCrashAfterPrepare,
 		transitionCrashAfterAttemptClose,
@@ -1467,6 +1487,7 @@ func TestAttemptClosePersistenceFailuresBlockCommit(t *testing.T) {
 }
 
 func TestArchivedCommittedRecoveryPreservesArchiveResidency(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	tk := seedRunningReservedAttempt(t, root)
 	if err := recordEvent(root, tk.ID, TaskEvent{
@@ -1611,6 +1632,7 @@ func writeForeignAttempt(t *testing.T, root string, tk *Task, attemptID string) 
 }
 
 func TestPreparedTerminalJournalAttemptIdentityBlocksCommit(t *testing.T) {
+	t.Parallel()
 	t.Run("omitted_attempt_id", func(t *testing.T) {
 		root := testRoot(t)
 		tk := seedRunningReservedAttempt(t, root)
@@ -1650,6 +1672,7 @@ func TestPreparedTerminalJournalAttemptIdentityBlocksCommit(t *testing.T) {
 }
 
 func TestForeignTransitionRecordDoesNotSatisfyDurableDone(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	dir := t.TempDir()
 	done := newTask(root, testCfg(), typeSequence, "foreign transition", dir, []string{"p"}, 5)
@@ -1727,6 +1750,7 @@ func TestForeignTransitionRecordDoesNotSatisfyDurableDone(t *testing.T) {
 }
 
 func TestDurableDoneRequiresMatchingCommittedEvent(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	dir := t.TempDir()
 	tk := newTask(root, testCfg(), typeSequence, "missing done event", dir, []string{"p"}, 5)
@@ -1753,6 +1777,7 @@ func TestDurableDoneRequiresMatchingCommittedEvent(t *testing.T) {
 }
 
 func TestCommittedTerminalJournalAttemptFailureBlocksProjection(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		mut  func(t *testing.T, root string, tk *Task)

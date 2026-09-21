@@ -84,10 +84,10 @@ Both modes use Cardex `depends_on`, normalized write-domain/resource claims, sep
 
 `cardex workflow` turns either topology into a durable record: it binds `serial`/`federated` mode, the module goal, a write domain, bounded rounds, and candidate identity, and creates a default-held integration card. Both tick dispatch and `cardex release` **re-derive** the independent review `verdict=pass` (empty `p0`/`p1`), candidate agreement, and reviewer custody for a gated card; a durable review `done` is not enough. Every transition is an explicit command — tick consults the integration gate read-only and never advances a workflow. Live and cutover have no release path in this tree.
 
-Goal mode means give the goal, not every step: the design node is read-only (bind a completed independent Astra/Fable design task or external receipt; existing `model=fable` Cursor routing is unchanged), and the execution stage stays on one Task for continuous diagnosis/implementation/test/fix. Grok native `/goal` is `manual-only`: complete and same-session restart are manually proven; the automatic protocol and active pause/resume remain unverified. `grok -p` is a single turn, not goal proof. Kimi/Codex/Claude/Cursor/agy/OpenCode have native candidates but unverified adapters (`manual-only`/`unverified`, not blanket unsupported); Gemini stays rejected. Copyable:
+Goal mode means give the goal, not every step: the design node is read-only (bind a completed independent design task (without a model-brand gate) or external receipt; existing `model=fable` Cursor routing is unchanged), and the execution stage stays on one Task for continuous diagnosis/implementation/test/fix. Grok native `/goal` is `manual-only`: complete and same-session restart are manually proven; the automatic protocol and active pause/resume remain unverified. `grok -p` is a single turn, not goal proof. Kimi/Codex/Claude/Cursor/agy/OpenCode have native candidates but unverified adapters (`manual-only`/`unverified`, not blanket unsupported); Gemini stays rejected. Copyable:
 
 ```bash
-cardex workflow init ... -engine grok-build -design-receipt /path/to/astra-design.json
+cardex workflow init ... -engine grok-build -design-receipt /path/to/design-receipt.json
 cardex workflow writer <id> -mode manual
 cardex workflow goal-run <id> -manual -budget 350000
 # In the Grok TUI (literal path+digest; do not use $(cat); the TUI is not a shell):

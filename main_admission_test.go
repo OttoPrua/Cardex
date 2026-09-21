@@ -38,6 +38,7 @@ func TestCmdAdmissionPauseResumeStatusNoDispatch(t *testing.T) {
 }
 
 func TestCmdAdmissionRejectsUnknownAction(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{nil, {}, {"explode"}, {"PAUSE"}} {
 		if err := cmdAdmission(args); err == nil {
 			t.Fatalf("cmdAdmission %v: want usage error", args)
@@ -46,6 +47,7 @@ func TestCmdAdmissionRejectsUnknownAction(t *testing.T) {
 }
 
 func TestCmdAdmissionRejectsExtraPositionalArgs(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		action string

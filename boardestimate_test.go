@@ -26,6 +26,7 @@ func asEmitted(t *Task) { t.EmittedBy = "t-parent" }
 
 // 计划锚点恒压过机械估算；被现存量超出时按现存计并提示更新——过期计划当分母是负进度幻觉。
 func TestEstimatePlannedAnchor(t *testing.T) {
+	t.Parallel()
 	ts := []*Task{estCard(statusDone), estCard(statusQueued)}
 	e := buildProjectEstimate(ts, 10)
 	if e.Source != "planned" || e.EstimatedTotal != 10 || e.EstimatedRemaining != 8 {
@@ -47,6 +48,7 @@ func TestEstimatePlannedAnchor(t *testing.T) {
 
 // 无在途卡：余量必须为 0——做完的项目显示幻影余量就是编造。
 func TestEstimateSettledProjectHasNoPhantomRemaining(t *testing.T) {
+	t.Parallel()
 	ts := []*Task{estCard(statusDone), estCard(statusDone, asReview), estCard(statusFailed)}
 	e := buildProjectEstimate(ts, 0)
 	if e.Source != "settled" || e.EstimatedRemaining != 0 || e.EstimatedTotal != 3 {
@@ -56,6 +58,7 @@ func TestEstimateSettledProjectHasNoPhantomRemaining(t *testing.T) {
 
 // 样本不足：显式回落现存卡数并说明，绝不硬给系数。
 func TestEstimateInsufficientSampleFallsBackDisclosed(t *testing.T) {
+	t.Parallel()
 	ts := []*Task{estCard(statusQueued), estCard(statusDone), estCard(statusDone, asReview)}
 	e := buildProjectEstimate(ts, 0)
 	if e.Source != "insufficient" || e.EstimatedTotal != 3 || e.EstimatedRemaining != 0 {
@@ -84,6 +87,7 @@ func couplingFixture() []*Task {
 
 // 派生耦合主路径：k = 系统派生/完成，R = 在途 × k/(1−k)（等比级数，派生的派生一次前置）。
 func TestEstimateSpawnCoupling(t *testing.T) {
+	t.Parallel()
 	e := buildProjectEstimate(couplingFixture(), 0)
 	if e.Source != "spawn_coupling" {
 		t.Fatalf("应走派生耦合估算: %+v", e)
@@ -101,6 +105,7 @@ func TestEstimateSpawnCoupling(t *testing.T) {
 // 【委托人修正轮核心性质】完成一张不派生的卡，预估总量必须缩减——"每次更新更接近完成"。
 // 完成一张派生类卡（其自身也是别人派生出来的）同样不得抬升预估：它的量早已在 R 里。
 func TestEstimateConvergesTowardCompletion(t *testing.T) {
+	t.Parallel()
 	before := buildProjectEstimate(couplingFixture(), 0)
 
 	// 场景一：queued 根卡完成（不派生新卡）。
@@ -123,6 +128,7 @@ func TestEstimateConvergesTowardCompletion(t *testing.T) {
 // 扩张期（k≥1，如装配浪进行中）：等比级数不收敛，按 k 上限给收敛下限并在 basis 明说——
 // 吐无穷大或假装精确都是编造。emitted_by 谱系标计入派生人口（emit 产出是派生主力）。
 func TestEstimateExpansionClampDisclosed(t *testing.T) {
+	t.Parallel()
 	var ts []*Task
 	ts = append(ts, estCard(statusDone), estCard(statusDone)) // 2 张 done 协调根
 	for i := 0; i < 8; i++ {
@@ -143,6 +149,7 @@ func TestEstimateExpansionClampDisclosed(t *testing.T) {
 
 // 谱系标的四种系统派生身份都必须被认出来，漏认会低估 k（预估失真方向=余量偏小）。
 func TestSystemSpawnedCardIdentities(t *testing.T) {
+	t.Parallel()
 	for name, mut := range map[string]func(*Task){
 		"复审卡": asReview, "修复轮卡": asFix, "交叉B腿": asCrossB, "emit谱系标": asEmitted,
 	} {
@@ -157,6 +164,7 @@ func TestSystemSpawnedCardIdentities(t *testing.T) {
 
 // emit 产出必须落 emitted_by 谱系标（此前父指针只在事件 detail，卡面无谱系 → k 被低估）。
 func TestEnqueueEmittedStampsLineage(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := defaultConfig("claude")
 	parent := newTask(root, cfg, typeAssembly, "装配父", t.TempDir(), []string{"p"}, 1)
@@ -176,6 +184,7 @@ func TestEnqueueEmittedStampsLineage(t *testing.T) {
 // 模型输出是不可信输入：即使协调器误给审核卡 review_after=true，入队层也必须归零，
 // 避免实际生产再次出现“审核: 审核…”卡。
 func TestEnqueueEmittedDisablesReviewAfterForReviewCards(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := defaultConfig("claude")
 	parent := newTask(root, cfg, typeAssembly, "装配父", t.TempDir(), []string{"p"}, 1)
@@ -195,6 +204,7 @@ func TestEnqueueEmittedDisablesReviewAfterForReviewCards(t *testing.T) {
 
 // 已取消卡两侧都不计：既不进现存分母，也不进系数样本。
 func TestEstimateExcludesCanceled(t *testing.T) {
+	t.Parallel()
 	ts := []*Task{estCard(statusDone), estCard(statusCanceled), estCard(statusCanceled, asReview)}
 	e := buildProjectEstimate(ts, 0)
 	if e.EstimatedTotal != 1 {
@@ -207,6 +217,7 @@ func TestEstimateExcludesCanceled(t *testing.T) {
 // 余量按历史派生构成分摊；最大余数法凑整；Σ 桶余量 ≡ 项目余量（分桶与总条对不上账
 // 会被读成看板算错）；无派生历史的桶分 0（前端回落现有卡口径）。
 func TestAnnotateKindEstimatesDistribution(t *testing.T) {
+	t.Parallel()
 	// 历史派生构成：修复×2、审核×1；设计桶无派生历史。
 	ts := []*Task{
 		estCard(statusDone),           // impl 根

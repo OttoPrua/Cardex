@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func nativeCompletionPayload(via, body string) string {
@@ -93,11 +94,14 @@ func assertNativeHeldWithoutReplay(t *testing.T, root string, got *Task) {
 }
 
 func TestNativeCompletionProcessAndConsumer(t *testing.T) {
+	t.Parallel()
 	for _, via := range []string{grokBuildRunnerName, kimiCLIRunnerName, "opencode"} {
 		t.Run(via, func(t *testing.T) {
+			t.Parallel()
 			body := verdictJSON("pass", nil, nil)
 			payload := nativeCompletionPayload(via, body)
 			t.Run("required review artifact", func(t *testing.T) {
+				t.Parallel()
 				root, cfg, got := runNativeCompletionTask(t, via, payload, typeReview, 0)
 				if got.Status != statusDone || got.Step != 1 || got.ReviewOutput == nil {
 					t.Fatalf("normal review must deliver: %+v", got)
@@ -137,12 +141,14 @@ func TestNativeCompletionProcessAndConsumer(t *testing.T) {
 				}
 			})
 			t.Run("ordinary task needs no artifact", func(t *testing.T) {
+				t.Parallel()
 				_, _, got := runNativeCompletionTask(t, via, nativeCompletionPayload(via, ""), typeSequence, 0)
 				if got.Status != statusDone || got.Step != 1 || got.ReviewOutput != nil {
 					t.Fatalf("normal no-artifact task must complete: %+v", got)
 				}
 			})
 			t.Run("process fails after native terminal", func(t *testing.T) {
+				t.Parallel()
 				root, _, got := runNativeCompletionTask(t, via, payload, typeReview, 7)
 				assertNativeHeldWithoutReplay(t, root, got)
 				r := got.LastRouteAttempt
@@ -154,8 +160,14 @@ func TestNativeCompletionProcessAndConsumer(t *testing.T) {
 				}
 			})
 			t.Run("completion loss", func(t *testing.T) {
+				t.Parallel()
 				lines := strings.Split(payload, "\n")
-				root, _, got := runNativeCompletionTask(t, via, strings.Join(lines[:len(lines)-1], "\n"), typeReview, 0)
+				lost := strings.Join(lines[:len(lines)-1], "\n")
+				if via == kimiCLIRunnerName {
+					// 0.41 resume_hint is optional; drop the assistant turn so the stream is actually incomplete.
+					lost = lines[0]
+				}
+				root, _, got := runNativeCompletionTask(t, via, lost, typeReview, 0)
 				assertNativeHeldWithoutReplay(t, root, got)
 				if got.ReviewOutput != nil {
 					t.Fatal("incomplete execution supplied an artifact")
@@ -166,12 +178,14 @@ func TestNativeCompletionProcessAndConsumer(t *testing.T) {
 }
 
 func TestNativeCompletionThenTimeoutOrSignal(t *testing.T) {
+	t.Parallel()
 	for _, via := range []string{grokBuildRunnerName, kimiCLIRunnerName, "opencode"} {
 		for _, failure := range []string{"timeout", "signal"} {
 			if failure == "timeout" && via != grokBuildRunnerName {
 				continue // The production step deadline is exercised once; every adapter also gets an actual signal.
 			}
 			t.Run(via+"/"+failure, func(t *testing.T) {
+				t.Parallel()
 				root := testRoot(t)
 				cfg := nativeCompletionConfig(t, via, nativeCompletionPayload(via, "synthetic final"), 0)
 				bin := cfg.OpenCodeBin
@@ -190,6 +204,7 @@ func TestNativeCompletionThenTimeoutOrSignal(t *testing.T) {
 				if failure == "timeout" {
 					ending = "exec sleep 70\n"
 					cfg.StepTimeoutMin = 1
+					cfg.grokStepTimeout = 3 * time.Second
 				}
 				if !strings.HasSuffix(string(script), "exit 0\n") {
 					t.Fatal("fake process fixture must end with exit 0")
@@ -219,6 +234,7 @@ func TestNativeCompletionThenTimeoutOrSignal(t *testing.T) {
 }
 
 func TestNativeReviewConsumerUsesOnlyFinalConclusion(t *testing.T) {
+	t.Parallel()
 	pass := verdictJSON("pass", nil, nil)
 	for _, tc := range []struct {
 		name, body string
@@ -234,6 +250,7 @@ func TestNativeReviewConsumerUsesOnlyFinalConclusion(t *testing.T) {
 		{"unfenced latest malformed", `{ "verdict": "pass" } { "verdict":`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root, cfg, got := runNativeCompletionTask(t, "opencode", nativeCompletionPayload("opencode", tc.body), typeReview, 0)
 			if got.Status != statusDone || got.ReviewOutput == nil || got.LastRouteAttempt.TerminalCount != 1 {
 				t.Fatalf("execution must finish even when review verdict is inadmissible: %+v", got)
@@ -247,9 +264,11 @@ func TestNativeReviewConsumerUsesOnlyFinalConclusion(t *testing.T) {
 }
 
 func TestNativeReviewArtifactRefusesMissingStaleMismatchedAndUnreadable(t *testing.T) {
+	t.Parallel()
 	body := verdictJSON("pass", nil, nil)
 	for _, name := range []string{"missing", "truncated", "wrong task", "old epoch", "old step", "wrong candidate version", "wrong attempt", "other exited attempt", "changed content", "unreadable", "old prompt pass"} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			root, cfg, got := runNativeCompletionTask(t, "opencode", nativeCompletionPayload("opencode", body), typeReview, 0)
 			if got.ReviewOutput == nil {
 				t.Fatalf("positive fixture failed: %+v", got)
@@ -300,6 +319,7 @@ func TestNativeReviewArtifactRefusesMissingStaleMismatchedAndUnreadable(t *testi
 }
 
 func TestNativeGrokLifecycleAndSyntheticMeta(t *testing.T) {
+	t.Parallel()
 	text := `{"type":"text","data":"OK"}`
 	end := grok105PublicEnd
 	plan := `{"type":"plan","entries":[{"content":"synthetic step","priority":"high","status":"completed"}]}`
@@ -357,6 +377,7 @@ func TestNativeGrokLifecycleAndSyntheticMeta(t *testing.T) {
 }
 
 func TestNativeKimiVersionAndToolLifecycle(t *testing.T) {
+	t.Parallel()
 	version := `{"role":"meta","type":"system.version","version":"0.41.0"}`
 	call := `{"role":"assistant","content":"read two fixtures","tool_calls":[{"id":"a"},{"id":"b"}]}`
 	toolA := `{"role":"tool","tool_call_id":"a","content":"handled tool error"}`
@@ -372,9 +393,9 @@ func TestNativeKimiVersionAndToolLifecycle(t *testing.T) {
 		{"legacy EOF", strings.Replace(version, "0.41.0", "0.37.2", 1) + "\n" + final, kimiEngineLegacy, true},
 		{"legacy cannot imply v2", strings.Replace(version, "0.41.0", "0.37.2", 1) + "\n" + final, kimiEngineV2, false},
 		{"missing version", final + "\n" + hint, kimiEngineLegacy, false},
-		{"future version", strings.Replace(complete, "0.41.0", "0.42.0", 1), kimiEngineLegacy, false},
-		{"malformed version", strings.Replace(complete, "0.41.0", "0.41garbage.0", 1), kimiEngineLegacy, false},
-		{"missing hint", version + "\n" + final, kimiEngineLegacy, false},
+		{"future version", strings.Replace(complete, "0.41.0", "0.42.0", 1), kimiEngineLegacy, true},
+		{"malformed version", strings.Replace(complete, "0.41.0", "0.41garbage.0", 1), kimiEngineLegacy, true},
+		{"missing hint", version + "\n" + final, kimiEngineLegacy, true},
 		{"v2 hint is unproved", complete, kimiEngineV2, false},
 		{"unmatched tool", version + "\n" + toolA + "\n" + final + "\n" + hint, kimiEngineLegacy, false},
 		{"unclosed tool", version + "\n" + call + "\n" + toolA + "\n" + final + "\n" + hint, kimiEngineLegacy, false},
@@ -394,11 +415,26 @@ func TestNativeKimiVersionAndToolLifecycle(t *testing.T) {
 			if tc.valid && got.Result != "OK" {
 				t.Fatalf("only post-tool final belongs in result: %q", got.Result)
 			}
+			if tc.name == "future version" || tc.name == "malformed version" || tc.name == "missing version" {
+				if got.Subtype == kimiCLISubtypeInvalidPostamble {
+					t.Fatalf("version must not be invalid_completion_postamble: %+v", got)
+				}
+				if got.Result != "OK" {
+					t.Fatalf("assistant text must land in Result: %q subtype=%q", got.Result, got.Subtype)
+				}
+			}
+			if tc.name == "future version" && got.NativeVersion != "0.42.0" {
+				t.Fatalf("0.42 must be recorded, got %q", got.NativeVersion)
+			}
+			if tc.name == "missing version" && got.Subtype != kimiCLISubtypeProtocolIncomplete {
+				t.Fatalf("missing version should be protocol_incomplete, got %+v", got)
+			}
 		})
 	}
 }
 
 func TestNativeKimiFinalBelongsToLastAssistant(t *testing.T) {
+	t.Parallel()
 	pass := verdictJSON("pass", nil, nil)
 	thinkingPass, _ := json.Marshal(pass)
 	for _, version := range []string{"0.37.2", "0.41.0"} {
@@ -413,6 +449,7 @@ func TestNativeKimiFinalBelongsToLastAssistant(t *testing.T) {
 			{"thinking text", `,"content":[{"type":"thinking","text":` + string(thinkingPass) + `}]`, false},
 		} {
 			t.Run(version+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
 				lines := strings.Split(nativeCompletionPayload(kimiCLIRunnerName, pass), "\n")
 				payload := strings.Replace(lines[0], "0.41.0", version, 1) + "\n"
 				if tc.earlier {
@@ -453,7 +490,282 @@ func TestNativeKimiFinalBelongsToLastAssistant(t *testing.T) {
 	}
 }
 
+func TestNativeDoneGateContractEvidence(t *testing.T) {
+	t.Parallel()
+	via := "opencode"
+	okPayload := nativeCompletionPayload(via, "OK")
+
+	t.Run("promised files and tests missing held", func(t *testing.T) {
+		t.Parallel()
+		root := testRoot(t)
+		cfg := nativeCompletionConfig(t, via, okPayload, 0)
+		dir := t.TempDir()
+		task := newTask(root, cfg, typeSequence, "impl promised", dir, []string{"Write promised_artifact.go and add tests"}, 1)
+		task.Model, task.PreferRunner, task.RunnerExplicit = "haiku", via, true
+		if err := saveTask(root, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := runTaskVia(context.Background(), root, cfg, task, via); err != nil {
+			t.Fatal(err)
+		}
+		got, err := loadTask(root, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != statusHeld {
+			t.Fatalf("promised files/tests missing must be held, got %+v", got)
+		}
+		if got.Step != 0 || got.Attempts != 0 {
+			t.Fatalf("contract hold must not advance step/attempts: %+v", got)
+		}
+		if !strings.Contains(got.LastError, nativeDoneHoldMissingFiles) && !strings.Contains(got.LastError, nativeDoneHoldMissingTests) {
+			t.Fatalf("held reason=%q", got.LastError)
+		}
+	})
+
+	t.Run("wf02 waiting for id zero diff not done", func(t *testing.T) {
+		t.Parallel()
+		payload := nativeCompletionPayload(via, "waiting for an id to start the hosted goal")
+		root := testRoot(t)
+		cfg := nativeCompletionConfig(t, via, payload, 0)
+		dir := t.TempDir()
+		task := newTask(root, cfg, typeSequence, "wf02", dir, []string{"implement the patch"}, 1)
+		task.Model, task.PreferRunner, task.RunnerExplicit = "haiku", via, true
+		if err := saveTask(root, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := runTaskVia(context.Background(), root, cfg, task, via); err != nil {
+			t.Fatal(err)
+		}
+		got, err := loadTask(root, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == statusDone {
+			t.Fatalf("WF-02 must not be done: %+v", got)
+		}
+		if got.Status != statusHeld || !strings.Contains(got.LastError, nativeDoneHoldWF02WaitingForID) {
+			t.Fatalf("WF-02 want held with reason, got %+v", got)
+		}
+		if got.Step != 0 {
+			t.Fatalf("WF-02 hold must not advance step: %+v", got)
+		}
+	})
+
+	t.Run("read-only report no diff may complete", func(t *testing.T) {
+		t.Parallel()
+		body := verdictJSON("pass", nil, nil)
+		_, _, got := runNativeCompletionTask(t, via, nativeCompletionPayload(via, body), typeReview, 0)
+		if got.Status != statusDone {
+			t.Fatalf("read-only report may complete with no diff: %+v", got)
+		}
+	})
+
+	t.Run("open tools still not done", func(t *testing.T) {
+		t.Parallel()
+		payload := `{"type":"tool_use","part":{"callID":"a","state":{"status":"running"}}}` + "\n" +
+			`{"type":"text","part":{"text":"OK"}}` + "\n" +
+			`{"type":"step_finish","part":{"reason":"stop"}}`
+		_, _, got := runNativeCompletionTask(t, via, payload, typeSequence, 0)
+		if got.Status == statusDone {
+			t.Fatal("open tools must not be done")
+		}
+	})
+
+	t.Run("unpaired tools still not done", func(t *testing.T) {
+		t.Parallel()
+		payload := `{"type":"tool_result","part":{"callID":"a","state":{"status":"completed"}}}` + "\n" +
+			`{"type":"text","part":{"text":"OK"}}` + "\n" +
+			`{"type":"step_finish","part":{"reason":"stop"}}`
+		_, _, got := runNativeCompletionTask(t, via, payload, typeSequence, 0)
+		if got.Status == statusDone {
+			t.Fatal("unpaired tools must not be done")
+		}
+	})
+
+	t.Run("process failure stay fail-closed", func(t *testing.T) {
+		t.Parallel()
+		root, _, got := runNativeCompletionTask(t, via, okPayload, typeSequence, 7)
+		if got.Status == statusDone {
+			t.Fatal("process failure must not be done")
+		}
+		r := got.LastRouteAttempt
+		if r == nil || r.FailureClass != "process_failure" {
+			t.Fatalf("process failures must stay fail-closed: %+v", got)
+		}
+		assertNativeHeldWithoutReplay(t, root, got)
+	})
+
+	t.Run("permission_requested idle not native done", func(t *testing.T) {
+		t.Parallel()
+		payload := nativeCompletionPayload(via, "permission_requested idle")
+		root := testRoot(t)
+		cfg := nativeCompletionConfig(t, via, payload, 0)
+		dir := t.TempDir()
+		task := newTask(root, cfg, typeSequence, "permission idle", dir, []string{"implement the four patches"}, 1)
+		task.Model, task.PreferRunner, task.RunnerExplicit = "haiku", via, true
+		if err := saveTask(root, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := runTaskVia(context.Background(), root, cfg, task, via); err != nil {
+			t.Fatal(err)
+		}
+		got, err := loadTask(root, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == statusDone {
+			t.Fatal("permission_requested idle is not native done")
+		}
+		if got.Status != statusHeld || !strings.Contains(got.LastError, nativeDoneHoldPermissionIdle) {
+			t.Fatalf("permission_requested want held, got %+v", got)
+		}
+	})
+
+	t.Run("tui input-box goal not native done", func(t *testing.T) {
+		t.Parallel()
+		payload := nativeCompletionPayload(via, "/goal Read and implement the complete stage contract at /tmp/contract")
+		root := testRoot(t)
+		cfg := nativeCompletionConfig(t, via, payload, 0)
+		dir := t.TempDir()
+		task := newTask(root, cfg, typeSequence, "tui composer goal", dir, []string{"implement the four patches"}, 1)
+		task.Model, task.PreferRunner, task.RunnerExplicit = "haiku", via, true
+		if err := saveTask(root, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := runTaskVia(context.Background(), root, cfg, task, via); err != nil {
+			t.Fatal(err)
+		}
+		got, err := loadTask(root, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == statusDone {
+			t.Fatal("TUI input-box Goal is not native done")
+		}
+		if got.Status != statusHeld || !strings.Contains(got.LastError, nativeDoneHoldTUIGoalNotStarted) {
+			t.Fatalf("TUI Goal want held not-started, got %+v", got)
+		}
+	})
+
+	t.Run("idle turn_ended 0-diff not native done", func(t *testing.T) {
+		t.Parallel()
+		payload := nativeCompletionPayload(via, "Idle: turn_ended")
+		root := testRoot(t)
+		cfg := nativeCompletionConfig(t, via, payload, 0)
+		dir := t.TempDir()
+		task := newTask(root, cfg, typeSequence, "idle fake executing", dir, []string{"implement the four patches"}, 1)
+		task.Model, task.PreferRunner, task.RunnerExplicit = "haiku", via, true
+		if err := saveTask(root, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := runTaskVia(context.Background(), root, cfg, task, via); err != nil {
+			t.Fatal(err)
+		}
+		got, err := loadTask(root, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == statusDone {
+			t.Fatal("Idle/turn_ended/0-diff is not native done")
+		}
+		if got.Status != statusHeld || !strings.Contains(got.LastError, nativeDoneHoldFakeExecuting) {
+			t.Fatalf("Idle/turn_ended/0-diff want held fake_executing, got %+v", got)
+		}
+		if got.Step != 0 {
+			t.Fatalf("Idle/turn_ended hold must not advance step: %+v", got)
+		}
+	})
+
+	t.Run("no_more_prompts cannot skip missing files", func(t *testing.T) {
+		t.Parallel()
+		root := testRoot(t)
+		cfg := nativeCompletionConfig(t, via, okPayload, 0)
+		dir := t.TempDir()
+		task := newTask(root, cfg, typeSequence, "impl promised skip", dir, []string{"Write promised_artifact.go and add tests"}, 1)
+		task.Model, task.PreferRunner, task.RunnerExplicit = "haiku", via, true
+		task.Step = 1
+		task.Status = statusQueued
+		if err := saveTask(root, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := runTaskVia(context.Background(), root, cfg, task, via); err != nil {
+			t.Fatal(err)
+		}
+		got, err := loadTask(root, task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == statusDone {
+			t.Fatalf("no_more_prompts must not done without promised files: %+v", got)
+		}
+		if got.Status != statusHeld || !strings.Contains(got.LastError, nativeDoneHoldMissingFiles) && !strings.Contains(got.LastError, nativeDoneHoldMissingTests) {
+			t.Fatalf("no_more_prompts want held with contract reason, got %+v", got)
+		}
+	})
+}
+
+func TestNativeKimi042UnknownVersionResultAndReviewConsumable(t *testing.T) {
+	t.Parallel()
+	t.Run("0.42 complete sequence is done with recorded version", func(t *testing.T) {
+		t.Parallel()
+		payload := strings.Replace(nativeCompletionPayload(kimiCLIRunnerName, "OK"), "0.41.0", "0.42.0", 1)
+		_, _, got := runNativeCompletionTask(t, kimiCLIRunnerName, payload, typeSequence, 0)
+		if got.Status != statusDone {
+			t.Fatalf("0.42 must be able to complete, got %+v", got)
+		}
+		if got.LastRouteAttempt == nil || got.LastRouteAttempt.NativeVersion != "0.42.0" {
+			t.Fatalf("0.42 must be recorded: %+v", got.LastRouteAttempt)
+		}
+		if got.LastRouteAttempt.FailureKind == kimiCLISubtypeInvalidPostamble {
+			t.Fatal("0.42 must not be invalid_completion_postamble")
+		}
+	})
+	t.Run("unknown version assistant text in Result", func(t *testing.T) {
+		t.Parallel()
+		payload := strings.Replace(nativeCompletionPayload(kimiCLIRunnerName, "OK"), "0.41.0", "9.9.9", 1)
+		_, _, got := runNativeCompletionTask(t, kimiCLIRunnerName, payload, typeSequence, 0)
+		if got.Status != statusDone {
+			t.Fatalf("unknown version with complete stream must complete, got %+v", got)
+		}
+		if got.LastRouteAttempt == nil || got.LastRouteAttempt.NativeVersion != "9.9.9" {
+			t.Fatalf("unknown version must be recorded: %+v", got.LastRouteAttempt)
+		}
+	})
+	t.Run("protocol_incomplete review consumable", func(t *testing.T) {
+		t.Parallel()
+		body := verdictJSON("pass", nil, nil)
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := `{"role":"assistant","content":` + string(encoded) + `}`
+		root, cfg, got := runNativeCompletionTask(t, kimiCLIRunnerName, payload, typeReview, 0)
+		if strings.TrimSpace(loadTaskResultForGate(root, got)) == "" && (got.ReviewOutput == nil || got.Status != statusDone) {
+			t.Fatalf("protocol_incomplete + nonempty Result must be consumable for review: %+v", got)
+		}
+		if got.LastRouteAttempt != nil && got.LastRouteAttempt.FailureKind == kimiCLISubtypeInvalidPostamble {
+			t.Fatal("missing version must not be invalid_completion_postamble")
+		}
+		if dec := evaluateIntegrationRelease(root, cfg, &Task{IntegrationGate: &IntegrationGate{
+			WriterTaskID: got.ReviewOf, ReviewTaskID: got.ID,
+			CandidateCommit: got.ReviewCandidate.Commit, CandidateTree: got.ReviewCandidate.Tree,
+		}}); !dec.Admit {
+			t.Fatalf("consumable review result was empty to the gate: %+v", dec)
+		}
+	})
+	t.Run("implementation still needs closed tools", func(t *testing.T) {
+		t.Parallel()
+		payload := `{"role":"assistant","content":"OK","tool_calls":[{"id":"a"}]}`
+		_, _, got := runNativeCompletionTask(t, kimiCLIRunnerName, payload, typeSequence, 0)
+		if got.Status == statusDone {
+			t.Fatal("implementation with open tools must not be done")
+		}
+	})
+}
+
 func TestNativeOpenCodeLifecycle(t *testing.T) {
+	t.Parallel()
 	text := `{"type":"text","part":{"text":"OK"}}`
 	stop := `{"type":"step_finish","part":{"reason":"stop"}}`
 	tool := `{"type":"tool_use","part":{"callID":"a","state":{"status":"completed"}}}`

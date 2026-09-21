@@ -6,6 +6,7 @@ import (
 )
 
 func TestRenderLaunchdPlistSetsKimiOpenFileCeiling(t *testing.T) {
+	t.Parallel()
 	got := renderLaunchdPlist("/opt/homebrew/bin/cardex", "/tmp/cardex-root", 300, "/tmp/cardex.log")
 	for _, want := range []string{
 		"<key>SoftResourceLimits</key>",
@@ -22,6 +23,7 @@ func TestRenderLaunchdPlistSetsKimiOpenFileCeiling(t *testing.T) {
 }
 
 func TestLaunchdOpenFileLimitRejectsMissingOrLowValue(t *testing.T) {
+	t.Parallel()
 	if _, err := launchdOpenFileLimit([]byte("<plist><dict></dict></plist>")); err == nil {
 		t.Fatal("missing SoftResourceLimits.NumberOfFiles must fail")
 	}

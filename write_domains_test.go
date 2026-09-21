@@ -9,6 +9,7 @@ import (
 )
 
 func TestNormalizePathClaimRejectsTraversalEmptyAndAmbiguous(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	insideAbs := filepath.Join(root, "internal", "auth")
 
@@ -49,6 +50,7 @@ func TestNormalizePathClaimRejectsTraversalEmptyAndAmbiguous(t *testing.T) {
 }
 
 func TestNormalizePathClaimBindsToRepositoryRoot(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "internal", "auth"), 0o755); err != nil {
 		t.Fatal(err)
@@ -79,6 +81,7 @@ func TestNormalizePathClaimBindsToRepositoryRoot(t *testing.T) {
 }
 
 func TestWriteDomainRequiresClosedClaimsAndIntegrationLineage(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	valid := WriteDomain{
 		ID:        "auth-tokens",
@@ -136,6 +139,7 @@ func TestWriteDomainRequiresClosedClaimsAndIntegrationLineage(t *testing.T) {
 }
 
 func TestAuditWriteDomainsBlocksOverlapButAllowsDisjointSameComponent(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	authTokens := WriteDomain{
 		ID: "auth-tokens", Lineage: "auth-tokens-lineage", Component: "auth",
@@ -179,6 +183,7 @@ func TestAuditWriteDomainsBlocksOverlapButAllowsDisjointSameComponent(t *testing
 }
 
 func TestAuditWriteDomainsBlocksSharedClosedResourcesAndDuplicateLineage(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	kinds := []string{
 		resourceRuntime, resourceDatabase, resourceProfile, resourceManifest,
@@ -245,6 +250,7 @@ func TestAuditWriteDomainsBlocksSharedClosedResourcesAndDuplicateLineage(t *test
 }
 
 func TestNormalizePathClaimCanonicalizesFileAndDirectorySymlinkAliases(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	realDir := filepath.Join(root, "internal", "auth")
 	if err := os.MkdirAll(realDir, 0o755); err != nil {
@@ -268,6 +274,7 @@ func TestNormalizePathClaimCanonicalizesFileAndDirectorySymlinkAliases(t *testin
 }
 
 func TestNormalizePathClaimCanonicalizesNonexistentSuffixBelowSymlink(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	realDir := filepath.Join(root, "internal", "auth")
 	if err := os.MkdirAll(realDir, 0o755); err != nil {
@@ -291,6 +298,7 @@ func TestNormalizePathClaimCanonicalizesNonexistentSuffixBelowSymlink(t *testing
 }
 
 func TestNormalizePathClaimCanonicalizesRepoRootSymlinkAlias(t *testing.T) {
+	t.Parallel()
 	realRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(realRoot, "internal", "auth"), 0o755); err != nil {
 		t.Fatal(err)
@@ -309,6 +317,7 @@ func TestNormalizePathClaimCanonicalizesRepoRootSymlinkAlias(t *testing.T) {
 }
 
 func TestNormalizePathClaimRejectsSymlinkEscapeDanglingAndCycle(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("nope\n"), 0o644); err != nil {
@@ -353,6 +362,7 @@ func TestNormalizePathClaimRejectsSymlinkEscapeDanglingAndCycle(t *testing.T) {
 }
 
 func TestAuditWriteDomainsBlocksSymlinkAliasOverlapDeterministically(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "internal", "auth"), 0o755); err != nil {
 		t.Fatal(err)

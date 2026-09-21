@@ -62,6 +62,7 @@ func joinResources(in []ResourceClaim) string {
 }
 
 func TestWriterClaimsAllowDisjointSameRepoAndSerializeOverlap(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	mustWriteFile(t, filepath.Join(root, "internal", "auth", "token.go"), "package auth\n")
 	mustWriteFile(t, filepath.Join(root, "internal", "billing", "bill.go"), "package billing\n")
@@ -105,6 +106,7 @@ func TestWriterClaimsAllowDisjointSameRepoAndSerializeOverlap(t *testing.T) {
 }
 
 func TestWriterClaimsSymlinkAliasAndWorktreeLogicalPath(t *testing.T) {
+	t.Parallel()
 	realRoot := t.TempDir()
 	mustWriteFile(t, filepath.Join(realRoot, "internal", "auth", "token.go"), "package auth\n")
 	alias := filepath.Join(t.TempDir(), "repo-alias")
@@ -140,6 +142,7 @@ func TestWriterClaimsSymlinkAliasAndWorktreeLogicalPath(t *testing.T) {
 }
 
 func TestLegacyWriterSerializesWithExplicitSameDir(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	other := t.TempDir()
 	legacy := &Task{ID: "legacy", Dir: dir, Type: typeSequence}
@@ -178,6 +181,7 @@ func linkedGitWorktrees(t *testing.T) (mainDir, worktreeDir string) {
 }
 
 func TestLegacyWritersSerializeOnSharedRepoCanonicalAliasAndStayConcurrentWhenUnrelated(t *testing.T) {
+	t.Parallel()
 	mainDir, wtDir := linkedGitWorktrees(t)
 	legacyMain := &Task{ID: "legacy-main", Dir: mainDir, Type: typeSequence}
 	legacyWT := &Task{ID: "legacy-wt", Dir: wtDir, Type: typeSequence}
@@ -240,6 +244,7 @@ func TestLegacyWritersSerializeOnSharedRepoCanonicalAliasAndStayConcurrentWhenUn
 }
 
 func TestLiveDAGFailClosedReadiness(t *testing.T) {
+	t.Parallel()
 	cardexRoot := testRoot(t)
 	dir := t.TempDir()
 	done := newTask(cardexRoot, testCfg(), typeSequence, "done dep", dir, []string{"p"}, 5)
@@ -353,6 +358,7 @@ func TestLiveDAGFailClosedReadiness(t *testing.T) {
 }
 
 func TestApplyTaskWriteDomainAndDependsOn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	mustWriteFile(t, filepath.Join(dir, "internal", "auth", "token.go"), "package auth\n")
 	tk := &Task{ID: "tapply", Dir: dir}
@@ -377,6 +383,7 @@ func TestApplyTaskWriteDomainAndDependsOn(t *testing.T) {
 }
 
 func TestGitIdentityFromNestedTaskDirAndUnreadableMetadata(t *testing.T) {
+	t.Parallel()
 	repo := t.TempDir()
 	mustWriteFile(t, filepath.Join(repo, ".git", "HEAD"), "ref: refs/heads/main\n")
 	mustWriteFile(t, filepath.Join(repo, "internal", "auth", "token.go"), "package auth\n")
@@ -412,6 +419,7 @@ func TestGitIdentityFromNestedTaskDirAndUnreadableMetadata(t *testing.T) {
 }
 
 func TestWriterClaimsReconstructAfterAbruptParentDeath(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("workspace flock is POSIX")
 	}

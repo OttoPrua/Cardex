@@ -194,6 +194,7 @@ func intFromDetail(v any) int {
 }
 
 func TestGrokTerminalUnknownOutcomeDerivesKindFromSubtypeOnly(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		res         *claudeResult
@@ -231,6 +232,7 @@ func TestGrokTerminalUnknownOutcomeDerivesKindFromSubtypeOnly(t *testing.T) {
 }
 
 func TestRunTaskGrokSemanticMissingEndHoldsUnknownOutcome(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// Keep stderr empty so the semantic missing-end observation stays complete; the stderr
 	// sentinel is covered by the invalid-terminal and malformed-stream cases below.
@@ -249,6 +251,7 @@ func TestRunTaskGrokSemanticMissingEndHoldsUnknownOutcome(t *testing.T) {
 }
 
 func TestRunTaskGrokToolModelInvalidTerminalHoldsUnknownOutcome(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, productCalls := fakeGrokBuildCounted(t, grokTerminalToolInvalidTerminalPayload(), grokTerminalFixtureStderrSentinel, 1)
 	cfg := policyTestConfig()
@@ -265,6 +268,7 @@ func TestRunTaskGrokToolModelInvalidTerminalHoldsUnknownOutcome(t *testing.T) {
 }
 
 func TestRunTaskGrokObservationIncompleteZeroCounterMalformedHolds(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, productCalls := fakeGrokBuildCounted(t, grokTerminalMalformedPayload, grokTerminalFixtureStderrSentinel, 1)
 	cfg := policyTestConfig()
@@ -293,6 +297,7 @@ func grokTerminalToolInvalidTerminalPayload() string {
 }
 
 func TestRunTaskGrokUnknownOutcomeHoldsDespiteCompetingDiagnostics(t *testing.T) {
+	t.Parallel()
 	semanticPayload := grokTerminalSemanticMissingEndPayload()
 	toolPayload := grokTerminalToolInvalidTerminalPayload()
 	diagnostics := []struct {
@@ -357,11 +362,13 @@ func TestRunTaskGrokUnknownOutcomeHoldsDespiteCompetingDiagnostics(t *testing.T)
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := testRoot(t)
 			bin, productCalls := fakeGrokBuildCounted(t, tc.payload, tc.stderr, 1)
 			cfg := policyTestConfig()
 			cfg.GrokBuildBin = bin
 			cfg.MaxAttempts = 3
+			isolateGrokLifecycleHome(t, cfg)
 			var task *Task
 			if tc.standalone {
 				task = newTask(root, cfg, typeSequence, "standalone explicit grok", t.TempDir(), []string{"implement"}, 1)
@@ -389,6 +396,7 @@ func TestRunTaskGrokUnknownOutcomeHoldsDespiteCompetingDiagnostics(t *testing.T)
 }
 
 func TestRunTaskGrokCompleteMetadataOnlyMissingEndDoesNotAuthorizeFallback(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, productCalls := fakeGrokBuildCounted(t, `{"type":"system.version","version":"1.0.5"}`, "", 1)
 	cfg := policyTestConfig()
@@ -555,11 +563,12 @@ func assertGrokProcessTerminalResult(t *testing.T, res *claudeResult, combined s
 }
 
 func TestInvokeGrokBuildZeroEventProcessTerminals(t *testing.T) {
+	t.Parallel()
 	for _, tc := range grokZeroEventProcessFixtures() {
 		t.Run(tc.name, func(t *testing.T) {
 			bin, productCalls := fakeGrokBuildCounted(t, tc.payload, tc.stderr, tc.exitCode)
 			cfg := grokBuildTestConfig(t, bin)
-			task := &Task{ID: "grok-process-invoke", Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
+			task := &Task{ID: uniqueTaskID("grok-process-invoke"), Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
 			root := admitDirectInvoke(t, "", task)
 			res, combined, err := invokeGrokBuild(context.Background(), root, cfg, task, "harmless prompt")
 			if n := countProductCalls(t, productCalls); n != 1 {
@@ -698,13 +707,16 @@ func assertGrokProcessTerminalHeld(t *testing.T, root string, task *Task, produc
 }
 
 func TestRunTaskGrokZeroEventProcessTerminalsHeld(t *testing.T) {
+	t.Parallel()
 	for _, tc := range grokZeroEventProcessFixtures() {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			root := testRoot(t)
 			bin, productCalls := fakeGrokBuildCounted(t, tc.payload, tc.stderr, tc.exitCode)
 			cfg := policyTestConfig()
 			cfg.GrokBuildBin = bin
 			cfg.MaxAttempts = 3
+			isolateGrokLifecycleHome(t, cfg)
 			task := ownerBackendGrokTask(t, root, cfg, t.TempDir())
 			if err := saveTask(root, task); err != nil {
 				t.Fatal(err)
@@ -718,6 +730,7 @@ func TestRunTaskGrokZeroEventProcessTerminalsHeld(t *testing.T) {
 }
 
 func TestRunTaskGrokZeroEventQuotaRemainsUnchanged(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, productCalls := fakeGrokBuildCounted(t, `{"type":"system.version","version":"1.0.5"}`, grokTerminalQuotaDiagnostic, 1)
 	cfg := policyTestConfig()
@@ -746,6 +759,7 @@ func TestRunTaskGrokZeroEventQuotaRemainsUnchanged(t *testing.T) {
 }
 
 func TestGrokBuildNormalizedProcessExitStatus(t *testing.T) {
+	t.Parallel()
 	cmd := exec.Command("/bin/sh", "-c", "exit 7")
 	err := cmd.Run()
 	if got := grokBuildNormalizedProcessExitStatus(err); got != "7" {
@@ -764,6 +778,7 @@ func TestGrokBuildNormalizedProcessExitStatus(t *testing.T) {
 }
 
 func TestGrokBuildUnclassifiedProcessMetadataDeterministicAndBounded(t *testing.T) {
+	t.Parallel()
 	runErr := exec.Command("/bin/sh", "-c", "exit 7").Run()
 	var exitErr *exec.ExitError
 	if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != 7 {
@@ -804,6 +819,7 @@ func TestGrokBuildUnclassifiedProcessMetadataDeterministicAndBounded(t *testing.
 }
 
 func TestGrokBuildUnclassifiedProcessMetadataRequiresPositiveExit(t *testing.T) {
+	t.Parallel()
 	signalErr := exec.Command("/bin/sh", "-c", "kill -9 $$").Run()
 	for _, tc := range []struct {
 		name       string
@@ -831,6 +847,7 @@ func TestGrokBuildUnclassifiedProcessMetadataRequiresPositiveExit(t *testing.T) 
 }
 
 func TestGrokTerminalUnknownOutcomeProcessClassesAreNotUnknown(t *testing.T) {
+	t.Parallel()
 	for _, subtype := range []string{
 		"grok_build_process_transport",
 		"grok_build_process_permission_environment",
@@ -847,6 +864,7 @@ func TestGrokTerminalUnknownOutcomeProcessClassesAreNotUnknown(t *testing.T) {
 }
 
 func TestRunTaskGrokValidEndTurnRemainsSuccessful(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	payload := `{"type":"text","data":"OK"}` + "\n" +
 		`{"type":"end","stopReason":"end_turn","sessionId":"session-ok","num_turns":1}`
@@ -953,6 +971,7 @@ func grokProcessScannerOverflowLine() string {
 }
 
 func TestClassifyGrokBuildProcessStderrClosedMultilinePolicy(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		stderr    string
@@ -1024,6 +1043,7 @@ func TestClassifyGrokBuildProcessStderrClosedMultilinePolicy(t *testing.T) {
 }
 
 func TestInvokeGrokBuildLaterBoundedProcessDiagnostic(t *testing.T) {
+	t.Parallel()
 	laterTransport := grokZeroEventProcessFixture{
 		name: "later-line transport", stderr: grokProcessLaterLineStderr(grokTerminalTransportDiagnostic),
 		exitCode: 1, wantSubtype: "grok_build_process_transport",
@@ -1041,7 +1061,7 @@ func TestInvokeGrokBuildLaterBoundedProcessDiagnostic(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			bin, productCalls := fakeGrokBuildCounted(t, tc.payload, tc.stderr, tc.exitCode)
 			cfg := grokBuildTestConfig(t, bin)
-			task := &Task{ID: "grok-process-multiline", Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
+			task := &Task{ID: uniqueTaskID("grok-process-multiline"), Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
 			root := admitDirectInvoke(t, "", task)
 			res, combined, err := invokeGrokBuild(context.Background(), root, cfg, task, "harmless prompt")
 			if n := countProductCalls(t, productCalls); n != 1 {
@@ -1053,6 +1073,7 @@ func TestInvokeGrokBuildLaterBoundedProcessDiagnostic(t *testing.T) {
 }
 
 func TestInvokeGrokBuildLaterLineFailClosedEvidenceIsNotProcessClass(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		stderr string
@@ -1067,7 +1088,7 @@ func TestInvokeGrokBuildLaterLineFailClosedEvidenceIsNotProcessClass(t *testing.
 		t.Run(tc.name, func(t *testing.T) {
 			bin, productCalls := fakeGrokBuildCounted(t, `{"type":"system.version","version":"1.0.5"}`, tc.stderr, 1)
 			cfg := grokBuildTestConfig(t, bin)
-			task := &Task{ID: "grok-process-fail-closed", Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
+			task := &Task{ID: uniqueTaskID("grok-process-fail-closed"), Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
 			root := admitDirectInvoke(t, "", task)
 			res, _, err := invokeGrokBuild(context.Background(), root, cfg, task, "harmless prompt")
 			if n := countProductCalls(t, productCalls); n != 1 {
@@ -1087,6 +1108,7 @@ func TestInvokeGrokBuildLaterLineFailClosedEvidenceIsNotProcessClass(t *testing.
 }
 
 func TestRunTaskGrokLaterBoundedProcessDiagnosticHeld(t *testing.T) {
+	t.Parallel()
 	tc := grokZeroEventProcessFixture{
 		name: "later-line transport", stderr: grokProcessLaterLineStderr(grokTerminalTransportDiagnostic),
 		exitCode: 1, wantSubtype: "grok_build_process_transport",
@@ -1109,6 +1131,7 @@ func TestRunTaskGrokLaterBoundedProcessDiagnosticHeld(t *testing.T) {
 }
 
 func TestRunTaskGrokIncompleteStdoutProcessDiagnosticNotPromoted(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, productCalls := fakeGrokBuildCounted(t, grokTerminalMalformedPayload,
 		grokProcessLaterLineStderr(grokTerminalTransportDiagnostic), 1)
@@ -1202,6 +1225,7 @@ func assertGrokZeroEventFailClosedNotProcessClass(t *testing.T, res *claudeResul
 }
 
 func TestInvokeGrokBuildFullStreamFailClosedEvidence(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name            string
 		stderr          string
@@ -1246,7 +1270,7 @@ func TestInvokeGrokBuildFullStreamFailClosedEvidence(t *testing.T) {
 				bin, productCalls = fakeGrokBuildCounted(t, grokProcessVersionOnlyStdout, tc.stderr, 1)
 			}
 			cfg := grokBuildTestConfig(t, bin)
-			task := &Task{ID: "grok-process-full-stream", Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
+			task := &Task{ID: uniqueTaskID("grok-process-full-stream"), Type: typeSequence, Dir: t.TempDir(), PreferRunner: grokBuildRunnerName}
 			root := admitDirectInvoke(t, "", task)
 			res, _, err := invokeGrokBuild(context.Background(), root, cfg, task, "harmless prompt")
 			if n := countProductCalls(t, productCalls); n != 1 {
@@ -1264,6 +1288,7 @@ func TestInvokeGrokBuildFullStreamFailClosedEvidence(t *testing.T) {
 }
 
 func TestRunTaskGrokJSONPastWindowRemainsUnknownOutcome(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		stderr string
@@ -1313,6 +1338,7 @@ func TestRunTaskGrokJSONPastWindowRemainsUnknownOutcome(t *testing.T) {
 }
 
 func TestRunTaskGrokStallPastWindowIsNotProcessHold(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, productCalls := fakeGrokBuildCounted(t, grokProcessVersionOnlyStdout,
 		grokProcessBlankLineBoundStderr(grokTerminalStallDiagnostic), 1)
@@ -1370,6 +1396,7 @@ func TestRunTaskGrokStallPastWindowIsNotProcessHold(t *testing.T) {
 }
 
 func TestRunTaskGrokScannerOverflowRemainsFailClosed(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, productCalls := fakeGrokBuildCountedStderrFile(t, grokProcessVersionOnlyStdout, grokProcessScannerOverflowLine(), 1)
 	cfg := policyTestConfig()
@@ -1395,7 +1422,8 @@ func TestRunTaskGrokScannerOverflowRemainsFailClosed(t *testing.T) {
 }
 
 func TestCardexReleaseIdentity(t *testing.T) {
-	if version != "0.10.17" {
-		t.Fatalf("release identity %q want 0.10.17", version)
+	t.Parallel()
+	if version != "0.10.18" {
+		t.Fatalf("release identity %q want 0.10.18", version)
 	}
 }

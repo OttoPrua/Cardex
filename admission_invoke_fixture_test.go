@@ -1,9 +1,17 @@
 package main
 
 import (
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+var testTaskIDSeq atomic.Int64
+
+func uniqueTaskID(prefix string) string {
+	return fmt.Sprintf("%s-%d", prefix, testTaskIDSeq.Add(1))
+}
 
 // admitDirectInvoke is the test-only seam for legacy direct provider/review-copy
 // fixtures. Production remains fail-closed: a nonempty taskID with no taskExecRoot

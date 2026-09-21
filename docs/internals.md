@@ -18,7 +18,7 @@
 
 - 步骤执行中撞限额：任务标记 `limit_paused` 并记录 `mid_step`。到点续跑时不会重发原 prompt，而是向**同一个会话**发送续跑提示（`config.json` 的 `resume_prompt`），让 Claude 从中断处接着做，避免重复劳动。
 - 每一步成功后立刻落盘（任务文件原子写入），进程被杀也不丢进度。
-- 单实例锁（`.lock`）保证 launchd 的多次触发不会并发跑任务；持锁进程死掉会自动清锁。
+- 单实例锁（`.lock`）保证 launchd 的多次触发不会并发跑任务；持锁进程死掉会自动清锁。`cardex run -root ROOT ID` 在锁被占用且该 ID 未派发时必须非 0 退出（排队卡保持 queued，不是静默成功）。无 ID 的 tick 在持锁时仍跳过本轮（exit 0）；拿到锁后仍会排空全部就绪卡——只启动一张卡必须带 ID。
 - 其他错误（网络、超时等）按 `retry_backoff_min` 退避重试，超过 `max_attempts_per_step` 次标记失败，`cardex retry <id>` 可带着会话与进度重新入队。
 
 ## 失败分类分流（CG-3）

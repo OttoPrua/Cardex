@@ -15,6 +15,7 @@ import (
 )
 
 func TestResolveCodexModel(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{
 		CodexModel:                 "global-sol",
 		CodexFallbackModel:         "fb-terra",
@@ -87,6 +88,7 @@ func TestResolveCodexModel(t *testing.T) {
 }
 
 func TestDefaultTaskTypesReserveFableForExplicitAdjudication(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("")
 	cases := []struct {
 		typ           string
@@ -121,6 +123,7 @@ func TestDefaultTaskTypesReserveFableForExplicitAdjudication(t *testing.T) {
 }
 
 func TestDefaultConfigKeepsLowStakesOpusOnSolXHigh(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("")
 	task := &Task{Model: "claude-opus-5", Stakes: stakesLow}
 	if got := resolveCodexModel(cfg, task); got != "gpt-5.6-sol" {
@@ -157,6 +160,7 @@ func fakeSSHArgvCapture(t *testing.T, capture string) string {
 
 // 解析结果必须真的穿线到 codex argv 的 -m——只测 resolve 不测穿线，改坏调用点不会红。
 func TestInvokeCodexThreadsResolvedModel(t *testing.T) {
+	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "argv.txt")
 	cfg := defaultConfig("")
 	cfg.CodexBin = fakeCodexArgvCapture(t, capture)
@@ -223,6 +227,7 @@ func TestInvokeCodexThreadsResolvedModel(t *testing.T) {
 }
 
 func TestInvokeRemoteCodexThreadsResolvedReasoning(t *testing.T) {
+	t.Parallel()
 	capture := filepath.Join(t.TempDir(), "ssh-argv.txt")
 	cfg := defaultConfig("")
 	cfg.SSHBin = fakeSSHArgvCapture(t, capture)
@@ -275,6 +280,7 @@ func TestInvokeRemoteCodexThreadsResolvedReasoning(t *testing.T) {
 
 // add 的 -codex-model 旗标：钉进任务 JSON 落盘；-model 与 -runner codex 互斥报错防误导。
 func TestAddCodexModelFlag(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "tasks"), 0o755); err != nil {
 		t.Fatal(err)
@@ -336,6 +342,7 @@ func TestAddCodexModelFlag(t *testing.T) {
 }
 
 func TestAddRejectsExplicitTierModelConflictUnderCodexDefault(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, dir := range []string{"tasks", "events", "archive", "logs", "templates"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
@@ -367,6 +374,7 @@ func TestAddRejectsExplicitTierModelConflictUnderCodexDefault(t *testing.T) {
 
 // emit 契约：协调器发的 codex 卡可带 codex_model（档位对等制按档发 terra/luna）。
 func TestEmitTaskCodexModelDecodes(t *testing.T) {
+	t.Parallel()
 	raw := `{"tasks":[{"title":"填充","runner":"codex","codex_model":"gpt-5.6-luna","prompt":"p"}]}`
 	ts := parseEmitTasks(raw)
 	if len(ts) != 1 {
@@ -378,6 +386,7 @@ func TestEmitTaskCodexModelDecodes(t *testing.T) {
 }
 
 func TestEnqueueEmittedRejectsExplicitRouteConflict(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := codexPrimaryTestConfig()
 	parent := &Task{ID: "parent", Dir: t.TempDir(), Project: "p"}
@@ -397,6 +406,7 @@ func TestEnqueueEmittedRejectsExplicitRouteConflict(t *testing.T) {
 }
 
 func TestDispatchEventDetailRecordsResolvedCodexRoute(t *testing.T) {
+	t.Parallel()
 	cfg := codexPrimaryTestConfig()
 	task := &Task{
 		Runner: "codex", PreferRunner: "codex", Model: "sonnet", Effort: "max",
@@ -431,6 +441,7 @@ func TestDispatchEventDetailRecordsResolvedCodexRoute(t *testing.T) {
 }
 
 func TestEffectiveEffortShowsResolvedCodexReasoning(t *testing.T) {
+	t.Parallel()
 	cfg := codexPrimaryTestConfig()
 
 	opus := &Task{Model: "claude-opus-5", Effort: "high", PreferRunner: "codex"}

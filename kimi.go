@@ -196,15 +196,16 @@ type kimiCLIEvent struct {
 }
 
 const (
-	kimiCLISubtypeUnmatchedTool    = "kimi_cli_unmatched_tool_id"
-	kimiCLISubtypeDuplicateTool    = "kimi_cli_duplicate_tool_id"
-	kimiCLISubtypeMissingFinal     = "kimi_cli_missing_final"
-	kimiCLISubtypeAfterHint        = "kimi_cli_semantic_after_hint"
-	kimiCLISubtypeInvalidPostamble = "kimi_cli_invalid_completion_postamble"
-	kimiCLISubtypeProcessExit      = "kimi_cli_process_exit"
-	kimiCLISubtypeProcessSignal    = "kimi_cli_process_signal"
-	kimiCLISubtypeProcessTimeout   = "kimi_cli_process_timeout"
-	kimiCLISubtypeProcessFailure   = "kimi_cli_process_failure"
+	kimiCLISubtypeUnmatchedTool      = "kimi_cli_unmatched_tool_id"
+	kimiCLISubtypeDuplicateTool      = "kimi_cli_duplicate_tool_id"
+	kimiCLISubtypeMissingFinal       = "kimi_cli_missing_final"
+	kimiCLISubtypeAfterHint          = "kimi_cli_semantic_after_hint"
+	kimiCLISubtypeInvalidPostamble   = "kimi_cli_invalid_completion_postamble"
+	kimiCLISubtypeProtocolIncomplete = "kimi_cli_protocol_incomplete"
+	kimiCLISubtypeProcessExit        = "kimi_cli_process_exit"
+	kimiCLISubtypeProcessSignal      = "kimi_cli_process_signal"
+	kimiCLISubtypeProcessTimeout     = "kimi_cli_process_timeout"
+	kimiCLISubtypeProcessFailure     = "kimi_cli_process_failure"
 )
 
 func kimiCLIContentText(raw json.RawMessage) string {
@@ -305,19 +306,42 @@ func kimiCLIResumeHintValid(ev kimiCLIEvent, content string, structured bool) bo
 		strings.TrimSpace(content) != "" && !structured
 }
 
-// Kimi 0.41's legacy agent-core stream closes an ordinary print with one
-// session.resume_hint containing the resumable identity. Older observed
-// streams did not have that postamble, so their compatibility path remains
-// deliberately narrow instead of treating every assistant message as EOT.
+// kimiCLICompletionContract records whether a stream version is recognized.
+// Any present version string is known: 0.42 and unknown versions are not
+// invalid_completion_postamble solely for the version. Empty version is not
+// known. 0.41 resume_hint is optional (requiresHint is always false).
 func kimiCLICompletionContract(version, engine string) (requiresHint, known bool) {
 	switch version {
 	case "0.35.0", "0.36.1", "0.37.2":
 		return false, engine == kimiEngineLegacy
 	case "0.41", "0.41.0":
-		return true, engine == kimiEngineLegacy
+		return false, engine == kimiEngineLegacy
 	default:
-		return false, false
+		return false, strings.TrimSpace(version) != ""
 	}
+}
+
+func taskIsReviewOrText(t *Task) bool {
+	return t != nil && (t.Type == typeReview || t.Type == typeProgressPull)
+}
+
+// nativeReviewTextConsumable reports whether a review/text card may consume a
+// nonempty Result even when the stream is protocol_incomplete. Open/unpaired
+// tools and process failures stay fail-closed.
+func nativeReviewTextConsumable(t *Task, res *claudeResult) bool {
+	if t == nil || res == nil || !taskIsReviewOrText(t) {
+		return false
+	}
+	if res.IsError || strings.TrimSpace(res.Result) == "" {
+		return false
+	}
+	switch res.Subtype {
+	case kimiCLISubtypeUnmatchedTool, kimiCLISubtypeDuplicateTool, kimiCLISubtypeMissingFinal,
+		kimiCLISubtypeProcessExit, kimiCLISubtypeProcessSignal, kimiCLISubtypeProcessTimeout,
+		kimiCLISubtypeProcessFailure, kimiCLISubtypeAfterHint, kimiCLISubtypeInvalidPostamble:
+		return false
+	}
+	return res.Subtype == kimiCLISubtypeProtocolIncomplete
 }
 
 func parseKimiCLIJSONL(raw string) *claudeResult {
@@ -372,7 +396,7 @@ func parseKimiCLIJSONLForEngine(raw, engine string) *claudeResult {
 			// Only the current assistant message can own the final response. A later
 			// missing, reasoning-only or tool message invalidates the earlier candidate.
 			finalOutput, finalMessage, finalAfterTools = "", false, false
-			if typ != "" && typ != "assistant" {
+			if typ != "" && typ != "assistant" && typ != "message" {
 				res.ObservationComplete = false
 			}
 			// Any assistant event proves model work even when its content is reasoning/tool metadata
@@ -446,6 +470,9 @@ func parseKimiCLIJSONLForEngine(raw, engine string) *claudeResult {
 				res.Result = string(ev.Error)
 			}
 		}
+		if role != "assistant" && typ == "plan" && output != "" {
+			lastAssistant = output
+		}
 		presemanticMeta := role == "meta" && (typ == "system.version" || typ == "system.init" || typ == "session.init" || typ == "session.resume_hint" || typ == "start")
 		if role == "meta" && typ == "system.version" {
 			if res.SemanticEvents > 0 || res.ToolEvents > 0 || sawHint {
@@ -486,18 +513,19 @@ func parseKimiCLIJSONLForEngine(raw, engine string) *claudeResult {
 		res.ObservationComplete = false
 		kimiCLINoteSubtype(res, kimiCLISubtypeUnmatchedTool)
 	}
+	if version != "" {
+		res.NativeVersion = version
+	}
+	// versionCount==1 is not a hard invalidation of nonempty Result. Missing or
+	// extra version events leave the stream protocol_incomplete so review/text
+	// can still consume last assistant/plan text.
 	if versionCount != 1 {
 		res.ObservationComplete = false
-		kimiCLINoteSubtype(res, kimiCLISubtypeInvalidPostamble)
-	}
-	if _, known := kimiCLICompletionContract(version, engine); known {
-		res.NativeVersion = version
-	} else {
-		res.NativeVersion = "unsupported"
+		kimiCLINoteSubtype(res, kimiCLISubtypeProtocolIncomplete)
 	}
 	if requiresHint, known := kimiCLICompletionContract(version, engine); !known {
 		res.ObservationComplete = false
-		kimiCLINoteSubtype(res, kimiCLISubtypeInvalidPostamble)
+		kimiCLINoteSubtype(res, kimiCLISubtypeProtocolIncomplete)
 	} else if requiresHint && (hintCount != 1 || validHintCount != 1) {
 		res.ObservationComplete = false
 		kimiCLINoteSubtype(res, kimiCLISubtypeInvalidPostamble)
@@ -505,7 +533,7 @@ func parseKimiCLIJSONLForEngine(raw, engine string) *claudeResult {
 	if !res.IsError && finalMessage && openTools == 0 && (!sawTool || finalAfterTools) && res.ObservationComplete {
 		res.TerminalEvents = 1
 		res.FinalReason = "final_assistant_eof"
-		if version == "0.41" || version == "0.41.0" {
+		if (version == "0.41" || version == "0.41.0") && validHintCount == 1 {
 			res.FinalReason = "session.resume_hint"
 		}
 		res.Result = finalOutput

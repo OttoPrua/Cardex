@@ -58,6 +58,7 @@ func mkReviewTask(t *testing.T, root string, cfg *Config, impl *Task) *Task {
 }
 
 func TestParseReviewVerdict(t *testing.T) {
+	t.Parallel()
 	v := parseReviewVerdict(reviewReport)
 	if v == nil || v.Verdict != "concerns" || len(v.P0) != 1 || len(v.P1) != 1 {
 		t.Fatalf("verdict 解析失败: %+v", v)
@@ -78,6 +79,7 @@ func TestParseReviewVerdict(t *testing.T) {
 }
 
 func TestFixLoopConcernsEmitsFixCard(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -111,6 +113,7 @@ func TestFixLoopConcernsEmitsFixCard(t *testing.T) {
 }
 
 func TestFixLoopPassStops(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -124,6 +127,7 @@ func TestFixLoopPassStops(t *testing.T) {
 }
 
 func TestFixLoopPassEmitsCloseout(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -152,6 +156,7 @@ func TestFixLoopPassEmitsCloseout(t *testing.T) {
 }
 
 func TestFixLoopCloseoutInheritsThroughFix(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -173,6 +178,7 @@ func TestFixLoopCloseoutInheritsThroughFix(t *testing.T) {
 }
 
 func TestFixLoopRoundLimitEscalates(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg() // MaxFixRounds=0 → 默认 3
 	impl := mkImplTask(t, root, cfg)
@@ -210,6 +216,7 @@ func TestFixLoopRoundLimitEscalates(t *testing.T) {
 }
 
 func TestFixLoopTitleNoNesting(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -235,6 +242,7 @@ func TestFixLoopTitleNoNesting(t *testing.T) {
 }
 
 func TestFixLoopNoVerdictNoop(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)
@@ -247,6 +255,7 @@ func TestFixLoopNoVerdictNoop(t *testing.T) {
 }
 
 func TestFixLoopArchivedOrigStillWorks(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	impl := mkImplTask(t, root, cfg)

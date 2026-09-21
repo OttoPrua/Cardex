@@ -19,6 +19,7 @@ import (
 // 【突变致死】defaultStakesPolicy 的 high 档 MaxFixRounds 改成其它值 → 红；
 // low/normal 补上任何非 0 值 → 红（它们必须留 0 = 跟随全局，否则改全局配置对低档位失效）。
 func TestStakesDefaultMaxFixRoundsPinned(t *testing.T) {
+	t.Parallel()
 	p := defaultStakesPolicy()
 	if got := p[stakesHigh].MaxFixRounds; got != 1 {
 		t.Errorf("high 档内置 max_fix_rounds = %d, 应为 1（一次自动修复后转人裁）", got)
@@ -34,6 +35,7 @@ func TestStakesDefaultMaxFixRoundsPinned(t *testing.T) {
 // 【突变致死】applyStakes 改成只在 r.MaxFixRounds>0 时写卡面（低档位留 0 当哨兵）→ 全局改配置
 // 会让在队低档卡的上限静默漂移，本测试的 wantGlobalDrift 子例报红。
 func TestApplyStakesPinsMaxFixRounds(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		globalMax int
@@ -69,6 +71,7 @@ func TestApplyStakesPinsMaxFixRounds(t *testing.T) {
 // **所有 -stakes high 的卡静默失去强制复审**，账面无任何报错。反向同理：只写 default_effort 会把
 // 分档轮限打回 0（静默缩回全局 3）。护栏静默失效是本功能定义的最坏失败模式。
 func TestStakesRuleMaxFixRoundsFieldLevelFallback(t *testing.T) {
+	t.Parallel()
 	t.Run("只写 max_fix_rounds: review/effort 回落内置 high 档", func(t *testing.T) {
 		cfg := defaultConfig("claude")
 		cfg.StakesPolicy = map[string]StakesRule{stakesHigh: {MaxFixRounds: 6}}
@@ -114,6 +117,7 @@ func TestStakesRuleMaxFixRoundsFieldLevelFallback(t *testing.T) {
 
 // TestApplyStakesRejectsNegativeMaxFixRounds：写错的表在 add 当场报错，不静默按默认放行。
 func TestApplyStakesRejectsNegativeMaxFixRounds(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig("claude")
 	cfg.StakesPolicy = map[string]StakesRule{stakesHigh: {Review: stakesReviewOn, MaxFixRounds: -1}}
 	if err := applyStakes(&Task{}, cfg, stakesHigh, false); err == nil {
@@ -124,6 +128,7 @@ func TestApplyStakesRejectsNegativeMaxFixRounds(t *testing.T) {
 // TestLoadConfigPartialHighTierKeepsWidenedRounds 走真实 config.json → loadConfig → add 的整条路。
 // 单测 stakesRule 只证函数，这条证"用户真这么写"时分档轮限还在。
 func TestLoadConfigPartialHighTierKeepsWidenedRounds(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	body := `{"claude_bin":"claude","stakes_policy":{"high":{"default_effort":"xhigh"}}}`
 	if err := os.WriteFile(filepath.Join(root, "config.json"), []byte(body), 0o644); err != nil {
@@ -154,6 +159,7 @@ func TestLoadConfigPartialHighTierKeepsWidenedRounds(t *testing.T) {
 // 【突变致死】把 runner 的 taskMaxFixRounds(orig,…) 换回 cfg.MaxFixRounds，会让所有自定义钉值
 // 子例报红。
 func TestFixLoopHonorsPinnedRoundLimit(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		pinnedRounds int
@@ -221,6 +227,7 @@ func TestFixLoopHonorsPinnedRoundLimit(t *testing.T) {
 // TestFixLoopLegacyCardFallsBackToGlobal：本改动之前入队的存量卡（卡面 max_fix_rounds=0）
 // 必须继续按全局值截断，不能因为读不到卡面值就变成"无上限"。
 func TestFixLoopLegacyCardFallsBackToGlobal(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	cfg.MaxFixRounds = 2

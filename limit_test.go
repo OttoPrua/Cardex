@@ -11,6 +11,7 @@ import (
 )
 
 func TestIsLimitHitPhrasings(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		text string
@@ -33,6 +34,7 @@ func TestIsLimitHitPhrasings(t *testing.T) {
 }
 
 func TestIsLimitHitGuardsOnSuccess(t *testing.T) {
+	t.Parallel()
 	// 成功结果里出现限额字样（如任务产出讨论限额机制）不得误判为限额命中。
 	res := &claudeResult{Type: "result", Subtype: "success", IsError: false,
 		Result: "本工具围绕 usage limit 做队列调度……"}
@@ -42,6 +44,7 @@ func TestIsLimitHitGuardsOnSuccess(t *testing.T) {
 }
 
 func TestParseResetEpochClockPhrase(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{LimitFallbackMin: 30, CooldownMarginSec: 90}
 	loc := time.FixedZone("UTC+8", 8*3600)
 	now := time.Date(2026, 7, 10, 18, 47, 0, 0, loc)
@@ -83,6 +86,7 @@ func TestParseResetEpochClockPhrase(t *testing.T) {
 // 26h 静默(远端全 stopping);本机 claude 径还写全局冷却停摆所有 claude 泳道。
 // 【反例】把 isLimitHit 里 `!res.ResultFromTranscript` 条件去掉(直接拼), 本测试报红。
 func TestIsLimitHitIgnoresResultFromTranscript(t *testing.T) {
+	t.Parallel()
 	res := &claudeResult{
 		Type: "result", IsError: true,
 		Result:               "审查引用:文档提到 You've reached your usage limit 措辞",
@@ -109,6 +113,7 @@ func TestIsLimitHitIgnoresResultFromTranscript(t *testing.T) {
 // 【反例】把 runTask 里 `isLimitHitClaude(res, combined)` 回退成 `isLimitHit(res, combined)`,
 // 本测试报红——限额被误命中。
 func TestIsLimitHitClaudeSkipsStdoutJSONTranscript(t *testing.T) {
+	t.Parallel()
 	// 模拟 claude --output-format json 半截 tool_use 消息:含 usage limit prose 但未闭合 result 对象.
 	// stderr 段为空. 组装形态 = stdout + "\n" + stderr.
 	stdout := `{"type":"assistant","message":{"content":[{"type":"text","text":"审查本仓 CG-3 提到 You've reached your usage limit 措辞"}]}`
@@ -141,6 +146,7 @@ func TestIsLimitHitClaudeSkipsStdoutJSONTranscript(t *testing.T) {
 // 【反例】把 stderrTailFromClaudeCombined 回退成 `strings.LastIndex(combined, "}")` 版本,
 // 本测试的 case A/B/D/E 会分别报红。
 func TestStderrTailFromClaudeCombinedBraceBoundary(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		combined string
@@ -236,6 +242,7 @@ func TestStderrTailFromClaudeCombinedBraceBoundary(t *testing.T) {
 // 期望行为")。新契约: prose 单行含 hardErr 措辞会被识别为限额(误报方向的可接受回退), 换真
 // 限额永不漏识别——见 runner.go isLimitHitCodex 注释「双向都是可接受回退」段。
 func TestIsLimitHitCodexScansAllCandidateLines(t *testing.T) {
+	t.Parallel()
 	res := &claudeResult{Type: "result", IsError: true, Subtype: "codex_error"}
 
 	// 场景 1 (P1-1 核心反例): transient 行在前 + 真限额行在后, 必须命中真限额。
@@ -277,6 +284,7 @@ func TestIsLimitHitCodexScansAllCandidateLines(t *testing.T) {
 // 跨天（周限额）措辞：实战 429 "resets Jul 16 at 1am"——旧 resetTimeRe 跨不过 "Jul 16 at"
 // → 落 30min 回退，每 30min 空转到真解冻。回归此坑。
 func TestParseResetEpochCrossDay(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{LimitFallbackMin: 30, CooldownMarginSec: 90}
 	loc := time.FixedZone("Asia/Shanghai", 8*3600)
 	now := time.Date(2026, 7, 13, 14, 23, 0, 0, loc)
@@ -323,6 +331,7 @@ func TestParseResetEpochCrossDay(t *testing.T) {
 // 返回空 → isLimitHitCodex=false; 反观 isLimitHitClaude 走 stderrTailFromClaudeCombined (无 `{`
 // 时退回全量) → limitRe 命中 → true。这样同一输入让两 wrapper 给相反答案, 路由错拿必测试红。
 func TestLimitHitForEngineRoutesByFlags(t *testing.T) {
+	t.Parallel()
 	combined := "session limit reached\n"
 	res := &claudeResult{Type: "result", IsError: true}
 
@@ -370,6 +379,7 @@ func TestLimitHitForEngineRoutesByFlags(t *testing.T) {
 // 【反例】把 parseResetEpoch 里 resetTryAgainRe/resetTryAgainDateOnlyRe 两段解析删掉（回退到
 // 修复前状态），本测试第一个 case 报红：resume 时间落在 31min 后而非 8 月 5 日。
 func TestParseResetEpochTryAgainAtPhrase(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{LimitFallbackMin: 31, CooldownMarginSec: 90}
 	loc := time.UTC
 	now := time.Date(2026, 7, 31, 3, 5, 0, 0, loc)
@@ -425,6 +435,7 @@ func TestParseResetEpochTryAgainAtPhrase(t *testing.T) {
 // 门槛去掉（或把完整形态分支里 `if !cand.After(now) { return ...LimitFallbackMin... }` 短回退删掉），
 // 本测试报红：返回值会变成 now+24h 而非 now+31min。
 func TestParseResetEpochTryAgainNearMissDoesNotOversleep(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{LimitFallbackMin: 31, CooldownMarginSec: 90}
 	loc := time.UTC
 	// 复撞重解析发生在真实重置点（12:00~12:09 之间某刻）之后几分钟：now=12:03。
@@ -459,6 +470,7 @@ func TestParseResetEpochTryAgainNearMissDoesNotOversleep(t *testing.T) {
 // 【反例】若未来给 resetDateRe 配一条无条件 "resets <month>" 宽松兜底（重现 P1-1 那种耦合），
 // 本测试会报红：返回值从 now+31min 变成某个远期兜底值。
 func TestParseResetEpochDateRecentlyPassedFallsBackShort(t *testing.T) {
+	t.Parallel()
 	cfg := &Config{LimitFallbackMin: 31, CooldownMarginSec: 90}
 	loc := time.UTC
 	now := time.Date(2026, 8, 5, 12, 3, 0, 0, loc)

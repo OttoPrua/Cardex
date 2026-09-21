@@ -33,6 +33,7 @@ func mkTombRoot(t *testing.T) string {
 // 连续 5 轮 inject 全部"crash"（返回错误 → 终稿未落盘），mock 计数总注入 ≤ 2；断言恰为 2。
 // 若代码没有上限，5 轮会跑满 5 次 inject → 该断言直接红。
 func TestInjectAtMostOnceCrashBoundedAtTwo(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	calls := 0
 	crash := func() error {
@@ -73,6 +74,7 @@ func TestInjectAtMostOnceCrashBoundedAtTwo(t *testing.T) {
 // TestInjectAtMostOnceSecondRoundZero 验收 #2（同一步连续两轮零注入）：
 // 第一轮 inject 成功、落 final;第二轮再调用 → skipped=true、inject 不调用、mock 计数不涨。
 func TestInjectAtMostOnceSecondRoundZero(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	calls := 0
 	ok := func() error { calls++; return nil }
@@ -105,6 +107,7 @@ func TestInjectAtMostOnceSecondRoundZero(t *testing.T) {
 // 向墓碑文件写入损坏字节 → 返回 corrupted=true(披露信号),inject 被调用(不静默跳过),
 // 落盘后文件重归有效 JSON。若代码把损坏当 final(静默跳过),第二个断言直接红。
 func TestInjectAtMostOnceCorruptedFileDisclosedNotSilent(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	// 手工造出损坏字节:半截 JSON,末尾无 } 也无 \n——极端场景模拟崩溃在 atomicWrite tmp→rename 之间。
 	if err := os.MkdirAll(tombstonesDir(root), 0o755); err != nil {
@@ -142,6 +145,7 @@ func TestInjectAtMostOnceCorruptedFileDisclosedNotSilent(t *testing.T) {
 // TestInjectAtMostOnceCrashThenRecoverySucceeds 补充覆盖:第一轮崩溃、第二轮成功 → 落 final,不再重派。
 // 是"bound=2 意味着允许一次崩溃后重试成功"的正向验证。
 func TestInjectAtMostOnceCrashThenRecoverySucceeds(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	calls := 0
 	// 第一次崩溃,后续成功
@@ -175,6 +179,7 @@ func TestInjectAtMostOnceCrashThenRecoverySucceeds(t *testing.T) {
 // 【反例】阶段 2 把 errTombstoneUnconsumedAbort 当普通 crash 留下 pending:两次 abort 即
 // attempt=2,第三次 skipped,成功注入进不去 → calls 远小于 6、账本停 pending(2)。
 func TestInjectAtMostOnceUnconsumedAbortRollsBackAndDoesNotCountAgainstBound(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	calls := 0
 	abort := func() error {
@@ -211,6 +216,7 @@ func TestInjectAtMostOnceUnconsumedAbortRollsBackAndDoesNotCountAgainstBound(t *
 // TestInjectAtMostOnceUnconsumedAbortRestoresPriorPending 先前一次真实崩溃留下 pending(1)
 // 后,预语义中止必须把账本恢复成 pending(1),不得删掉、也不得推进到 pending(2)。
 func TestInjectAtMostOnceUnconsumedAbortRestoresPriorPending(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	if skipped, _, err := injectAtMostOnce(root, "task-prior", "resume:0", func() error {
 		return errors.New("crash after semantic start")
@@ -244,6 +250,7 @@ func TestInjectAtMostOnceUnconsumedAbortRestoresPriorPending(t *testing.T) {
 // TestInjectAtMostOnceNilStillFinalizesAfterRealInject 对照:真正成功的 inject 仍必须升 final,
 // 预语义回滚不得把"return nil → final"这条 at-most-once 契约改掉。
 func TestInjectAtMostOnceNilStillFinalizesAfterRealInject(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	skipped, _, err := injectAtMostOnce(root, "task-real", "resume:0", func() error { return nil })
 	if err != nil || skipped {
@@ -276,6 +283,7 @@ func assertResumeKindAbsent(t *testing.T, root, id, kind string) {
 
 // TestInjectAtMostOnceKindsIndependent 不同 kind 的 bound 不能互相污染。
 func TestInjectAtMostOnceKindsIndependent(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	cnt1, cnt2 := 0, 0
 	// resume:0 崩满 bound
@@ -294,6 +302,7 @@ func TestInjectAtMostOnceKindsIndependent(t *testing.T) {
 
 // TestResetTombstoneKindClearsOne 验证 resetTombstoneKind 只清指定 kind,其他 kind 完好。
 func TestResetTombstoneKindClearsOne(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	// 让 resume:0 落 final、reconcile:cross 落 final
 	_, _, _ = injectAtMostOnce(root, "task-reset", "resume:0", func() error { return nil })
@@ -316,6 +325,7 @@ func TestResetTombstoneKindClearsOne(t *testing.T) {
 // TestResetTombstoneKindEmptyJournalRemovesFile 清空后应删整个墓碑文件,
 // 避免空 JSON({"entries":{}}) 长期残留占位。
 func TestResetTombstoneKindEmptyJournalRemovesFile(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	_, _, _ = injectAtMostOnce(root, "task-empty", "resume:0", func() error { return nil })
 	if _, err := os.Stat(tombstonePath(root, "task-empty")); err != nil {
@@ -331,6 +341,7 @@ func TestResetTombstoneKindEmptyJournalRemovesFile(t *testing.T) {
 
 // TestArchiveTaskTombstonesMovesFile 单元层验证归档函数搬迁墓碑到 archive/tombstones/。
 func TestArchiveTaskTombstonesMovesFile(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	_, _, _ = injectAtMostOnce(root, "task-arch", "resume:0", func() error { return nil })
 	if err := archiveTaskTombstones(root, "task-arch"); err != nil {
@@ -346,6 +357,7 @@ func TestArchiveTaskTombstonesMovesFile(t *testing.T) {
 
 // TestArchiveTaskAlsoArchivesTombstones 集成层:archiveTask 应把墓碑一并搬到 archive/tombstones/。
 func TestArchiveTaskAlsoArchivesTombstones(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	tk := newTask(root, cfg, typeSequence, "归档带墓碑", "/tmp", []string{"p"}, 5)
@@ -401,6 +413,7 @@ func TestRunTaskWritesResumeTombstoneOnMidStep(t *testing.T) {
 // TestRunTaskResetsResumeTombstoneOnFreshEntry 集成:两轮合法 limit 恢复 → 每轮 fresh entry
 // 都会 reset 上一轮的 resume 墓碑,业务不因 bound 被误跳过。
 func TestRunTaskResetsResumeTombstoneOnFreshEntry(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	// 先造出一份 resume:0 已达 bound 的墓碑(模拟上一轮撞过 bound)。
 	_, _, _ = injectAtMostOnce(root, "t-fresh", "resume:0", func() error { return errors.New("x") })
@@ -435,6 +448,7 @@ func TestRunTaskResetsResumeTombstoneOnFreshEntry(t *testing.T) {
 // 是把测试对准新的正确契约)。此外正常 cli retry 会调 resetTombstoneKind(reconcileCrossKind()),
 // 本测试用"手工强设 done 冒充复发"是极端反例场景,专门检验最后一道护栏。
 func TestReconcileCrossChainsGuardsAtMostOnce(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	// 造一张 done 的 A 孤儿卡(没有 B 后继)
@@ -522,6 +536,7 @@ func TestReconcileCrossChainsGuardsAtMostOnce(t *testing.T) {
 // TestReadTombstoneJournalIgnoresEmptyFile 空文件应等同于损坏字节(json 解析失败) → corrupted=true。
 // 保证 resetTombstoneKind 删完空文件的策略不会因残留 0 字节文件误导后续读取。
 func TestReadTombstoneJournalIgnoresEmptyFile(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	if err := os.MkdirAll(tombstonesDir(root), 0o755); err != nil {
 		t.Fatal(err)
@@ -541,6 +556,7 @@ func TestReadTombstoneJournalIgnoresEmptyFile(t *testing.T) {
 // TestArchiveTombstoneRoundtrip 联合测试:归档后墓碑文件搬到 archive/tombstones/,
 // 且原始账本内容与归档后一致(binary equal)。
 func TestArchiveTombstoneRoundtrip(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	_, _, _ = injectAtMostOnce(root, "task-round", "resume:1", func() error { return nil })
 	orig, err := os.ReadFile(tombstonePath(root, "task-round"))
@@ -565,6 +581,7 @@ func TestArchiveTombstoneRoundtrip(t *testing.T) {
 
 // TestInjectAtMostOnceEmptyIDNoOp 空 taskID 或空 kind 应静默跳过(caller 兜底不该走到这)。
 func TestInjectAtMostOnceEmptyIDNoOp(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	calls := 0
 	inc := func() error { calls++; return nil }
@@ -584,6 +601,7 @@ func TestInjectAtMostOnceEmptyIDNoOp(t *testing.T) {
 
 // TestTombstoneNonceMonotonic 墓碑 Nonce 应单调递增,便于人工审计时看清楚每次尝试的先后顺序。
 func TestTombstoneNonceMonotonic(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	// 让第一轮崩溃,pending 落一次 nonce
 	_, _, _ = injectAtMostOnce(root, "t-mono", "resume:0", func() error { return fmt.Errorf("x") })
@@ -603,6 +621,7 @@ func TestTombstoneNonceMonotonic(t *testing.T) {
 
 // 兜底:确保 tombstoneJournal 结构在 JSON 序列化后仍能被无损反序列化(防未来改字段名忘同步)。
 func TestTombstoneJournalRoundtripJSON(t *testing.T) {
+	t.Parallel()
 	j := tombstoneJournal{
 		Version: 1,
 		Entries: map[string]Tombstone{
@@ -637,6 +656,7 @@ func TestTombstoneJournalRoundtripJSON(t *testing.T) {
 // tombstone 清空 → inject 正常调 fakeClaude → 事件不再是 [dispatched, held] 而是 [dispatched,
 // step_ok(+ ...)] → 断言直接报红。
 func TestRunTaskHoldsWhenRunningSideTombstoneExhausted(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	claudeBin := fakeClaudeBin(t, mkOKResultJSON("sess-A"), "", 0)
 	cfg := runTaskCfg(t, claudeBin)
@@ -713,6 +733,7 @@ func TestRunTaskHoldsWhenRunningSideTombstoneExhausted(t *testing.T) {
 // 【为什么这两个测试要同一份墓碑构造】只测 running 侧不能证明"条件是 statusRunning";只测 limit_paused
 // 也不能证明差异。两个一起做才把承重分支的语义锁死:同墓碑、不同入场状态,恰好走不同路径。
 func TestRunTaskResetsAndInjectsWhenLimitPausedFreshEntry(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	claudeBin := fakeClaudeBin(t, mkOKResultJSON("sess-A"), "", 0)
 	cfg := runTaskCfg(t, claudeBin)
@@ -773,6 +794,7 @@ func TestRunTaskResetsAndInjectsWhenLimitPausedFreshEntry(t *testing.T) {
 // 【反例】把 runner.go 的 skipped 分支删掉(退回原 `_, corrupted, tombErr :=` 静默丢弃):
 // 卡留 status=done、零披露事件——本测试的 held 断言直接报红。
 func TestReconcileCrossChainsHoldsOnTombstoneSkipped(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	a := newTask(root, cfg, typeCrossCheck, "A孤儿-skipped 复活", "/tmp", []string{"p"}, 5)
@@ -831,6 +853,7 @@ func TestReconcileCrossChainsHoldsOnTombstoneSkipped(t *testing.T) {
 // 该卡仍是 done+孤儿 → reconcile 撞上时 injectAtMostOnce 返回 skipped=true(bound 耗尽) →
 // 期望:升级 held + emit 披露,不再无限 stderr 刷屏。
 func TestReconcileCrossChainsHoldsOnBoundExhausted(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	a := newTask(root, cfg, typeCrossCheck, "A孤儿-bound 耗尽", "/tmp", []string{"p"}, 5)
@@ -879,6 +902,7 @@ func TestReconcileCrossChainsHoldsOnBoundExhausted(t *testing.T) {
 // 【反例】去掉 main.go retry 分支的 resetTombstoneKind(reconcileCrossKind()) 那行:
 // 墓碑 final 保留 → 复活后的 A 卡再次成为孤儿会被 final 静默挡住,单腿 done 永久冒充可采信结果。
 func TestCmdRetryResetsReconcileCrossTombstone(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	a := newTask(root, cfg, typeCrossCheck, "retry-reset A", "/tmp", []string{"p"}, 5)
@@ -918,6 +942,7 @@ func TestCmdRetryResetsReconcileCrossTombstone(t *testing.T) {
 // 【反例】去掉 main.go release 分支的 resetTombstoneKind(reconcileCrossKind()) 那行:
 // 释放后墓碑仍 final/pending(2),孤儿再次撞 skipped 分支——本测试断言"释放后墓碑清空"直接报红。
 func TestCmdReleaseResetsReconcileCrossTombstone(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	a := newTask(root, cfg, typeCrossCheck, "release-reset A", "/tmp", []string{"p"}, 5)
@@ -961,6 +986,7 @@ func TestCmdReleaseResetsReconcileCrossTombstone(t *testing.T) {
 // 事件不再是 [..., failed] 而是 [..., held];回退 P1-1b → skipped 静默丢弃 → 卡还留 done、事件里
 // 完全无第二条 failed/held。
 func TestReconcileCrossChainsAfterRetryReAdjudicates(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	a := newTask(root, cfg, typeCrossCheck, "retry+reconcile 端到端", "/tmp", []string{"p"}, 5)
@@ -1034,6 +1060,7 @@ func TestReconcileCrossChainsAfterRetryReAdjudicates(t *testing.T) {
 // 【反例】把 injectAtMostOnce 阶段 3 的 "if !exists { return }" 删掉、回到 R1 的"attempt<newAttempt
 // 重建"路径,断言"reset 后墓碑清空"直接红——final 会以 attempt=newAttempt 重建条目.
 func TestInjectAtMostOnceFinalYieldsToConcurrentReset(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	calls := 0
 	inject := func() error {
@@ -1082,6 +1109,7 @@ func TestInjectAtMostOnceFinalYieldsToConcurrentReset(t *testing.T) {
 // 双方结局都被吞, "别人的 pending 被我们的 final 静默替换"的骗审现场重现. 本测试断言"nonce
 // 不匹配时不写 final", 回退即报红.
 func TestInjectAtMostOnceFinalYieldsOnNonceMismatch(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	otherInjectCalled := false
 	inject := func() error {
@@ -1127,6 +1155,7 @@ func TestInjectAtMostOnceFinalYieldsOnNonceMismatch(t *testing.T) {
 // 【反例】任何一处锁/让位分支被回退, 本测试要么断言"墓碑清空"报红 (final 重建了条目),
 // 要么阶段 3 竞态死锁 (锁未释放). 是对锁/让位组合修复的端到端守卫.
 func TestCmdRetryResetVsInjectAtMostOnceIsSerialized(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	a := newTask(root, cfg, typeCrossCheck, "R2 P1-1 端到端", "/tmp", []string{"p"}, 5)
@@ -1181,6 +1210,7 @@ func TestCmdRetryResetVsInjectAtMostOnceIsSerialized(t *testing.T) {
 // 【反例】把 archiveTaskTombstones 里的锁去掉, 本测试通过嵌套 archive 调用触发竞态 → 断言
 // "活动路径应不再存在"报红 (会存在一个只带 final 的新建活动文件).
 func TestArchiveTaskTombstonesSerializesAgainstWriters(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	inject := func() error {
 		// 阶段 2 窗口内 archive: 拿墓碑锁 → rename src→dst → 释锁.
@@ -1208,6 +1238,7 @@ func TestArchiveTaskTombstonesSerializesAgainstWriters(t *testing.T) {
 //
 // 【反例】把 archiveTaskTombstones 里的锁去掉, 断言"持锁期间 archive 不完成"立即报红.
 func TestArchiveTaskTombstonesBlocksOnLock(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	if err := os.MkdirAll(tombstonesDir(root), 0o755); err != nil {
 		t.Fatal(err)
@@ -1255,6 +1286,7 @@ func TestArchiveTaskTombstonesBlocksOnLock(t *testing.T) {
 //
 // 【反例】把 resetTombstoneKind 里的锁去掉, 本测试立即报红——reset 不等待, 立即完成.
 func TestResetTombstoneKindBlocksOnLock(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	if err := os.MkdirAll(tombstonesDir(root), 0o755); err != nil {
 		t.Fatal(err)
@@ -1297,6 +1329,7 @@ func TestResetTombstoneKindBlocksOnLock(t *testing.T) {
 // 【反例】把 injectAtMostOnce 阶段 1 的 acquireTombstoneLock 去掉 (仅留 mutex 或全去), 阶段 1 的
 // pending 写会在外部持锁窗口内落盘, 本测试即报红.
 func TestInjectAtMostOnceBlocksOnLockPhase1(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	if err := os.MkdirAll(tombstonesDir(root), 0o755); err != nil {
 		t.Fatal(err)
@@ -1356,6 +1389,7 @@ func TestInjectAtMostOnceBlocksOnLockPhase1(t *testing.T) {
 // 【反例】任何一处组件 (Link 变 O_EXCL / stale 判据放宽 / release 不核 PID) 回退, 都会打破
 // exclusive 语义 → 本测试会看到并发 acquire 立即成功而非等待.
 func TestAcquireTombstoneLockExcludesConcurrent(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	if err := os.MkdirAll(tombstonesDir(root), 0o755); err != nil {
 		t.Fatal(err)
@@ -1405,6 +1439,7 @@ func TestAcquireTombstoneLockExcludesConcurrent(t *testing.T) {
 // 若 release 无脑 Remove, 系统睡眠/挂起跨 5s TTL 唤醒后, 原持有者会误删强夺者的新锁 → 双持锁.
 // 手工制造"锁文件属于另一 PID"的场景, 断言 releaseTombstoneLock 不删.
 func TestReleaseTombstoneLockChecksPID(t *testing.T) {
+	t.Parallel()
 	root := mkTombRoot(t)
 	if err := os.MkdirAll(tombstonesDir(root), 0o755); err != nil {
 		t.Fatal(err)
@@ -1439,6 +1474,7 @@ func TestReleaseTombstoneLockChecksPID(t *testing.T) {
 // 【反例】把 runner.go 附近的 emitTaskEvent 挪回 saveTask 之后 (回到 R2 顺序), saveTask 失败
 // continue 直接吞掉 emit, 事件账本无 evHeld → 本测试断言报红.
 func TestReconcileSkippedHeldEmitsBeforeSave(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	a := newTask(root, cfg, typeCrossCheck, "R3 P1-1 held emit-first", "/tmp", []string{"p"}, 5)
@@ -1518,6 +1554,7 @@ func TestReconcileSkippedHeldEmitsBeforeSave(t *testing.T) {
 // 【反例】去掉 runner.go skipped 分支里的 loadTaskEvents 去重判据(直接 emit), 本测试会看到
 // 两条 evHeld → "恰 1 条" 断言直接报红.
 func TestReconcileHeldDedupesOnPersistentSaveFailure(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	a := newTask(root, cfg, typeCrossCheck, "CG-R1 held dedupe", "/tmp", []string{"p"}, 5)
@@ -1595,6 +1632,7 @@ func TestReconcileHeldDedupesOnPersistentSaveFailure(t *testing.T) {
 // 【反例】把 runner.go 闭包内 emit 挪回 saveTask 之后 (R2 顺序), saveTask 失败 return err 前
 // emit 没机会调用, 事件账本无 evFailed → 本测试断言报红.
 func TestReconcileFailedEmitsBeforeSave(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
 	a := newTask(root, cfg, typeCrossCheck, "R3 P1-1 failed emit-first", "/tmp", []string{"p"}, 5)
@@ -1642,6 +1680,7 @@ func TestReconcileFailedEmitsBeforeSave(t *testing.T) {
 // 【反例】把 runner.go resume 侧的 emitTaskEvent 挪到 return saveTask 之后, 或者删掉 emit 直接
 // return saveTask, 本测试立即报红.
 func TestResumeHeldSourceOrder(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("runner.go")
 	if err != nil {
 		t.Fatal(err)

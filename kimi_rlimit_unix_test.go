@@ -12,6 +12,7 @@ import (
 )
 
 func TestInvokeKimiCLIRejectsLowOpenFileLimitBeforeSpawn(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "spawned")
 	bin := filepath.Join(dir, "kimi")

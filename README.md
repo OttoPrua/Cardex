@@ -84,10 +84,10 @@ cardex board                 # Web 看板 http://127.0.0.1:8787
 
 `cardex workflow` 可以把两种拓扑落成耐久记录：绑定 `serial`/`federated` 模式、模块目标、写域、有界轮次和候选身份，并创建一张默认 held 的集成卡。带门的集成卡在 tick 派发与 `cardex release` 时都会**重新**核验独立审核 `verdict=pass`（`p0`/`p1` 皆空）、候选一致与 reviewer custody；durable review `done` 不够。每一步转移都是显式命令——tick 只读地咨询集成门，不自动推进 workflow。live 与 cutover 在本树没有释放路径。
 
-Goal 模式是「给目标，不是每一步」：设计节点只读（须绑定已完成的独立 Astra/Fable 设计任务或外部收据，不改变现有 `model=fable` Cursor 路由），执行阶段绑在同一张 Task 上连续诊断/实现/测试/修复。Grok 原生 `/goal` 是 `manual-only`：完整完成与同 session 重启已手工证明；自动协议与进行中的 pause/resume 仍未验证。`grok -p` 是单回合，不是 goal 证明。Kimi/Codex/Claude/Cursor/agy/OpenCode 有原生候选但适配器未证明，记为 `manual-only`/`unverified`，不是一律 unsupported；Gemini 仍拒绝。复制：
+Goal 模式是「给目标，不是每一步」：设计节点只读（须绑定已完成的独立设计任务（不限模型品牌）或外部收据，不改变现有 `model=fable` Cursor 路由），执行阶段绑在同一张 Task 上连续诊断/实现/测试/修复。Grok 原生 `/goal` 是 `manual-only`：完整完成与同 session 重启已手工证明；自动协议与进行中的 pause/resume 仍未验证。`grok -p` 是单回合，不是 goal 证明。Kimi/Codex/Claude/Cursor/agy/OpenCode 有原生候选但适配器未证明，记为 `manual-only`/`unverified`，不是一律 unsupported；Gemini 仍拒绝。复制：
 
 ```bash
-cardex workflow init ... -engine grok-build -design-receipt /path/to/astra-design.json
+cardex workflow init ... -engine grok-build -design-receipt /path/to/design-receipt.json
 cardex workflow writer <id> -mode manual
 cardex workflow goal-run <id> -manual -budget 350000
 # 在 Grok TUI（字面路径+摘要，不要 $(cat)；TUI 不是 shell）：

@@ -250,6 +250,7 @@ func wakeCrashAfterSuccessfulStartHelper(t *testing.T) {
 	thread := os.Getenv("CARDEX_WAKE_CRASH_THREAD")
 	mw := testWakeCfg(bin, "wake-proj", thread, "mgr")
 	managerWakeQueue = defaultManagerWakeQueue
+	managerWakeQueueTimeout = 15 * time.Second
 	managerWakeCrashAt = "after_start"
 	_ = managerWakeOnce(root, mw)
 	os.Exit(12)
@@ -262,6 +263,7 @@ func TestWakeStartingBoundaryBeforeStartCrashIsUncertain(t *testing.T) {
 		bin := os.Getenv("CARDEX_WAKE_CRASH_BIN")
 		thread := os.Getenv("CARDEX_WAKE_CRASH_THREAD")
 		managerWakeQueue = defaultManagerWakeQueue
+		managerWakeQueueTimeout = 15 * time.Second
 		managerWakeCrashAt = "after_starting"
 		_ = managerWakeOnce(root, testWakeCfg(bin, "wake-proj", thread, "mgr"))
 		os.Exit(12)
@@ -304,6 +306,7 @@ func TestWakeStartingBoundaryBeforeStartCrashIsUncertain(t *testing.T) {
 }
 
 func TestWakeStartingPhaseRestartDeliveryUncertainNoDuplicate(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "f6f6f6f6-f6f6-f6f6-f6f6-f6f6f6f6f6f6"
@@ -376,6 +379,7 @@ func TestWakePostStartQueueStartFailedTextIsNotDefinitePreSpawnFailure(t *testin
 }
 
 func TestWakeOutgoingTaskIDMustBeExactCanonical(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "ffffffff-ffff-ffff-ffff-fffffffffff1"
@@ -431,6 +435,7 @@ func TestWakeOutgoingTaskIDMustBeExactCanonical(t *testing.T) {
 }
 
 func TestWakeOutgoingTaskIDDuplicateAliasRejected(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1"
@@ -463,6 +468,7 @@ func TestWakeOutgoingTaskIDDuplicateAliasRejected(t *testing.T) {
 }
 
 func TestWakeTraversalTaskIDMustNotCreateEscapedLockOrQueue(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2"
@@ -745,6 +751,7 @@ func assertStartingInflightDoesNotDuplicateDestination(t *testing.T, root, logPa
 }
 
 func TestWakeStartingInflightNotSeededIntoDestinationDedupeOverlapOrder(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "7b7b7b7b-7b7b-7b7b-7b7b-7b7b7b7b7b01"
@@ -759,6 +766,7 @@ func TestWakeStartingInflightNotSeededIntoDestinationDedupeOverlapOrder(t *testi
 }
 
 func TestWakeStartingInflightDisabledOriginDestinationDedupe(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "7b7b7b7b-7b7b-7b7b-7b7b-7b7b7b7b7b02"
@@ -773,6 +781,7 @@ func TestWakeStartingInflightDisabledOriginDestinationDedupe(t *testing.T) {
 }
 
 func TestWakeStartingInflightRemovedOriginDestinationDedupe(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "7b7b7b7b-7b7b-7b7b-7b7b-7b7b7b7b7b03"
@@ -787,6 +796,7 @@ func TestWakeStartingInflightRemovedOriginDestinationDedupe(t *testing.T) {
 }
 
 func TestWakeStartingInflightCanonicalThreadAliasDestinationDedupe(t *testing.T) {
+	t.Parallel()
 	const canonical = "7b7b7b7b-7b7b-41b4-a1b4-7b7b7b7b7b04"
 	const alias = "7B7B7B7B-7B7B-41B4-A1B4-7B7B7B7B7B04"
 	cases := []struct {
@@ -818,6 +828,7 @@ func TestWakeStartingInflightCanonicalThreadAliasDestinationDedupe(t *testing.T)
 }
 
 func TestWakeClaimedInflightDoesNotSuppressOverlappingFirstDelivery(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "7b7b7b7b-7b7b-7b7b-7b7b-7b7b7b7b7b05"
@@ -849,6 +860,7 @@ func TestWakeClaimedInflightDoesNotSuppressOverlappingFirstDelivery(t *testing.T
 }
 
 func TestWakeMalformedInflightInventoryFailsClosedBeforeQueue(t *testing.T) {
+	t.Parallel()
 	thread := "7b7b7b7b-7b7b-7b7b-7b7b-7b7b7b7b7b06"
 	cases := []struct {
 		name  string
@@ -1113,6 +1125,7 @@ func TestWakeClaimedOriginRetryAfterSiblingReceiptRemovalDoesNotDuplicate(t *tes
 }
 
 func TestWakeClaimedOriginWithoutDestinationDeliveryRemainsFirstDeliveryEligible(t *testing.T) {
+	t.Parallel()
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	thread := "7b7b7b7b-7b7b-7b7b-7b7b-7b7b7b7b7b09"

@@ -108,6 +108,17 @@ func writeAstraDesignReceiptWith(t *testing.T, extra map[string]any) string {
 	for k, v := range extra {
 		rec[k] = v
 	}
+	if _, supplied := rec["result_path"]; !supplied {
+		result := filepath.Join(t.TempDir(), "design.md")
+		body, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(result, append([]byte("Synthetic independent design fixture for these inputs:\n"), body...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		rec["result_path"] = result
+	}
 	path := filepath.Join(t.TempDir(), "astra-design.json")
 	raw, err := json.MarshalIndent(rec, "", "  ")
 	if err != nil {
@@ -217,6 +228,7 @@ func headlessGoalStdin(t *testing.T) *os.File {
 			panic(err)
 		}
 		headlessGoalStdinFile = r
+		goalLaunchStdin = r
 		_ = w
 	})
 	return headlessGoalStdinFile
@@ -224,7 +236,7 @@ func headlessGoalStdin(t *testing.T) *os.File {
 
 func runManualGoalLaunch(t *testing.T, root string, cfg *Config, wf *WorkflowRecord, budget int64) error {
 	t.Helper()
-	goalLaunchStdin = headlessGoalStdin(t)
+	headlessGoalStdin(t)
 	return launchManualWorkflowGoal(root, cfg, wf, budget)
 }
 
@@ -302,6 +314,7 @@ func captureWorkflowShow(t *testing.T, root, id string) map[string]any {
 }
 
 func TestOrdinaryCardsWithoutGoalFieldsRemainEligible(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	queued := &Task{Status: statusQueued, CreatedAt: now.Format(time.RFC3339)}
 	applyControlDefaults(queued)
@@ -324,6 +337,7 @@ func TestOrdinaryCardsWithoutGoalFieldsRemainEligible(t *testing.T) {
 }
 
 func TestManualActivePausedUnknownGoalExcludedFromEligibleAndAutoResume(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	ordinary := &Task{ID: "ord", Status: statusQueued, Priority: 1, CreatedAt: now.Add(-time.Hour).Format(time.RFC3339)}
 	applyControlDefaults(ordinary)
@@ -347,6 +361,7 @@ func TestManualActivePausedUnknownGoalExcludedFromEligibleAndAutoResume(t *testi
 }
 
 func TestDuplicateGoalWriterAdmissionRejected(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -368,6 +383,7 @@ func TestDuplicateGoalWriterAdmissionRejected(t *testing.T) {
 }
 
 func TestNativeWriterRefusedWhenAutomaticUnproven(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -382,6 +398,7 @@ func TestNativeWriterRefusedWhenAutomaticUnproven(t *testing.T) {
 }
 
 func TestGoalWriterRequiresIndependentDesignProof(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -409,6 +426,7 @@ func TestGoalWriterRequiresIndependentDesignProof(t *testing.T) {
 }
 
 func TestGoalWriteDomainsOverlapFailClosedAndDisjointDoNot(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -438,6 +456,7 @@ func TestGoalWriteDomainsOverlapFailClosedAndDisjointDoNot(t *testing.T) {
 }
 
 func TestGoalSyncIdempotentAndRejectsStaleIdentities(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -497,6 +516,7 @@ func TestGoalSyncIdempotentAndRejectsStaleIdentities(t *testing.T) {
 }
 
 func TestD3GenuineAchievedZeroRoundsAcceptedWithAttempt(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -529,6 +549,7 @@ func TestD3GenuineAchievedZeroRoundsAcceptedWithAttempt(t *testing.T) {
 }
 
 func TestD3MissingAttemptMustNotBecomeDone(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -562,6 +583,7 @@ func TestD3MissingAttemptMustNotBecomeDone(t *testing.T) {
 }
 
 func TestD3CorruptTailMustInvalidateNativeEvidence(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	cwd := t.TempDir()
 	sid := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
@@ -584,6 +606,7 @@ func TestD3CorruptTailMustInvalidateNativeEvidence(t *testing.T) {
 }
 
 func TestD3InventedClassifierAliasesDoNotProveDone(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	cwd := t.TempDir()
 	sid := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
@@ -638,6 +661,7 @@ func TestD3InventedClassifierAliasesDoNotProveDone(t *testing.T) {
 }
 
 func TestD3BudgetLimitedNotAchievedIsNotComplete(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -664,6 +688,7 @@ func TestD3BudgetLimitedNotAchievedIsNotComplete(t *testing.T) {
 }
 
 func TestGoalSyncMapsNativeStatesAndDeniesIncompleteTerminals(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -721,6 +746,7 @@ func TestGoalSyncMapsNativeStatesAndDeniesIncompleteTerminals(t *testing.T) {
 }
 
 func TestGoalSyncCompletedLiveLeaseIsNotDone(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -754,6 +780,7 @@ func TestGoalSyncCompletedLiveLeaseIsNotDone(t *testing.T) {
 }
 
 func TestGoalSyncMissingWrongAndFailOpenStayHeldUnknown(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -832,6 +859,7 @@ func TestGoalSyncMissingWrongAndFailOpenStayHeldUnknown(t *testing.T) {
 }
 
 func TestCancelThenLateNativeCompletedIsNotDone(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -867,6 +895,7 @@ func TestCancelThenLateNativeCompletedIsNotDone(t *testing.T) {
 }
 
 func TestGoalSyncDoesNotStartProvider(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	stamp := filepath.Join(t.TempDir(), "stamp")
@@ -894,6 +923,7 @@ func TestGoalSyncDoesNotStartProvider(t *testing.T) {
 }
 
 func TestManualGoalLaunchBindsSessionBeforeEffectAndOmitsDashP(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	argvPath := filepath.Join(t.TempDir(), "argv")
@@ -929,6 +959,7 @@ func TestManualGoalLaunchBindsSessionBeforeEffectAndOmitsDashP(t *testing.T) {
 }
 
 func TestManualGrokArgvPreservesPermissionTupleAndStageDigest(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	argvPath := filepath.Join(t.TempDir(), "argv")
@@ -950,6 +981,9 @@ func TestManualGrokArgvPreservesPermissionTupleAndStageDigest(t *testing.T) {
 	}
 	if !strings.Contains(argv, "workspace") || !strings.Contains(argv, "auto") {
 		t.Fatalf("write-capable tuple must keep workspace/auto: %s", raw)
+	}
+	if !strings.Contains(string(raw), "--cwd") {
+		t.Fatalf("manual launch must pass --cwd: %s", raw)
 	}
 	tk, err = loadTask(root, tk.ID)
 	if err != nil {
@@ -1021,6 +1055,7 @@ func TestCrashBeforeStartUnstartedCrashAfterStartUnknownBlocksRedispatch(t *test
 }
 
 func TestSameSessionResumePersistsControlEpochBeforeReserve(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	enableManualGrok(t, root, cfg, filepath.Join(t.TempDir(), "argv"))
@@ -1070,6 +1105,7 @@ func TestGoalWriterPublishedAtomicallyAgainstConcurrentConsumers(t *testing.T) {
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
 	bindTestDesign(t, root, cfg, wf)
+	wfID := wf.ID
 
 	var mu sync.Mutex
 	var violation string
@@ -1089,7 +1125,7 @@ func TestGoalWriterPublishedAtomicallyAgainstConcurrentConsumers(t *testing.T) {
 				continue
 			}
 			for _, tk := range tasks {
-				if tk == nil || tk.WorkflowID != wf.ID || tk.IntegrationGate != nil {
+				if tk == nil || tk.WorkflowID != wfID || tk.IntegrationGate != nil {
 					continue
 				}
 				if tk.Type == typeSequence && tk.Goal == nil {
@@ -1170,6 +1206,7 @@ func extraWorkflowDir(t *testing.T) string {
 }
 
 func TestGoalRunDisjointOverlapAndMissingPredecessor(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	cfg.MaxParallel = 2
@@ -1200,7 +1237,7 @@ func TestGoalRunDisjointOverlapAndMissingPredecessor(t *testing.T) {
 		defer wg.Done()
 		errA = runManualGoalLaunch(t, root, cfg, auth, 0)
 	}()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(8 * time.Second)
 	for {
 		if _, err := os.Stat(argvA); err == nil {
 			break
@@ -1212,13 +1249,14 @@ func TestGoalRunDisjointOverlapAndMissingPredecessor(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	cfg.GrokBuildBin = fakeGrokGoalBinHold(t, argvB, hold)
+	cfgB := *cfg
+	cfgB.GrokBuildBin = fakeGrokGoalBinHold(t, argvB, hold)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		errB = runManualGoalLaunch(t, root, cfg, bill, 0)
+		errB = runManualGoalLaunch(t, root, &cfgB, bill, 0)
 	}()
-	deadline = time.Now().Add(3 * time.Second)
+	deadline = time.Now().Add(8 * time.Second)
 	for {
 		if _, err := os.Stat(argvB); err == nil {
 			break
@@ -1273,7 +1311,7 @@ func TestGoalRunDisjointOverlapAndMissingPredecessor(t *testing.T) {
 		firstErr = runManualGoalLaunch(t, root2, cfg2, w1, 0)
 		close(done)
 	}()
-	deadline = time.Now().Add(3 * time.Second)
+	deadline = time.Now().Add(8 * time.Second)
 	for {
 		if _, err := os.Stat(argvC); err == nil {
 			break
@@ -1315,7 +1353,8 @@ func TestGoalRunDisjointOverlapAndMissingPredecessor(t *testing.T) {
 	}
 }
 
-func TestFreshDesignNodeConsumesCandidateAndSecondRepairRefused(t *testing.T) {
+func TestFreshDesignNodeConsumesCandidateAndUsesWorkflowRounds(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	if err := cmdWorkflowInit([]string{
@@ -1367,12 +1406,27 @@ func TestFreshDesignNodeConsumesCandidateAndSecondRepairRefused(t *testing.T) {
 	if latest.ConsumedCommit != wf.Candidate.Commit || latest.ConsumedTree != wf.Candidate.Tree || latest.ConsumedReviewTask != wf.Review.TaskID {
 		t.Fatalf("fresh design node must consume current candidate/results: %+v candidate=%+v review=%+v", latest, wf.Candidate, wf.Review)
 	}
-	if err := bindWorkflowDesignRepair(root, cfg, wf, repairReceipt); !errors.Is(err, errWorkflowDesignRepairExhausted) {
-		t.Fatalf("second design repair must be refused: %v", err)
+	if err := bindWorkflowDesignRepair(root, cfg, wf, repairReceipt); err != nil || wf.DesignLineage.RepairCount != 1 {
+		t.Fatalf("replayed design bind must be a no-op: %v", err)
+	}
+	second := writeAstraDesignReceiptWith(t, map[string]any{
+		"consumed_commit": wf.Candidate.Commit, "consumed_tree": wf.Candidate.Tree,
+		"actual_model": "another-model", "identity": "independent-designer-2",
+	})
+	if err := bindWorkflowDesignRepair(root, cfg, wf, second); err != nil || wf.DesignLineage.RepairCount != 2 {
+		t.Fatalf("second fresh design must use existing workflow limits, not a global once limit: %v", err)
+	}
+	wf.CurrentRound = wf.MaxRounds
+	if err := persistWorkflow(root, cfg, wf); err != nil {
+		t.Fatal(err)
+	}
+	if err := bindWorkflowDesignRepair(root, cfg, wf, second); !errors.Is(err, errWorkflowRoundsExceeded) {
+		t.Fatalf("workflow round limit must remain hard: %v", err)
 	}
 }
 
 func TestDesignResultConsumesNonacceptedAndRefusesDuplicate(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1443,6 +1497,7 @@ func TestDesignResultConsumesNonacceptedAndRefusesDuplicate(t *testing.T) {
 }
 
 func TestNativeGoalCapabilityMatrixHonest(t *testing.T) {
+	t.Parallel()
 	caps := nativeGoalCapabilities()
 	by := map[string]GoalCapability{}
 	for _, c := range caps {
@@ -1459,8 +1514,11 @@ func TestNativeGoalCapabilityMatrixHonest(t *testing.T) {
 	if !strings.Contains(low, "complete") || !strings.Contains(low, "restart") {
 		t.Fatalf("Grok reason must disclose proven complete+restart: %s", g.Reason)
 	}
-	if !strings.Contains(low, "pause") || !strings.Contains(low, "unverified") {
-		t.Fatalf("Grok reason must disclose unverified pause/resume: %s", g.Reason)
+	if !strings.Contains(low, "pause") {
+		t.Fatalf("Grok reason must disclose pause control limits: %s", g.Reason)
+	}
+	if !strings.Contains(low, "post-state") && !strings.Contains(low, "not pause") {
+		t.Fatalf("Grok reason must not treat write/exit0 as pause: %s", g.Reason)
 	}
 	for _, name := range []string{kimiCLIRunnerName, "codex", "claude", cursorRunnerName, antigravityRunnerName, "opencode"} {
 		c, ok := by[name]
@@ -1490,6 +1548,7 @@ func TestNativeGoalCapabilityMatrixHonest(t *testing.T) {
 }
 
 func TestWorkflowShowReportsBoundGoalIdentity(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1516,6 +1575,7 @@ func TestWorkflowShowReportsBoundGoalIdentity(t *testing.T) {
 }
 
 func TestOrdinaryWorkflowShowJSONTopLevelKeys(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	wf := initTestWorkflow(t, root, dir)
 	first := captureWorkflowShow(t, root, wf.ID)
@@ -1538,12 +1598,14 @@ func TestOrdinaryWorkflowShowJSONTopLevelKeys(t *testing.T) {
 }
 
 func TestGoalRunRequiresManualFlag(t *testing.T) {
+	t.Parallel()
 	if err := cmdWorkflowGoalRun([]string{"-root", t.TempDir(), "wf-nope"}); !errors.Is(err, errGoalManualRequired) {
 		t.Fatalf("goal-run without -manual: %v", err)
 	}
 }
 
 func TestWorkflowFlagsAfterPositionalID(t *testing.T) {
+	t.Parallel()
 	fs := flag.NewFlagSet("goal-run", flag.ContinueOnError)
 	manual := fs.Bool("manual", false, "")
 	budget := fs.Int64("budget", 0, "")
@@ -1557,6 +1619,7 @@ func TestWorkflowFlagsAfterPositionalID(t *testing.T) {
 }
 
 func TestUnsupportedPermissionTupleRejectedBeforeLaunch(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	enableManualGrok(t, root, cfg, filepath.Join(t.TempDir(), "argv"))
@@ -1572,6 +1635,7 @@ func TestUnsupportedPermissionTupleRejectedBeforeLaunch(t *testing.T) {
 }
 
 func TestD3MissingFinalUpdateStatusRejected(t *testing.T) {
+	t.Parallel()
 	home := t.TempDir()
 	cwd := t.TempDir()
 	sid := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
@@ -1595,6 +1659,7 @@ func TestD3MissingFinalUpdateStatusRejected(t *testing.T) {
 }
 
 func TestD3EmptySummaryCwdRejected(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1620,6 +1685,7 @@ func TestD3EmptySummaryCwdRejected(t *testing.T) {
 }
 
 func TestReservedAttemptCannotAcceptDone(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1654,6 +1720,7 @@ func TestReservedAttemptCannotAcceptDone(t *testing.T) {
 }
 
 func TestDesignReceiptRejectsReadOnlyFalse(t *testing.T) {
+	t.Parallel()
 	path := writeAstraDesignReceiptWith(t, map[string]any{"read_only": false})
 	if _, err := loadExternalDesignReceipt(path); err == nil {
 		t.Fatal("read_only false must not be rewritten into acceptance")
@@ -1661,6 +1728,7 @@ func TestDesignReceiptRejectsReadOnlyFalse(t *testing.T) {
 }
 
 func TestDesignResultAcceptsCompletedStageWithFreshReceipt(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1703,7 +1771,8 @@ func TestDesignResultAcceptsCompletedStageWithFreshReceipt(t *testing.T) {
 	}
 }
 
-func TestDesignResultRejectsUnqualifiedActualModel(t *testing.T) {
+func TestDesignResultKeepsActualModelDespiteDisplayLabel(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1722,12 +1791,16 @@ func TestDesignResultRejectsUnqualifiedActualModel(t *testing.T) {
 		"consumed_revision":    tk.Revision,
 		"consumed_observation": "budget_limited",
 	})
-	if _, err := applyWorkflowDesignResult(root, cfg, wf, goalDecisionStop, "budget_limited", receipt); err == nil {
-		t.Fatal("unqualified actual_model with Astra display identity must not be an independent design result")
+	if _, err := applyWorkflowDesignResult(root, cfg, wf, goalDecisionStop, "budget_limited", receipt); err != nil {
+		t.Fatal(err)
+	}
+	if wf.DesignLineage.LatestValid.ActualModel != "gpt-4" || tk.Status == statusDone {
+		t.Fatal("display identity must not rewrite actual model or manufacture success")
 	}
 }
 
 func TestCopyableNativeGoalIsLiteralPathDigest(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1792,6 +1865,7 @@ func d4SuccessorFixture(t *testing.T) (string, *Config, *WorkflowRecord, *Task, 
 }
 
 func TestD4SuccessorRetainsFreshDesignAndRound(t *testing.T) {
+	t.Parallel()
 	root, cfg, wf, _, receipt := d4SuccessorFixture(t)
 	fresh, err := loadExternalDesignReceipt(receipt)
 	if err != nil {
@@ -1825,6 +1899,7 @@ func TestD4SuccessorRetainsFreshDesignAndRound(t *testing.T) {
 }
 
 func TestD4SuccessorHonorsExhaustedRound(t *testing.T) {
+	t.Parallel()
 	root, cfg, wf, _, receipt := d4SuccessorFixture(t)
 	wf.CurrentRound = wf.MaxRounds
 	if err := persistWorkflow(root, cfg, wf); err != nil {
@@ -1840,6 +1915,7 @@ func TestD4SuccessorHonorsExhaustedRound(t *testing.T) {
 }
 
 func TestGoalRepairRefusedTowardDesignResult(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1858,6 +1934,7 @@ func TestGoalRepairRefusedTowardDesignResult(t *testing.T) {
 }
 
 func TestStaleDesignResultRevisionRefused(t *testing.T) {
+	t.Parallel()
 	root, cfg, wf, tk, _ := d4SuccessorFixture(t)
 	receipt := writeAstraDesignReceiptWith(t, map[string]any{
 		"consumed_task_id":     tk.ID,
@@ -1872,6 +1949,7 @@ func TestStaleDesignResultRevisionRefused(t *testing.T) {
 }
 
 func TestConcurrentGoalRepairAndDesignResultFailClosed(t *testing.T) {
+	t.Parallel()
 	root, cfg, wf, tk, receipt := d4SuccessorFixture(t)
 	wf.Review = &WorkflowReview{TaskID: "rev-1", Verdict: "block", Admissible: false}
 	if err := persistWorkflow(root, cfg, wf); err != nil {
@@ -1907,6 +1985,7 @@ func TestConcurrentGoalRepairAndDesignResultFailClosed(t *testing.T) {
 }
 
 func TestCompletedDesignTaskPromptHashIsNotProof(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	review := newTask(root, cfg, typeReview, "design", dir, []string{"design the auth token vertical as Astra"}, 1)
@@ -1922,6 +2001,7 @@ func TestCompletedDesignTaskPromptHashIsNotProof(t *testing.T) {
 }
 
 func TestDesignArtifactDriftRefusedAtAdmission(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	result := filepath.Join(t.TempDir(), "design.md")
@@ -1945,6 +2025,7 @@ func TestDesignArtifactDriftRefusedAtAdmission(t *testing.T) {
 }
 
 func TestExitedNeverStartedPID0CannotAcceptDone(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1966,6 +2047,7 @@ func TestExitedNeverStartedPID0CannotAcceptDone(t *testing.T) {
 }
 
 func TestInputDigestMismatchRejected(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)
@@ -1988,6 +2070,7 @@ func TestInputDigestMismatchRejected(t *testing.T) {
 }
 
 func TestFakeExecutableLaunchExitGoalSyncDoesNotStuffPID(t *testing.T) {
+	t.Parallel()
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)

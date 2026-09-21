@@ -51,6 +51,8 @@ func providerChildEnv(home string, extra map[string]string) []string {
 	extraAllowed := map[string]bool{
 		"NO_COLOR": true, "KIMI_CODE_NO_AUTO_UPDATE": true, "KIMI_CODE_HOME": true,
 		"KIMI_MODEL_THINKING_EFFORT": true,
+		"GROK_HOME": true, "GROK_WORKFLOWS": true, "GROK_DISABLE_AUTOUPDATER": true,
+		"GROK_MANAGED_BY_NPM": true,
 	}
 	for _, key := range keys {
 		if value, ok := os.LookupEnv(key); ok {

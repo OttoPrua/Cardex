@@ -25,9 +25,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
+
+var patrolTestMu sync.Mutex
+
+func parallelPatrol(t *testing.T) {
+	t.Helper()
+	t.Parallel()
+	patrolTestMu.Lock()
+	t.Cleanup(func() { patrolTestMu.Unlock() })
+}
 
 // patrolShort 临时短化三个 patrol 参数;返回还原函数供 defer 调用。
 func patrolShort() func() {
@@ -50,6 +60,7 @@ func patrolShort() func() {
 // → cancel → killProcGroup 链路可达且能真收尾(cancel 是幂等的第二拳)。
 // 【杀的突变】把 patrolOnce 里的 cancel() 调用删掉 → 未 emit evStalled/cancelled 计数为 0,测试红。
 func TestPatrolFlagsSilentlyHungTaskAndKillsProcgroup(t *testing.T) {
+	parallelPatrol(t)
 	defer patrolShort()()
 
 	root := testRoot(t)
@@ -134,6 +145,7 @@ func TestPatrolFlagsSilentlyHungTaskAndKillsProcgroup(t *testing.T) {
 // 【杀的突变】把 patrolOnce 里 pgDeadTooLong 的判据 || 到 noHeartbeat 依赖 alive 之类的条件 →
 // 日志新增刷 lastLogGrow 就绕过 → 测试红。
 func TestPatrolFakeHeartbeatCannotDefeatPatrol(t *testing.T) {
+	parallelPatrol(t)
 	defer patrolShort()()
 
 	root := testRoot(t)
@@ -181,6 +193,7 @@ func TestPatrolFakeHeartbeatCannotDefeatPatrol(t *testing.T) {
 // 也不能误判卡死。等待 invoke 就绪的窗口(runTask 步骤间隙、invoke→invoke 切换)属正常。
 // 【杀的突变】去掉 patrolState.pgSeenAlive 前置守卫,直接用 pgDeadSince 计时 → 启动即误杀,测试红。
 func TestPatrolStartupGraceProtectsUninvokedTask(t *testing.T) {
+	parallelPatrol(t)
 	defer patrolShort()()
 	// 本测试只验 procgroup 通道的启动保护,禁用 heartbeat 通道以隔离变量。
 	origHB := patrolHeartbeatTimeout
@@ -214,6 +227,7 @@ func TestPatrolStartupGraceProtectsUninvokedTask(t *testing.T) {
 // 死透。此测试模拟"活但静默"场景,任何轮次都不得触发。
 // 【杀的突变】把 patrol.go 里 noHeartbeat 判据里的 && pgDead 摘掉(回退到 R1 独立触发)→ 本测试红。
 func TestPatrolDoesNotKillHealthyLongStepWithoutHeartbeat(t *testing.T) {
+	parallelPatrol(t)
 	defer patrolShort()()
 	// 心跳阈值刻意压到 5ms,heartbeat 通道被"触发"到极限;procgroup 通道靠 sleep 60 常活兜住。
 	origHB := patrolHeartbeatTimeout
@@ -274,6 +288,7 @@ func TestPatrolDoesNotKillHealthyLongStepWithoutHeartbeat(t *testing.T) {
 // 【杀的突变】若 reason 分类退回 R1 的"no_heartbeat 独立"分支(即 heartbeat 单独触发时报 no_heartbeat),
 // 本测试对 procgroup_dead 分类无法解释 → 红。
 func TestPatrolReasonReflectsBothSignalsCombination(t *testing.T) {
+	parallelPatrol(t)
 	defer patrolShort()()
 	// heartbeat 阈值刻意拉长,只让 pgDeadTooLong 命中,验 reason=procgroup_dead(非 no_heartbeat)。
 	origHB := patrolHeartbeatTimeout
@@ -330,6 +345,7 @@ func TestPatrolReasonReflectsBothSignalsCombination(t *testing.T) {
 // 【杀的突变】把 patrol.go 里 noHeartbeat 判据里的 && pgDeadTooLong 换回 && pgDead(R2.1 缺陷回退)
 // → 本测试立刻红——pgDead=true 且 staleness≥heartbeat → cancel 被调用。
 func TestPatrolHeartbeatStalledWithinPgGraceMustNotTrigger(t *testing.T) {
+	parallelPatrol(t)
 	defer patrolShort()()
 	// patrolShort:heartbeat=30ms,pgGrace=20ms。要构造"心跳超阈值 + 死亡<pgGrace"格子,需:
 	//   staleness = now - lastLogGrow >= 30ms (远古 1s 稳超)
@@ -374,6 +390,7 @@ func TestPatrolHeartbeatStalledWithinPgGraceMustNotTrigger(t *testing.T) {
 // 让阈值 = max(70min, cfg.StepTimeoutMin+10min),此测试守卫该契约。
 // 【杀的突变】把 helper 里的 max 逻辑改为固定 70min → 150min 步超时用例断言失败。
 func TestUpdatePatrolHeartbeatTimeoutScalesWithStepTimeoutMin(t *testing.T) {
+	parallelPatrol(t)
 	orig := patrolHeartbeatTimeout
 	defer func() { patrolHeartbeatTimeout = orig }()
 

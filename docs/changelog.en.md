@@ -1,5 +1,12 @@
 # cardex changelog
 
+## 2026-09-22 · v0.10.19: stable Grok models and preserved execution identity
+
+- New Grok attempts configured with `stable` resolve the concrete CLI catalog default (currently `grok-4.7`), excluding Fast defaults. Explicit pins, retries and resumes preserve their identity; requested and actual `grok-4.7-build` models remain distinct.
+- Manual commands and board readback resolve identity on a task copy. Hosted Goal arguments are generated after model freezing and session binding.
+- `migrate-grok-model -config FILE` explicitly migrates legacy defaults with a byte-preserving rollback backup. The current Cursor default slug is `grok-4.7-xhigh`. Historical tasks are not migrated automatically.
+- Integrates the published 0.10.18 hosted Goal, PTY, terminal-result and recovery protections. Fixes shared-timeout interference in review-sync tests and installed-helper lookup under the isolated test home.
+
 ## 2026-09-14 · v0.10.18: hosted native Goal, durable design session, Hermes inbound
 
 - `goal-run -hosted` opens a Cardex-owned PTY and injects a literal `/goal` contract path+SHA256 on the **master**; `--cwd` and `GROK_HOME` are passed to the child. Interactive `-manual` still requires a controlling TTY; missing PTY is `pty_missing` rather than a headless empty run.

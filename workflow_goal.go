@@ -1134,13 +1134,9 @@ func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int
 	if !grokBuildEnabled(cfg) {
 		return fmt.Errorf("%w: grok_build_bin/grok_build not enabled", errGoalCapability)
 	}
-	model := resolveGrokBuildModel(cfg, t)
-	effort := resolveGrokBuildEffort(cfg, t)
-	if model == "" || effort == "" {
-		return fmt.Errorf("unresolved Grok model/effort")
-	}
-	sandbox, permission, err := resolveManualGrokTuple(cfg, t)
-	if err != nil {
+	// Freeze before admission. bindGoalSessionBeforeEffect assigns SessionID
+	// only inside admission, and that id must not be present during the probe.
+	if err := freezeManualGoalModel(context.Background(), root, cfg, t); err != nil {
 		return err
 	}
 
@@ -1171,6 +1167,15 @@ func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int
 	}
 	releaseAdmission()
 
+	// SessionID is bound now. Build argv from the frozen id; do not probe again.
+	args, grokHome, err := manualGoalCommandArgs(cfg, t)
+	if err != nil {
+		_ = withWorkflowSchedulerLock(root, cfg, func() error {
+			return abandonUnstartedGoalAttempt(root, t)
+		})
+		return err
+	}
+
 	if hook := goalLaunchBeforeStartHook; hook != nil {
 		if herr := hook(); herr != nil {
 			_ = withWorkflowSchedulerLock(root, cfg, func() error {
@@ -1190,9 +1195,6 @@ func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	grokHome := firstNonBlank(t.Goal.GrokHome, defaultGrokHome())
-	t.Goal.GrokHome = grokHome
-	args := manualGrokGoalArgs(cfg, t, model, effort, sandbox, permission, grokHome)
 	contractPath := filepath.Join(workflowsDir(root), wf.ID+".stage-contract.txt")
 	if hosted {
 		return runHostedGrokGoal(root, cfg, wf, t, ctx, args, grokHome, contractPath, t.Goal.InputDigest)

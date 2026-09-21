@@ -177,6 +177,18 @@ function modelDisplayName(model) {
 	  return 'Fable 5 Thinking Max';
 	case 'grok-4.6':
 	  return 'Grok 4.6';
+	case 'grok-4.7':
+	  return 'Grok 4.7';
+	case 'grok-4.7-xhigh':
+	  return 'Grok 4.7 Extra High';
+	case 'grok-4.7-high':
+	  return 'Grok 4.7 High';
+	case 'grok-4.7-medium':
+	  return 'Grok 4.7 Medium';
+	case 'grok-4.7-low':
+	  return 'Grok 4.7 Low';
+	case 'grok-4.7-build':
+	  return 'Grok 4.7 build';
 	case 'cursor-grok-4.6-xhigh':
 	  return 'Grok 4.6 Extra High';
 	case 'gpt-5.6-sol':
@@ -222,15 +234,15 @@ const ROUTE_REASON_ZH = {
   kimi_cli_limit_fallback_pending: '旧版 Kimi CLI 限额链，待转 Sol',
   kimi_cli_limit_fallback: '旧版 Kimi CLI → Sol',
   grok_build_explicit: '显式 Grok Build',
-  kimi_to_grok_pending: 'Kimi 安全失败已证明，待串行转 Grok 4.6',
-  kimi_to_grok: 'Kimi 安全失败 → Grok 4.6',
-  fable_to_grok_pending: '旧版 Fable 5 限额链，待转 Grok 4.6',
-  fable_to_grok: '旧版 Fable 5 → Grok 4.6',
+  kimi_to_grok_pending: 'Kimi 安全失败已证明，待串行转 Grok',
+  kimi_to_grok: 'Kimi 安全失败 → Grok',
+  fable_to_grok_pending: '旧版 Fable 5 限额链，待转 Grok',
+  fable_to_grok: '旧版 Fable 5 → Grok',
   grok_to_sol_pending: 'Grok 安全失败已证明，待串行转 Sol 末腿',
   grok_to_sol: 'Grok 安全失败 → Sol 末腿',
-  grok_opus_backend_preferred: '后端 Opus → Grok 4.6/xhigh',
-  grok_sonnet_preferred: 'Sonnet → Grok 4.6/high',
-  grok_haiku_preferred: 'Haiku → Grok 4.6/high',
+  grok_opus_backend_preferred: '后端 Opus → Grok/xhigh',
+  grok_sonnet_preferred: 'Sonnet → Grok/high',
+  grok_haiku_preferred: 'Haiku → Grok/high',
   grok_sonnet_to_luna_pending: 'Grok 安全失败已证明，Sonnet 待串行转 Luna/max',
   grok_sonnet_to_luna: 'Grok 安全失败 → Luna/max',
   grok_haiku_to_luna_pending: 'Grok 安全失败已证明，Haiku 待串行转 Luna/xhigh',

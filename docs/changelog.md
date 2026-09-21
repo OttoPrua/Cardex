@@ -2,6 +2,13 @@
 
 **中文** | [English](changelog.en.md) · 返回 [README](../README.md)
 
+## 2026-09-22 · v0.10.19：Grok 稳定模型与恢复身份
+
+- 新 Grok attempt 使用 `stable` 配置时，从 CLI 模型目录解析具体默认模型（当前 `grok-4.7`），不自动选择 Fast。显式模型钉定、重试和续跑保留既有身份；请求模型与实际 `grok-4.7-build` 分别记录。
+- 手工命令和看板读回在任务副本上解析身份；托管 Goal 在模型冻结与会话绑定后生成最终启动参数。
+- `migrate-grok-model -config FILE` 显式迁移旧配置并保存逐字节回滚备份；当前 Cursor 默认标识为 `grok-4.7-xhigh`。不自动改写历史任务。
+- 整合已发布的 0.10.18 托管 Goal、PTY、终端结果与恢复保护；修复 review-sync 测试的共享超时干扰及安装验收的隔离目录定位。
+
 ## 2026-09-14 · v0.10.18：托管原生 Goal、持久设计会话、Hermes 入站
 
 - `goal-run -hosted` 打开 Cardex 自有 PTY，在 **master** 注入字面 `/goal` 合同路径+SHA256；`--cwd` 与 `GROK_HOME` 进入子进程。交互 `-manual` 仍要求控制 TTY，缺 PTY 记 `pty_missing`，不再无 TTY 空跑。

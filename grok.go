@@ -366,13 +366,17 @@ func grokBuildEnabled(cfg *Config) bool {
 }
 
 func resolveGrokBuildModel(cfg *Config, t *Task) string {
-	if t != nil && strings.TrimSpace(t.GrokModel) != "" {
-		return strings.TrimSpace(t.GrokModel)
+	if t != nil {
+		if model := concreteGrokPin(t.GrokModel); model != "" {
+			return model
+		}
 	}
-	if cfg == nil || cfg.GrokBuild == nil {
-		return ""
+	if cfg != nil && cfg.GrokBuild != nil {
+		if model := concreteGrokPin(cfg.GrokBuild.Model); model != "" {
+			return model
+		}
 	}
-	return strings.TrimSpace(cfg.GrokBuild.Model)
+	return ""
 }
 
 func resolveGrokBuildEffort(cfg *Config, t *Task) string {
@@ -506,7 +510,7 @@ func pinGrokBuild(cfg *Config, t *Task, routeReason string) {
 	if cfg == nil || cfg.GrokBuild == nil {
 		return
 	}
-	if model := strings.TrimSpace(cfg.GrokBuild.Model); model != "" {
+	if model := concreteGrokPin(cfg.GrokBuild.Model); model != "" {
 		t.GrokModel = model
 	}
 	if effort := strings.ToLower(strings.TrimSpace(cfg.GrokBuild.Effort)); effort != "" {
@@ -695,6 +699,7 @@ func grokBuildEndShape(fields map[string]json.RawMessage) (valid, public105 bool
 		"type": "string", "stopReason": "string", "sessionId": "string",
 		"num_turns": "number", "total_cost_usd": "number", "duration_ms": "number",
 		"usage": "object", "requestId": "string", "modelUsage": "object",
+		"model_id": "string", "chat_history": "array",
 		// Public 1.0.5 may report this numeric marker. It stays absent from grokBuildEvent
 		// so it cannot enter accounting, and it remains illegal on the legacy envelope.
 		"total_cost_usd_ticks": "number",
@@ -730,6 +735,69 @@ func grokBuildEndShape(fields map[string]json.RawMessage) (valid, public105 bool
 		}
 	}
 	return true, public105
+}
+
+func captureGrokAssistantModel(res *claudeResult, fields map[string]json.RawMessage) {
+	if res == nil {
+		return
+	}
+	if id := grokJSONStringField(fields, "model_id"); grokReportableAssistantModel(id) {
+		res.ObservedAssistantModel = id
+	}
+	captureGrokChatHistoryIdentity(res, fields["chat_history"])
+	if strings.TrimSpace(res.ObservedAssistantModel) != "" {
+		return
+	}
+	raw, ok := fields["modelUsage"]
+	if !ok {
+		return
+	}
+	var usage map[string]json.RawMessage
+	if json.Unmarshal(raw, &usage) != nil || len(usage) != 1 {
+		return
+	}
+	for key := range usage {
+		if grokReportableAssistantModel(key) {
+			res.ObservedAssistantModel = key
+		}
+	}
+}
+
+// captureGrokChatHistoryIdentity reads the parent transcript. The assistant
+// model_id there is the actual execution id; a public request of grok-4.7 can
+// report grok-4.7-build at reasoning_effort xhigh. That internal suffix is not Fast.
+func captureGrokChatHistoryIdentity(res *claudeResult, raw json.RawMessage) {
+	if res == nil || len(bytes.TrimSpace(raw)) == 0 {
+		return
+	}
+	var items []map[string]json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
+		return
+	}
+	for _, item := range items {
+		role := strings.ToLower(grokJSONStringField(item, "role"))
+		if role != "" && role != "assistant" {
+			continue
+		}
+		if id := grokJSONStringField(item, "model_id"); grokReportableAssistantModel(id) {
+			res.ObservedAssistantModel = id
+		}
+		if effort := strings.ToLower(grokJSONStringField(item, "reasoning_effort")); effort != "" {
+			res.ObservedAssistantEffort = effort
+		}
+	}
+}
+
+func grokJSONStringField(fields map[string]json.RawMessage, key string) string {
+	raw, ok := fields[key]
+	if !ok {
+		return ""
+	}
+	var value string
+	if json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	return strings.TrimSpace(value)
 }
 
 func grokBuildPostEndAccountingOrMetadata(typ string, fields map[string]json.RawMessage) bool {
@@ -1211,6 +1279,7 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			res.TotalCostUSD = ev.TotalCostUSD
 			res.DurationMS = ev.DurationMS
 			observeGrokBuildUsage(res, ev.Usage, true)
+			captureGrokAssistantModel(res, fields)
 			if ev.TotalCostUSD != 0 {
 				res.ModelEvents++
 			}
@@ -1562,7 +1631,7 @@ func invokeGrokBuild(ctx context.Context, root string, cfg *Config, t *Task, pro
 		return nil, "", fmt.Errorf("未解析出 Grok Build 模型/推理档")
 	}
 	if effort == "max" {
-		return nil, "", fmt.Errorf("Grok 4.6 不支持 reasoning effort=max；最高可用档为 xhigh")
+		return nil, "", fmt.Errorf("Grok 不支持 reasoning effort=max；最高可用档为 xhigh")
 	}
 	home, err := resolveGrokLifecycleHome(cfg)
 	if err != nil {

@@ -118,7 +118,8 @@ type Task struct {
 	GrokModel  string `json:"grok_model,omitempty"`
 	GrokEffort string `json:"grok_effort,omitempty"`
 	// CursorModel 钉定 Cursor CLI 账号模型清单中的完整模型 ID。Cursor 把思考档编码在
-	// 模型 ID 内（如 claude-fable-5-thinking-max / cursor-grok-4.6-xhigh）。
+	// 模型 ID 内（如 claude-fable-5-thinking-max / grok-4.7-xhigh）。
+	// 显式旧钉 cursor-grok-4.6-xhigh 仍按原样执行。
 	CursorModel string `json:"cursor_model,omitempty"`
 	// RouteClass 是与模型档位正交的 Owner 工作负载分类。backend 覆盖 service、persistence、
 	// protocol、database、network execution、identity/credential、manifest/launchd、

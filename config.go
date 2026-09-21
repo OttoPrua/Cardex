@@ -934,14 +934,14 @@ func validateGrokBuild(cfg *Config) error {
 		return fmt.Errorf("grok_build.read_only_sandbox_profile %q 非法（可选 %s/%s）",
 			r.ReadOnlySandboxProfile, grokBuildReadOnlySandboxDefault, grokBuildReadOnlySandboxMacOSNoopNetwork)
 	}
-	// Grok Build 1.0.4 的 grok-4.6 菜单最高只接受 xhigh；max 会在模型调用前退出。
+	// The Grok menu still rejects max; xhigh remains the top effort for 4.6 and 4.7.
 	if r.Effort == "max" {
-		return fmt.Errorf("grok_build.effort=max 不受当前 Grok 4.6 支持；请使用最高可用档 xhigh")
+		return fmt.Errorf("grok_build.effort=max 不受当前 Grok 支持；请使用最高可用档 xhigh")
 	}
 	switch r.Effort {
 	case "low", "medium", "high", "xhigh":
 	default:
-		return fmt.Errorf("grok_build.effort %q 非法（当前 Grok 4.6 可选 low/medium/high/xhigh）", r.Effort)
+		return fmt.Errorf("grok_build.effort %q 非法（当前 Grok 可选 low/medium/high/xhigh）", r.Effort)
 	}
 	if r.LimitFallbackMin < 0 {
 		return fmt.Errorf("grok_build.limit_fallback_min 不能为负数")
@@ -975,7 +975,7 @@ func validateGrokBuild(cfg *Config) error {
 		switch route.Effort {
 		case "low", "medium", "high", "xhigh":
 		default:
-			return fmt.Errorf("grok_build.tier_routes.%s.effort %q 非法（当前 Grok 4.6 可选 low/medium/high/xhigh）", key, route.Effort)
+			return fmt.Errorf("grok_build.tier_routes.%s.effort %q 非法（当前 Grok 可选 low/medium/high/xhigh）", key, route.Effort)
 		}
 		if route.CodexFallbackModel == "" && !cfg.OwnerRoutingEnforced {
 			return fmt.Errorf("grok_build.tier_routes.%s.codex_fallback_model 不能为空", key)
@@ -1011,8 +1011,9 @@ func validateGrokBuild(cfg *Config) error {
 			}
 		}
 	}
-	if len(r.TierRoutes) > 0 && r.Model != "grok-4.6" {
-		return fmt.Errorf("Owner tier routes must strictly use grok_build.model=grok-4.6")
+	if len(r.TierRoutes) > 0 && !grokOwnerPolicyModelAllowed(r.Model) {
+		return fmt.Errorf("Owner tier routes require a standard stable Grok id or %s; refusing %q",
+			grokStableSelector, r.Model)
 	}
 	if r.OpusAdversarialReview && (r.ReviewCodexModel == "" || r.ReviewCodexEffort == "") {
 		return fmt.Errorf("grok_build.opus_adversarial_review=true 需要 review_codex_model/review_codex_effort")
@@ -1021,8 +1022,9 @@ func validateGrokBuild(cfg *Config) error {
 		return fmt.Errorf("grok_build Opus 对抗复审必须严格使用 gpt-5.6-sol/max")
 	}
 	if r.KimiOpusFallback && !cfg.OwnerRoutingEnforced {
-		if r.Model != "grok-4.6" || r.Effort != "xhigh" || r.CodexFallbackModel != "gpt-5.6-sol" || r.CodexFallbackEffort != "xhigh" {
-			return fmt.Errorf("Grok→Kimi→Sol 策略必须严格使用 grok-4.6/xhigh → kimi-code/k3/max → gpt-5.6-sol/xhigh")
+		if !grokOwnerPolicyModelAllowed(r.Model) || r.Effort != "xhigh" || r.CodexFallbackModel != "gpt-5.6-sol" || r.CodexFallbackEffort != "xhigh" {
+			return fmt.Errorf("Grok→Kimi→Sol 策略的 grok_build.model 必须是标准稳定 Grok id 或 %s，且 effort=xhigh → kimi-code/k3/max → gpt-5.6-sol/xhigh；拒绝 %q",
+				grokStableSelector, r.Model)
 		}
 		if cfg.KimiCLIOpus == nil || strings.TrimSpace(cfg.KimiCLIOpus.Model) != "kimi-code/k3" ||
 			strings.ToLower(strings.TrimSpace(cfg.KimiCLIOpus.Effort)) != "max" {
@@ -1035,8 +1037,9 @@ func validateGrokBuild(cfg *Config) error {
 		}
 	}
 	if r.KimiOpusFallback && cfg.OwnerRoutingEnforced {
-		if r.Model != "grok-4.6" || r.Effort != "xhigh" {
-			return fmt.Errorf("Owner final matrix requires grok_build grok-4.6/xhigh base identity")
+		if !grokOwnerPolicyModelAllowed(r.Model) || r.Effort != "xhigh" {
+			return fmt.Errorf("Owner final matrix requires a standard stable Grok id or %s with effort xhigh; refusing %q",
+				grokStableSelector, r.Model)
 		}
 		if cfg.KimiCLIOpus == nil || strings.TrimSpace(cfg.KimiCLIOpus.Model) != "kimi-code/k3" ||
 			strings.ToLower(strings.TrimSpace(cfg.KimiCLIOpus.Effort)) != "max" {

@@ -725,7 +725,7 @@ func modelTierKeyword(cfg *Config, model string) string {
 		}
 	}
 	switch {
-	case strings.Contains(m, "fable"), strings.Contains(m, "sol"), strings.Contains(m, "grok-4.6"):
+	case strings.Contains(m, "fable"), strings.Contains(m, "sol"), strings.Contains(m, "grok-4.6"), strings.Contains(m, "grok-4.7"):
 		return "fable"
 	case strings.Contains(m, "opus"), strings.Contains(m, "terra"), strings.Contains(m, "k3"):
 		return "opus"
@@ -985,8 +985,16 @@ func boardRouteModelName(model string) string {
 		return "Fable 5 Thinking Max"
 	case "cursor-grok-4.6-xhigh":
 		return "Grok 4.6"
+	case "grok-4.7-xhigh", "grok-4.7-high", "grok-4.7-medium", "grok-4.7-low":
+		return "Grok 4.7"
+	case "grok-4.7-build":
+		return "4.7 build"
 	case "grok-4.6":
 		return "4.6"
+	case "grok-4.7":
+		return "4.7"
+	case grokStableSelector:
+		return "catalog"
 	case "gpt-5.6-sol":
 		return "GPT-5.6 Sol"
 	case "gpt-5.6-luna":

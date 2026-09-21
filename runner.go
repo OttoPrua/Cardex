@@ -58,6 +58,10 @@ type claudeResult struct {
 
 	// Grok-only diagnostic projection; absent for other providers and old records.
 	GrokDiagnostics *grokBuildDiagnostics `json:"-"`
+	// ObservedAssistantModel is the provider-reported assistant model_id.
+	// It is actual identity, not the requested --model value.
+	ObservedAssistantModel  string `json:"-"`
+	ObservedAssistantEffort string `json:"-"`
 }
 
 var (
@@ -1157,6 +1161,12 @@ func recordRouteAttemptObservation(t *Task, res *claudeResult) {
 	r.FinalReason = res.FinalReason
 	r.NativeVersion = res.NativeVersion
 	r.GrokDiagnostics = res.GrokDiagnostics
+	if id := strings.TrimSpace(res.ObservedAssistantModel); grokReportableAssistantModel(id) {
+		r.ActualModel = id
+	}
+	if effort := strings.ToLower(strings.TrimSpace(res.ObservedAssistantEffort)); effort != "" {
+		r.ActualEffort = effort
+	}
 }
 
 // Native execution facts are independent of business text and required review artifacts.
@@ -1425,10 +1435,20 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		}
 	}
 	if useGrokBuild {
-		// 人工显式 Grok 与自动路由走同一冻结纪律：实际开跑前把模型/档位写回卡面，
-		// Opus 实现同时固化对抗复审义务，避免“配置说会复审、卡面却没有”的漂移。
-		if t.GrokModel == "" {
-			t.GrokModel = resolveGrokBuildModel(cfg, t)
+		// Freeze a concrete catalog id or an explicit pin before preflight, readback, or argv.
+		// A failed probe stores nothing and does not invent a model.
+		if err := freezeGrokAttemptModel(ctx, cfg, t); err != nil {
+			if !grokModelIsConcrete(t.GrokModel) {
+				t.GrokModel = ""
+			}
+			t.Status = statusHeld
+			t.LastError = err.Error()
+			t.touch()
+			return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:grok-catalog", statusHeld, t.Step,
+				withCostTelemetry(map[string]any{
+					"reason": "grok_catalog_unresolved", "detail": err.Error(),
+					"semantic_attempt_consumed": false,
+				}, t)))
 		}
 		if t.GrokEffort == "" {
 			t.GrokEffort = resolveGrokBuildEffort(cfg, t)
@@ -2726,6 +2746,7 @@ var (
 // (10s)或 ctx 超时(120s)。marker 一见即 killProcGroup 让 wait 立刻收——上层从"我知道退出码但还得等
 // 10s"提速到"知道退出码且 wait 立刻返回"。killProcGroup 幂等,若 wait 已提前返回也无害。
 func runReviewSync(t *Task, lg *os.File) error {
+	timeout := reviewSyncTimeout
 	marker := filepath.Join(os.TempDir(), fmt.Sprintf("cardex-reviewsync-%s-%d.ec", t.ID, os.Getpid()))
 	_ = os.Remove(marker) // 前置清理:防同 ID 上次残留骗过 watcher 立即误杀
 	defer os.Remove(marker)
@@ -2738,7 +2759,7 @@ func runReviewSync(t *Task, lg *os.File) error {
 	// 修法:'\n)' 让 '#' 的注释效应止于换行,')' 独立成行安全闭壳。
 	wrapped := fmt.Sprintf("( %s\n)\n__ec=$?\nprintf %%d \"$__ec\" > '%s'\nexit $__ec", t.ReviewSync, marker)
 
-	ctx, cancel := context.WithTimeout(context.Background(), reviewSyncTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", wrapped)
 	// 同步命令以实现卡 Dir 为工作目录执行：本库本地执行器（invokeClaude/invokeCodex）均 cmd.Dir=t.Dir，
@@ -2820,7 +2841,7 @@ func runReviewSync(t *Task, lg *os.File) error {
 
 	// marker 缺失才落到旧路径:真超时(sync 未在预算内完成)/wrap 未启动等异常。
 	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("同步命令超时（%s）", reviewSyncTimeout)
+		return fmt.Errorf("同步命令超时（%s）", timeout)
 	}
 	return err
 }
@@ -4082,10 +4103,10 @@ func applyCrossEngine(t *Task, eng CrossEngine, cfg *Config) error {
 		switch effort {
 		case "low", "medium", "high", "xhigh":
 		default:
-			return fmt.Errorf("grok-build 交叉引擎 effort %q 非法（Grok 4.6 最高 xhigh）", eng.Effort)
+			return fmt.Errorf("grok-build 交叉引擎 effort %q 非法（Grok 最高 xhigh）", eng.Effort)
 		}
 		t.PreferRunner = grokBuildRunnerName
-		t.GrokModel = strings.TrimSpace(eng.Model)
+		t.GrokModel = concreteGrokPin(eng.Model)
 		t.GrokEffort = effort
 	case cursorRunnerName:
 		if !cursorEnabled(cfg) {

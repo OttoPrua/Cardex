@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const version = "0.10.18"
+const version = "0.10.19"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -76,6 +76,8 @@ func main() {
 		err = cmdClean(os.Args[2:])
 	case "migrate":
 		err = cmdMigrate(os.Args[2:])
+	case "migrate-grok-model":
+		err = cmdMigrateGrokModel(os.Args[2:])
 	case "install-launchd":
 		err = cmdInstallLaunchd(os.Args[2:])
 	case "uninstall-launchd":
@@ -110,7 +112,7 @@ func printUsage() {
 	add       [-type sequence|design-review|prompt-assembly|coordinate|progress-pull]
 	          [-title T] [-dir D] [-priority N] [-model haiku|sonnet|opus] [-file steps.md]
 	          [-runner claude|codex|agy|opencode|kimi-cli|grok-build|cursor] [-opencode-model provider/model]
-	          [-kimi-model kimi-code/k3] [-grok-model grok-4.6] [-grok-effort xhigh] [-cursor-model MODEL]
+	          [-kimi-model kimi-code/k3] [-grok-model MODEL] [-grok-effort xhigh] [-cursor-model MODEL]
 	          [-route-class general|backend] [-risk-class ordinary|high-risk|critical|production]
 	          [-quality-sensitive] [-specialized-frontend] [-owner-critical-bypass-reason REASON]
 	          [-stakes low|normal|high] [-max-attempts N] [-review-after] [-emit] [-hold] [-skip-permissions]
@@ -171,6 +173,12 @@ func printUsage() {
                                    # 把数据根从改名前的旧根整体搬到 ~/.cardex（fail-closed：
                                    # 目标非空/有 running 卡/拿不到实例锁一律拒绝；搬完做零丢失
                                    # 对账，不符即回滚）。不代建 symlink、不代卸 launchd
+  migrate-grok-model -config FILE [-rollback]
+                                   # 只改调用方给出的 Cardex 配置：遗留 grok_build 模型字段
+                                   # grok-4.6 写成选择器 stable；遗留 cursor_model
+                                   # cursor-grok-4.6-xhigh 写成当前目录 id grok-4.7-xhigh。
+                                   # 显式旧钉留在任务上不动。不在启动时运行，不改 live 配置。
+                                   # -rollback 用迁移前备份恢复该文件的原始字节。不碰 ~/.grok
   install-launchd [-interval 300]  # 安装 macOS 定时器，开机自动调度
   uninstall-launchd
   doctor                           # 自检环境（含各订阅引擎认证可解析性，值不回显）
@@ -266,12 +274,12 @@ func cmdAdd(args []string) error {
 	agyModel := fs.String("agy-model", "", "钉定 Antigravity 模型；空时从 agy models 动态选择实际广告的最高 Claude Opus")
 	openCodeModel := fs.String("opencode-model", "", "钉定原生 OpenCode provider/model（如 opencode-go/gpt-5.6-luna）")
 	kimiModel := fs.String("kimi-model", "", "钉定原生 Kimi Code CLI 模型（如 kimi-code/k3）")
-	grokModel := fs.String("grok-model", "", "钉定原生 Grok Build 模型（如 grok-4.6）")
-	grokEffort := fs.String("grok-effort", "", "钉定 Grok Build 推理档（当前 grok-4.6 最高 xhigh）")
-	cursorModel := fs.String("cursor-model", "", "钉定 Cursor 账号模型 ID（思考档已编码在 ID 内）")
+	grokModel := fs.String("grok-model", "", "钉定原生 Grok Build 模型。留空则在新 attempt 解析 grok models 的 Default model（Grok CLI 1.0.40 为 grok-4.7）。显式 grok-4.6 或 grok-4.7-build-fast 按钉定执行")
+	grokEffort := fs.String("grok-effort", "", "钉定 Grok Build 推理档（当前最高 xhigh）")
+	cursorModel := fs.String("cursor-model", "", "钉定 Cursor 账号模型 ID。当前 cursor-agent 目录的 Grok 是 grok-4.7-xhigh（另有 low/medium/high；Fast 变体分开，不是默认）。显式旧钉 cursor-grok-4.6-xhigh 仍按原样执行")
 	routeClass := fs.String("route-class", "", "工作负载路由分类：backend=服务/持久化/协议/数据库/网络执行/身份凭据/manifest-launchd/Control权限/live cutover，general=明确非后端；Owner 强制模式下新 sequence 卡必填，空值仅供存量卡兼容判定")
 	riskClass := fs.String("risk-class", "", "Owner 风险分类：ordinary|high-risk|critical|production；backend 缺失或不明确时按 high-risk fail closed")
-	qualitySensitive := fs.Bool("quality-sensitive", false, "兼容元数据：Haiku 已固定 Grok 4.6/high 基线，本标志不再抬升 effort")
+	qualitySensitive := fs.Bool("quality-sensitive", false, "兼容元数据：Haiku 基线为目录稳定 Grok/high（Grok CLI 1.0.40 为 grok-4.7），本标志不再抬升 effort")
 	specializedFrontend := fs.Bool("specialized-frontend", false, "复杂 React/frontend refactor、accessibility 或 fixing：要求 fresh Sol 最终质量门")
 	ownerCriticalBypassReason := fs.String("owner-critical-bypass-reason", "", "Owner-pinned critical automatic Codex 预算旁路的持久、可见理由（仅 high/critical/production 有效）")
 	host := fs.String("host", "", "远程执行主机（config.remote_hosts 的键，SSH→远端 codex；要求单步或 -fresh）")
@@ -445,6 +453,9 @@ func cmdAdd(args []string) error {
 	}
 	t.OpenCodeModel = strings.TrimSpace(*openCodeModel)
 	t.KimiModel = strings.TrimSpace(*kimiModel)
+	if strings.TrimSpace(*grokModel) == grokStableSelector {
+		return fmt.Errorf("-grok-model %s 不是可执行模型；留空以解析目录 Default model，或传入具体模型 id", grokStableSelector)
+	}
 	t.GrokModel = strings.TrimSpace(*grokModel)
 	t.GrokEffort = strings.ToLower(strings.TrimSpace(*grokEffort))
 	t.CursorModel = strings.TrimSpace(*cursorModel)
@@ -478,7 +489,7 @@ func cmdAdd(args []string) error {
 	}
 	if t.GrokEffort != "" {
 		if t.GrokEffort == "max" {
-			return fmt.Errorf("-grok-effort=max 不受当前 Grok 4.6 支持；请使用最高可用档 xhigh")
+			return fmt.Errorf("-grok-effort=max 不受当前 Grok 支持；请使用最高可用档 xhigh")
 		}
 		switch t.GrokEffort {
 		case "low", "medium", "high", "xhigh":
@@ -486,7 +497,7 @@ func cmdAdd(args []string) error {
 			return fmt.Errorf("未知 grok-effort %q（当前可选 low/medium/high/xhigh）", t.GrokEffort)
 		}
 	}
-	if t.PreferRunner == grokBuildRunnerName && resolveGrokBuildModel(cfg, t) == "" {
+	if t.PreferRunner == grokBuildRunnerName && !grokDispatchModelPending(cfg, t) {
 		return fmt.Errorf("-runner grok-build 需要 -grok-model，或配置 grok_build.model")
 	}
 	if t.PreferRunner == cursorRunnerName && resolveCursorModel(cfg, t) == "" {
@@ -1375,12 +1386,16 @@ func manualDispatchCommandForLeg(cfg *Config, t *Task, prompt string, leg policy
 		if bin == "" {
 			bin = "grok"
 		}
+		model, err := grokDispatchExecutionModel(context.Background(), cfg, t, leg.Model)
+		if err != nil || !grokModelIsConcrete(model) {
+			return "", false
+		}
 		writeCapable := grokBuildWriteCapable(t)
 		sandbox, permission := resolvedGrokBuildReadOnlySandbox(cfg), "plan"
 		if writeCapable {
 			sandbox, permission = "workspace", "auto"
 		}
-		cmd := shellQuote(bin) + " --no-auto-update --model " + shellQuote(leg.Model) +
+		cmd := shellQuote(bin) + " --no-auto-update --model " + shellQuote(model) +
 			" --reasoning-effort " + shellQuote(leg.Effort) + " --output-format streaming-json" +
 			" --sandbox " + sandbox + " --permission-mode " + permission +
 			" --no-memory --no-subagents --disable-web-search --verbatim"

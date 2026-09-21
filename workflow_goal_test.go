@@ -942,6 +942,9 @@ func TestManualGoalLaunchBindsSessionBeforeEffectAndOmitsDashP(t *testing.T) {
 	if tk.SessionID == "" {
 		t.Fatal("session must be bound before launch")
 	}
+	if tk.GrokModel != "grok-4.6" {
+		t.Fatalf("model must be frozen before launch, got %q", tk.GrokModel)
+	}
 	raw, err := os.ReadFile(argvPath)
 	if err != nil {
 		t.Fatal(err)
@@ -950,11 +953,54 @@ func TestManualGoalLaunchBindsSessionBeforeEffectAndOmitsDashP(t *testing.T) {
 	if strings.Contains(argv, "\n-p\n") || strings.Contains(argv, "--single") || strings.Contains(argv, "--prompt-file") {
 		t.Fatalf("-p/--single/--prompt-file is not goal proof: %s", argv)
 	}
-	if !strings.Contains(argv, "-s") && !strings.Contains(argv, "--resume") {
-		t.Fatalf("manual launch must pass session identity: %s", argv)
+	if !strings.Contains(argv, "-s\n"+tk.SessionID+"\n") && !strings.Contains(argv, "--resume\n"+tk.SessionID+"\n") {
+		t.Fatalf("manual launch argv missing bound session %s:\n%s", tk.SessionID, argv)
+	}
+	if !strings.Contains(argv, "--model\ngrok-4.6\n") {
+		t.Fatalf("manual launch argv missing frozen model:\n%s", argv)
 	}
 	if tk.Goal.Started && tk.Goal.Observation == goalObsUnstarted {
 		t.Fatal("started launch must not remain unstarted")
+	}
+}
+
+func TestManualGoalLaunchFreezesCatalogBeforeSessionArgv(t *testing.T) {
+	t.Parallel()
+	const want = "grok-4.7"
+	catalog := filepath.Join(t.TempDir(), "catalog.txt")
+	writeCatalog(t, catalog, grok47CatalogText(want))
+	bin, productArgs, modelsArgs := newGrokCatalogFake(t, catalog, 0, false)
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	cfg.GrokBuildBin = bin
+	cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: grokStableSelector, Effort: "xhigh"}
+	saveGoalCfg(t, root, cfg)
+	wf := initTestWorkflow(t, root, dir)
+	admitManualWriter(t, root, cfg, wf)
+	withSchedulerLock(t, root)
+	if err := runManualGoalLaunch(t, root, cfg, wf, 0); err != nil {
+		t.Fatalf("goal-run: %v", err)
+	}
+	tk, err := loadTask(root, wf.WriterTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tk.SessionID == "" || tk.GrokModel != want {
+		t.Fatalf("session=%q model=%q", tk.SessionID, tk.GrokModel)
+	}
+	if countFileLines(modelsArgs+".calls") != 1 {
+		t.Fatalf("catalog probe count=%d, want one probe before session bind", countFileLines(modelsArgs+".calls"))
+	}
+	raw, err := os.ReadFile(productArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := string(raw)
+	if !strings.Contains(argv, "-s\n"+tk.SessionID+"\n") && !strings.Contains(argv, "--resume\n"+tk.SessionID+"\n") {
+		t.Fatalf("stable launch argv missing bound session %s:\n%s", tk.SessionID, argv)
+	}
+	if !strings.Contains(argv, "--model\n"+want+"\n") || strings.Contains(argv, "--model\n"+grokStableSelector+"\n") {
+		t.Fatalf("stable launch argv model:\n%s", argv)
 	}
 }
 

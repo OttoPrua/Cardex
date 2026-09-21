@@ -466,16 +466,16 @@ codex 主跑卡与远端 codex 不受影响。
 
 Final Owner 矩阵按角色、工作面与闭合风险解析：显式 Fable→Cursor Fable 5/thinking-max；仅在确认 quota
 或 eligible 且已经证明的 quota/transport/stream-incomplete/execution-environment 前语义失败后，串行取得
-一份只读 Grok 4.6/xhigh answer，再由唯一一次 fresh Sol/ultra 读取原问题/证据和 Grok answer，从第一性
+一份只读目录稳定 Grok/xhigh answer（Grok CLI 1.0.40 的 Default model 为 grok-4.7），再由唯一一次 fresh Sol/ultra 读取原问题/证据和 Grok answer，从第一性
 重建目标/约束/风险/验收、攻击并修复该提案，直接给出终局；语义或验收失败不触发，也没有 blind Sol B、
 Sol/max 第三腿、backend 默认或 review-of-review。未决 P0/P1/uncertainty 挂起交 Owner。
 
-Opus non-backend 以 Grok 4.6/xhigh 为主，eligible 时串行 Kimi K3/max fallback/review；Sol/xhigh 只在
+Opus non-backend 以目录稳定 Grok/xhigh 为主，eligible 时串行 Kimi K3/max fallback/review；Sol/xhigh 只在
 Grok-Kimi 分歧、验收失败或显式高风险升级时出现。Opus backend ordinary 为 Grok implementer→fresh
 Kimi K3/max adversarial review/repair；确定性 20% 抽样、分歧或验收失败再进入 Sol/xhigh。backend
 high-risk 为 Grok implementer→fresh Kimi K3/max 只读第二视角→fresh Sol/max mandatory release gate。
 standalone review ordinary 用 fresh Kimi K3/max，critical/production（以及缺失风险）用 fresh independent Sol/max。
-Sonnet 为 Grok 4.6/high→eligible Kimi K3/max，无自动 Codex；Haiku 为 Grok 4.6/high，
+Sonnet 为目录稳定 Grok/high→eligible Kimi K3/max，无自动 Codex；Haiku 为目录稳定 Grok/high，
 eligible overflow/fallback 仅 Kimi 或已证明 OpenCode Go 轻量车道。`quality_sensitive` 仍可作为兼容元数据
 填写，不再抬升 effort。
 复杂 React/frontend refactor、accessibility 或 fixing 写 `specialized_frontend=true`，按 ordinary/high-risk
@@ -534,7 +534,7 @@ Owner-pinned critical 卡可绕过。Grok/Kimi/direct Sol 的 70–80%/15–25%/
 "grok_build_bin": "/Users/ottoprua/.local/bin/grok",
 "grok_build": {
   "enabled": true,
-  "model": "grok-4.6",
+  "model": "stable",
   "effort": "xhigh",
   "limit_fallback_min": 180,
   "kimi_opus_fallback": true,
@@ -554,8 +554,8 @@ Owner-pinned critical 卡可绕过。Grok/Kimi/direct Sol 的 70–80%/15–25%/
 ```
 
 Grok Build 使用自身已登录的 `~/.grok`，Cardex 不读取认证值。`sequence` 卡以 `workspace` OS 沙箱和
-`auto` 权限运行；审核/协调等非落码卡强制 `read-only` + `plan`。当前本机 Grok 4.6 的最高菜单档是
-`xhigh`，配置 `max` 会在加载时直接拒绝。显式人工测试可用
+`auto` 权限运行；审核/协调等非落码卡强制 `read-only` + `plan`。当前 Grok 菜单最高档仍是
+`xhigh`，配置 `max` 会在加载时直接拒绝。`grok_build.model` 用 `stable` 时，新 attempt 解析 CLI 目录的 `Default model`（Grok CLI 1.0.40 为 `grok-4.7`）；显式 `-grok-model grok-4.6` 或 `grok-4.7-build-fast` 按钉定执行。人工测试示例：
 `-runner grok-build -grok-model grok-4.6 -grok-effort xhigh`。
 Cardex 在每次 Grok 任务前先执行 `grok --no-auto-update models`：它只验证实时登录态和所需模型清单，
 不创建模型会话、不发送任务 prompt。首个可信 401 会不烧 attempts 地挂起根因卡，并打开 24 小时
@@ -574,7 +574,7 @@ Claude Fable→Grok→补盲提案不属于 Owner 自动路由。已有 Claude �
 ### Cursor Fable 5 主路由与单次 Sol 终局
 
 本机 Cursor Agent CLI 的账号模型清单是 Fable 能力真源；Fable 主腿固定
-`claude-fable-5-thinking-max`。fallback profile 的 A 固定 Grok 4.6/xhigh，B 固定 Sol/ultra 且同时承担
+`claude-fable-5-thinking-max`。fallback profile 的 A 使用目录稳定 Grok/xhigh（可为显式 `grok-4.6` 钉或 `stable`），B 固定 Sol/ultra 且同时承担
 adversarial reviewer、repairer 与 terminal merger；profile 必须没有第三个 `merge`。
 
 `cursor_fable.enabled=true` 后，默认 Codex 路由中显式 Fable、无会话、首步且单步的卡优先走
@@ -583,7 +583,7 @@ Cursor Fable 5/thinking-max。fresh 多步或配置不完整的显式 Fable 卡�
 quota/transport/stream-incomplete/execution-environment 中 eligible 且已证明的前语义失败发生，并且
 三轴证明全部通过时，同一母卡原子转换为：
 
-1. Grok Build `grok-4.6/xhigh` 只读独立作答；
+1. Grok Build 目录稳定 id/`xhigh` 只读独立作答（1.0.40 目录默认 `grok-4.7`；显式 `grok-4.6` 钉保持不变）；
 2. 唯一一次 fresh Codex `gpt-5.6-sol/ultra` 同时接收原始问题/证据与 Grok answer，从零重建目标、约束、
    风险和验收，攻击 Grok 提案、修复遗漏/错误并直接输出 corrected terminal conclusion。
 

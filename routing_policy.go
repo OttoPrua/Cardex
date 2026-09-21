@@ -420,9 +420,18 @@ func ownerRouteSnapshotLegMatches(t *Task, leg policyLeg) bool {
 			t.GeminiModel == "" && t.AgyModel == "" && t.OpenCodeModel == "" && t.KimiModel == "" &&
 			t.GrokModel == "" && t.GrokEffort == "" && (t.CursorModel == "" || t.CursorModel == leg.Model)
 	case grokBuildRunnerName:
-		return t.PreferRunner == grokBuildRunnerName && t.GrokModel == leg.Model && t.GrokEffort == leg.Effort &&
-			t.CodexModel == "" && t.XCodexModel == "" && t.GeminiModel == "" && t.AgyModel == "" &&
-			t.OpenCodeModel == "" && t.KimiModel == "" && t.CursorModel == ""
+		if t.PreferRunner != grokBuildRunnerName || t.GrokEffort != leg.Effort ||
+			t.CodexModel != "" || t.XCodexModel != "" || t.GeminiModel != "" || t.AgyModel != "" ||
+			t.OpenCodeModel != "" || t.KimiModel != "" || t.CursorModel != "" {
+			return false
+		}
+		taskModel := strings.TrimSpace(t.GrokModel)
+		legModel := strings.TrimSpace(leg.Model)
+		if taskModel == legModel {
+			return true
+		}
+		// A frozen public id stays on this leg when config still says the selector.
+		return grokStandardStableID(taskModel) && !grokModelIsConcrete(legModel)
 	case "codex":
 		return t.PreferRunner == "codex" && t.CodexModel == leg.Model && t.Effort == leg.Effort &&
 			t.EffortExplicit && t.XCodexModel == "" && t.GeminiModel == "" && t.AgyModel == "" &&
@@ -550,7 +559,8 @@ func pinOwnerPrimaryRoute(t *Task, route ownerRoute) bool {
 			t.RouteReason = routeReasonOwnerReviewSol
 			return true
 		case grokBuildRunnerName:
-			t.PreferRunner, t.GrokModel, t.GrokEffort = grokBuildRunnerName, leg.Model, leg.Effort
+			t.PreferRunner, t.GrokEffort = grokBuildRunnerName, leg.Effort
+			t.GrokModel = concreteGrokPin(leg.Model)
 			switch route.Name {
 			case "opus_general":
 				t.RouteReason = routeReasonGrokOpusGeneral
@@ -599,7 +609,7 @@ func pinOwnerPrimaryRoute(t *Task, route ownerRoute) bool {
 		return true
 	case grokBuildRunnerName:
 		t.PreferRunner = grokBuildRunnerName
-		t.GrokModel = leg.Model
+		t.GrokModel = concreteGrokPin(leg.Model)
 		t.GrokEffort = leg.Effort
 		switch route.Name {
 		case "opus_non_backend":
@@ -1217,7 +1227,7 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 	switch next.Runner {
 	case grokBuildRunnerName:
 		t.PreferRunner = grokBuildRunnerName
-		t.GrokModel, t.GrokEffort = next.Model, next.Effort
+		t.GrokModel, t.GrokEffort = concreteGrokPin(next.Model), next.Effort
 		t.RouteReason = routeReasonKimiToGrokPending // legacy in-flight compatibility only
 	case kimiCLIRunnerName:
 		t.PreferRunner = kimiCLIRunnerName

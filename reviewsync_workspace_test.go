@@ -30,6 +30,10 @@ import (
 	"testing"
 )
 
+// Capture the installed helper location before TestMain isolates provider HOME.
+// Acceptance checks must inspect the real installation, not the empty test home.
+var installedSyncHome, installedSyncHomeErr = os.UserHomeDir()
+
 // syncScriptsRoot 返回 ~/.claudego 绝对路径。所有脚本共用一份装机版,测试与生产同源。
 //
 // 【CG-R2 R1·2026-07-23】环境变量升级门:
@@ -41,7 +45,7 @@ import (
 //   - 【R2 新增】.ps1 版本 verify 脚本纳入必装清单(Windows 沙箱无 bash 通道时的兜底)。
 func syncScriptsRoot(t *testing.T) string {
 	t.Helper()
-	home, err := os.UserHomeDir()
+	home, err := installedSyncHome, installedSyncHomeErr
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
 	}
@@ -79,7 +83,7 @@ func syncScriptsRoot(t *testing.T) string {
 // 【杀的突变】把 syncScriptsRoot 的 Skip 逻辑改回"仅 Skip 不看环境变量"→ 此哨兵在 env=1 下仍红。
 func TestSyncScriptsInstalled(t *testing.T) {
 	t.Parallel()
-	home, err := os.UserHomeDir()
+	home, err := installedSyncHome, installedSyncHomeErr
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
 	}
@@ -1453,7 +1457,7 @@ func TestDesignReviewAndFixCycleTemplatesEmbedContractContent(t *testing.T) {
 		t.Log("提示(非致命):设 CARDEX_REQUIRE_SYNC_SCRIPTS=1 可对 ~/.claudego 装机副本追加同源断言")
 		return
 	}
-	home, err := os.UserHomeDir()
+	home, err := installedSyncHome, installedSyncHomeErr
 	if err != nil {
 		t.Fatalf("UserHomeDir: %v", err)
 	}

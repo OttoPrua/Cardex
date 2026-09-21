@@ -475,19 +475,19 @@ both fields are deliberately configured later.
 
 The final Owner matrix resolves role, work surface, and closed risk. Explicit Fable uses Cursor Fable
 5/thinking-max. Only confirmed quota, or an eligible proven quota/transport/stream-incomplete/execution-
-environment presemantic failure, starts one read-only Grok 4.6/xhigh answer followed by the lineage's sole
+environment presemantic failure, starts one read-only catalog-stable Grok/xhigh answer (Grok CLI 1.0.40 default `grok-4.7`) followed by the lineage's sole
 fresh Sol/ultra call. That call receives the original problem/evidence and Grok answer, reconstructs goals,
 constraints, risks, and acceptance criteria from first principles, attacks and repairs the proposal, and
 emits the corrected terminal conclusion. Semantic or acceptance failure is not a trigger. There is no blind
 Sol answer B, third Sol/max leg, backend default, or review-of-review; unresolved P0/P1/uncertainty holds for Owner.
 
-Non-backend Opus uses Grok 4.6/xhigh with eligible serial Kimi K3/max fallback/review; Sol/xhigh appears only
+Non-backend Opus uses catalog-stable Grok/xhigh with eligible serial Kimi K3/max fallback/review; Sol/xhigh appears only
 for Grok-Kimi disagreement, failed acceptance, or explicit high-risk escalation. Ordinary backend is Grok
 implementer→fresh Kimi K3/max adversarial review/repair, with Sol/xhigh for deterministic 20% sampling,
 disagreement, or failed acceptance. High-risk backend is Grok implementer→fresh read-only Kimi K3/max second
 view→fresh mandatory Sol/max release gate. Standalone ordinary review uses fresh Kimi K3/max; critical,
-production, or missing-risk review uses fresh independent Sol/max. Sonnet is Grok 4.6/high→eligible Kimi,
-with no automatic Codex. Haiku is Grok 4.6/high, and eligible overflow/fallback is limited to Kimi
+production, or missing-risk review uses fresh independent Sol/max. Sonnet is catalog-stable Grok/high→eligible Kimi,
+with no automatic Codex. Haiku is catalog-stable Grok/high, and eligible overflow/fallback is limited to Kimi
 or the already-proven OpenCode Go lightweight lane. `quality_sensitive` remains accepted as compatibility
 metadata under that high baseline and no longer raises effort. Complex
 React/frontend refactoring, accessibility, or fixing sets `specialized_frontend=true` and requires fresh
@@ -553,7 +553,7 @@ information isolation.
 "grok_build_bin": "/Users/ottoprua/.local/bin/grok",
 "grok_build": {
   "enabled": true,
-  "model": "grok-4.6",
+  "model": "stable",
   "effort": "xhigh",
   "limit_fallback_min": 180,
   "kimi_opus_fallback": true,
@@ -574,8 +574,8 @@ information isolation.
 
 Grok Build reuses its authenticated `~/.grok` state; Cardex never reads credential values. Sequence cards
 run under the `workspace` OS sandbox with `auto` permissions, while non-implementation cards are forced
-to `read-only` + `plan`. The currently installed Grok 4.6 menu tops out at `xhigh`; `max` is rejected at
-configuration load. Manual probes can use
+to `read-only` + `plan`. The current Grok menu still tops out at `xhigh`; `max` is rejected at
+configuration load. `grok_build.model` `stable` resolves a new attempt from the CLI catalog `Default model` line (Grok CLI 1.0.40 reports `grok-4.7`). An explicit `-grok-model grok-4.6` or `grok-4.7-build-fast` runs as pinned. Manual probe example:
 `-runner grok-build -grok-model grok-4.6 -grok-effort xhigh`.
 Before every Grok job, Cardex runs `grok --no-auto-update models`. This validates the live login and required
 model list without opening a model session or sending the task prompt. The first trusted 401 holds the root
@@ -596,7 +596,7 @@ may create the two-leg continuation below.
 ### Cursor Fable 5 primary route and one-Sol terminal
 
 The account-specific Cursor model list is authoritative for Fable. The primary remains
-`claude-fable-5-thinking-max`. Fallback-profile A is fixed to Grok 4.6/xhigh; B is fixed to Sol/ultra and
+`claude-fable-5-thinking-max`. Fallback-profile A uses catalog-stable Grok/xhigh (an explicit `grok-4.6` pin or `stable`); B is fixed to Sol/ultra and
 simultaneously serves as adversarial reviewer, repairer, and terminal merger. The profile must have no third
 `merge` engine.
 
@@ -607,7 +607,7 @@ adjudication as one fresh prompt. Only confirmed quota, or an eligible proven qu
 incomplete/execution-environment presemantic failure, plus the complete three-axis proof atomically converts
 the card into:
 
-1. one read-only Grok Build `grok-4.6/xhigh` answer;
+1. one read-only Grok Build catalog-stable/`xhigh` answer (1.0.40 catalog default `grok-4.7`; an explicit `grok-4.6` pin stays);
 2. the one fresh Codex `gpt-5.6-sol/ultra` call, receiving the original problem/evidence plus Grok's answer,
    reconstructing goals, constraints, risks, and acceptance, attacking and repairing the proposal, and
    directly emitting the corrected terminal conclusion.

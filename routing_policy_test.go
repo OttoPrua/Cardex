@@ -426,9 +426,17 @@ func TestOwnerRouteConfigRejectsIdentityDrift(t *testing.T) {
 	})
 	t.Run("Grok model identity", func(t *testing.T) {
 		cfg := policyTestConfig()
-		cfg.GrokBuild.Model = "grok-4.5"
-		if err := validateGrokBuild(cfg); err == nil {
-			t.Fatal("owner tier routes must reject a non-4.6 Grok model")
+		for _, model := range []string{"grok-4.6", "grok-4.7", "grok-4.8", grokStableSelector} {
+			cfg.GrokBuild.Model = model
+			if err := validateGrokBuild(cfg); err != nil {
+				t.Fatalf("standard stable Grok id %s must load: %v", model, err)
+			}
+		}
+		for _, model := range []string{"grok-4.5-build-fast", "grok-4.8-build-fast", "grok-4.7-preview", "not-a-grok"} {
+			cfg.GrokBuild.Model = model
+			if err := validateGrokBuild(cfg); err == nil {
+				t.Fatalf("owner tier routes must reject non-stable model %s", model)
+			}
 		}
 	})
 	t.Run("review identity", func(t *testing.T) {

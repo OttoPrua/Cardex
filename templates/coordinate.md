@@ -31,13 +31,13 @@
      C. 必要性测试：是否存在更简单机制满足同一底层需求；复杂度必须由已证明的需求支撑，否则选简单方案或把复杂度列为待裁；
    - 任务一律设 "fresh_steps": true（每步全新会话，谁来跑都一样）；只有确需延续某个既有会话上下文时才填 session_id 并去掉 fresh_steps；
    - 为每个任务选择来源档位。Final Owner 自动路由卡依赖已锁定的 `default_runner=codex`，emit JSON **省略 `runner`**；出现 `runner` 就表示人工显式 pin，不得被 resolver 改写。`model` 是来源档位，由同一张 Owner 路由表解析：
-     - **仅显式最难裁决**：`"model":"claude-fable-5","effort":"max","route_class":"general"` → Cursor Fable 5/thinking-max。Fable 是专用只读决策/方案综合，fresh 且只有一个 prompt；只有确认 quota 或 eligible 已证明的 quota/transport/stream-incomplete/execution-environment 前语义失败，才走一份只读 Grok 4.6/xhigh answer → 唯一一次 fresh Sol/ultra 对抗审查、修复并直接终局。没有 blind Sol answer B、Sol/max 第三腿、backend 默认或 review-of-review；未决 P0/P1/uncertainty held for Owner；
-     - **非 backend Opus**：Grok 4.6/xhigh primary → eligible 串行 Kimi K3/max fallback/review；只有 Grok-Kimi 分歧、验收失败或显式高风险升级才进入 Sol/xhigh；
-     - **backend Opus ordinary**：Grok 4.6/xhigh implementer → fresh Kimi K3/max 对抗审查/修复；确定性 20% 抽样、分歧或验收失败再进 Sol/xhigh；
-     - **backend Opus high-risk**：Grok 4.6/xhigh implementer → fresh Kimi K3/max 只读第二视角 → fresh Sol/max mandatory release gate；
+     - **仅显式最难裁决**：`"model":"claude-fable-5","effort":"max","route_class":"general"` → Cursor Fable 5/thinking-max。Fable 是专用只读决策/方案综合，fresh 且只有一个 prompt；只有确认 quota 或 eligible 已证明的 quota/transport/stream-incomplete/execution-environment 前语义失败，才走一份只读目录稳定 Grok/xhigh answer（CLI 1.0.40 默认 grok-4.7；显式 grok-4.6 钉保持） → 唯一一次 fresh Sol/ultra 对抗审查、修复并直接终局。没有 blind Sol answer B、Sol/max 第三腿、backend 默认或 review-of-review；未决 P0/P1/uncertainty held for Owner；
+     - **非 backend Opus**：目录稳定 Grok/xhigh primary → eligible 串行 Kimi K3/max fallback/review；只有 Grok-Kimi 分歧、验收失败或显式高风险升级才进入 Sol/xhigh；
+     - **backend Opus ordinary**：目录稳定 Grok/xhigh implementer → fresh Kimi K3/max 对抗审查/修复；确定性 20% 抽样、分歧或验收失败再进 Sol/xhigh；
+     - **backend Opus high-risk**：目录稳定 Grok/xhigh implementer → fresh Kimi K3/max 只读第二视角 → fresh Sol/max mandatory release gate；
      - **独立审核**：ordinary→fresh Kimi K3/max；critical/production 或缺失风险→fresh independent Sol/max，审核不递归；
-     - **Sonnet**：Grok 4.6/high → eligible Kimi K3/max fallback/review，无自动 Codex；
-     - **Haiku**：Grok 4.6/high。eligible overflow/fallback 只用 Kimi 或已证明的 OpenCode Go 轻量车道，无自动 Codex；`quality_sensitive` 仍可作为兼容元数据填写，不再抬升 effort；
+     - **Sonnet**：目录稳定 Grok/high → eligible Kimi K3/max fallback/review，无自动 Codex；
+     - **Haiku**：目录稳定 Grok/high。eligible overflow/fallback 只用 Kimi 或已证明的 OpenCode Go 轻量车道，无自动 Codex；`quality_sensitive` 仍可作为兼容元数据填写，不再抬升 effort；
      每张 sequence 卡必须填 `"route_class":"backend"` 或 `"route_class":"general"`，并填闭合 `"risk_class"`。backend high-risk 包括 identity/credential、DB/schema/migration、protocol/network execution、manifest/launchd、Control/authority、live cutover、security 与 funds；只有明确 `ordinary` 才走 ordinary，缺失/歧义按 high-risk。复杂 React/frontend refactor、accessibility 或 fixing 另写 `"specialized_frontend":true`，按 ordinary/high-risk 分别要求 fresh Sol/xhigh 或 Sol/max 最终门。不得从标题短小推断 ordinary；已有 session、remote、cross profile 与人工显式 pin 保持原身份；
      所有 eligible transition 必须严格串行，并同时证明 semantic/model/tool=0/0/0、调用前后 product/workspace 完全不变（含原 dirty tracked/untracked 字节）及零 writer/process residue；Grok 鉴权/权限保持原腿 held，绝不推进。Fable 不接受 semantic stall 或 invalid/acceptance failure 触发。任何 lineage 最多一个自动 Sol，自动 Codex provider-specific 用量达到 65% 或证据不可用即 held；只有带可见持久原因的 Owner-pinned critical bypass。Kimi CLI 与 OpenCode Go Kimi K3 只是容量冗余，不得把同一语义失败重放并计作独立意见；
    - 用 priority 表达先后：被依赖的排前（priority 更大），可并行的同级；

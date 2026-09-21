@@ -445,7 +445,8 @@ func TestReviewDivertEscalationUsesOrigDir(t *testing.T) {
 // 【杀的突变】把 runReviewSync 回退到只看 ctx.Err()/rescueWaitDelay 的旧代码 → sh 主体成功但
 // 孙进程吊管 → 返回"同步命令超时"→本测试立刻红。
 func TestReviewSyncMarkerSavesSuccessDespitePipeHoldRace(t *testing.T) {
-	t.Parallel()
+	// Serial: this test mutates package-global reviewSyncTimeout. Parallel tests
+	// that call runReviewSync must not observe the shortened deadline.
 	origTO := reviewSyncTimeout
 	origPoll := reviewSyncMarkerPoll
 	// ctx 800ms、sleep 100ms:主体在 ~200ms 完成 → marker 见证 ec=0 → watcher 立即整组击杀。

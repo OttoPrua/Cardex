@@ -15,6 +15,6 @@ Hard constraints:
 
 {{TASK}}
 
-## Grok 4.6/xhigh independent answer
+## Catalog-stable Grok/xhigh independent answer
 
 {{A}}

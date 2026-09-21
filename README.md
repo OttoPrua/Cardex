@@ -67,9 +67,9 @@ cardex board                 # Web 看板 http://127.0.0.1:8787
 |---|---|---|
 | `design-review` | 设计审核 session：只读审查代码/架构，产出 P0/P1/P2 分级报告 | 只读工具；默认来源档位 Opus，按 Opus 实际链派发 |
 | `prompt-assembly` | prompt 装配 session：调研项目后把目标拆成 prompt 序列，**产出的任务自动入队** | 只读工具；默认来源档位 Opus，按 Opus 实际链派发 |
-| `sequence` | 预设 prompt 序列：多个步骤在同一个会话中依次执行（`--resume` 串联，上下文连续） | acceptEdits；默认 Sonnet→Grok 4.6/high，eligible 串行接力 Kimi K3/max；复杂前端按风险追加 Sol 最终门 |
+| `sequence` | 预设 prompt 序列：多个步骤在同一个会话中依次执行（`--resume` 串联，上下文连续） | acceptEdits；默认 Sonnet→目录稳定 Grok/high（CLI 1.0.40 为 grok-4.7），eligible 串行接力 Kimi K3/max；复杂前端按风险追加 Sol 最终门 |
 | `coordinate` | 分工协调 session：读**实时**队列快照 + 各会话进度报告，把目标拆成分工任务（含模型建议）自动入队 | 只读工具；默认来源档位 Opus，按 Opus 实际链派发 |
-| `progress-pull` | 进度回收 session：`--resume` 某个会话，让它输出结构化进度报告并落盘 | 只读工具；默认 Haiku→Grok 4.6/high，eligible 接力仅 Kimi/既证 OpenCode Go 轻量车道 |
+| `progress-pull` | 进度回收 session：`--resume` 某个会话，让它输出结构化进度报告并落盘 | 只读工具；默认 Haiku→目录稳定 Grok/high（CLI 1.0.40 为 grok-4.7），eligible 接力仅 Kimi/既证 OpenCode Go 轻量车道 |
 
 任务可以链式衔接：`assemble`（装配）→ 产出 `sequence` 入队 → 执行完成 → `review_after` 自动入队一个 `design-review` 审查刚才的改动。
 
@@ -187,7 +187,7 @@ delegate bounded execution, and wake only on material changes.
 | `codex_tier_models` / `codex_tier_reasoning` | 见内置映射 | 只负责人工显式 Codex 与旧通用兼容径。Final Owner 模式移除全局 Codex fallback；每个自动 Sol 都是解析器显式 route gate，同一 lineage 最多一次 |
 | `grok_build_bin` / `grok_build` | 空 / 关闭 | Grok 主腿；`grok_build.max_parallel` 为独立并发上限，空/0 默认 24。模型、认证、代理和限额先做 value-blind preflight，失败不消耗语义 attempt |
 | `kimi_cli_opus.max_parallel` | 24 | Kimi 原生腿的独立并发上限；仍受全局 `max_parallel` 与写域互斥约束 |
-| `cursor_bin` / `cursor_model` / `cursor_fable` | 空 / 关闭 | 显式 Fable 主跑 `claude-fable-5-thinking-max`，始终是 general、只读决策/方案综合角色。仅确认 quota 或 eligible 已证明前语义失败后，串行一份只读 Grok 4.6/xhigh answer，再由唯一一次 fresh Sol/ultra 接收原问题/证据与 Grok 答案，从第一性重建、对抗并修复后直接终局；没有 blind Sol answer B、Sol/max 第三腿或 review-of-review，未决 P0/P1/uncertainty 转 Owner held |
+| `cursor_bin` / `cursor_model` / `cursor_fable` | 空 / 关闭 | 显式 Fable 主跑 `claude-fable-5-thinking-max`，始终是 general、只读决策/方案综合角色。仅确认 quota 或 eligible 已证明前语义失败后，串行一份只读 Grok 标准稳定版/xhigh（当前 4.7） answer，再由唯一一次 fresh Sol/ultra 接收原问题/证据与 Grok 答案，从第一性重建、对抗并修复后直接终局；没有 blind Sol answer B、Sol/max 第三腿或 review-of-review，未决 P0/P1/uncertainty 转 Owner held |
 | `antigravity_bin` / `antigravity` | 空 / 关闭 | `agy` 原生路由；复用本机 OAuth，动态选择 `agy models` 中最高实际 Opus。thinking 模型不另传 `--effort`；无 Opus 即 `MODEL_UNAVAILABLE` |
 | `gemini_*` | 仅历史兼容 | 旧卡仍可解码/展示；新卡、默认路由、fallback、workflow 与运行时执行全部拒绝 |
 | `engines` | {}（空） | 多订阅引擎档案（Kimi/GLM/MiniMax/MiMo/OpenCode Go/Ollama Cloud），`cardex engines add <名>` 并入预设，见[进阶指南](docs/guide.md#多订阅引擎engine-profileskimi--glm--minimax--mimo--opencode-go--ollama-cloud) |

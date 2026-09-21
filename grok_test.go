@@ -34,6 +34,26 @@ func TestMain(m *testing.M) {
 		if err := os.Chmod(grokHome, 0o700); err != nil {
 			return err
 		}
+		// Installed sync scripts resolve their three companion helpers under
+		// HOME/.cardex. Copy only those non-secret files into the isolated home;
+		// provider state and credentials must remain absent.
+		for _, name := range []string{"workspace-fingerprint.sh", "verify-mirror-fingerprint.sh", "verify-mirror-fingerprint.ps1"} {
+			src := filepath.Join(priorHome, ".claudego", name)
+			body, readErr := os.ReadFile(src)
+			if os.IsNotExist(readErr) {
+				continue // The installation sentinel reports missing helpers.
+			}
+			if readErr != nil {
+				return readErr
+			}
+			dest := filepath.Join(home, ".cardex", name)
+			if err := os.MkdirAll(filepath.Dir(dest), 0o700); err != nil {
+				return err
+			}
+			if err := os.WriteFile(dest, body, 0o700); err != nil {
+				return err
+			}
+		}
 		if err := os.Setenv("HOME", home); err != nil {
 			return err
 		}

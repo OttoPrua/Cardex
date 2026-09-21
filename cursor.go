@@ -469,6 +469,9 @@ func validateCursor(cfg *Config) error {
 	}
 	cfg.CursorBin = strings.TrimSpace(cfg.CursorBin)
 	cfg.CursorModel = strings.TrimSpace(cfg.CursorModel)
+	if err := validateCursorGrokSlug(cfg.CursorModel); err != nil {
+		return err
+	}
 	r := cfg.CursorFable
 	if r == nil || !r.Enabled {
 		return nil
@@ -491,8 +494,9 @@ func validateCursor(cfg *Config) error {
 	if prof.A.Kind != grokBuildRunnerName || strings.ToLower(strings.TrimSpace(prof.A.Effort)) != "xhigh" {
 		return fmt.Errorf("Cursor Fable 回退 profile 的 A 必须是 grok-build/xhigh")
 	}
-	if leg := crossPolicyLeg(cfg, prof.A); leg.Model != "grok-4.6" {
-		return fmt.Errorf("Cursor Fable 回退 profile 的 A 必须严格使用 grok-4.6/xhigh")
+	if leg := crossPolicyLeg(cfg, prof.A); !grokOwnerPolicyModelAllowed(leg.Model) {
+		return fmt.Errorf("Cursor Fable 回退 profile 的 A 必须是标准稳定 Grok id 或 %s，且 effort=xhigh；拒绝 %q",
+			grokStableSelector, leg.Model)
 	}
 	if prof.B.Kind != "codex" || strings.ToLower(strings.TrimSpace(prof.B.Effort)) != "ultra" {
 		return fmt.Errorf("Cursor Fable 回退 profile 的 B 必须是 codex Sol/ultra")

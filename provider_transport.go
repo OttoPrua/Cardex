@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,7 +52,7 @@ func providerChildEnv(home string, extra map[string]string) []string {
 	extraAllowed := map[string]bool{
 		"NO_COLOR": true, "KIMI_CODE_NO_AUTO_UPDATE": true, "KIMI_CODE_HOME": true,
 		"KIMI_MODEL_THINKING_EFFORT": true,
-		"GROK_HOME": true, "GROK_WORKFLOWS": true, "GROK_DISABLE_AUTOUPDATER": true,
+		"GROK_HOME":                  true, "GROK_WORKFLOWS": true, "GROK_DISABLE_AUTOUPDATER": true,
 		"GROK_MANAGED_BY_NPM": true,
 	}
 	for _, key := range keys {
@@ -212,6 +213,44 @@ func compareNumericVersion(a, b []int) int {
 	return 0
 }
 
+// Agy tries several authentication sources before its final OAuth provider.
+// Only a successful catalog process may supersede earlier auth-source failures;
+// later diagnostics, stdout errors and every failed exit remain authoritative.
+func antigravityCatalogDiagnostics(stdout, stderr string, runErr error) string {
+	if runErr != nil {
+		return stdout + "\n" + stderr
+	}
+	lines := strings.Split(stderr, "\n")
+	recovered := -1
+	for i, line := range lines {
+		lower := strings.ToLower(line)
+		if strings.Contains(lower, "server_oauth.go:") && strings.Contains(lower, "oauth: authenticated successfully as ") {
+			recovered = i
+		}
+	}
+	if recovered < 0 {
+		return stdout + "\n" + stderr
+	}
+	return stdout + "\n" + strings.Join(lines[recovered:], "\n")
+}
+
+// Current agy models writes one slug<TAB>display-name row per model.
+// Older catalogs/fixtures may use bare slugs. Arbitrary diagnostic prose is
+// never catalog evidence, even if it mentions the requested model verbatim.
+var antigravityCatalogIDRe = regexp.MustCompile(`^[a-z][a-z0-9._:-]*$`)
+var antigravityCatalogErrorRe = regexp.MustCompile(`(?im)^[EF][0-9]{4}\s|(?:^|\s)(?:error|fatal):|authentication failed|\b(?:unauthorized|forbidden)\b`)
+
+func antigravityAdvertisedModels(stdout string) string {
+	var ids []string
+	for _, line := range strings.Split(grokCatalogANSI.ReplaceAllString(stdout, ""), "\n") {
+		id := strings.TrimSpace(strings.SplitN(line, "\t", 2)[0])
+		if antigravityCatalogIDRe.MatchString(id) {
+			ids = append(ids, id)
+		}
+	}
+	return strings.Join(ids, "\n")
+}
+
 func runAntigravityPreflight(ctx context.Context, cfg *Config, t *Task, env []string) ProviderPreflightReadback {
 	checked := time.Now().UTC().Format(time.RFC3339Nano)
 	probeCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -224,20 +263,25 @@ func runAntigravityPreflight(ctx context.Context, cfg *Config, t *Task, env []st
 	if probeCtx.Err() == context.DeadlineExceeded {
 		err = probeCtx.Err()
 	}
-	state := classifyProviderPreflight(stdout.String()+"\n"+stderr.String(), err)
+	diagnostic := antigravityCatalogDiagnostics(stdout.String(), stderr.String(), err)
+	state := classifyProviderPreflight(diagnostic, err)
+	if state == providerReady && antigravityCatalogErrorRe.MatchString(diagnostic) {
+		state = providerTransportFailed
+	}
+	catalog := antigravityAdvertisedModels(stdout.String())
 	r := ProviderPreflightReadback{Runner: antigravityRunnerName, State: state, CheckedAt: checked}
 	if state != providerReady {
 		return r
 	}
 	if t != nil && strings.TrimSpace(t.AgyModel) != "" {
-		if modelListed(stdout.String(), t.AgyModel) {
+		if modelListed(catalog, t.AgyModel) {
 			r.SelectedModel = strings.TrimSpace(t.AgyModel)
 			return r
 		}
 		r.State = providerModelUnavailable
 		return r
 	}
-	if model, ok := highestAdvertisedOpus(stdout.String()); ok {
+	if model, ok := highestAdvertisedOpus(catalog); ok {
 		r.SelectedModel = model
 		return r
 	}

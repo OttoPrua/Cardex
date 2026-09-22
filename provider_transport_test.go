@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestProviderChildEnvProjectsOnlyTransportAndNativeHome(t *testing.T) {
@@ -110,5 +112,65 @@ func TestAntigravityPreflightDoesNotFallBackToSonnet(t *testing.T) {
 	r := runAntigravityPreflight(context.Background(), cfg, &Task{}, providerChildEnv(dir, nil))
 	if r.State != providerModelUnavailable || r.SelectedModel != "" {
 		t.Fatalf("missing Opus must hold MODEL_UNAVAILABLE without Sonnet substitution: %+v", r)
+	}
+}
+
+func TestAntigravityCatalogAuthRecoveryIsOrderedAndTerminal(t *testing.T) {
+	t.Parallel()
+	const model = "gemini-3.8-flash-high"
+	const catalog = model + "\tGemini 3.8 Flash (High)\n"
+	const startup = "W0922 18:52:15.000000 1 auth.go:101] not logged in\n"
+	const oauth = "I0922 18:52:16.006284 1 server_oauth.go:201] OAuth: authenticated successfully as test@example.invalid\n"
+	for _, tc := range []struct {
+		name, stdout, stderr string
+		exit                 int
+		want                 providerPreflightState
+	}{
+		{"recovered startup", catalog, startup + oauth, 0, providerReady},
+		{"recovered startup error", catalog, "E0922 18:52:15.000000 1 launchsteps.go:84] startup auth source failed\n" + startup + oauth, 0, providerReady},
+		{"final auth failure", catalog, startup + oauth + "login required\n", 0, providerAuthMissing},
+		{"final auth expired", catalog, startup + oauth + "401 unauthorized\n", 0, providerAuthExpiredRefreshable},
+		{"final error", catalog, startup + oauth + "E0922 18:52:17.000000 1 models.go:12] model catalog failed\n", 0, providerTransportFailed},
+		{"nonzero after success", catalog, oauth + "HTTP 503: service unavailable\n", 1, providerTransportFailed},
+		{"no success marker", catalog, startup, 0, providerAuthMissing},
+		{"keyring alone", catalog, startup + "I0922 18:52:16.006275 1 auth.go:148] ChainedAuth: authenticated via keyring (effective: keyring)\n", 0, providerAuthMissing},
+		{"stdout auth error", catalog + "login required\n", startup + oauth, 0, providerAuthMissing},
+		{"stdout error", catalog + "error: catalog incomplete\n", startup + oauth, 0, providerTransportFailed},
+		{"model mentioned in prose", "Requested model " + model + " is unavailable\n", startup + oauth, 0, providerModelUnavailable},
+		{"only near match", model + "-preview\tOther model\n", startup + oauth, 0, providerModelUnavailable},
+		{"missing model", "claude-opus-4-6-thinking\tOpus\n", startup + oauth, 0, providerModelUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			bin := filepath.Join(dir, "agy")
+			script := "#!/bin/sh\nprintf '%s' " + shSingleQuote(tc.stdout) + "\nprintf '%s' " + shSingleQuote(tc.stderr) + " >&2\nexit " + fmt.Sprint(tc.exit) + "\n"
+			if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			cfg := defaultConfig("")
+			cfg.AntigravityBin = bin
+			r := runAntigravityPreflight(context.Background(), cfg, &Task{AgyModel: model}, providerChildEnv(dir, nil))
+			if r.State != tc.want || (r.State == providerReady) != (r.SelectedModel == model) {
+				t.Fatalf("state=%s selected=%q want=%s", r.State, r.SelectedModel, tc.want)
+			}
+		})
+	}
+}
+
+func TestAntigravityCatalogTimeoutNeverAuthorizesCachedSuccess(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "agy")
+	script := "#!/bin/sh\nprintf '%s\\n' 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)'\nprintf '%s\\n' 'I0922 18:52:16.006284 1 server_oauth.go:201] OAuth: authenticated successfully as test@example.invalid' >&2\nexec sleep 5\n"
+	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaultConfig("")
+	cfg.AntigravityBin = bin
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	r := runAntigravityPreflight(ctx, cfg, &Task{AgyModel: "gemini-3.8-flash-high"}, providerChildEnv(dir, nil))
+	if r.State == providerReady || r.SelectedModel != "" {
+		t.Fatal("timeout authorized a provider model")
 	}
 }

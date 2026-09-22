@@ -366,6 +366,9 @@ func grokBuildEnabled(cfg *Config) bool {
 }
 
 func resolveGrokBuildModel(cfg *Config, t *Task) string {
+	if model := mixedNewGrokModel(cfg, t); model != "" {
+		return model
+	}
 	if t != nil {
 		if model := concreteGrokPin(t.GrokModel); model != "" {
 			return model
@@ -380,6 +383,9 @@ func resolveGrokBuildModel(cfg *Config, t *Task) string {
 }
 
 func resolveGrokBuildEffort(cfg *Config, t *Task) string {
+	if mixedNewGrokModel(cfg, t) != "" {
+		return "high"
+	}
 	if t != nil && strings.TrimSpace(t.GrokEffort) != "" {
 		return strings.ToLower(strings.TrimSpace(t.GrokEffort))
 	}

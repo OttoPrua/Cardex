@@ -1111,7 +1111,7 @@ func routeAttemptIdentity(cfg *Config, t *Task, remote bool) (provider, runner, 
 	case runner == grokBuildRunnerName:
 		model, effort = resolveGrokBuildModel(cfg, t), resolveGrokBuildEffort(cfg, t)
 	case runner == antigravityRunnerName:
-		model, effort = resolveAntigravityModel(cfg, t), resolveAntigravityEffort(cfg)
+		model, effort = resolveAntigravityModel(cfg, t), resolveAntigravityTaskEffort(cfg, t)
 	case runner == cursorRunnerName:
 		model = resolveCursorModel(cfg, t)
 		effort = cursorEffortFromModel(model)
@@ -1324,7 +1324,7 @@ func dispatchEventDetail(cfg *Config, t *Task, useCodex, remote bool) map[string
 	}
 	if t.Runner == antigravityRunnerName {
 		detail["agy_model"] = resolveAntigravityModel(cfg, t)
-		detail["agy_effort"] = resolveAntigravityEffort(cfg)
+		detail["agy_effort"] = resolveAntigravityTaskEffort(cfg, t)
 	}
 	if t.Runner == cursorRunnerName {
 		detail["cursor_model"] = resolveCursorModel(cfg, t)
@@ -1509,6 +1509,8 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 	remote := t.RemoteHost != ""
 	enforceRemoteHostPolicy(cfg, t)
 	switch {
+	case !remote && mixedOwnerTask(t) && (t.RouteReason == mixedRouteReason || t.RouteReason == mixedQuotaReason):
+		t.Runner = via
 	case remote:
 		t.Runner = "remote:" + t.RemoteHost
 		t.RouteReason = ""
@@ -1981,10 +1983,21 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			}
 		}
 
+		// Mixed subscription routing must not reinterpret auth/refusal/transport or a
+		// transient rate limit as spent subscription quota through the legacy limiter below.
+		if useGrokBuild && mixedOwnerTask(t) && (runErr != nil || (res != nil && res.IsError)) {
+			if _, allowed := classifyTaskPolicyFallbackFailure(t, via, res, combined, runErr); !allowed {
+				scan := policyFailureScanText(via, res, combined, runErr)
+				if policyUnsafeTerminal(scan) || mixedRefusalRe.MatchString(scan) || policyTransportRe.MatchString(scan) || grokBuildQuotaRe.MatchString(scan) {
+					return holdNativeExecution(root, t, via, "mixed_non_quota_failure", "no_quota_authority")
+				}
+			}
+		}
+
 		// Owner serial fallback gate. Classification happens only after invoke returned; the post-state
 		// fingerprint and process-group residue probe happen after that. queuePolicyFallback refuses a
 		// zero/forged authorization, so no next writer can be queued before all three proof axes pass.
-		if kind, candidateFailure := classifyPolicyFallbackFailure(via, res, combined, runErr); candidateFailure &&
+		if kind, candidateFailure := classifyTaskPolicyFallbackFailure(t, via, res, combined, runErr); candidateFailure &&
 			policyFallbackCandidate(cfg, t, via) {
 			if via == cursorRunnerName && !fableFallbackKindEligible(kind) {
 				// Semantic stalls and invalid/acceptance terminals do not authorize the Fable chain.
@@ -3564,6 +3577,7 @@ type emitTask struct {
 	Runner      string `json:"runner"`
 	// RouteClass 让协调器显式标注后端开发例外；空值由调度器对存量卡做确定性判定。
 	RouteClass string `json:"route_class"`
+	WorkClass  string `json:"work_class"`
 	// RiskClass is closed; backend omission remains valid input but resolves to high-risk.
 	RiskClass           string `json:"risk_class"`
 	QualitySensitive    bool   `json:"quality_sensitive"`
@@ -4613,6 +4627,9 @@ func enqueueEmitted(root string, cfg *Config, parent *Task, result string) ([]st
 		nt.FreshSteps = s.FreshSteps
 		if s.Model != "" {
 			nt.Model = s.Model
+		}
+		if s.WorkClass != "" {
+			nt.WorkClass = strings.ToLower(strings.TrimSpace(s.WorkClass))
 		}
 		nt.RouteClass = strings.ToLower(strings.TrimSpace(s.RouteClass))
 		if nt.RouteClass != "" && nt.RouteClass != routeClassGeneral && nt.RouteClass != routeClassBackend {

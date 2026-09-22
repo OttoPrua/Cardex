@@ -112,10 +112,17 @@ func closedOwnerTaskStateError(t *Task) error {
 		return fmt.Errorf("automatic Sol counters invalid: calls=%d invocations=%d",
 			t.AutomaticSolCalls, t.AutomaticSolInvocations)
 	}
-	if t.AutomaticCodex && t.AutomaticSolCalls != 1 {
+	if t.AutomaticCodex && !mixedCodexPrimary(t) && t.AutomaticSolCalls != 1 {
 		return fmt.Errorf("automatic_codex requires exactly one reserved Sol call")
 	}
-	if t.AutomaticCodex {
+	if mixedCodexPrimary(t) {
+		route, ok := resolveMixedOwnerRoute(nil, t)
+		if !ok || route.Name != t.OwnerRouteName || !t.AutomaticCodex || t.OwnerRouteLeg != 1 || t.OwnerRouteStage != routeStagePrimary ||
+			t.AutomaticSolCalls != 0 || t.AutomaticSolInvocations != 0 || !ownerRouteSnapshotLegMatches(t, route.Legs[0]) {
+			return fmt.Errorf("mixed automatic Codex primary identity invalid")
+		}
+	}
+	if t.AutomaticCodex && !mixedCodexPrimary(t) {
 		if t.PreferRunner != "codex" || t.ReviewAfter {
 			return fmt.Errorf("automatic_codex requires a direct Codex identity with review_after=false")
 		}
@@ -316,7 +323,7 @@ func reserveAutomaticSolCall(t *Task, stage string) error {
 }
 
 func beginAutomaticSolInvocation(t *Task) error {
-	if t == nil || !t.AutomaticCodex {
+	if t == nil || !t.AutomaticCodex || mixedCodexPrimary(t) {
 		return nil
 	}
 	if t.AutomaticSolCalls != 1 {

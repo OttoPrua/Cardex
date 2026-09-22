@@ -20,6 +20,12 @@ func ownerRoutingPolicyWaitReason(cfg *Config, t *Task) string {
 	if cfg == nil || !cfg.OwnerRoutingEnforced || t == nil {
 		return ""
 	}
+	if !validMixedWorkClass(t.WorkClass) {
+		return "invalid work_class"
+	}
+	if t.WorkClass != "" && !cfg.OwnerMixedRouting && t.OwnerRouteName == "" {
+		return "work_class requires owner_mixed_routing"
+	}
 	if invalidExplicitRouteClass(t) {
 		return fmt.Sprintf("route_class=%q 无效；仅允许 backend|general", t.RouteClass)
 	}
@@ -33,7 +39,16 @@ func ownerRoutingPolicyWaitReason(cfg *Config, t *Task) string {
 }
 
 func validateNewTaskRouteClass(cfg *Config, t *Task) error {
-	if t == nil || t.Type != typeSequence {
+	if t == nil {
+		return nil
+	}
+	if !validMixedWorkClass(t.WorkClass) {
+		return fmt.Errorf("invalid work_class %q", t.WorkClass)
+	}
+	if t.WorkClass != "" && (cfg == nil || !cfg.OwnerMixedRouting) {
+		return fmt.Errorf("work_class requires owner_mixed_routing")
+	}
+	if t.Type != typeSequence {
 		return nil
 	}
 	class := strings.ToLower(strings.TrimSpace(t.RouteClass))

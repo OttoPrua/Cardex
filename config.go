@@ -138,6 +138,7 @@ type Config struct {
 	// 通用调度器使用；开启时，Kimi/Grok/Cursor、全部风险/审核分支、显式 Sol gate 与 Fable
 	// reviewer-merger 任一缺失或漂移都拒绝加载，避免生产静默退回旧路线。
 	OwnerRoutingEnforced bool `json:"owner_routing_enforced,omitempty"`
+	OwnerMixedRouting    bool `json:"owner_mixed_routing,omitempty"`
 	// AutomaticCodexBudgetStopPercent is provider-specific to automatic Owner route gates. The final
 	// policy requires exactly 65: at or above it Cardex preserves the remaining ~35%; absent/stale
 	// usage_feed evidence fails closed. Explicit manual Codex pins remain outside this automatic budget.
@@ -818,6 +819,9 @@ func loadConfig(root string) (*Config, error) {
 	}
 	if err := validateDefaultRunner(cfg); err != nil {
 		return nil, fmt.Errorf("%s: %w", configPath(root), err)
+	}
+	if err := validateMixedOwnerConfig(cfg); err != nil {
+		return nil, err
 	}
 	if err := validateOwnerRoutingPolicy(cfg); err != nil {
 		return nil, fmt.Errorf("%s: %w", configPath(root), err)

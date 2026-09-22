@@ -951,7 +951,7 @@ func effectiveEffort(cfg *Config, t *Task) (effort, source string) {
 		}
 	}
 	if taskUsesAntigravity(t) {
-		return resolveAntigravityEffort(cfg), "agy_effort"
+		return resolveAntigravityTaskEffort(cfg, t), "agy_effort"
 	}
 	if taskUsesCursor(t) {
 		if resolved := cursorEffortFromModel(resolveCursorModel(cfg, t)); resolved != "" {
@@ -1055,6 +1055,9 @@ func ownerModelRoute(route ownerRoute) string {
 	if legacy || (route.Name == "sonnet" && len(route.Legs) > 1 && route.Legs[1].Runner == "codex") ||
 		(route.Name == "haiku" && len(route.Legs) > 1 && route.Legs[1].Runner == "codex") {
 		separator = " →（仅安全失败）"
+	}
+	if strings.HasPrefix(route.Name, "mixed_") {
+		separator = " →（仅已证明订阅额度耗尽，同模型/档位 Cursor 额度）"
 	}
 	result := strings.Join(parts, separator)
 	if route.Review != nil {
@@ -1302,6 +1305,9 @@ func toBrief(cfg *Config, t *Task, now time.Time) TaskBrief {
 		if route, ok := resolveOwnerRoute(cfg, t); ok && len(route.Legs) > 0 {
 			copyTask := *t
 			leg := route.Legs[0]
+			if strings.HasPrefix(route.Name, "mixed_") {
+				pinMixedOwnerPrimary(&copyTask, route)
+			}
 			copyTask.OwnerRouteName = route.Name
 			copyTask.OwnerRouteLeg = 1
 			copyTask.OwnerRouteStage = leg.Stage

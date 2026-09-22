@@ -77,7 +77,7 @@ func validateCursorGrokSlug(model string) error {
 	if strings.Contains(lower, "fast") {
 		return fmt.Errorf("cursor_model %q is a Fast variant and is not the current Cursor Grok default", model)
 	}
-	if lower == grokLegacyCursorDefault || cursorGrokCatalogModel(model) {
+	if lower == "cursor-grok-4.6-high" || lower == grokLegacyCursorDefault || cursorGrokCatalogModel(model) {
 		return nil
 	}
 	return fmt.Errorf("cursor_model %q is not a current catalog id (grok-4.7-low|medium|high|xhigh) or the historical pin %s", model, grokLegacyCursorDefault)
@@ -234,6 +234,10 @@ func probeGrokCatalogDefault(ctx context.Context, cfg *Config) (string, error) {
 // does not probe. The selector and an empty model probe once. A later call
 // sees the stored id and does not probe again.
 func freezeGrokAttemptModel(ctx context.Context, cfg *Config, t *Task) error {
+	if model := mixedNewGrokModel(cfg, t); model != "" {
+		t.GrokModel, t.GrokEffort = model, "high"
+		return nil
+	}
 	if t == nil {
 		return fmt.Errorf("Grok catalog probe failed: no task")
 	}
@@ -359,7 +363,7 @@ func grokExplicitTaskPin(t *Task) bool {
 	if t == nil || !grokModelIsConcrete(t.GrokModel) {
 		return false
 	}
-	if t.RouteReason == routeReasonGrokExplicit {
+	if t.RouteReason == routeReasonGrokExplicit || (mixedOwnerTask(t) && t.RouteReason == mixedRouteReason) {
 		return true
 	}
 	return t.RunnerExplicit && t.PreferRunner == grokBuildRunnerName

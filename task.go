@@ -126,6 +126,7 @@ type Task struct {
 	// Control/authority 与 live cutover；general 明确非 backend。显式值权威；空值仅对 eligible
 	// implementation/sequence 存量卡做保守文本兼容判定，不覆盖 session/remote/cross/显式 pin。
 	RouteClass string `json:"route_class,omitempty"`
+	WorkClass  string `json:"work_class,omitempty"`
 	// RouteReason 记录最近一次实际派发为何选择该执行器。策略安全接力的 pending 值保证
 	// 同一卡不会在冷却到点后又弹回上一腿；同时供看板/事件按实际组合复盘。
 	RouteReason string `json:"route_reason,omitempty"`
@@ -168,7 +169,8 @@ type Task struct {
 	// sampling, or the specialized frontend gate. Unknown values never authorize a Codex call.
 	SolEscalationReason string `json:"sol_escalation_reason,omitempty"`
 	// AutomaticCodex distinguishes an explicit Owner route gate from a global Codex fallback. The lineage
-	// counter enforces one automatic Sol call, including Fable. A budget bypass is valid only when its
+	// counter enforces one historical automatic Sol review call, including Fable.
+	// Mixed primary Astra/Sol shares the budget flag but retains ordinary task attempt/step limits. A budget bypass is valid only when its
 	// durable OwnerCriticalBypassReason is non-empty and the effective risk is high/critical/production.
 	AutomaticCodex    bool `json:"automatic_codex,omitempty"`
 	AutomaticSolCalls int  `json:"automatic_sol_calls,omitempty"`
@@ -474,6 +476,9 @@ func newTask(root string, cfg *Config, typ, title, dir string, prompts []string,
 		t.Effort = td.Effort
 	}
 	applyDefaultRunner(cfg, t)
+	if cfg != nil && cfg.OwnerMixedRouting {
+		t.WorkClass = defaultMixedWorkClass(typ)
+	}
 	return t
 }
 

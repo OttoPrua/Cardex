@@ -36,6 +36,13 @@ func resolveAntigravityEffort(cfg *Config) string {
 	return strings.ToLower(strings.TrimSpace(cfg.Antigravity.Effort))
 }
 
+func resolveAntigravityTaskEffort(cfg *Config, t *Task) string {
+	if mixedOwnerTask(t) && t.EffortExplicit {
+		return t.Effort
+	}
+	return resolveAntigravityEffort(cfg)
+}
+
 func parseAntigravityJSON(raw []byte) *claudeResult {
 	res := &claudeResult{Type: "result"}
 	var object map[string]json.RawMessage
@@ -77,12 +84,13 @@ func parseAntigravityJSON(raw []byte) *claudeResult {
 
 func antigravityArgs(cfg *Config, t *Task, model, prompt string) []string {
 	mode := "plan"
-	if t.Type == typeSequence && !t.SkipPermissions {
+	if t.Type == typeSequence && !t.SkipPermissions && !(mixedOwnerTask(t) && t.WorkClass == "management") {
 		mode = "accept-edits"
 	}
 	args := []string{"--output-format", "json", "--mode", mode, "--model", model}
 	if !strings.Contains(strings.ToLower(model), "thinking") {
-		args = append(args, "--effort", resolveAntigravityEffort(cfg))
+		effort := resolveAntigravityTaskEffort(cfg, t)
+		args = append(args, "--effort", effort)
 	}
 	return append(args, "--disable-slash-commands", "--print", prompt)
 }

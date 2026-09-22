@@ -1,5 +1,7 @@
 # cardex
 
+新 Owner 混合路由（Astra / Sol / 原生 Grok / Gemini 管理）：见 [配置、精确模型及只读验收命令](MIXED_ROUTING.md)。
+
 **中文** | [English](README.en.md)
 
 [![LINUX DO](https://img.shields.io/badge/LINUX%20DO-社区分享-ffb003?logo=discourse&logoColor=white)](https://linux.do)

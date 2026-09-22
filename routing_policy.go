@@ -160,6 +160,9 @@ func resolveOwnerRoute(cfg *Config, t *Task) (ownerRoute, bool) {
 	if !cfg.OwnerRoutingEnforced {
 		return resolveLegacyOwnerRoute(cfg, t)
 	}
+	if t.WorkClass != "" && (cfg.OwnerMixedRouting || mixedOwnerTask(t)) {
+		return resolveMixedOwnerRoute(cfg, t)
+	}
 	risk := effectiveOwnerRiskClass(t)
 	kimiLeg := func(stage string, readOnly bool) policyLeg {
 		return policyLeg{Runner: kimiCLIRunnerName, Model: strings.TrimSpace(cfg.KimiCLIOpus.Model),
@@ -355,7 +358,7 @@ func validateOwnerRoutingPolicy(cfg *Config) error {
 
 func ownerPolicyRouteReason(reason string) bool {
 	switch reason {
-	case routeReasonCursorFable, routeReasonCursorFableFallbackPending, routeReasonCursorFableFallback,
+	case mixedRouteReason, mixedQuotaReason, routeReasonCursorFable, routeReasonCursorFableFallbackPending, routeReasonCursorFableFallback,
 		routeReasonKimiCLIOpus, routeReasonKimiToGrokPending, routeReasonKimiToGrok,
 		routeReasonGrokToKimiPending, routeReasonGrokToKimi,
 		routeReasonKimiToSolPending, routeReasonKimiToSol,
@@ -387,6 +390,7 @@ func resolveOwnerRouteReadback(cfg *Config, t *Task) (ownerRoute, bool) {
 	probe.CodexModel = ""
 	probe.XCodexModel = ""
 	probe.GeminiModel = ""
+	probe.AgyModel = ""
 	probe.OpenCodeModel = ""
 	probe.KimiModel = ""
 	probe.GrokModel = ""
@@ -416,7 +420,7 @@ func ownerRouteSnapshotLegMatches(t *Task, leg policyLeg) bool {
 			t.GrokModel == "" && t.GrokEffort == "" && t.CursorModel == "" &&
 			(t.Effort == "" || (t.Effort == leg.Effort && t.EffortExplicit))
 	case cursorRunnerName:
-		return t.PreferRunner == "codex" && t.CodexModel == "" && t.XCodexModel == "" &&
+		return (t.PreferRunner == "codex" || (mixedOwnerTask(t) && t.PreferRunner == cursorRunnerName)) && t.CodexModel == "" && t.XCodexModel == "" &&
 			t.GeminiModel == "" && t.AgyModel == "" && t.OpenCodeModel == "" && t.KimiModel == "" &&
 			t.GrokModel == "" && t.GrokEffort == "" && (t.CursorModel == "" || t.CursorModel == leg.Model)
 	case grokBuildRunnerName:
@@ -432,6 +436,9 @@ func ownerRouteSnapshotLegMatches(t *Task, leg policyLeg) bool {
 		}
 		// A frozen public id stays on this leg when config still says the selector.
 		return grokStandardStableID(taskModel) && !grokModelIsConcrete(legModel)
+	case antigravityRunnerName:
+		return t.PreferRunner == antigravityRunnerName && t.AgyModel == leg.Model && t.Effort == leg.Effort && t.EffortExplicit &&
+			t.CodexModel == "" && t.XCodexModel == "" && t.GeminiModel == "" && t.OpenCodeModel == "" && t.KimiModel == "" && t.GrokModel == "" && t.GrokEffort == "" && t.CursorModel == ""
 	case "codex":
 		return t.PreferRunner == "codex" && t.CodexModel == leg.Model && t.Effort == leg.Effort &&
 			t.EffortExplicit && t.XCodexModel == "" && t.GeminiModel == "" && t.AgyModel == "" &&
@@ -465,7 +472,7 @@ func resolvePinnedTaskLeg(cfg *Config, t *Task) (policyLeg, bool) {
 		model, _ := resolveGeminiModel(cfg, t)
 		return policyLeg{Runner: "gemini", Model: model}, true
 	case antigravityRunnerName:
-		return policyLeg{Runner: antigravityRunnerName, Model: resolveAntigravityModel(cfg, t), Effort: resolveAntigravityEffort(cfg)}, true
+		return policyLeg{Runner: antigravityRunnerName, Model: resolveAntigravityModel(cfg, t), Effort: resolveAntigravityTaskEffort(cfg, t)}, true
 	default:
 		return policyLeg{}, false
 	}
@@ -536,6 +543,9 @@ func applyOwnerRouteRequirements(t *Task, route ownerRoute) bool {
 func pinOwnerPrimaryRoute(t *Task, route ownerRoute) bool {
 	if t == nil || len(route.Legs) == 0 {
 		return false
+	}
+	if strings.HasPrefix(route.Name, "mixed_") {
+		return pinMixedOwnerPrimary(t, route)
 	}
 	leg := route.Legs[0]
 	t.OwnerRouteName = route.Name
@@ -651,6 +661,10 @@ func ownerPrimaryDispatch(root string, cfg *Config, t *Task, now time.Time) (run
 		}
 	case grokBuildRunnerName:
 		if grokBuildReady(root, cfg, now) {
+			return leg.Runner, true
+		}
+	case antigravityRunnerName:
+		if antigravityEnabled(cfg) {
 			return leg.Runner, true
 		}
 	case "codex":
@@ -1131,6 +1145,9 @@ func policyFallbackCandidate(cfg *Config, t *Task, via string) bool {
 	if cfg == nil || t == nil {
 		return false
 	}
+	if mixedOwnerTask(t) {
+		return via == grokBuildRunnerName && t.OwnerRouteLeg == 1 && t.RouteReason == mixedRouteReason
+	}
 	switch via {
 	case cursorRunnerName:
 		return t.RouteReason == routeReasonCursorFable || cursorFablePolicyApplies(cfg, t)
@@ -1165,6 +1182,8 @@ func policyFallbackResolvedModel(cfg *Config, t *Task) string {
 		return resolveGrokBuildModel(cfg, t)
 	case kimiCLIRunnerName:
 		return resolveKimiCLIModel(cfg, t)
+	case cursorRunnerName:
+		return resolveCursorModel(cfg, t)
 	case "codex":
 		return resolveCodexModel(cfg, t)
 	default:
@@ -1181,6 +1200,8 @@ func policyFallbackResolvedEffort(cfg *Config, t *Task) string {
 		return resolveGrokBuildEffort(cfg, t)
 	case kimiCLIRunnerName:
 		return resolveKimiCLIEffort(cfg, t)
+	case cursorRunnerName:
+		return cursorEffortFromModel(resolveCursorModel(cfg, t))
 	case "codex":
 		return resolveCodexReasoning(cfg, t)
 	default:
@@ -1207,7 +1228,12 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 	}
 	nextIndex := t.OwnerRouteLeg
 	next := route.Legs[nextIndex]
-	if !independentModelOpinion(current, next) {
+	if mixedOwnerTask(t) {
+		if kind != fallbackQuota || current.Runner != grokBuildRunnerName || next.Runner != cursorRunnerName ||
+			current.Effort != "high" || next.Effort != "high" || mixedCursorEquivalent(current.Model) != next.Model {
+			return fmt.Errorf("mixed fallback requires quota and exact equivalent Grok model/effort")
+		}
+	} else if !independentModelOpinion(current, next) {
 		return fmt.Errorf("fallback blocked: provider redundancy is not an independent model opinion")
 	}
 	// Clear every provider-specific pin before freezing the next leg. The route snapshot and last
@@ -1225,6 +1251,9 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 	t.Effort = ""
 	t.EffortExplicit = false
 	switch next.Runner {
+	case cursorRunnerName:
+		t.PreferRunner, t.CursorModel = cursorRunnerName, next.Model
+		t.RouteReason = mixedQuotaReason
 	case grokBuildRunnerName:
 		t.PreferRunner = grokBuildRunnerName
 		t.GrokModel, t.GrokEffort = concreteGrokPin(next.Model), next.Effort

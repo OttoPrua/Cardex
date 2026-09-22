@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"reflect"
@@ -746,37 +747,46 @@ func TestGrokDiagnosticsTaskEventReadback(t *testing.T) {
 	text := `{"type":"text","data":"` + grokDiagnosticCanary + `"}`
 	end := grok105PublicEnd
 	valid := text + "\n" + end
+	var capped strings.Builder
+	capped.WriteString(`{"type":"metadata"`)
+	for i := 0; i < grokRejectUnknownKeyCap+8; i++ {
+		fmt.Fprintf(&capped, `,"k%d_%s":{"nested_%s":"%s"}`, i, grokDiagnosticCanary, grokDiagnosticCanary, grokDiagnosticCanary)
+	}
+	capped.WriteString(`}`)
 	for _, tc := range []struct {
 		name, stdout, stderr, defect, source, stop string
 		ends, legacyEnds                           int
 		complete, success                          bool
+		line, event, unknown                       int
+		evType, schema, field, jsonType            string
 	}{
-		{"valid public", valid, "", "none", "none", "end_turn", 1, 1, true, true},
-		{"valid usage metadata tail", valid + "\n" + grok105PublicUsage + "\n" + grok105ClosedMetadata, "", "none", "none", "end_turn", 1, 1, true, true},
-		{"ancillary stderr", valid, "warning " + grokDiagnosticCanary, "none", "none", "end_turn", 1, 1, true, true},
-		{"closed stderr metadata", valid, grok105ClosedMetadata, "none", "none", "end_turn", 1, 1, true, true},
-		{"missing end", text, "", "missing_end", "observation", "missing", 0, 0, true, false},
-		{"duplicate end", valid + "\n" + end, "", "duplicate_end", "stdout", "end_turn", 2, 1, true, false},
-		{"third end counted", valid + "\n" + end + "\n" + end, "", "duplicate_end", "stdout", "end_turn", 3, 1, true, false},
-		{"bad end shape", text + "\n" + `{"type":"end","stopReason":"end_turn","message":"` + grokDiagnosticCanary + `"}`, "", "invalid_end_shape", "stdout", "end_turn", 1, 1, true, false},
-		{"abnormal end", text + "\n" + strings.Replace(end, "end_turn", "max_tokens", 1), "", "abnormal_stop_reason", "stdout", "max_tokens", 1, 1, true, false},
-		{"private stop reason", text + "\n" + strings.Replace(end, "end_turn", grokDiagnosticCanary, 1), "", "abnormal_stop_reason", "stdout", "unknown", 1, 1, true, false},
-		{"bad end decode", text + "\n" + `{"type":"end","stopReason":123}`, "", "event_decode_before_end", "stdout", "invalid_type", 1, 0, true, false},
-		{"bad json before end", text + "\n" + grokDiagnosticCanary + "\n" + end, "", "malformed_json_before_end", "stdout", "end_turn", 1, 1, true, false},
-		{"bad json after end", valid + "\n" + grokDiagnosticCanary, "", "malformed_json_after_end", "stdout", "end_turn", 1, 1, true, false},
-		{"missing type before end", text + "\n" + `{"private":"` + grokDiagnosticCanary + `"}` + "\n" + end, "", "missing_type_before_end", "stdout", "end_turn", 1, 1, true, false},
-		{"missing type after end", valid + "\n" + `{"private":"` + grokDiagnosticCanary + `"}`, "", "missing_type_after_end", "stdout", "end_turn", 1, 1, true, false},
-		{"unknown before end", text + "\n" + `{"type":"` + grokDiagnosticCanary + `","rawInput":{"secret":"` + grokDiagnosticCanary + `"}}` + "\n" + end, "", "unknown_event_before_end", "stdout", "end_turn", 1, 1, true, false},
-		{"unknown after end", valid + "\n" + `{"type":"` + grokDiagnosticCanary + `"}`, "", "disallowed_event_after_end", "stdout", "end_turn", 1, 1, true, false},
-		{"invalid shape before end", text + "\n" + `{"type":"metadata","data":"` + grokDiagnosticCanary + `"}` + "\n" + end, "", "invalid_event_shape_before_end", "stdout", "end_turn", 1, 1, true, false},
-		{"invalid shape after end", valid + "\n" + `{"type":"usage","usage":"` + grokDiagnosticCanary + `"}`, "", "event_decode_after_end", "stdout", "end_turn", 1, 1, true, false},
-		{"stderr semantic merge", valid, text, "disallowed_event_after_end", "stderr", "end_turn", 1, 1, true, false},
-		{"stderr duplicate merge", valid, end, "duplicate_end", "stderr", "end_turn", 2, 1, true, false},
-		{"stderr malformed merge", valid, `{"private":"` + grokDiagnosticCanary, "malformed_json_after_end", "stderr", "end_turn", 1, 1, true, false},
-		{"CRLF source boundary", strings.ReplaceAll(valid, "\n", "\r\n") + "\r\n", text, "disallowed_event_after_end", "stderr", "end_turn", 1, 1, true, false},
-		{"stdout scanner loss", text + "\n" + strings.Repeat("x", 4*1024*1024) + "\n" + end, "", "scanner_loss", "stdout", "missing", 0, 0, false, false},
-		{"stderr parser scanner loss", valid, `{"type":"` + strings.Repeat("x", 4*1024*1024) + `"}`, "scanner_loss", "stderr", "end_turn", 1, 1, false, false},
-		{"stderr adapter scanner loss", valid, strings.Repeat("x", 8*1024*1024), "stderr_scanner_loss", "stderr", "end_turn", 1, 1, true, false},
+		{"valid public", valid, "", "none", "none", "end_turn", 1, 1, true, true, 0, 0, 0, "none", "none", "none", "none"},
+		{"valid usage metadata tail", valid + "\n" + grok105PublicUsage + "\n" + grok105ClosedMetadata, "", "none", "none", "end_turn", 1, 1, true, true, 0, 0, 0, "none", "none", "none", "none"},
+		{"ancillary stderr", valid, "warning " + grokDiagnosticCanary, "none", "none", "end_turn", 1, 1, true, true, 0, 0, 0, "none", "none", "none", "none"},
+		{"closed stderr metadata", valid, grok105ClosedMetadata, "none", "none", "end_turn", 1, 1, true, true, 0, 0, 0, "none", "none", "none", "none"},
+		{"missing end", text, "", "missing_end", "observation", "missing", 0, 0, true, false, 0, 0, 0, "none", "none", "none", "none"},
+		{"duplicate end", valid + "\n" + end, "", "duplicate_end", "stdout", "end_turn", 2, 1, true, false, 3, 3, 0, "end", "duplicate_end", "none", "none"},
+		{"third end counted", valid + "\n" + end + "\n" + end, "", "duplicate_end", "stdout", "end_turn", 3, 1, true, false, 3, 3, 0, "end", "duplicate_end", "none", "none"},
+		{"bad end shape", text + "\n" + `{"type":"end","stopReason":"end_turn","message":"` + grokDiagnosticCanary + `"}`, "", "invalid_end_shape", "stdout", "end_turn", 1, 1, true, false, 2, 2, 0, "end", "unexpected_field", "message", "string"},
+		{"abnormal end", text + "\n" + strings.Replace(end, "end_turn", "max_tokens", 1), "", "abnormal_stop_reason", "stdout", "max_tokens", 1, 1, true, false, 2, 2, 0, "end", "abnormal_stop", "stopReason", "string"},
+		{"private stop reason", text + "\n" + strings.Replace(end, "end_turn", grokDiagnosticCanary, 1), "", "abnormal_stop_reason", "stdout", "unknown", 1, 1, true, false, 2, 2, 0, "end", "abnormal_stop", "stopReason", "string"},
+		{"bad end decode", text + "\n" + `{"type":"end","stopReason":123}`, "", "event_decode_before_end", "stdout", "invalid_type", 1, 0, true, false, 2, 2, 0, "end", "type_mismatch", "stopReason", "number"},
+		{"bad json before end", text + "\n" + grokDiagnosticCanary + "\n" + end, "", "malformed_json_before_end", "stdout", "end_turn", 1, 1, true, false, 2, 2, 0, "none", "malformed_json", "none", "none"},
+		{"bad json after end", valid + "\n" + grokDiagnosticCanary, "", "malformed_json_after_end", "stdout", "end_turn", 1, 1, true, false, 3, 3, 0, "none", "malformed_json", "none", "none"},
+		{"missing type before end", text + "\n" + `{"private":"` + grokDiagnosticCanary + `"}` + "\n" + end, "", "missing_type_before_end", "stdout", "end_turn", 1, 1, true, false, 2, 2, 1, "absent", "missing_type", "type", "absent"},
+		{"missing type after end", valid + "\n" + `{"private":"` + grokDiagnosticCanary + `"}`, "", "missing_type_after_end", "stdout", "end_turn", 1, 1, true, false, 3, 3, 1, "absent", "missing_type", "type", "absent"},
+		{"unknown before end", text + "\n" + `{"type":"` + grokDiagnosticCanary + `","rawInput":{"secret":"` + grokDiagnosticCanary + `"}}` + "\n" + end, "", "unknown_event_before_end", "stdout", "end_turn", 1, 1, true, false, 2, 2, 0, "unknown", "unknown_event", "none", "none"},
+		{"unknown after end", valid + "\n" + `{"type":"` + grokDiagnosticCanary + `"}`, "", "disallowed_event_after_end", "stdout", "end_turn", 1, 1, true, false, 3, 3, 0, "unknown", "disallowed_after_end", "none", "none"},
+		{"invalid shape before end", text + "\n" + `{"type":"metadata","data":"` + grokDiagnosticCanary + `"}` + "\n" + end, "", "invalid_event_shape_before_end", "stdout", "end_turn", 1, 1, true, false, 2, 2, 0, "metadata", "unexpected_field", "data", "string"},
+		{"unknown key cap", text + "\n" + capped.String() + "\n" + end, "", "invalid_event_shape_before_end", "stdout", "end_turn", 1, 1, true, false, 2, 2, grokRejectUnknownKeyCap, "metadata", "unexpected_field", "unknown", "none"},
+		{"invalid shape after end", valid + "\n" + `{"type":"usage","usage":"` + grokDiagnosticCanary + `"}`, "", "event_decode_after_end", "stdout", "end_turn", 1, 1, true, false, 3, 3, 0, "usage", "type_mismatch", "usage", "string"},
+		{"stderr semantic merge", valid, text, "disallowed_event_after_end", "stderr", "end_turn", 1, 1, true, false, 3, 3, 0, "text", "disallowed_after_end", "none", "none"},
+		{"stderr duplicate merge", valid, end, "duplicate_end", "stderr", "end_turn", 2, 1, true, false, 3, 3, 0, "end", "duplicate_end", "none", "none"},
+		{"stderr malformed merge", valid, `{"private":"` + grokDiagnosticCanary, "malformed_json_after_end", "stderr", "end_turn", 1, 1, true, false, 3, 3, 0, "none", "malformed_json", "none", "none"},
+		{"CRLF source boundary", strings.ReplaceAll(valid, "\n", "\r\n") + "\r\n", text, "disallowed_event_after_end", "stderr", "end_turn", 1, 1, true, false, 4, 3, 0, "text", "disallowed_after_end", "none", "none"},
+		{"stdout scanner loss", text + "\n" + strings.Repeat("x", 4*1024*1024) + "\n" + end, "", "scanner_loss", "stdout", "missing", 0, 0, false, false, 2, 2, 0, "none", "scanner_loss", "none", "none"},
+		{"stderr parser scanner loss", valid, `{"type":"` + strings.Repeat("x", 4*1024*1024) + `"}`, "scanner_loss", "stderr", "end_turn", 1, 1, false, false, 3, 3, 0, "none", "scanner_loss", "none", "none"},
+		{"stderr adapter scanner loss", valid, strings.Repeat("x", 8*1024*1024), "stderr_scanner_loss", "stderr", "end_turn", 1, 1, true, false, 3, 3, 0, "none", "stderr_scanner_loss", "none", "none"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -800,6 +810,10 @@ func TestGrokDiagnosticsTaskEventReadback(t *testing.T) {
 			if tc.success && parsed.Result != grokDiagnosticCanary {
 				t.Fatal("diagnostic redaction must not change the existing business Result")
 			}
+			if !tc.success && strings.Contains(parsed.Result, grokDiagnosticCanary) {
+				t.Fatalf("failure result retained stream content: %q", parsed.Result)
+			}
+			grokAssertRejectLocus(t, parsed.GrokDiagnostics, tc.line, tc.event, tc.unknown, tc.evType, tc.schema, tc.field, tc.jsonType)
 			if err := runTaskVia(context.Background(), root, cfg, task, grokBuildRunnerName); err != nil {
 				t.Fatal(err)
 			}
@@ -823,6 +837,7 @@ func TestGrokDiagnosticsTaskEventReadback(t *testing.T) {
 				d.ObservedEndCount != tc.ends || d.ParserScanComplete != tc.complete || d.Subtype != grokBuildDiagnosticSubtype(parsed.Subtype) {
 				t.Fatalf("diagnostic mismatch: %+v", d)
 			}
+			grokAssertRejectLocus(t, d, tc.line, tc.event, tc.unknown, tc.evType, tc.schema, tc.field, tc.jsonType)
 			if d.ObservationOrder != "stdout_then_stderr" || d.StdioEOF != "unknown" ||
 				d.ExitCode == nil || *d.ExitCode != 0 || d.Signal == nil || *d.Signal != 0 ||
 				d.TimedOut == nil || *d.TimedOut || d.ProcessError != "none" || d.WaitError != "none" {
@@ -863,10 +878,24 @@ func TestGrokDiagnosticsTaskEventReadback(t *testing.T) {
 	}
 }
 
+func grokAssertRejectLocus(t *testing.T, d *grokBuildDiagnostics, line, event, unknown int, evType, schema, field, jsonType string) {
+	t.Helper()
+	if d == nil {
+		t.Fatal("missing diagnostics")
+	}
+	if d.RejectLine != line || d.RejectEvent != event || d.RejectUnknownKeys != unknown ||
+		d.RejectEventType != evType || d.RejectSchema != schema || d.RejectField != field || d.RejectJSONType != jsonType {
+		t.Fatalf("reject locus line=%d event=%d type=%s schema=%s field=%s json=%s unknown=%d, want line=%d event=%d type=%s schema=%s field=%s json=%s unknown=%d",
+			d.RejectLine, d.RejectEvent, d.RejectEventType, d.RejectSchema, d.RejectField, d.RejectJSONType, d.RejectUnknownKeys,
+			line, event, evType, schema, field, jsonType, unknown)
+	}
+}
+
 func grokAssertSafeDiagnostics(t *testing.T, raw []byte) {
 	t.Helper()
 	for _, secret := range []string{grokDiagnosticCanary, "message-public-private", "session-public-private",
-		"request-public-private", "signature-public-private", "rawInput", "secret", "grok-4.6"} {
+		"request-public-private", "signature-public-private", "rawInput", "secret", "grok-4.6",
+		"invalid character", "cannot unmarshal", "looking for beginning of value"} {
 		if strings.Contains(string(raw), secret) {
 			t.Fatalf("new diagnostics retained private material %q: %s", secret, raw)
 		}
@@ -993,4 +1022,122 @@ func TestGrokDiagnosticsUnknownProcessFactsAndClosedValues(t *testing.T) {
 			t.Fatalf("stop reason field type was not controlled: %q", got)
 		}
 	}
+}
+
+func TestGrokStreamRejectFirstLocusPrivacyAndBusinessBytes(t *testing.T) {
+	t.Parallel()
+	const secret = "STREAM_REJECT_SECRET_DO_NOT_RETAIN"
+	const secretKey = "type_mismatch_" + secret
+	end := grok105PublicEnd
+	legalText := `{"type":"text","data":"LEGAL_OK"}`
+	legal := parseGrokBuildJSONL(legalText + "\n" + end)
+	if legal.Result != "LEGAL_OK" || legal.IsError || !legal.ObservationComplete || legal.Subtype != "" ||
+		legal.TerminalEvents != 1 || legal.SemanticEvents == 0 {
+		t.Fatalf("legal stream business bytes changed: %+v", legal)
+	}
+	grokAssertRejectLocus(t, legal.GrokDiagnostics, 0, 0, 0, "none", "none", "none", "none")
+
+	missing := parseGrokBuildJSONL(legalText)
+	// Missing end keeps the initial ObservationComplete flag and reports stream_incomplete.
+	if missing.Result != "Grok Build 流缺少终局 end 事件" || !missing.IsError || !missing.ObservationComplete ||
+		missing.Subtype != "grok_build_stream_incomplete" {
+		t.Fatalf("missing end business bytes changed: %+v", missing)
+	}
+	grokAssertRejectLocus(t, missing.GrokDiagnostics, 0, 0, 0, "none", "none", "none", "none")
+
+	malformedLine := "not-json " + secret
+	var syntax map[string]json.RawMessage
+	syntaxErr := json.Unmarshal([]byte(malformedLine), &syntax)
+	if syntaxErr == nil || !strings.Contains(syntaxErr.Error(), "invalid character") {
+		t.Fatalf("fixture must prove parser errors can carry text, err=%v", syntaxErr)
+	}
+	blank := parseGrokBuildJSONL("\n\n" + malformedLine + "\n" + end)
+	if blank.Result != "Grok Build 流包含未完整识别事件" || blank.Subtype != "grok_build_stream_incomplete" || blank.ObservationComplete {
+		t.Fatalf("malformed business bytes changed: %+v", blank)
+	}
+	grokAssertRejectLocus(t, blank.GrokDiagnostics, 3, 1, 0, "none", "malformed_json", "none", "none")
+	grokAssertDiagnosticClosed(t, blank.GrokDiagnostics, secret, "not-json", "invalid character")
+
+	first := `{"type":"metadata","data":"` + secret + `"}`
+	later := `{"type":"text","data":{"nested_` + secret + `":"` + secret + `"}}`
+	stickyShape := parseGrokBuildJSONL(first + "\n\n" + later + "\n" + end)
+	if stickyShape.Result != "Grok Build 流包含未完整识别事件" || stickyShape.TerminalEvents != 1 {
+		t.Fatalf("first shape failure changed the terminal: %+v", stickyShape)
+	}
+	grokAssertRejectLocus(t, stickyShape.GrokDiagnostics, 1, 1, 0, "metadata", "unexpected_field", "data", "string")
+	grokAssertDiagnosticClosed(t, stickyShape.GrokDiagnostics, secret, "nested_"+secret)
+
+	legacy := `{"type":"tool"}`
+	laterShape := `{"type":"metadata","` + secretKey + `":"` + secret + `"}`
+	legacyFirst := parseGrokBuildJSONL(legacy + "\n" + laterShape + "\n" + end)
+	if legacyFirst.GrokDiagnostics.TerminalDefect != "invalid_event_shape_before_end" ||
+		legacyFirst.Subtype != "grok_build_stream_incomplete" || legacyFirst.Result != "Grok Build 流包含未完整识别事件" {
+		t.Fatalf("legacy closure classification changed: %+v diag=%+v", legacyFirst, legacyFirst.GrokDiagnostics)
+	}
+	grokAssertRejectLocus(t, legacyFirst.GrokDiagnostics, 1, 1, 0, "tool", "legacy_tool", "type", "string")
+	grokAssertDiagnosticClosed(t, legacyFirst.GrokDiagnostics, secret, secretKey)
+
+	call := `{"status":"pending","toolCallId":"` + secret + `","toolName":"read_file","type":"tool_call"}`
+	open := parseGrokBuildJSONL(call + "\n" + `{"type":"text","data":"` + secret + `"}` + "\n" + end)
+	if open.Subtype != "grok_build_stream_incomplete" || open.ObservationComplete || open.TerminalEvents != 1 ||
+		open.Result != "Grok Build 流包含未完整识别事件" || strings.Contains(open.Result, secret) {
+		t.Fatalf("unclosed tool business bytes changed: %+v", open)
+	}
+	grokAssertRejectLocus(t, open.GrokDiagnostics, 3, 3, 0, "end", "tool_unclosed", "none", "none")
+	grokAssertDiagnosticClosed(t, open.GrokDiagnostics, secret)
+
+	decoded := parseGrokBuildJSONL(`{"type":"text","data":{"nested_` + secret + `":"` + secret + `"}}` + "\n" + end)
+	grokAssertRejectLocus(t, decoded.GrokDiagnostics, 1, 1, 0, "text", "type_mismatch", "data", "object")
+	grokAssertDiagnosticClosed(t, decoded.GrokDiagnostics, secret, "nested_"+secret)
+	if decoded.Subtype != "grok_build_stream_incomplete" || decoded.Result != "Grok Build 流包含未完整识别事件" {
+		t.Fatalf("decode failure business bytes changed: %+v", decoded)
+	}
+
+	typed := parseGrokBuildJSONL(`{"type":{"` + secretKey + `":"` + secret + `"}}` + "\n" + end)
+	grokAssertRejectLocus(t, typed.GrokDiagnostics, 1, 1, 0, "absent", "type_not_string", "type", "object")
+	grokAssertDiagnosticClosed(t, typed.GrokDiagnostics, secret, secretKey)
+
+	for _, wire := range []string{"absent", "none", "unknown", secret} {
+		got := parseGrokBuildJSONL(`{"type":"` + wire + `"}` + "\n" + end)
+		grokAssertRejectLocus(t, got.GrokDiagnostics, 1, 1, 0, "unknown", "unknown_event", "none", "none")
+		grokAssertDiagnosticClosed(t, got.GrokDiagnostics, secret)
+	}
+
+	badEnd := parseGrokBuildJSONL(legalText + "\n" + `{"type":"end","stopReason":"end_turn","message":"` + secret + `"}`)
+	if badEnd.Result != "Grok Build 未正常完成: 终局 end 事件无效或不是最后事件" || badEnd.Subtype != "grok_build_invalid_terminal" {
+		t.Fatalf("invalid end business bytes changed: %+v", badEnd)
+	}
+	grokAssertRejectLocus(t, badEnd.GrokDiagnostics, 2, 2, 0, "end", "unexpected_field", "message", "string")
+	grokAssertDiagnosticClosed(t, badEnd.GrokDiagnostics, secret)
+
+	plan := `{"type":"plan","entries":[{"content":"step","private_` + secret + `":"` + secret + `"}]}`
+	planned := parseGrokBuildJSONL(plan + "\n" + end)
+	grokAssertRejectLocus(t, planned.GrokDiagnostics, 1, 1, 1, "plan", "unexpected_field", "unknown", "none")
+	grokAssertDiagnosticClosed(t, planned.GrokDiagnostics, secret, "private_"+secret)
+	if planned.Subtype != "grok_build_stream_incomplete" || planned.ObservationComplete {
+		t.Fatalf("plan shape rejection changed acceptance: %+v", planned)
+	}
+
+	status := strings.Replace(call, "pending", "almost_"+secret, 1)
+	badStatus := parseGrokBuildJSONL(status + "\n" + end)
+	grokAssertRejectLocus(t, badStatus.GrokDiagnostics, 1, 1, 0, "tool_call", "tool_status", "status", "string")
+	grokAssertDiagnosticClosed(t, badStatus.GrokDiagnostics, secret, "almost_"+secret)
+
+	additive := parseGrokBuildJSONL(legalText + "\n" + grok105EndWithAdditiveMetadata(grok105PublicEnd))
+	grokAssertRejectLocus(t, additive.GrokDiagnostics, 2, 2, 4, "end", "unexpected_field", "unknown", "none")
+	grokAssertDiagnosticClosed(t, additive.GrokDiagnostics, "eventId", "traceId", "accounting_channel", grokOpaqueEndEventID, grokOpaqueEndTraceID, grokOpaqueEndChannel)
+}
+
+func grokAssertDiagnosticClosed(t *testing.T, d *grokBuildDiagnostics, forbidden ...string) {
+	t.Helper()
+	raw, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range forbidden {
+		if secret != "" && strings.Contains(string(raw), secret) {
+			t.Fatalf("diagnostics retained %q: %s", secret, raw)
+		}
+	}
+	grokAssertSafeDiagnostics(t, raw)
 }

@@ -957,6 +957,10 @@ func markGrokBuildInvalidTerminal(res *claudeResult) {
 
 // This projection contains only closed categories and observed numbers, never event values.
 // It is diagnostic only: TerminalEvents and all existing policy inputs retain their semantics.
+// Reject* is the first actual parser or closure defect in input order. Later events do not move
+// it merely because ObservationComplete stays false. Names that are not in the closed lists
+// become "unknown" and are counted; raw JSON, values, and parser error text are not retained.
+// These coordinates are not terminal acceptance evidence.
 type grokBuildDiagnostics struct {
 	Subtype            string `json:"subtype"`
 	TerminalDefect     string `json:"terminal_defect"`
@@ -971,13 +975,532 @@ type grokBuildDiagnostics struct {
 	TimedOut           *bool  `json:"timed_out"`
 	ProcessError       string `json:"process_error"`
 	WaitError          string `json:"wait_error"`
+	RejectLine         int    `json:"reject_line"`
+	RejectEvent        int    `json:"reject_event"`
+	RejectEventType    string `json:"reject_event_type"`
+	RejectSchema       string `json:"reject_schema"`
+	RejectJSONType     string `json:"reject_json_type"`
+	RejectField        string `json:"reject_field"`
+	RejectUnknownKeys  int    `json:"reject_unknown_keys"`
 }
 
-func (d *grokBuildDiagnostics) defect(category, source string) {
-	// First defect in parser input order, which is NOT cross-channel event chronology.
-	if d.TerminalDefect == "none" {
-		d.TerminalDefect, d.DefectSource = category, source
+// grokRejectUnknownKeyCap bounds how many non-allowlisted keys are counted.
+// Additional keys still fail closed; their names are not stored.
+const grokRejectUnknownKeyCap = 32
+
+// grokStreamReject is the content-free locus passed into the first-wins defect record.
+type grokStreamReject struct {
+	Line        int
+	Event       int
+	EventType   string
+	Schema      string
+	JSONType    string
+	Field       string
+	UnknownKeys int
+}
+
+func (r *grokStreamReject) fill(src grokStreamReject) {
+	r.Schema = src.Schema
+	r.Field = src.Field
+	r.JSONType = src.JSONType
+	r.UnknownKeys = src.UnknownKeys
+}
+
+var grokCanonicalFieldOrder = []string{
+	"type", "data", "message", "stopReason", "sessionId", "num_turns", "total_cost_usd",
+	"duration_ms", "usage", "toolCallId", "status", "content", "kind", "locations",
+	"rawInput", "rawOutput", "title", "toolName", "version", "commands", "tools", "entries",
+	"requestId", "modelUsage", "model_id", "chat_history", "total_cost_usd_ticks",
+	"signature", "messageId", "_meta", "priority", "error", "result", "text",
+}
+
+var grokCanonicalFields = func() map[string]struct{} {
+	out := make(map[string]struct{}, len(grokCanonicalFieldOrder))
+	for _, key := range grokCanonicalFieldOrder {
+		out[key] = struct{}{}
 	}
+	return out
+}()
+
+func grokCanonicalEventType(typ string) string {
+	switch typ {
+	case "text", "thinking", "thought", "reasoning", "plan",
+		"model", "model_start", "model_end",
+		"tool", "tool_use", "tool_result", "tool_call", "tool_call_update",
+		"start", "system", "metadata", "system.version", "available_commands",
+		"usage", "error", "end":
+		return typ
+	default:
+		return "unknown"
+	}
+}
+
+func grokClosedRejectEventType(v string) string {
+	switch v {
+	case "", "none":
+		return "none"
+	case "absent":
+		return "absent"
+	default:
+		return grokCanonicalEventType(v)
+	}
+}
+
+func grokClosedRejectSchema(v string) string {
+	switch v {
+	case "", "none":
+		return "none"
+	case "malformed_json", "missing_type", "type_not_string", "decode", "type_mismatch",
+		"missing_field", "unexpected_field", "invalid_meta", "invalid_nested", "invalid_shape",
+		"unknown_event", "duplicate_end", "abnormal_stop", "disallowed_after_end",
+		"legacy_tool", "tool_identity", "tool_status", "tool_unclosed",
+		"scanner_loss", "stderr_scanner_loss", "unknown":
+		return v
+	default:
+		return "unknown"
+	}
+}
+
+func grokClosedRejectJSONType(v string) string {
+	switch v {
+	case "string", "number", "object", "array", "boolean", "null", "absent", "none":
+		return v
+	case "":
+		return "none"
+	default:
+		return "invalid"
+	}
+}
+
+func grokObservedJSONType(raw json.RawMessage) string {
+	got := grokBuildJSONType(raw)
+	if got == "" {
+		return "absent"
+	}
+	return grokClosedRejectJSONType(got)
+}
+
+func grokClosedRejectField(v string) string {
+	switch v {
+	case "", "none":
+		return "none"
+	case "unknown":
+		return "unknown"
+	default:
+		if _, ok := grokCanonicalFields[v]; ok {
+			return v
+		}
+		return "unknown"
+	}
+}
+
+func grokUnknownKeyCount(fields map[string]json.RawMessage) int {
+	n := 0
+	for key := range fields {
+		if _, ok := grokCanonicalFields[key]; ok {
+			continue
+		}
+		n++
+		if n >= grokRejectUnknownKeyCap {
+			return grokRejectUnknownKeyCap
+		}
+	}
+	return n
+}
+
+func (d *grokBuildDiagnostics) defect(category, source string, rej grokStreamReject) {
+	// First defect in parser input order, which is NOT cross-channel event chronology.
+	// A later call, including one caused only by sticky ObservationComplete=false, does not move it.
+	if d == nil || d.TerminalDefect != "none" {
+		return
+	}
+	d.TerminalDefect, d.DefectSource = category, source
+	if rej.Line < 0 {
+		rej.Line = 0
+	}
+	if rej.Event < 0 {
+		rej.Event = 0
+	}
+	d.RejectLine = rej.Line
+	d.RejectEvent = rej.Event
+	d.RejectEventType = grokClosedRejectEventType(rej.EventType)
+	d.RejectSchema = grokClosedRejectSchema(rej.Schema)
+	d.RejectJSONType = grokClosedRejectJSONType(rej.JSONType)
+	d.RejectField = grokClosedRejectField(rej.Field)
+	n := rej.UnknownKeys
+	if n < 0 {
+		n = 0
+	}
+	if n > grokRejectUnknownKeyCap {
+		n = grokRejectUnknownKeyCap
+	}
+	d.RejectUnknownKeys = n
+}
+
+func grokDiagnoseExact(fields map[string]json.RawMessage, allowMeta bool, pairs ...string) grokStreamReject {
+	unknown := grokUnknownKeyCount(fields)
+	out := grokStreamReject{UnknownKeys: unknown, Schema: "invalid_shape"}
+	if allowMeta {
+		if raw, ok := fields["_meta"]; ok && !grokBuildBenignSyntheticMeta(fields) {
+			out.Schema = "invalid_meta"
+			out.Field = "_meta"
+			out.JSONType = grokObservedJSONType(raw)
+			return out
+		}
+	}
+	expected := make(map[string]string, len(pairs)/2)
+	order := make([]string, 0, len(pairs)/2)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		expected[pairs[i]] = pairs[i+1]
+		order = append(order, pairs[i])
+	}
+	for _, key := range order {
+		raw, ok := fields[key]
+		if !ok {
+			continue
+		}
+		got := grokBuildJSONType(raw)
+		if got != expected[key] {
+			out.Schema = "type_mismatch"
+			out.Field = key
+			out.JSONType = grokObservedJSONType(raw)
+			return out
+		}
+	}
+	for _, key := range order {
+		if _, ok := fields[key]; !ok {
+			out.Schema = "missing_field"
+			out.Field = key
+			out.JSONType = "absent"
+			return out
+		}
+	}
+	if field, jt, ok := grokFirstUnexpected(fields, expected, allowMeta); ok {
+		out.Schema = "unexpected_field"
+		out.Field = field
+		out.JSONType = jt
+		return out
+	}
+	return out
+}
+
+func grokFirstUnexpected(fields map[string]json.RawMessage, expected map[string]string, allowMeta bool) (string, string, bool) {
+	for _, key := range grokCanonicalFieldOrder {
+		raw, present := fields[key]
+		if !present {
+			continue
+		}
+		if _, isExpected := expected[key]; isExpected {
+			continue
+		}
+		if key == "_meta" && allowMeta && grokBuildBenignSyntheticMeta(fields) {
+			continue
+		}
+		return key, grokObservedJSONType(raw), true
+	}
+	for key := range fields {
+		if _, isExpected := expected[key]; isExpected {
+			continue
+		}
+		if _, canon := grokCanonicalFields[key]; canon {
+			continue
+		}
+		return "unknown", "none", true
+	}
+	return "", "", false
+}
+
+type grokShapeSpec struct {
+	allowMeta bool
+	pairs     []string
+}
+
+func grokShapeDistance(fields map[string]json.RawMessage, spec grokShapeSpec) (matched, missing, unexpected int) {
+	expected := make(map[string]string, len(spec.pairs)/2)
+	for i := 0; i+1 < len(spec.pairs); i += 2 {
+		expected[spec.pairs[i]] = spec.pairs[i+1]
+		raw, ok := fields[spec.pairs[i]]
+		if !ok {
+			missing++
+			continue
+		}
+		if grokBuildJSONType(raw) == spec.pairs[i+1] {
+			matched++
+		}
+	}
+	for key := range fields {
+		if key == "_meta" && spec.allowMeta && grokBuildBenignSyntheticMeta(fields) {
+			continue
+		}
+		if _, ok := expected[key]; ok {
+			continue
+		}
+		unexpected++
+	}
+	return matched, missing, unexpected
+}
+
+func grokPickShape(fields map[string]json.RawMessage, specs ...grokShapeSpec) grokStreamReject {
+	best := grokStreamReject{Schema: "invalid_shape", UnknownKeys: grokUnknownKeyCount(fields)}
+	bestScore, bestMissing, bestUnexpected := -1, 0, 0
+	for _, spec := range specs {
+		matched, missing, unexpected := grokShapeDistance(fields, spec)
+		diag := grokDiagnoseExact(fields, spec.allowMeta, spec.pairs...)
+		better := bestScore < 0 || matched > bestScore ||
+			(matched == bestScore && missing < bestMissing) ||
+			(matched == bestScore && missing == bestMissing && unexpected < bestUnexpected)
+		if better {
+			best = diag
+			bestScore, bestMissing, bestUnexpected = matched, missing, unexpected
+		}
+	}
+	return best
+}
+
+func grokDiagnoseToolCall(fields map[string]json.RawMessage) grokStreamReject {
+	return grokPickShape(fields,
+		grokShapeSpec{true, []string{
+			"content", "array", "kind", "string", "locations", "array", "rawInput", "object",
+			"status", "string", "title", "string", "toolCallId", "string", "toolName", "string",
+			"type", "string",
+		}},
+		grokShapeSpec{true, []string{
+			"status", "string", "toolCallId", "string", "toolName", "string", "type", "string",
+		}},
+	)
+}
+
+func grokDiagnoseUsage(fields map[string]json.RawMessage) grokStreamReject {
+	return grokPickShape(fields,
+		grokShapeSpec{true, []string{"signature", "string", "type", "string", "usage", "object"}},
+		grokShapeSpec{true, []string{
+			"messageId", "string", "signature", "string", "stopReason", "string",
+			"type", "string", "usage", "object",
+		}},
+	)
+}
+
+func grokDiagnoseCommands(fields map[string]json.RawMessage) grokStreamReject {
+	return grokPickShape(fields,
+		grokShapeSpec{false, []string{"commands", "array", "tools", "array", "type", "string"}},
+		grokShapeSpec{false, []string{"tools", "array", "type", "string"}},
+	)
+}
+
+func grokDiagnoseDecode(fields map[string]json.RawMessage) grokStreamReject {
+	unknown := grokUnknownKeyCount(fields)
+	type check struct {
+		key, kind string
+	}
+	for _, c := range []check{
+		{"data", "string"}, {"message", "string"}, {"stopReason", "string"},
+		{"sessionId", "string"}, {"num_turns", "number"}, {"total_cost_usd", "number"},
+		{"duration_ms", "number"}, {"usage", "usage"}, {"toolCallId", "string"},
+		{"status", "status"},
+	} {
+		raw, ok := fields[c.key]
+		if !ok {
+			continue
+		}
+		got := grokBuildJSONType(raw)
+		switch c.kind {
+		case "string":
+			if got != "string" {
+				return grokStreamReject{Schema: "type_mismatch", Field: c.key, JSONType: grokObservedJSONType(raw), UnknownKeys: unknown}
+			}
+		case "number":
+			if got != "number" {
+				return grokStreamReject{Schema: "type_mismatch", Field: c.key, JSONType: grokObservedJSONType(raw), UnknownKeys: unknown}
+			}
+		case "usage":
+			if got == "null" {
+				continue
+			}
+			if got != "object" {
+				return grokStreamReject{Schema: "type_mismatch", Field: "usage", JSONType: grokObservedJSONType(raw), UnknownKeys: unknown}
+			}
+			var usage grokBuildUsage
+			if json.Unmarshal(raw, &usage) != nil {
+				return grokStreamReject{Schema: "invalid_nested", Field: "usage", JSONType: "object", UnknownKeys: unknown}
+			}
+		case "status":
+			if got != "string" && got != "null" {
+				return grokStreamReject{Schema: "type_mismatch", Field: "status", JSONType: grokObservedJSONType(raw), UnknownKeys: unknown}
+			}
+		}
+	}
+	return grokStreamReject{Schema: "decode", UnknownKeys: unknown}
+}
+
+func grokDiagnoseEnd(fields map[string]json.RawMessage) grokStreamReject {
+	unknown := grokUnknownKeyCount(fields)
+	out := grokStreamReject{UnknownKeys: unknown, Schema: "invalid_shape"}
+	if _, ok := fields["type"]; !ok {
+		out.Schema, out.Field, out.JSONType = "missing_field", "type", "absent"
+		return out
+	}
+	if grokBuildJSONType(fields["type"]) != "string" {
+		out.Schema, out.Field, out.JSONType = "type_mismatch", "type", grokObservedJSONType(fields["type"])
+		return out
+	}
+	if _, ok := fields["stopReason"]; !ok {
+		out.Schema, out.Field, out.JSONType = "missing_field", "stopReason", "absent"
+		return out
+	}
+	if grokBuildJSONType(fields["stopReason"]) != "string" {
+		out.Schema, out.Field, out.JSONType = "type_mismatch", "stopReason", grokObservedJSONType(fields["stopReason"])
+		return out
+	}
+	_, hasRequest := fields["requestId"]
+	_, hasModel := fields["modelUsage"]
+	public := hasRequest || hasModel
+	if public && !hasRequest {
+		out.Schema, out.Field, out.JSONType = "missing_field", "requestId", "absent"
+		return out
+	}
+	if public && !hasModel {
+		out.Schema, out.Field, out.JSONType = "missing_field", "modelUsage", "absent"
+		return out
+	}
+	if raw, ok := fields["total_cost_usd_ticks"]; ok && !public {
+		out.Schema, out.Field, out.JSONType = "unexpected_field", "total_cost_usd_ticks", grokObservedJSONType(raw)
+		return out
+	}
+	for _, key := range []string{"content", "data", "error", "message", "rawInput", "rawOutput", "result", "text"} {
+		raw, ok := fields[key]
+		if ok && grokBuildJSONType(raw) != "" && grokBuildJSONType(raw) != "null" {
+			out.Schema, out.Field, out.JSONType = "unexpected_field", key, grokObservedJSONType(raw)
+			return out
+		}
+	}
+	for _, key := range []string{"kind", "locations", "title", "toolCallId", "toolName", "tools"} {
+		raw, ok := fields[key]
+		if ok && grokBuildJSONType(raw) != "" && grokBuildJSONType(raw) != "null" {
+			out.Schema, out.Field, out.JSONType = "unexpected_field", key, grokObservedJSONType(raw)
+			return out
+		}
+	}
+	known := map[string]string{
+		"type": "string", "stopReason": "string", "sessionId": "string",
+		"num_turns": "number", "total_cost_usd": "number", "duration_ms": "number",
+		"usage": "object", "requestId": "string", "modelUsage": "object",
+		"model_id": "string", "chat_history": "array", "total_cost_usd_ticks": "number",
+	}
+	for _, key := range []string{
+		"type", "stopReason", "sessionId", "num_turns", "total_cost_usd", "duration_ms",
+		"usage", "requestId", "modelUsage", "model_id", "chat_history", "total_cost_usd_ticks",
+	} {
+		raw, ok := fields[key]
+		if !ok {
+			continue
+		}
+		if grokBuildJSONType(raw) != known[key] {
+			out.Schema, out.Field, out.JSONType = "type_mismatch", key, grokObservedJSONType(raw)
+			return out
+		}
+	}
+	if raw, ok := fields["_meta"]; ok && !grokBuildBenignSyntheticMeta(fields) {
+		out.Schema, out.Field, out.JSONType = "invalid_meta", "_meta", grokObservedJSONType(raw)
+		return out
+	}
+	if field, jt, ok := grokFirstUnexpected(fields, known, true); ok {
+		out.Schema, out.Field, out.JSONType = "unexpected_field", field, jt
+		return out
+	}
+	return out
+}
+
+func grokDiagnosePlan(fields map[string]json.RawMessage) grokStreamReject {
+	if !grokBuildExactShapeWithBenignSyntheticMeta(fields, "type", "string", "entries", "array") || grokBuildHasContent(fields) {
+		return grokDiagnoseExact(fields, true, "type", "string", "entries", "array")
+	}
+	unknown := grokUnknownKeyCount(fields)
+	var entries []json.RawMessage
+	if json.Unmarshal(fields["entries"], &entries) != nil {
+		return grokStreamReject{Schema: "invalid_nested", Field: "entries", JSONType: "array", UnknownKeys: unknown}
+	}
+	for _, entry := range entries {
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(entry, &obj) != nil || obj == nil {
+			return grokStreamReject{Schema: "invalid_nested", Field: "entries", JSONType: grokObservedJSONType(entry), UnknownKeys: unknown}
+		}
+		nested := 0
+		for key := range obj {
+			if key != "content" && key != "priority" && key != "status" {
+				nested++
+			}
+		}
+		totalUnknown := unknown + nested
+		raw, ok := obj["content"]
+		if !ok {
+			return grokStreamReject{Schema: "missing_field", Field: "content", JSONType: "absent", UnknownKeys: totalUnknown}
+		}
+		if grokBuildJSONType(raw) != "string" {
+			return grokStreamReject{Schema: "type_mismatch", Field: "content", JSONType: grokObservedJSONType(raw), UnknownKeys: totalUnknown}
+		}
+		for _, key := range []string{"priority", "status"} {
+			raw, ok := obj[key]
+			if !ok {
+				continue
+			}
+			got := grokBuildJSONType(raw)
+			if got != "string" && got != "null" {
+				return grokStreamReject{Schema: "type_mismatch", Field: key, JSONType: grokObservedJSONType(raw), UnknownKeys: totalUnknown}
+			}
+		}
+		if nested > 0 {
+			return grokStreamReject{Schema: "unexpected_field", Field: "unknown", JSONType: "none", UnknownKeys: totalUnknown}
+		}
+	}
+	return grokStreamReject{Schema: "invalid_shape", Field: "entries", JSONType: "array", UnknownKeys: unknown}
+}
+
+func grokDiagnoseToolUpdate(fields map[string]json.RawMessage) grokStreamReject {
+	unknown := grokUnknownKeyCount(fields)
+	out := grokStreamReject{UnknownKeys: unknown, Schema: "invalid_shape"}
+	expected := map[string]string{
+		"content": "array", "locations": "array", "rawOutput": "", "status": "",
+		"toolCallId": "string", "type": "string",
+	}
+	for _, key := range []string{"content", "locations", "toolCallId", "type"} {
+		raw, ok := fields[key]
+		if !ok {
+			out.Schema, out.Field, out.JSONType = "missing_field", key, "absent"
+			return out
+		}
+		want := map[string]string{"content": "array", "locations": "array", "toolCallId": "string", "type": "string"}[key]
+		if grokBuildJSONType(raw) != want {
+			out.Schema, out.Field, out.JSONType = "type_mismatch", key, grokObservedJSONType(raw)
+			return out
+		}
+	}
+	rawOutput, hasOutput := fields["rawOutput"]
+	status, hasStatus := fields["status"]
+	if !hasOutput {
+		out.Schema, out.Field, out.JSONType = "missing_field", "rawOutput", "absent"
+		return out
+	}
+	if !hasStatus {
+		out.Schema, out.Field, out.JSONType = "missing_field", "status", "absent"
+		return out
+	}
+	outputType := grokBuildJSONType(rawOutput)
+	statusType := grokBuildJSONType(status)
+	combo := outputType == "null" && statusType == "null" ||
+		outputType != "" && outputType != "null" && statusType == "string"
+	if !combo {
+		if statusType != "string" && statusType != "null" {
+			out.Schema, out.Field, out.JSONType = "type_mismatch", "status", grokObservedJSONType(status)
+			return out
+		}
+		out.Schema, out.Field, out.JSONType = "invalid_shape", "rawOutput", grokObservedJSONType(rawOutput)
+		return out
+	}
+	if field, jt, ok := grokFirstUnexpected(fields, expected, false); ok {
+		out.Schema, out.Field, out.JSONType = "unexpected_field", field, jt
+		return out
+	}
+	return out
 }
 
 func grokBuildDiagnosticStopReason(raw json.RawMessage) string {
@@ -1059,7 +1582,8 @@ func parseGrokBuildJSONL(raw string) *claudeResult {
 func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 	d := &grokBuildDiagnostics{Subtype: "none", TerminalDefect: "none", DefectSource: "none",
 		ObservationOrder: "input_order", StopReason: "missing", StdioEOF: "unknown",
-		ProcessError: "unknown", WaitError: "unknown"}
+		ProcessError: "unknown", WaitError: "unknown",
+		RejectEventType: "none", RejectSchema: "none", RejectJSONType: "none", RejectField: "none"}
 	if stdoutBytes >= 0 {
 		d.ObservationOrder = "stdout_then_stderr"
 	}
@@ -1079,6 +1603,7 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 	}
 	s := bufio.NewScanner(strings.NewReader(raw))
 	s.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	lineNo, eventNo := 0, 0
 	for s.Scan() {
 		source := sourceAt(offset)
 		// ScanLines strips CR; use the original byte offset so CRLF cannot shift provenance.
@@ -1087,20 +1612,29 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 		} else {
 			offset = len(raw)
 		}
+		lineNo++
 		line := strings.TrimSpace(s.Text())
 		if line == "" {
 			continue
 		}
+		eventNo++
+		// Snapshot before this record. A later record must not become the first defect
+		// solely because an earlier record already left ObservationComplete false.
+		wasComplete := res.ObservationComplete
+		rej := grokStreamReject{Line: lineNo, Event: eventNo}
 		var fields map[string]json.RawMessage
 		if json.Unmarshal([]byte(line), &fields) != nil || fields == nil {
 			category := "malformed_json_before_end"
+			schema := "malformed_json"
 			if sawEnd {
 				category = "malformed_json_after_end"
 			}
 			if source == "stderr" && line == "__CARDEX_UNOBSERVED_STDERR__" {
 				category = "stderr_scanner_loss"
+				schema = "stderr_scanner_loss"
 			}
-			d.defect(category, source)
+			rej.Schema = schema
+			d.defect(category, source, rej)
 			if sawEnd {
 				markGrokBuildInvalidTerminal(res)
 			}
@@ -1113,7 +1647,20 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			if sawEnd {
 				category = "missing_type_after_end"
 			}
-			d.defect(category, source)
+			rej.EventType = "absent"
+			rej.Field = "type"
+			rej.UnknownKeys = grokUnknownKeyCount(fields)
+			if grokBuildJSONType(fields["type"]) == "string" {
+				rej.Schema = "missing_type"
+				rej.JSONType = "string"
+			} else if grokBuildJSONType(fields["type"]) == "" {
+				rej.Schema = "missing_type"
+				rej.JSONType = "absent"
+			} else {
+				rej.Schema = "type_not_string"
+				rej.JSONType = grokObservedJSONType(fields["type"])
+			}
+			d.defect(category, source, rej)
 			if sawEnd {
 				markGrokBuildInvalidTerminal(res)
 			}
@@ -1126,7 +1673,10 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			if d.ObservedEndCount == 1 {
 				d.StopReason = grokBuildDiagnosticStopReason(fields["stopReason"])
 			} else {
-				d.defect("duplicate_end", source)
+				d.defect("duplicate_end", source, grokStreamReject{
+					Line: lineNo, Event: eventNo, EventType: "end", Schema: "duplicate_end",
+					UnknownKeys: grokUnknownKeyCount(fields),
+				})
 			}
 		}
 		var ev grokBuildEvent
@@ -1135,7 +1685,9 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			if sawEnd {
 				category = "event_decode_after_end"
 			}
-			d.defect(category, source)
+			dec := grokDiagnoseDecode(fields)
+			dec.Line, dec.Event, dec.EventType = lineNo, eventNo, grokCanonicalEventType(typ)
+			d.defect(category, source, dec)
 			if sawEnd {
 				markGrokBuildInvalidTerminal(res)
 			}
@@ -1149,7 +1701,10 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			if grokBuildPostEndAccountingOrMetadata(ev.Type, fields) {
 				continue
 			}
-			d.defect("disallowed_event_after_end", source)
+			d.defect("disallowed_event_after_end", source, grokStreamReject{
+				Line: lineNo, Event: eventNo, EventType: grokCanonicalEventType(ev.Type), Schema: "disallowed_after_end",
+				UnknownKeys: grokUnknownKeyCount(fields),
+			})
 			markGrokBuildInvalidTerminal(res)
 			continue
 		}
@@ -1160,35 +1715,51 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			res.ModelEvents++
 			if !grokBuildExactShapeWithBenignSyntheticMeta(fields, "data", "string", "type", "string") {
 				res.ObservationComplete = false
+				rej.fill(grokDiagnoseExact(fields, true, "data", "string", "type", "string"))
+				rej.EventType = "text"
 			}
 		case "thinking", "thought", "reasoning":
 			res.SemanticEvents++
 			res.ModelEvents++
 			if !grokBuildExactShapeWithBenignSyntheticMeta(fields, "data", "string", "type", "string") {
 				res.ObservationComplete = false
+				rej.fill(grokDiagnoseExact(fields, true, "data", "string", "type", "string"))
+				rej.EventType = ev.Type
 			}
 		case "plan":
 			res.SemanticEvents++
 			res.ModelEvents++
 			if !grokBuildPlanShape(fields) {
 				res.ObservationComplete = false
+				rej.fill(grokDiagnosePlan(fields))
+				rej.EventType = "plan"
 			}
 		case "model", "model_start", "model_end":
 			res.ModelEvents++
 			if !grokBuildExactShape(fields, "type", "string") {
 				res.ObservationComplete = false
+				rej.fill(grokDiagnoseExact(fields, false, "type", "string"))
+				rej.EventType = ev.Type
 			}
 		case "tool", "tool_use", "tool_result":
 			res.ToolEvents++
 			res.ObservationComplete = false // Legacy markers cannot prove call closure.
 			if !grokBuildExactShape(fields, "type", "string") {
 				res.ObservationComplete = false
+				rej.fill(grokDiagnoseExact(fields, false, "type", "string"))
+			} else {
+				rej.Schema = "legacy_tool"
+				rej.Field = "type"
+				rej.JSONType = "string"
 			}
+			rej.EventType = ev.Type
 		case "tool_call":
 			res.ToolEvents++
+			closure := ""
 			_, duplicate := tools[ev.ToolCallID]
 			if ev.ToolCallID == "" || duplicate || ev.Status == nil {
 				res.ObservationComplete = false
+				closure = "tool_identity"
 			} else {
 				switch *ev.Status {
 				case "pending", "in_progress":
@@ -1197,16 +1768,31 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 					tools[ev.ToolCallID] = true
 				default:
 					res.ObservationComplete = false
+					closure = "tool_status"
 				}
 			}
 			if !grokBuildToolCallShape(fields) {
 				res.ObservationComplete = false
+				rej.fill(grokDiagnoseToolCall(fields))
+			} else if closure != "" {
+				rej.Schema = closure
+				rej.UnknownKeys = grokUnknownKeyCount(fields)
+				if closure == "tool_status" {
+					rej.Field = "status"
+					rej.JSONType = "string"
+				} else {
+					rej.Field = "toolCallId"
+					rej.JSONType = grokObservedJSONType(fields["toolCallId"])
+				}
 			}
+			rej.EventType = "tool_call"
 		case "tool_call_update":
 			res.ToolEvents++
+			closure := ""
 			closed, exists := tools[ev.ToolCallID]
 			if !exists || closed {
 				res.ObservationComplete = false
+				closure = "tool_identity"
 			} else if ev.Status != nil {
 				switch *ev.Status {
 				case "pending", "in_progress":
@@ -1214,26 +1800,45 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 					tools[ev.ToolCallID] = true
 				default:
 					res.ObservationComplete = false
+					closure = "tool_status"
 				}
 			}
 			if !grokBuildToolCallUpdateShape(fields) {
 				res.ObservationComplete = false
+				rej.fill(grokDiagnoseToolUpdate(fields))
+			} else if closure != "" {
+				rej.Schema = closure
+				rej.UnknownKeys = grokUnknownKeyCount(fields)
+				if closure == "tool_status" {
+					rej.Field = "status"
+					rej.JSONType = "string"
+				} else {
+					rej.Field = "toolCallId"
+					rej.JSONType = grokObservedJSONType(fields["toolCallId"])
+				}
 			}
+			rej.EventType = "tool_call_update"
 		case "start", "system", "metadata":
 			// Invocation metadata is not model/tool work.
 			if !grokBuildExactShape(fields, "type", "string") {
 				res.ObservationComplete = false
 				grokBuildCountUnclassified(res, ev.Type, fields)
+				rej.fill(grokDiagnoseExact(fields, false, "type", "string"))
+				rej.EventType = ev.Type
 			}
 		case "system.version":
 			if !grokBuildExactShape(fields, "type", "string", "version", "string") {
 				res.ObservationComplete = false
 				grokBuildCountUnclassified(res, ev.Type, fields)
+				rej.fill(grokDiagnoseExact(fields, false, "type", "string", "version", "string"))
+				rej.EventType = "system.version"
 			}
 		case "available_commands":
 			if !grokBuildAvailableCommandsShape(fields) {
 				res.ObservationComplete = false
 				grokBuildCountUnclassified(res, ev.Type, fields)
+				rej.fill(grokDiagnoseCommands(fields))
+				rej.EventType = "available_commands"
 			}
 		case "usage":
 			// Usage remains accounting metadata, never a terminal, and non-zero usage
@@ -1244,6 +1849,8 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			if !valid {
 				res.ObservationComplete = false
 				grokBuildCountUnclassified(res, ev.Type, fields)
+				rej.fill(grokDiagnoseUsage(fields))
+				rej.EventType = "usage"
 			}
 		case "error":
 			res.IsError = true
@@ -1253,12 +1860,16 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			} else {
 				res.ObservationComplete = false
 				res.Result = "Grok Build 返回未识别 error 事件"
+				rej.fill(grokDiagnoseExact(fields, false, "message", "string", "type", "string"))
+				rej.EventType = "error"
 			}
 		case "end":
 			res.FinalReason = grokBuildDiagnosticStopReason(fields["stopReason"])
+			unclosed := false
 			for _, closed := range tools {
 				if !closed {
 					res.ObservationComplete = false
+					unclosed = true
 				}
 			}
 			sawEnd = true
@@ -1266,14 +1877,23 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			validEnd, public105End := grokBuildEndShape(fields)
 			if !validEnd || ev.StopReason != "end_turn" || res.TerminalEvents != 1 {
 				if !validEnd {
-					d.defect("invalid_end_shape", source)
+					endRej := grokDiagnoseEnd(fields)
+					endRej.Line, endRej.Event, endRej.EventType = lineNo, eventNo, "end"
+					d.defect("invalid_end_shape", source, endRej)
 				} else {
-					d.defect("abnormal_stop_reason", source)
+					d.defect("abnormal_stop_reason", source, grokStreamReject{
+						Line: lineNo, Event: eventNo, EventType: "end", Schema: "abnormal_stop",
+						Field: "stopReason", JSONType: grokObservedJSONType(fields["stopReason"]),
+					})
 				}
 				observeGrokBuildUsage(res, ev.Usage, false)
 				grokBuildCountUnclassified(res, ev.Type, fields)
 				markGrokBuildInvalidTerminal(res)
 				break
+			}
+			if unclosed {
+				rej.Schema = "tool_unclosed"
+				rej.EventType = "end"
 			}
 			// The documented 1.0.5 envelope carries request/session identifiers and opaque
 			// modelUsage metadata. Validate their types without retaining their values. The
@@ -1290,21 +1910,34 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 				res.ModelEvents++
 			}
 		default:
-			d.defect("unknown_event_before_end", source)
+			d.defect("unknown_event_before_end", source, grokStreamReject{
+				Line: lineNo, Event: eventNo, EventType: grokCanonicalEventType(typ), Schema: "unknown_event",
+				UnknownKeys: grokUnknownKeyCount(fields),
+			})
 			res.ObservationComplete = false
 			grokBuildCountUnclassified(res, ev.Type, fields)
 		}
-		if !res.ObservationComplete {
-			d.defect("invalid_event_shape_before_end", source)
+		// Only the record that first makes the observation incomplete is a shape/closure defect.
+		// A later intact record keeps the earlier locus even while ObservationComplete stays false.
+		if wasComplete && !res.ObservationComplete {
+			if rej.EventType == "" {
+				rej.EventType = grokCanonicalEventType(ev.Type)
+			}
+			if rej.Schema == "" {
+				rej.Schema = "invalid_shape"
+			}
+			d.defect("invalid_event_shape_before_end", source, rej)
 		}
 	}
 	d.ParserScanComplete = s.Err() == nil
 	if s.Err() != nil {
-		d.defect("scanner_loss", sourceAt(offset))
+		d.defect("scanner_loss", sourceAt(offset), grokStreamReject{
+			Line: lineNo + 1, Event: eventNo + 1, Schema: "scanner_loss",
+		})
 		res.ObservationComplete = false
 	}
 	if !sawEnd {
-		d.defect("missing_end", "observation")
+		d.defect("missing_end", "observation", grokStreamReject{})
 	}
 	if res.NumTurns > res.SemanticEvents {
 		res.SemanticEvents = res.NumTurns

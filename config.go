@@ -139,6 +139,13 @@ type Config struct {
 	// reviewer-merger 任一缺失或漂移都拒绝加载，避免生产静默退回旧路线。
 	OwnerRoutingEnforced bool `json:"owner_routing_enforced,omitempty"`
 	OwnerMixedRouting    bool `json:"owner_mixed_routing,omitempty"`
+	// Named modes apply only to eligible new work. The priority authority is a fixed,
+	// non-renewing interval; selecting it after expiry still resolves to daily.
+	DispatchMode            string `json:"dispatch_mode,omitempty"`
+	CodexAllowanceAccountID string `json:"codex_allowance_account_id,omitempty"`
+	CodexAllowanceSnapshot  string `json:"codex_allowance_snapshot,omitempty"`
+	CodexPriorityStart      string `json:"codex_priority_start,omitempty"`
+	CodexPriorityExpiresAt  string `json:"codex_priority_expires_at,omitempty"`
 	// AutomaticCodexBudgetStopPercent is provider-specific to automatic Owner route gates. The final
 	// policy requires exactly 65: at or above it Cardex preserves the remaining ~35%; absent/stale
 	// usage_feed evidence fails closed. Explicit manual Codex pins remain outside this automatic budget.

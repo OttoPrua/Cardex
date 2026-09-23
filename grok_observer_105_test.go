@@ -339,7 +339,7 @@ func TestGrokBuild105ObservedToolSchemasRejectLookalikes(t *testing.T) {
 		{"tool call missing content", `{"kind":"tool","locations":[],"rawInput":{},"status":"pending","title":"read","toolCallId":"call-1","toolName":"read_file","type":"tool_call"}`},
 		{"tool call wrong raw input type", `{"content":[],"kind":"tool","locations":[],"rawInput":null,"status":"pending","title":"read","toolCallId":"call-1","toolName":"read_file","type":"tool_call"}`},
 		{"update missing raw output", `{"content":[],"locations":[],"status":null,"toolCallId":"call-1","type":"tool_call_update"}`},
-		{"update mismatched null status", `{"content":[],"locations":[],"rawOutput":{},"status":null,"toolCallId":"call-1","type":"tool_call_update"}`},
+		{"update numeric status", `{"content":[],"locations":[],"rawOutput":{},"status":4,"toolCallId":"call-1","type":"tool_call_update"}`},
 		{"update extra data", `{"content":[],"data":"hidden","locations":[],"rawOutput":null,"status":null,"toolCallId":"call-1","type":"tool_call_update"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1140,4 +1140,41 @@ func grokAssertDiagnosticClosed(t *testing.T, d *grokBuildDiagnostics, forbidden
 		}
 	}
 	grokAssertSafeDiagnostics(t, raw)
+}
+
+// Official xai-org/grok-build headless reducer projects status independently
+// from raw_output.unwrap_or(Null). Regression for 2026-09-23 C event 2787;
+// entirely synthetic public fields, never a replay of the held stream.
+func TestGrokToolUpdateNullableOutputIndependentOfStatus(t *testing.T) {
+	t.Parallel()
+	call := `{"status":"pending","toolCallId":"public-call","toolName":"read_file","type":"tool_call"}`
+	update := func(status, output, id string) string {
+		return `{"content":[],"locations":[],"rawOutput":` + output + `,"status":` + status + `,"toolCallId":"` + id + `","type":"tool_call_update"}`
+	}
+	for _, status := range []string{`"completed"`, `"failed"`} {
+		stream := call + "\n" + update(`null`, `{}`, "public-call") + "\n" + update(status, `null`, "public-call")
+		res := parseGrokBuildJSONL(stream + "\n" + grok105PublicEnd)
+		if !res.ObservationComplete || res.IsError || res.TerminalEvents != 1 || res.ToolEvents != 3 {
+			t.Fatalf("valid nullable output rejected: %+v", res)
+		}
+		if kind, ok := classifyTaskPolicyFallbackFailure(&Task{OwnerRouteName: "mixed_daily_development"}, grokBuildRunnerName, res, "quota exhausted", nil); ok {
+			t.Fatalf("tool work admitted quota fallback: %s", kind)
+		}
+		for name, invalid := range map[string]string{
+			"missing-end":    stream,
+			"duplicate-end":  stream + "\n" + grok105PublicEnd + "\n" + grok105PublicEnd,
+			"post-end-tool":  stream + "\n" + grok105PublicEnd + "\n" + update(status, `null`, "public-call"),
+			"unknown-id":     call + "\n" + update(status, `null`, "unknown-call") + "\n" + grok105PublicEnd,
+			"closed-id":      stream + "\n" + update(status, `null`, "public-call") + "\n" + grok105PublicEnd,
+			"unknown-status": call + "\n" + update(`"unknown"`, `null`, "public-call") + "\n" + grok105PublicEnd,
+			"still-open":     call + "\n" + update(`"in_progress"`, `null`, "public-call") + "\n" + grok105PublicEnd,
+			"unknown-event":  stream + "\n" + `{"type":"new_unknown"}` + "\n" + grok105PublicEnd,
+		} {
+			t.Run(status+name, func(t *testing.T) {
+				if got := parseGrokBuildJSONL(invalid); !got.IsError {
+					t.Fatalf("unsafe stream accepted: %+v", got)
+				}
+			})
+		}
+	}
 }

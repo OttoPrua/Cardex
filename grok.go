@@ -902,8 +902,9 @@ func grokBuildToolCallUpdateShape(fields map[string]json.RawMessage) bool {
 	}
 	rawOutputType := grokBuildJSONType(fields["rawOutput"])
 	statusType := grokBuildJSONType(fields["status"])
-	return rawOutputType == "null" && statusType == "null" ||
-		rawOutputType != "" && rawOutputType != "null" && statusType == "string"
+	// Official ACP projection keeps these independent: absent raw output
+	// serializes as null even when a terminal tool status is supplied.
+	return rawOutputType != "" && (statusType == "null" || statusType == "string")
 }
 
 func grokBuildHasContent(fields map[string]json.RawMessage) bool {
@@ -1486,8 +1487,7 @@ func grokDiagnoseToolUpdate(fields map[string]json.RawMessage) grokStreamReject 
 	}
 	outputType := grokBuildJSONType(rawOutput)
 	statusType := grokBuildJSONType(status)
-	combo := outputType == "null" && statusType == "null" ||
-		outputType != "" && outputType != "null" && statusType == "string"
+	combo := outputType != "" && (statusType == "null" || statusType == "string")
 	if !combo {
 		if statusType != "string" && statusType != "null" {
 			out.Schema, out.Field, out.JSONType = "type_mismatch", "status", grokObservedJSONType(status)

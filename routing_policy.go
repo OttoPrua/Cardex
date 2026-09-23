@@ -358,7 +358,7 @@ func validateOwnerRoutingPolicy(cfg *Config) error {
 
 func ownerPolicyRouteReason(reason string) bool {
 	switch reason {
-	case mixedRouteReason, mixedQuotaReason, routeReasonCursorFable, routeReasonCursorFableFallbackPending, routeReasonCursorFableFallback,
+	case mixedRouteReason, mixedQuotaReason, codexSnapshotExhaustedReason, routeReasonCursorFable, routeReasonCursorFableFallbackPending, routeReasonCursorFableFallback,
 		routeReasonKimiCLIOpus, routeReasonKimiToGrokPending, routeReasonKimiToGrok,
 		routeReasonGrokToKimiPending, routeReasonGrokToKimi,
 		routeReasonKimiToSolPending, routeReasonKimiToSol,
@@ -642,7 +642,28 @@ func pinOwnerPrimaryRoute(t *Task, route ownerRoute) bool {
 // ownerPrimaryDispatch is the single production selector for fresh final-matrix routes. matched=true with
 // an empty runner means the current first-leg lane is cooling down and the card must wait, never skip.
 func ownerPrimaryDispatch(root string, cfg *Config, t *Task, now time.Time) (runner string, matched bool) {
+	if refreshQueuedQuotaSuccessor(root, cfg, t, now) {
+		switch t.PreferRunner {
+		case grokBuildRunnerName:
+			if !grokBuildReady(root, cfg, now) {
+				return "", true
+			}
+		case kimiCLIRunnerName:
+			if !kimiCLIReady(root, cfg, now) {
+				return "", true
+			}
+		case cursorRunnerName:
+			if !cursorReady(root, cfg, now) {
+				return "", true
+			}
+		}
+		return t.PreferRunner, true
+	}
+	refreshed := refreshUnstartedDispatchMode(cfg, t, now)
 	route, ok := resolveOwnerRoute(cfg, t)
+	if refreshed {
+		route, ok = resolveOwnerRouteReadback(cfg, t)
+	}
 	if !ok {
 		return "", false
 	}
@@ -1146,6 +1167,10 @@ func policyFallbackCandidate(cfg *Config, t *Task, via string) bool {
 		return false
 	}
 	if mixedOwnerTask(t) {
+		if frozenDispatchMode(t) != "" {
+			route, ok := resolveOwnerRouteReadback(cfg, t)
+			return ok && t.OwnerRouteLeg > 0 && t.OwnerRouteLeg < len(route.Legs) && route.Legs[t.OwnerRouteLeg-1].Runner == via
+		}
 		return via == grokBuildRunnerName && t.OwnerRouteLeg == 1 && t.RouteReason == mixedRouteReason
 	}
 	switch via {
@@ -1229,12 +1254,38 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 	nextIndex := t.OwnerRouteLeg
 	next := route.Legs[nextIndex]
 	if mixedOwnerTask(t) {
-		if kind != fallbackQuota || current.Runner != grokBuildRunnerName || next.Runner != cursorRunnerName ||
+		if frozenDispatchMode(t) != "" {
+			limit := cfg.MaxAttempts
+			if t.MaxAttempts > 0 {
+				limit = t.MaxAttempts
+			}
+			if kind != fallbackQuota || t.Status == statusHeld || t.terminal() || (limit > 0 && t.Attempts+1 >= limit) {
+				return fmt.Errorf("named mode fallback requires quota and remaining attempt authority")
+			}
+		} else if kind != fallbackQuota || current.Runner != grokBuildRunnerName || next.Runner != cursorRunnerName ||
 			current.Effort != "high" || next.Effort != "high" || mixedCursorEquivalent(current.Model) != next.Model {
 			return fmt.Errorf("mixed fallback requires quota and exact equivalent Grok model/effort")
 		}
 	} else if !independentModelOpinion(current, next) {
 		return fmt.Errorf("fallback blocked: provider redundancy is not an independent model opinion")
+	}
+	if frozenDispatchMode(t) != "" && frozenDispatchMode(t) != effectiveDispatchMode(cfg, dispatchNow()) {
+		probe := *t
+		clearMixedProviderPins(&probe)
+		probe.OwnerRouteName, probe.OwnerRouteLeg, probe.OwnerRouteStage = "", 0, ""
+		var resolved bool
+		route, resolved = resolveMixedOwnerRouteAt(cfg, &probe, dispatchNow())
+		if !resolved {
+			return fmt.Errorf("mode boundary has no safe successor")
+		}
+		nextIndex = 0
+		if route.Legs[nextIndex].Runner == current.Runner {
+			nextIndex++
+		}
+		if nextIndex >= len(route.Legs) {
+			return fmt.Errorf("mode boundary has no unexhausted successor")
+		}
+		next = route.Legs[nextIndex]
 	}
 	// Clear every provider-specific pin before freezing the next leg. The route snapshot and last
 	// attempt readback retain the previous identity; carrying its concrete fields would make readback
@@ -1243,6 +1294,7 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 	t.CodexModel = ""
 	t.XCodexModel = ""
 	t.GeminiModel = ""
+	t.AgyModel = ""
 	t.OpenCodeModel = ""
 	t.KimiModel = ""
 	t.GrokModel = ""
@@ -1254,6 +1306,9 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 	case cursorRunnerName:
 		t.PreferRunner, t.CursorModel = cursorRunnerName, next.Model
 		t.RouteReason = mixedQuotaReason
+	case antigravityRunnerName:
+		t.PreferRunner, t.AgyModel = antigravityRunnerName, next.Model
+		t.Effort, t.EffortExplicit = next.Effort, true
 	case grokBuildRunnerName:
 		t.PreferRunner = grokBuildRunnerName
 		t.GrokModel, t.GrokEffort = concreteGrokPin(next.Model), next.Effort
@@ -1284,7 +1339,16 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 	t.OwnerRouteLeg = nextIndex + 1
 	t.OwnerRouteStage = next.Stage
 	t.FallbackReason = string(kind)
-	resetQueuedPolicyLeg(t)
+	if frozenDispatchMode(t) != "" {
+		t.AutomaticCodex = next.Runner == "codex"
+		t.RouteReason = mixedQuotaReason
+		t.Status = statusQueued
+		t.NotBeforeEpoch, t.ResumeAtEpoch = 0, 0
+		t.SessionID, t.MidStep = "", false
+		t.Attempts++
+	} else {
+		resetQueuedPolicyLeg(t)
+	}
 	t.LastError = fmt.Sprintf("%s 安全回退已证明，串行排队下一执行腿", kind)
 	t.touch()
 	return nil

@@ -146,6 +146,97 @@ type feedSample struct {
 	WindowKind    string `json:"windowKind"`
 }
 
+// This snapshot is a read-only projection of the actual Codex account bucket.
+// It does not pretend the weekly primary is a five-hour sample or borrow a
+// model-specific reserve. Missing/changed bucket shapes require a fresh adapter.
+type codexAllowanceSnapshot struct {
+	Schema           string `json:"schema"`
+	AccountID        string `json:"account_id"`
+	Source           string `json:"source"`
+	SampledAt        string `json:"sampled_at"`
+	Provider         string `json:"provider"`
+	LimitID          string `json:"limit_id"`
+	WindowMinutes    int    `json:"window_duration_mins"`
+	UsedPercent      *int   `json:"used_percent"`
+	OrdinaryAllowed  *bool  `json:"ordinary_usage_allowed"`
+	SecondaryPresent *bool  `json:"secondary_present"`
+	ResetsAt         int64  `json:"resets_at"`
+	AuthorizedStart  string `json:"authorized_start"`
+	AuthorizedExpiry string `json:"authorized_expires_at"`
+}
+
+func readCodexTemporaryAllowance(cfg *Config, now time.Time) automaticCodexBudgetEvidence {
+	r := automaticCodexBudgetEvidence{TemporaryAllowance: true, Source: "codex_app.get_usage_limits", Reason: "finite allowance evidence unavailable"}
+	if cfg == nil || effectiveDispatchMode(cfg, now) != dispatchModeCodexPriority {
+		r.Reason = "finite allowance inactive"
+		return r
+	}
+	r = readCodexQuotaSnapshot(cfg, now)
+	r.TemporaryAllowance = true
+	return r
+}
+
+// The same official account bucket can authorize a zero-invocation alternate
+// admission in daily mode. It never grants the finite GPT budget exception.
+func readCodexQuotaSnapshot(cfg *Config, now time.Time) automaticCodexBudgetEvidence {
+	r := automaticCodexBudgetEvidence{Source: "codex_app.get_usage_limits", Reason: "quota snapshot unavailable"}
+	if cfg == nil {
+		return r
+	}
+	data, err := os.ReadFile(cfg.CodexAllowanceSnapshot)
+	if err != nil {
+		r.Reason = "finite allowance snapshot unreadable"
+		return r
+	}
+	var s codexAllowanceSnapshot
+	if json.Unmarshal(data, &s) != nil || s.Schema != "cardex-codex-allowance-v1" || s.Source != r.Source ||
+		s.Provider != "codex" || s.LimitID != "codex" || s.WindowMinutes != 10080 || s.UsedPercent == nil ||
+		s.OrdinaryAllowed == nil || s.SecondaryPresent == nil || *s.SecondaryPresent ||
+		cfg.CodexAllowanceAccountID == "" || s.AccountID != cfg.CodexAllowanceAccountID {
+		r.Reason = "finite allowance identity/window/authority mismatch"
+		return r
+	}
+	r.UsedPercent, r.WindowMinutes, r.SampledAt, r.AllowanceExpiresAt = *s.UsedPercent, s.WindowMinutes, s.SampledAt, s.AuthorizedExpiry
+	at, err := time.Parse(time.RFC3339, s.SampledAt)
+	if err != nil || at.After(now) || now.Sub(at) > 15*time.Minute || s.ResetsAt <= now.Unix() {
+		r.Reason = "finite allowance sample stale, future, or reset"
+		return r
+	}
+	if effectiveDispatchMode(cfg, now) == dispatchModeCodexPriority {
+		start, _ := time.Parse(time.RFC3339, cfg.CodexPriorityStart)
+		if at.Before(start) || s.AuthorizedStart != cfg.CodexPriorityStart || s.AuthorizedExpiry != cfg.CodexPriorityExpiresAt {
+			r.Reason = "finite allowance authority mismatch"
+			return r
+		}
+	}
+	if r.UsedPercent < 0 || r.UsedPercent > 100 {
+		r.Reason = "actual Codex usage percentage invalid"
+		return r
+	}
+	if r.UsedPercent == 100 {
+		// ordinary_usage_allowed does not reopen a fresh primary bucket at 100%.
+		r.Reason = "actual Codex quota exhausted"
+		return r
+	}
+	if !*s.OrdinaryAllowed {
+		r.Reason = "ordinary Codex usage not allowed; not proof of exhaustion"
+		return r
+	}
+	r.Available, r.Reason = true, ""
+	return r
+}
+
+// A fresh, matching official bucket at exactly 100% authorizes only an
+// unstarted alternate admission; it never waives the daily five-hour GPT gate.
+func codexSnapshotExhausted(cfg *Config, now time.Time) bool {
+	if cfg == nil || cfg.DispatchMode == "" {
+		return false
+	}
+	e := readCodexQuotaSnapshot(cfg, now)
+	return !e.Available && e.UsedPercent == 100 && e.WindowMinutes == 10080 &&
+		e.Source == "codex_app.get_usage_limits" && e.Reason == "actual Codex quota exhausted"
+}
+
 // latestFeedSampleForProvider takes the newest primary/5h sample for exactly one provider. Automatic
 // Codex gates must never consume the legacy Claude percentage merely because both share one CodexBar file.
 func latestFeedSampleForProvider(path, provider string) (*feedSample, error) {

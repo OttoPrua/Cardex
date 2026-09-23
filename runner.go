@@ -401,6 +401,9 @@ func invokeCodex(ctx context.Context, root string, cfg *Config, t *Task, prompt 
 	defer os.Remove(outFile)
 	args := []string{"exec", "-C", workDir, "--sandbox", sandbox, "--skip-git-repo-check",
 		"--color", "never", "-o", outFile}
+	if frozenDispatchMode(t) != "" {
+		args = append(args, "--json")
+	}
 	args = append(args, extra...)
 	// 模型：见 resolveCodexModel 优先序（交叉冻结 > 卡级钉定 > 降级专用 > 全局）。
 	if codexModel := resolveCodexModel(cfg, t); codexModel != "" {
@@ -428,6 +431,14 @@ func invokeCodex(ctx context.Context, root string, cfg *Config, t *Task, prompt 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	// CG-5 巡逻登记:pid 落 taskPG,drain 内 patrolOnce 可查该任务进程组存活(见 patrol.go)。
+	if frozenDispatchMode(t) != "" {
+		if namedCodexPreparedHook != nil {
+			namedCodexPreparedHook()
+		}
+		if err := checkNamedDispatchInvocation(root, cfg, t); err != nil {
+			return nil, "", err
+		}
+	}
 	runErr := runCmdRegisteredForTaskWorkspace(cmd, t.ID, t.Dir)
 	// codex exit 0 但派生子进程吊住 stdout 管道触发 WaitDelay 时，-o 结果文件已写好却因 ErrWaitDelay
 	// 被下方 `runErr != nil` 判定标 IsError、白白重试。同 runReviewSync/invokeClaude 的同类救援。
@@ -467,6 +478,12 @@ func invokeCodex(ctx context.Context, root string, cfg *Config, t *Task, prompt 
 		res.IsError = true
 		res.Subtype = "codex_no_final_message"
 		res.Result = "codex 回合完成但未产出最终消息(-o 空,末尾停在工具调用/推理)——常因 skill/workflow 框架注入耗尽预算;已加 subagent 前导抑制,重试通常可成"
+	}
+	if frozenDispatchMode(t) != "" {
+		observeNamedCodexJSON(res, stdout.String(), stderr.String())
+		// JSON contains private reasoning/tool payloads. Only the existing final
+		// message or a canonical failure may reach logBlock/events/task storage.
+		combined = res.Result
 	}
 	return res, combined, runErr
 }
@@ -1342,6 +1359,19 @@ func dispatchEventDetail(cfg *Config, t *Task, useCodex, remote bool) map[string
 // 其余=引擎档案名（config.engines 的键，claude CLI + env 注入，会话语义与本机 claude 同构）。
 // ctx 由 tick 持有：任务被 cancel 后 tick 对账发现即取消 ctx，整组击杀执行进程。
 func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via string) error {
+	if (cfg != nil && cfg.DispatchMode != "") || frozenDispatchMode(t) != "" {
+		latest, err := loadConfig(root)
+		if err != nil {
+			return err
+		}
+		cfg = latest
+		if refreshQueuedQuotaSuccessor(root, cfg, t, dispatchNow()) || refreshUnstartedDispatchMode(cfg, t, dispatchNow()) {
+			via = t.PreferRunner
+		} else if unstartedCodexSnapshotSuccessor(t) && effectiveDispatchMode(cfg, dispatchNow()) == frozenDispatchMode(t) &&
+			!taskProcessResidue(t.ID) && !anyTaskProcAlive(t.ID) && !workspaceProcessResidue(t.Dir) {
+			via = t.PreferRunner
+		}
+	}
 	useCodex := via == "codex"
 	useGemini := geminiVia(via)
 	useOpenCode := via == "opencode"
@@ -1388,6 +1418,23 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:owner-policy", statusHeld, t.Step,
 			withCostTelemetry(map[string]any{"reason": "closed_owner_task_state_invalid", "detail": reason}, t)))
 	}
+	if frozenDispatchMode(t) != "" && frozenDispatchMode(t) != effectiveDispatchMode(cfg, dispatchNow()) {
+		return holdNamedDispatchBeforeInvocation(root, t, "mode boundary requires fresh successor proof/custody; previous actual attempt preserved")
+	}
+	if selectUnstartedCodexSnapshotSuccessor(root, cfg, t, dispatchNow()) {
+		via = t.PreferRunner
+		useCodex = via == "codex"
+		useGemini = geminiVia(via)
+		useOpenCode = via == "opencode"
+		useKimiCLI = kimiCLIVia(via)
+		useGrokBuild = grokBuildVia(via)
+		useAntigravity = antigravityVia(via)
+		useCursor = cursorVia(via)
+		engineName = ""
+		if engineVia(via) {
+			engineName = via
+		}
+	}
 	if useGemini {
 		t.Status = statusHeld
 		t.LastError = "Gemini executor retired; historical task preserved without execution"
@@ -1410,7 +1457,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:automatic-sol", statusHeld, t.Step,
 				withCostTelemetry(map[string]any{"reason": "automatic_sol_provider_drift"}, t)))
 		}
-		evidence := currentAutomaticCodexBudgetEvidence(cfg, time.Now())
+		evidence := currentAutomaticCodexBudgetEvidence(cfg, dispatchNow())
 		if allowed, reason := automaticCodexBudgetAllowed(t, evidence, cfg.AutomaticCodexBudgetStopPercent); !allowed {
 			t.Status = statusHeld
 			t.LastError = reason
@@ -1500,6 +1547,20 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			t.AgyModel = preflight.SelectedModel
 		}
 	}
+	if frozenDispatchMode(t) != "" {
+		if namedDispatchPreflightHook != nil {
+			namedDispatchPreflightHook()
+		}
+		if err := checkNamedDispatchInvocation(root, cfg, t); err != nil {
+			if errors.Is(err, errNamedDispatchModeChanged) && t.Status == statusQueued && t.LastRouteAttempt == nil && t.Runner == "" {
+				t.LastError = err.Error()
+				return finishIfStopped(persistTaskEvent(root, t, evRetry, "runner:dispatch-mode", statusQueued, t.Step, map[string]any{"reason": "dispatch_mode_changed_before_invoke"}))
+			}
+			return holdNamedDispatchBeforeInvocation(root, t, err.Error())
+		}
+	}
+	priorRunner, priorRouteAttempt := t.Runner, t.LastRouteAttempt
+	invokedInThisRun := false
 	t.Status = statusRunning
 	// 交叉 C 重跑（如 cardex retry）先撤下旧的终局报告：否则若这次在执行器层就失败（未进 postComplete），
 	// 上一轮的旧报告仍会被 progress -show 当成当前终局。首跑时无报告可删，无害。
@@ -1509,7 +1570,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 	remote := t.RemoteHost != ""
 	enforceRemoteHostPolicy(cfg, t)
 	switch {
-	case !remote && mixedOwnerTask(t) && (t.RouteReason == mixedRouteReason || t.RouteReason == mixedQuotaReason):
+	case !remote && mixedOwnerTask(t) && (t.RouteReason == mixedRouteReason || t.RouteReason == mixedQuotaReason || t.RouteReason == codexSnapshotExhaustedReason):
 		t.Runner = via
 	case remote:
 		t.Runner = "remote:" + t.RemoteHost
@@ -1693,6 +1754,10 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		}
 		t.ReviewOutput = nil // No previous attempt output may be adopted by this invocation.
 		invoke := func() error {
+			if err := checkNamedDispatchInvocation(root, cfg, t); err != nil {
+				runErr = err
+				return nil
+			}
 			if preexistingPolicyResidue {
 				res = &claudeResult{Type: "result", IsError: true, Subtype: "policy_process_residue",
 					Result: "检测到上一执行腿仍有 writer/process residue；本轮未启动新执行器"}
@@ -1854,6 +1919,19 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		if errors.Is(runErr, errAdmissionDenied) {
 			return finishIfStopped(abandonReservedAttemptForAdmission(root, t))
 		}
+		if frozenDispatchMode(t) != "" && res == nil && runErr != nil {
+			if errors.Is(runErr, errNamedDispatchModeChanged) && !invokedInThisRun && priorRouteAttempt == nil && priorRunner == "" {
+				t.Status = statusQueued
+				t.Runner, t.LastRouteAttempt = priorRunner, priorRouteAttempt
+				t.LastError = runErr.Error()
+				return finishIfStopped(persistTaskEvent(root, t, evRetry, "runner:dispatch-mode", statusQueued, t.Step, map[string]any{"reason": "dispatch_mode_changed_before_invoke", "provider_started": false}))
+			}
+			if !invokedInThisRun {
+				t.Runner, t.LastRouteAttempt = priorRunner, priorRouteAttempt
+			}
+			return holdNamedDispatchBeforeInvocation(root, t, runErr.Error())
+		}
+		invokedInThisRun = true
 
 		// 0) 取消：tick 对账发现盘上已标 canceled 后取消 ctx 击杀进程组；也可能进程
 		// 自然结束后才发现取消标记（cancel 落在步骤间隙）。两种都按取消收尾：
@@ -1873,6 +1951,9 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			return finalizeCanceled(root, t, lg)
 		}
 		recordRouteAttemptObservation(t, res)
+		if frozenDispatchMode(t) != "" && useCodex && (res == nil || !res.ObservationComplete) {
+			return holdNativeExecution(root, t, via, "codex_stream_incomplete", "unknown_outcome")
+		}
 
 		if (useGrokBuild || useKimiCLI || useOpenCode) && runErr != nil && runnerNativeTerminalValid(via, res, nil) {
 			kind := "process_failure_after_native_terminal"
@@ -1985,10 +2066,10 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 
 		// Mixed subscription routing must not reinterpret auth/refusal/transport or a
 		// transient rate limit as spent subscription quota through the legacy limiter below.
-		if useGrokBuild && mixedOwnerTask(t) && (runErr != nil || (res != nil && res.IsError)) {
+		if (useGrokBuild || frozenDispatchMode(t) != "") && mixedOwnerTask(t) && (runErr != nil || (res != nil && res.IsError)) {
 			if _, allowed := classifyTaskPolicyFallbackFailure(t, via, res, combined, runErr); !allowed {
 				scan := policyFailureScanText(via, res, combined, runErr)
-				if policyUnsafeTerminal(scan) || mixedRefusalRe.MatchString(scan) || policyTransportRe.MatchString(scan) || grokBuildQuotaRe.MatchString(scan) {
+				if frozenDispatchMode(t) != "" || policyUnsafeTerminal(scan) || mixedRefusalRe.MatchString(scan) || policyTransportRe.MatchString(scan) || grokBuildQuotaRe.MatchString(scan) {
 					return holdNativeExecution(root, t, via, "mixed_non_quota_failure", "no_quota_authority")
 				}
 			}
@@ -1999,7 +2080,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		// zero/forged authorization, so no next writer can be queued before all three proof axes pass.
 		if kind, candidateFailure := classifyTaskPolicyFallbackFailure(t, via, res, combined, runErr); candidateFailure &&
 			policyFallbackCandidate(cfg, t, via) {
-			if via == cursorRunnerName && !fableFallbackKindEligible(kind) {
+			if via == cursorRunnerName && !mixedOwnerTask(t) && !fableFallbackKindEligible(kind) {
 				// Semantic stalls and invalid/acceptance terminals do not authorize the Fable chain.
 				// Quota and the closed set of proven presemantic failures may proceed only after the
 				// same complete-observation, 0/0/0, unchanged-workspace, zero-residue proof below.
@@ -2066,6 +2147,8 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 				}
 				if kind == fallbackQuota {
 					switch via {
+					case "codex":
+						setEngineCooldown(root, "codex", parseResetEpoch("", cfg, now), "confirmed quota exhaustion")
 					case kimiCLIRunnerName:
 						setEngineCooldown(root, kimiCLICooldownName, kimiCLIResetEpoch(cfg, res, combined, now), reason)
 					case grokBuildRunnerName:
@@ -2074,7 +2157,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 						setEngineCooldown(root, cursorCooldownName, cursorResetEpoch(cfg, res, combined, now), reason)
 					}
 				}
-				if via == cursorRunnerName {
+				if via == cursorRunnerName && !mixedOwnerTask(t) {
 					if err := prepareCursorFableFallback(root, cfg, t, reason, kind, auth); err != nil {
 						return err
 					}
@@ -2084,6 +2167,13 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 					return nil
 				}
 				previousRunner := via
+				if frozenDispatchMode(t) != "" {
+					latest, err := loadConfig(root)
+					if err != nil {
+						return holdNamedDispatchBeforeInvocation(root, t, "successor config unavailable after proved quota terminal")
+					}
+					cfg = latest
+				}
 				if err := queuePolicyFallback(cfg, t, kind, auth); err != nil {
 					// A proved eligible failure does not create authority for a provider that is
 					// absent from the resolved row. Keep the exact current card/identity and hold;
@@ -2122,6 +2212,9 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 				"semantic_events": semanticEvents, "model_events": modelEvents, "tool_events": toolEvents,
 				"process_residue": proof.ProcessResidue,
 			}, t))
+			if frozenDispatchMode(t) != "" {
+				return holdNativeExecution(root, t, via, "quota_fallback_proof_failed", "unknown_outcome")
+			}
 		}
 
 		// 1d) gemini 车道挂起（当日配额耗尽 / 认证资格错误）：只写 cooldown-gemini.json，

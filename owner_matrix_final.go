@@ -249,15 +249,22 @@ func independentModelOpinion(a, b policyLeg) bool {
 }
 
 type automaticCodexBudgetEvidence struct {
-	Available   bool
-	UsedPercent int
-	Source      string
-	Reason      string
+	Available          bool
+	UsedPercent        int
+	Source             string
+	Reason             string
+	TemporaryAllowance bool
+	WindowMinutes      int
+	SampledAt          string
+	AllowanceExpiresAt string
 }
 
 func currentAutomaticCodexBudgetEvidence(cfg *Config, now time.Time) automaticCodexBudgetEvidence {
 	if cfg == nil {
 		return automaticCodexBudgetEvidence{Reason: "provider-specific usage configuration unavailable"}
+	}
+	if effectiveDispatchMode(cfg, now) == dispatchModeCodexPriority {
+		return readCodexTemporaryAllowance(cfg, now)
 	}
 	// Automatic Codex gates must consume only the configured CodexBar/usage-feed evidence.
 	// The legacy OAuth source measures a different provider and therefore can never authorize
@@ -290,6 +297,12 @@ func ownerCriticalBudgetBypass(t *Task) bool {
 func automaticCodexBudgetAllowed(t *Task, evidence automaticCodexBudgetEvidence, stopPercent int) (bool, string) {
 	if t == nil || !t.AutomaticCodex {
 		return true, "explicit or non-automatic Codex invocation"
+	}
+	if evidence.TemporaryAllowance {
+		if !evidence.Available || evidence.UsedPercent < 0 || evidence.UsedPercent >= 100 {
+			return false, "automatic Codex held: " + evidence.Reason
+		}
+		return true, fmt.Sprintf("Owner finite Codex allowance: weekly %dmin %d%% used, source=%s sampled=%s expires=%s", evidence.WindowMinutes, evidence.UsedPercent, evidence.Source, evidence.SampledAt, evidence.AllowanceExpiresAt)
 	}
 	if ownerCriticalBudgetBypass(t) {
 		return true, "Owner-pinned critical bypass: " + strings.TrimSpace(t.OwnerCriticalBypassReason)

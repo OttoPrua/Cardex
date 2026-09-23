@@ -50,6 +50,8 @@ func main() {
 		err = cmdCmd(os.Args[2:])
 	case "route":
 		err = cmdRoute(os.Args[2:])
+	case "mode":
+		err = cmdDispatchMode(os.Args[2:])
 	case "quota":
 		err = cmdQuota(os.Args[2:])
 	case "board":
@@ -1550,6 +1552,18 @@ func cmdCmd(args []string) error {
 	}
 	if len(t.Prompts) == 0 {
 		return fmt.Errorf("%s 没有 prompt", t.ID)
+	}
+	if cfg.DispatchMode != "" && t.WorkClass != "" && !t.RunnerExplicit && (ownerAutoRouteEligible(t) || mixedOwnerTask(t)) {
+		// A copied command may run after expiry or an early switch. Re-enter the
+		// normal locked dispatcher at execution time; retain its automatic budget,
+		// custody and held/no-retry semantics instead of emitting stale provider argv.
+		bin, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("# configured mode=%s; effective mode=%s; frozen mode=%s\n", cfg.DispatchMode, effectiveDispatchMode(cfg, dispatchNow()), frozenDispatchMode(t))
+		fmt.Printf("%s run -root %s %s\n", shellQuote(bin), shellQuote(root), shellQuote(t.ID))
+		return nil
 	}
 	step := t.Step
 	if step >= len(t.Prompts) {

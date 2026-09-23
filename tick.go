@@ -208,7 +208,7 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 						// policy waits. They never fall through to a generic/default provider.
 						continue
 					}
-					ownerRunner, ownerMatched := ownerPrimaryDispatch(root, cfg, t, now)
+					ownerRunner, ownerMatched := ownerPrimaryDispatch(root, cfg, t, dispatchNow())
 					switch {
 					case t.RemoteHost != "":
 						// 远端 codex 执行器：SSH 到远端跑 codex，走自己的 GPT 额度，不受 claude 冷却/红线阻塞。
@@ -293,8 +293,13 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 						}
 						viaRunner[t.ID] = via
 					}
+					// Select before provider parallel limits so snapshot admission cannot
+					// charge the Codex lane while starting a Kimi child.
+					if viaRunner[t.ID] == "codex" && t.AutomaticCodex && selectUnstartedCodexSnapshotSuccessor(root, cfg, t, dispatchNow()) {
+						viaRunner[t.ID] = t.PreferRunner
+					}
 					if viaRunner[t.ID] == "codex" && t.AutomaticCodex {
-						evidence := currentAutomaticCodexBudgetEvidence(cfg, now)
+						evidence := currentAutomaticCodexBudgetEvidence(cfg, dispatchNow())
 						allowed, reason := automaticCodexBudgetAllowed(t, evidence, cfg.AutomaticCodexBudgetStopPercent)
 						if !allowed {
 							t.Status = statusHeld

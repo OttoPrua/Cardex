@@ -90,12 +90,10 @@ func frozenDispatchMode(t *Task) string {
 // Empty means a historical card, which keeps the pre-mixed policy.
 func defaultMixedWorkClass(typ string) string {
 	switch typ {
-	case typeSequence:
+	case typeSequence, typeAssembly:
 		return "development"
 	case typeCoordinate, typeProgressPull:
 		return "management"
-	case typeAssembly:
-		return "gpt-complex"
 	default:
 		return "gpt-short"
 	}

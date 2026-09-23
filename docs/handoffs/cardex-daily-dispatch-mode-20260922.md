@@ -13,7 +13,10 @@ simple-development → pinned Grok 4.6/high, complex GPT → Astra/high (explici
 medium retained), short GPT → Sol/xhigh or max, management → agy Gemini 3.8 Flash
 High. Proven exhausted Grok may use equivalent Cursor; capable Kimi K3/max is the
 last named alternate. Explicit pins, Goal contracts and executed identities remain
-unchanged. Existing historical mixed routes keep their old semantics.
+unchanged. Existing historical mixed routes keep their old semantics. Future
+assembly cards without an explicit work class now default to development/Grok;
+length or importance alone does not select GPT. Existing saved GPT classes remain
+explicit task metadata and are not silently rewritten.
 
 `codex-priority` uses an explicit finite interval, never installation time. The
 only authorized application interval was 2026-09-22T11:09:13Z to 12:09:13Z and has

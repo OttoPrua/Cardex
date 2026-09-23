@@ -935,3 +935,19 @@ func TestDispatchModeDailySnapshotActualAdmission(t *testing.T) {
 		}
 	}
 }
+
+func TestDispatchModeAssemblyDoesNotImplicitlySelectGPT(t *testing.T) {
+	cfg, now := modeFixture(t)
+	cfg.DispatchMode = dispatchModeDaily
+	task := modeTask(defaultMixedWorkClass(typeAssembly))
+	task.Type = typeAssembly
+	route, ok := resolveMixedOwnerRouteAt(cfg, task, now)
+	if !ok || route.Legs[0].Runner != grokBuildRunnerName || route.Legs[0].Model != "grok-4.7" {
+		t.Fatalf("implicit GPT selection: %+v", route)
+	}
+	task.WorkClass = "gpt-complex"
+	route, ok = resolveMixedOwnerRouteAt(cfg, task, now)
+	if !ok || route.Legs[0].Runner != "codex" || route.Legs[0].Model != "gpt-6-astra" {
+		t.Fatalf("explicit GPT class lost: %+v", route)
+	}
+}

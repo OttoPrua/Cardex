@@ -72,6 +72,8 @@ const (
 	// evStaleAttemptWrite is a diagnostic: a runner/CAS write lost authority. At most
 	// one is appended per attempt; it never restores scheduling eligibility.
 	evStaleAttemptWrite = "stale_attempt_write_rejected"
+	// evHarvested records an outcome re-judgment. It does not by itself change status.
+	evHarvested = "harvested"
 )
 
 // 缺口标记：不是被写入的事件，而是活动流读者见 seq 跳号时插入的显式披露。

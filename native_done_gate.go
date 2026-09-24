@@ -118,6 +118,23 @@ func nativeDoneContractPrompt(t *Task, current string) string {
 // nativeDoneHoldReason returns a closed hold reason if native done must not be
 // persisted. An empty string allows done.
 func nativeDoneHoldReason(t *Task, facts nativeDoneFacts) string {
+	return nativeDoneHoldReasonMode(t, facts, false)
+}
+
+// nativeDoneHoldReasonMode is the harvest-aware gate. When harvestOutcome is
+// true (harvest mode on), only a live or residual provider process holds the
+// card. Observation-derived open tools and the regex heuristics are skipped
+// because the outcome was already judged from the worktree.
+func nativeDoneHoldReasonMode(t *Task, facts nativeDoneFacts, harvestOutcome bool) string {
+	if harvestOutcome {
+		if facts.ProcessAlive {
+			return nativeDoneHoldFakeExecuting
+		}
+		if facts.ProcessResidue {
+			return nativeDoneHoldProcessResidue
+		}
+		return ""
+	}
 	if facts.OpenTools {
 		return nativeDoneHoldOpenTools
 	}

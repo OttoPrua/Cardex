@@ -863,8 +863,9 @@ func TestWakeMalformedInflightInventoryFailsClosedBeforeQueue(t *testing.T) {
 	t.Parallel()
 	thread := "7b7b7b7b-7b7b-7b7b-7b7b-7b7b7b7b7b06"
 	cases := []struct {
-		name  string
-		write func(t *testing.T, root string)
+		name      string
+		blocksAll bool
+		write     func(t *testing.T, root string)
 	}{
 		{
 			name: "garbage_json",
@@ -903,7 +904,8 @@ func TestWakeMalformedInflightInventoryFailsClosedBeforeQueue(t *testing.T) {
 			},
 		},
 		{
-			name: "path_unsafe_name",
+			name:      "path_unsafe_name",
+			blocksAll: true,
 			write: func(t *testing.T, root string) {
 				dir := managerWakeInflightDir(root)
 				if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -928,9 +930,15 @@ func TestWakeMalformedInflightInventoryFailsClosedBeforeQueue(t *testing.T) {
 			if err == nil {
 				t.Fatal("malformed inflight inventory must fail closed")
 			}
-			if queueThreadCount(logPath) != 0 {
+			queued := queueThreadCount(logPath)
+			if tc.blocksAll {
+				if queued != 0 {
+					data, _ := os.ReadFile(logPath)
+					t.Fatalf("unattributable inflight inventory queued: %s", data)
+				}
+			} else if queued != 1 {
 				data, _ := os.ReadFile(logPath)
-				t.Fatalf("malformed inflight inventory queued: %s", data)
+				t.Fatalf("attributable inflight fault must not block the other subscription, queued=%d log=%s", queued, data)
 			}
 			if got := loadManagerWakeErrorClass(root); got == "" {
 				t.Fatal("malformed inflight inventory must leave a durable error")
@@ -959,6 +967,7 @@ func TestWakeMalformedReceiptInventoryFailsClosedBeforeQueue(t *testing.T) {
 		name         string
 		laterEnabled bool
 		includeLater bool
+		blocksAll    bool
 		write        func(t *testing.T, root, wantID string)
 	}{
 		{
@@ -1020,6 +1029,7 @@ func TestWakeMalformedReceiptInventoryFailsClosedBeforeQueue(t *testing.T) {
 			name:         "path_unsafe_name",
 			laterEnabled: false,
 			includeLater: false,
+			blocksAll:    true,
 			write: func(t *testing.T, root, wantID string) {
 				dir := managerWakeReceiptDir(root)
 				if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1050,12 +1060,16 @@ func TestWakeMalformedReceiptInventoryFailsClosedBeforeQueue(t *testing.T) {
 			if err == nil {
 				t.Fatal("malformed receipt inventory must fail closed")
 			}
-			if enteredQueue {
-				t.Fatal("malformed receipt inventory must fail closed before queue")
-			}
-			if queueThreadCount(logPath) != 0 {
-				data, _ := os.ReadFile(logPath)
-				t.Fatalf("malformed receipt inventory queued: %s", data)
+			if tc.blocksAll {
+				if enteredQueue {
+					t.Fatal("unattributable receipt inventory must fail closed before queue")
+				}
+				if queueThreadCount(logPath) != 0 {
+					data, _ := os.ReadFile(logPath)
+					t.Fatalf("unattributable receipt inventory queued: %s", data)
+				}
+			} else if !enteredQueue {
+				t.Fatal("attributable receipt fault must still attempt the other subscription")
 			}
 			if got := loadManagerWakeErrorClass(root); got == "" {
 				t.Fatal("malformed receipt inventory must leave a durable error")

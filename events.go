@@ -69,6 +69,9 @@ const (
 	// evNeedsOwner is an attention signal, not a fabricated terminal. Custody timeout
 	// stays visible without claiming held/done/failed.
 	evNeedsOwner = "needs_owner"
+	// evDeferred is a non-transition skip: the card stays queued. Tick uses it
+	// for write conflicts and automatic Codex budget backoff.
+	evDeferred = "deferred"
 	// evStaleAttemptWrite is a diagnostic: a runner/CAS write lost authority. At most
 	// one is appended per attempt; it never restores scheduling eligibility.
 	evStaleAttemptWrite = "stale_attempt_write_rejected"
@@ -628,6 +631,95 @@ func withCostTelemetry(detail map[string]any, t *Task) map[string]any {
 // emitTaskEvent 是 recordEvent 的便捷封装：状态机侧点用它记录事件，写入失败只打警告不阻断。
 // 【为什么失败不阻断】事件账本是审计凭证层，绝不能反向让 saveTask 失败卡死主流程；出错走
 // stderr 提示由 launchd 日志收拢——事件缺口在活动流里由 seq 检测自动可见。
+// lastTaskEvent reads only the tail of events/<id>.jsonl and returns the last complete line.
+func lastTaskEvent(root, taskID string) (TaskEvent, bool) {
+	f, err := os.Open(eventsPath(root, taskID))
+	if err != nil {
+		return TaskEvent{}, false
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil || st.Size() == 0 {
+		return TaskEvent{}, false
+	}
+	const tail = 8192
+	start := int64(0)
+	if st.Size() > tail {
+		start = st.Size() - tail
+	}
+	buf := make([]byte, st.Size()-start)
+	n, _ := f.ReadAt(buf, start)
+	if n == 0 {
+		return TaskEvent{}, false
+	}
+	buf = buf[:n]
+	if start > 0 {
+		if i := bytes.IndexByte(buf, '\n'); i >= 0 {
+			buf = buf[i+1:]
+		} else {
+			return TaskEvent{}, false
+		}
+	}
+	lines := bytes.Split(buf, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := bytes.TrimSpace(lines[i])
+		if len(line) == 0 {
+			continue
+		}
+		var ev TaskEvent
+		if json.Unmarshal(line, &ev) != nil {
+			return TaskEvent{}, false
+		}
+		return ev, true
+	}
+	return TaskEvent{}, false
+}
+
+func detailBlockedBy(v any) []string {
+	var out []string
+	switch x := v.(type) {
+	case []string:
+		out = append(out, x...)
+	case []any:
+		for _, item := range x {
+			s, ok := item.(string)
+			if ok {
+				out = append(out, s)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// deferredEventRepeats is true when the ledger's last event is already a deferred
+// skip with the same reason and the same blocked_by set.
+func deferredEventRepeats(root, taskID, reason string, blocked []string) bool {
+	ev, ok := lastTaskEvent(root, taskID)
+	if !ok || ev.Type != evDeferred || ev.Detail == nil {
+		return false
+	}
+	got, _ := ev.Detail["reason"].(string)
+	if got != reason {
+		return false
+	}
+	want := append([]string(nil), blocked...)
+	sort.Strings(want)
+	return sameStringSet(detailBlockedBy(ev.Detail["blocked_by"]), want)
+}
+
 func emitTaskEvent(root, taskID, evType, actor, status string, step int, detail map[string]any) {
 	if taskID == "" || root == "" {
 		return

@@ -254,6 +254,7 @@ type automaticCodexBudgetEvidence struct {
 	Source             string
 	Reason             string
 	TemporaryAllowance bool
+	WindowKind         string
 	WindowMinutes      int
 	SampledAt          string
 	AllowanceExpiresAt string
@@ -273,6 +274,7 @@ func currentAutomaticCodexBudgetEvidence(cfg *Config, now time.Time) automaticCo
 	if read.Available {
 		return automaticCodexBudgetEvidence{
 			Available: true, UsedPercent: read.Percent, Source: read.Source,
+			WindowKind: read.WindowKind, WindowMinutes: read.WindowMinutes,
 		}
 	}
 	reason := strings.TrimSpace(read.Reason)
@@ -317,10 +319,26 @@ func automaticCodexBudgetAllowed(t *Task, evidence automaticCodexBudgetEvidence,
 		}
 		return false, "automatic Codex held: " + reason
 	}
+	window := codexBudgetWindowLabel(evidence.WindowKind, evidence.WindowMinutes)
 	if evidence.UsedPercent >= stopPercent {
-		return false, fmt.Sprintf("automatic Codex held at %d%% used (stop=%d%%, reserve=%d%%)", evidence.UsedPercent, stopPercent, 100-stopPercent)
+		return false, fmt.Sprintf("automatic Codex held at %d%% used (stop=%d%%, reserve=%d%%, window=%s)", evidence.UsedPercent, stopPercent, 100-stopPercent, window)
 	}
-	return true, fmt.Sprintf("automatic Codex budget %d%% used below %d%% stop", evidence.UsedPercent, stopPercent)
+	return true, fmt.Sprintf("automatic Codex budget %d%% used below %d%% stop (window=%s)", evidence.UsedPercent, stopPercent, window)
+}
+
+func codexBudgetWindowLabel(kind string, minutes int) string {
+	switch {
+	case minutes == 10080 || kind == "secondary":
+		return "weekly"
+	case minutes == windowHours*60 || kind == "primary":
+		return "5h"
+	case kind != "":
+		return kind
+	case minutes > 0:
+		return fmt.Sprintf("%dm", minutes)
+	default:
+		return "unknown"
+	}
 }
 
 func reserveAutomaticSolCall(t *Task, stage string) error {

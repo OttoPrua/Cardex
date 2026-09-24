@@ -193,11 +193,13 @@ func writerClaimForTask(t *Task) liveWriterClaim {
 	}
 	c.taskID = t.ID
 	c.dir = t.Dir
-	c.dirKey = writerDirKey(t.Dir)
+	// dirKey is the canonical working directory. Symlink aliases and trailing
+	// "/." spellings of one directory share a key; linked worktrees do not.
+	c.dirKey = physicalDirKey(t.Dir)
 	top, common, unc := resolveGitIdentity(t.Dir)
 	if unc {
 		c.valid = false
-		c.dirKey = writerDirKey(t.Dir)
+		c.dirKey = physicalDirKey(t.Dir)
 		c.repoKey = physicalDirKey(t.Dir)
 		if t.WriteDomain != nil {
 			c.explicit = true
@@ -240,13 +242,26 @@ func writerClaimForTask(t *Task) liveWriterClaim {
 	return c
 }
 
+func sameDirKey(a, b liveWriterClaim) bool {
+	return a.dirKey != "" && a.dirKey == b.dirKey
+}
+
+func realPathsOverlap(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+string(filepath.Separator)) || strings.HasPrefix(b, a+string(filepath.Separator))
+}
+
+// writerClaimsConflict reports whether two writer claims cannot run together.
+// Same working directory blocks legacy writers and invalid explicit claims.
+// Valid explicit claims block on domain, lineage, closed resources, same-directory
+// path overlap, or resolved real-path overlap. Different worktrees of one repo
+// do not block; merge time resolves those files.
 func writerClaimsConflict(a, b liveWriterClaim) bool {
 	if a.taskID == "" || b.taskID == "" || a.taskID == b.taskID {
 		return false
 	}
 	if a.explicit && b.explicit {
 		if !a.valid || !b.valid {
-			return a.dirKey == b.dirKey || a.repoKey == b.repoKey
+			return sameDirKey(a, b)
 		}
 		if a.domainID != "" && a.domainID == b.domainID {
 			return true
@@ -261,17 +276,18 @@ func writerClaimsConflict(a, b liveWriterClaim) bool {
 				}
 			}
 		}
-		sameRepo := a.repoKey != "" && a.repoKey == b.repoKey
-		for _, pa := range a.paths {
-			for _, pb := range b.paths {
-				if _, ok := pathOverlapKind(pa, pb); ok && sameRepo {
-					return true
+		if sameDirKey(a, b) {
+			for _, pa := range a.paths {
+				for _, pb := range b.paths {
+					if _, ok := pathOverlapKind(pa, pb); ok {
+						return true
+					}
 				}
 			}
 		}
 		for _, ra := range a.reals {
 			for _, rb := range b.reals {
-				if ra == rb || strings.HasPrefix(ra, rb+string(filepath.Separator)) || strings.HasPrefix(rb, ra+string(filepath.Separator)) {
+				if realPathsOverlap(ra, rb) {
 					return true
 				}
 			}
@@ -282,10 +298,40 @@ func writerClaimsConflict(a, b liveWriterClaim) bool {
 }
 
 func legacyWritersShareBoundary(a, b liveWriterClaim) bool {
-	if a.repoKey != "" && a.repoKey == b.repoKey {
-		return true
+	return sameDirKey(a, b)
+}
+
+// writerConflictsWithActiveIDs lists active tasks that block candidate, sorted.
+// Read-only types are exempt. An uncertain non-explicit claim (unreadable git
+// identity) has no peer id; writerConflictsWithActive still fail-closes it.
+func writerConflictsWithActiveIDs(candidate *Task, active []*Task) []string {
+	if candidate == nil || taskIsReadOnlyType(candidate) {
+		return nil
 	}
-	return a.dirKey != "" && a.dirKey == b.dirKey
+	claim := writerClaimForTask(candidate)
+	if !claim.valid && !claim.explicit {
+		return nil
+	}
+	var ids []string
+	seen := map[string]bool{}
+	for _, other := range active {
+		if other == nil || other.ID == "" || other.ID == candidate.ID || seen[other.ID] || taskIsReadOnlyType(other) {
+			continue
+		}
+		otherClaim := writerClaimForTask(other)
+		block := false
+		if !otherClaim.valid && !otherClaim.explicit {
+			block = true
+		} else if writerClaimsConflict(claim, otherClaim) {
+			block = true
+		}
+		if block {
+			seen[other.ID] = true
+			ids = append(ids, other.ID)
+		}
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func writerConflictsWithActive(candidate *Task, active []*Task) bool {
@@ -293,19 +339,10 @@ func writerConflictsWithActive(candidate *Task, active []*Task) bool {
 		return false
 	}
 	claim := writerClaimForTask(candidate)
-	if !claim.valid {
+	if !claim.valid && !claim.explicit {
 		return true
 	}
-	for _, other := range active {
-		if other == nil || other.ID == candidate.ID || taskIsReadOnlyType(other) {
-			continue
-		}
-		otherClaim := writerClaimForTask(other)
-		if !otherClaim.valid || writerClaimsConflict(claim, otherClaim) {
-			return true
-		}
-	}
-	return false
+	return len(writerConflictsWithActiveIDs(candidate, active)) > 0
 }
 
 func taskHasLiveWriterProof(root string, t *Task) bool {

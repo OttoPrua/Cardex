@@ -390,12 +390,13 @@ func invokeCodex(ctx context.Context, root string, cfg *Config, t *Task, prompt 
 	switch {
 	case t.Type == typeSequence:
 		sandbox = "workspace-write"
-		// codex 沙箱默认禁写 .git，导致收工 commit 失败（活干了提交不了）；显式放行本仓 .git。
-		extra = []string{"-c", fmt.Sprintf(`sandbox_workspace_write.writable_roots=["%s"]`, filepath.Join(t.Dir, ".git"))}
+		// codex 沙箱默认禁写 .git，导致收工 commit 失败（活干了提交不了）。
+		// 普通仓放行 <dir>/.git；linked worktree 的 .git 是文件，还要放行 git-dir 与 git-common-dir。
+		extra = []string{"-c", codexWritableRootsArg(t.Dir)}
 	case workDir != t.Dir:
 		// 复审副本模式:跑在副本内的 workspace-write,顺带放行副本 .git(git apply/commit 等)。
 		sandbox = "workspace-write"
-		extra = []string{"-c", fmt.Sprintf(`sandbox_workspace_write.writable_roots=["%s"]`, filepath.Join(workDir, ".git"))}
+		extra = []string{"-c", codexWritableRootsArg(workDir)}
 	}
 	outFile := filepath.Join(os.TempDir(), "cardex-codex-"+t.ID+".txt")
 	defer os.Remove(outFile)
@@ -1208,8 +1209,9 @@ func holdNativeExecution(root string, t *Task, via, kind, class string) error {
 	t.Status = statusHeld
 	t.LastError = "native execution held: " + kind
 	t.touch()
+	detail := annotateHarvestHold(map[string]any{"reason": "runner_native_execution_held", "runner": via}, t)
 	return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:native-terminal", statusHeld, t.Step,
-		withCostTelemetry(withRouteAttempt(map[string]any{"reason": "runner_native_execution_held", "runner": via}, t), t)))
+		withCostTelemetry(withRouteAttempt(detail, t), t)))
 }
 
 // grokBuildZeroEventProcessFailure returns the closed, value-free process class only
@@ -1655,6 +1657,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 	}
 	// 派发事件:tick 已把卡从 queued/limit_paused 拉进 running。actor=runner,detail 记录执行器身份
 	// (远端/codex/引擎/claude)与当前步序号——恢复限额后续跑与首次派发在这条事件上会有 step/mid_step 差异。
+	recordDispatchBaseCommit(t)
 	if err := persistTaskEvent(root, t, evDispatched, "runner", statusRunning, t.Step,
 		dispatchEventDetail(cfg, t, useCodex, remote)); err != nil {
 		return finishIfStopped(err)
@@ -1697,7 +1700,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		default:
 			if nativeDoneApplies(via) {
 				prompt := nativeDoneContractPrompt(t, "")
-				if reason := nativeDoneHoldReason(t, collectNativeDoneFactsForPersist(t, prompt, t.LastSummary, nil)); reason != "" {
+				if reason := nativeDoneHoldReasonMode(t, collectNativeDoneFactsForPersist(t, prompt, t.LastSummary, nil), harvestMode(cfg) == harvestModeOn); reason != "" {
 					logBlock(lg, "NATIVE_DONE_GATE", reason)
 					return holdNativeContractEvidence(root, t, via, reason)
 				}
@@ -1952,6 +1955,12 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		}
 		recordRouteAttemptObservation(t, res)
 		if frozenDispatchMode(t) != "" && useCodex && (res == nil || !res.ObservationComplete) {
+			if handled, herr := dispatchUnknownHarvest(root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
+				if errors.Is(herr, errHarvestContinueLoop) {
+					continue
+				}
+				return herr
+			}
 			return holdNativeExecution(root, t, via, "codex_stream_incomplete", "unknown_outcome")
 		}
 
@@ -1976,6 +1985,12 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 				if res != nil && res.Subtype != "" {
 					kind = res.Subtype
 				}
+				if handled, herr := dispatchUnknownHarvest(root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
+					if errors.Is(herr, errHarvestContinueLoop) {
+						continue
+					}
+					return herr
+				}
 				return holdNativeExecution(root, t, via, kind, "unknown_outcome")
 			}
 		}
@@ -1987,6 +2002,12 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		// attempts stay unchanged, and the operator can act on the truthful process class.
 		if via == grokBuildRunnerName {
 			if processClass, hold := grokBuildZeroEventProcessFailure(res, runErr); hold {
+				if handled, herr := dispatchUnknownHarvest(root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
+					if errors.Is(herr, errHarvestContinueLoop) {
+						continue
+					}
+					return herr
+				}
 				failureKind := res.Subtype
 				safeErr := failureKind
 				if strings.TrimSpace(res.Result) != "" {
@@ -2014,7 +2035,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 					detail["stderr_line_count_bucket"] = res.ProcessStderrLineCountBucket
 				}
 				return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:classifier", statusHeld, t.Step,
-					withCostTelemetry(withRouteAttempt(detail, t), t)))
+					withCostTelemetry(withRouteAttempt(annotateHarvestHold(detail, t), t), t)))
 			}
 		}
 
@@ -2023,6 +2044,12 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		if useGrokBuild && res != nil && res.ObservationComplete && res.Subtype == "grok_build_stream_incomplete" &&
 			res.SemanticEvents == 0 && res.ModelEvents == 0 && res.ToolEvents == 0 {
 			if kind, ok := classifyPolicyFallbackFailure(via, res, combined, runErr); !ok || kind != fallbackQuota {
+				if handled, herr := dispatchUnknownHarvest(root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
+					if errors.Is(herr, errHarvestContinueLoop) {
+						continue
+					}
+					return herr
+				}
 				return holdNativeExecution(root, t, via, "stream_incomplete", "unknown_outcome")
 			}
 		}
@@ -2034,6 +2061,12 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		// proved complete 0/0/0/0 metadata-only terminal remains eligible for the bounded path below.
 		if via == grokBuildRunnerName {
 			if kind, unknown := grokTerminalUnknownOutcome(res); unknown {
+				if handled, herr := dispatchUnknownHarvest(root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
+					if errors.Is(herr, errHarvestContinueLoop) {
+						continue
+					}
+					return herr
+				}
 				semanticEvents, modelEvents, toolEvents, observationComplete := 0, 0, 0, false
 				if res != nil {
 					semanticEvents = res.SemanticEvents
@@ -2055,12 +2088,12 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 					"unknown outcome held (kind=%s, observation_complete=%v, semantic=%d, model=%d, tools=%d)",
 					kind, observationComplete, semanticEvents, modelEvents, toolEvents))
 				return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:grok-build", statusHeld, t.Step,
-					withCostTelemetry(withRouteAttempt(map[string]any{
+					withCostTelemetry(withRouteAttempt(annotateHarvestHold(map[string]any{
 						"reason": "grok_terminal_unknown_outcome_held", "reason_class": "unknown_outcome",
 						"failure_class": "unknown_outcome", "failure_kind": string(kind),
 						"observation_complete": observationComplete,
 						"semantic_events":      semanticEvents, "model_events": modelEvents, "tool_events": toolEvents,
-					}, t), t)))
+					}, t), t), t)))
 			}
 		}
 
@@ -2604,180 +2637,198 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 
 		// 3) 成功：推进步骤（codex/gemini/远端/引擎成功不代表 claude 限额解除，全局冷却只由
 		// claude 路径清除；引擎/gemini 成功清的是自己的 cooldown-<name>.json——账各归各）。
-		if !useCodex && !remote {
-			switch {
-			case useGemini:
-				clearEngineCooldown(root, "gemini")
-			case useOpenCode:
-				clearEngineCooldown(root, openCodeCooldownName)
-			case useKimiCLI:
-				clearEngineCooldown(root, kimiCLICooldownName)
-			case useGrokBuild:
-				clearEngineCooldown(root, grokBuildCooldownName)
-			case useCursor:
-				clearEngineCooldown(root, cursorCooldownName)
-			case engineName != "":
-				clearEngineCooldown(root, engineName)
-			default:
-				clearCooldown(root)
-			}
+		cont, err := finishProviderSuccess(root, cfg, t, via, prompt, res, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName)
+		if err != nil {
+			return err
 		}
-		// Consult contract evidence before Step++ so a held card cannot later
-		// no_more_prompts into done without artifacts.
-		if t.Step+1 >= len(t.Prompts) && nativeDoneApplies(via) {
-			if reason := nativeDoneHoldReason(t, collectNativeDoneFacts(t, nativeDoneContractPrompt(t, prompt), res.Result, res)); reason != "" {
-				logBlock(lg, "NATIVE_DONE_GATE", reason)
-				return holdNativeContractEvidence(root, t, via, reason)
-			}
+		if cont {
+			continue
 		}
-		t.Attempts = 0
-		t.NotBeforeEpoch = 0
-		t.MidStep = false
-		t.Step++
-		if t.FreshSteps {
-			t.SessionID = "" // 下一步全新会话
-		}
-		t.TurnsUsed += res.NumTurns
-		t.CostUSD += res.TotalCostUSD
-		t.LastError = ""
-		// 交叉验证 A 卡的结论不落可达面：不写进日志 RESULT、不写进 LastSummary(list 摘要)——
-		// 减少引擎乙从盘上被动读到甲的表面(logs/<A>.log 与 tasks/<A>.json 都是绝对路径可 Read 的)。
-		// 甲结论仅在隔离侧车(供 C 用)与 C 卡合并 prompt 里可审计。这是被动暴露最小化,非硬沙箱(见 README)。
-		if t.XRole != "A" {
-			if s := summarizeResult(res.Result); s != "" {
-				t.LastSummary = s
-			}
-			if t.Type == typeReview {
-				if err := writeReviewOutput(lg, t, res.Result); err != nil {
-					return holdNativeExecution(root, t, via, "review_output_unreadable", "delivery_failure")
-				}
-			} else {
-				logBlock(lg, "RESULT", res.Result)
-			}
-		} else {
-			logBlock(lg, "RESULT", "[交叉A结论已隔离——不落可达日志,避免引擎乙从盘上读到甲;完整结论见隔离侧车与链汇总 C 卡]")
-		}
-		logSection(lg, fmt.Sprintf("步骤完成  turns=%d cost=$%.4f duration=%.0fs", res.NumTurns, res.TotalCostUSD, float64(res.DurationMS)/1000))
+		return nil
+	}
+}
 
-		if t.Step >= len(t.Prompts) {
-			plannedReviewStage := pendingRequiredReviewStage(t)
-			if t.ReviewAfter && reviewAfterEligibleType(t) && (t.SolMaxAdversarialReview || plannedReviewStage != "") {
-				// Persist the completed implementation as held/pending before the reviewer child. A crash
-				// anywhere after this write cannot expose a done Opus implementation without its review
-				// obligation, and tick can reconcile by ReviewOf without rerunning the model step.
-				t.Status = statusHeld
-				t.ReviewObligationPending = true
-				t.LastError = "implementation complete; waiting for mandatory review obligation to persist"
-				t.touch()
-				if err := saveAuthorizedTask(root, t); err != nil {
-					return err
-				}
-				if !admissionAllowsFollowOn(root, t) || producerInvalidated(t) {
-					return nil
-				}
-				childCfg := configForGeneratedChildren(root, cfg, lg)
-				rv, err := ensureReviewAfterTask(root, childCfg, t, lg)
-				if err != nil || rv == nil {
-					if err == nil {
-						err = fmt.Errorf("review helper returned no child")
-					}
-					t.LastError = "mandatory review obligation was not persisted: " + err.Error()
-					t.touch()
-					if saveErr := persistTaskEvent(root, t, evHeld, "runner:review-obligation", statusHeld, t.Step,
-						withCostTelemetry(map[string]any{"reason": "mandatory_review_persist_failed", "err": err.Error()}, t)); saveErr != nil {
-						return errors.Join(err, saveErr)
-					}
-					logBlock(lg, "REVIEW", t.LastError)
-					return nil
-				}
-				t.ReviewTaskID = rv.ID
-				t.ReviewObligationPending = false
-				if plannedReviewStage != "" {
-					t.Status = statusHeld
-					t.LastError = "required Owner review gate queued: " + plannedReviewStage
-					t.touch()
-					if err := persistTaskEvent(root, t, evStepOK, "runner", statusRunning, t.Step, withRouteAttempt(map[string]any{
-						"turns": res.NumTurns, "cost_usd": res.TotalCostUSD, "final_step": true,
-					}, t)); err != nil {
-						return finishIfStopped(err)
-					}
-					return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:owner-review-plan", statusHeld, t.Step,
-						withCostTelemetry(map[string]any{
-							"reason": "required_review_pending", "review_stage": plannedReviewStage,
-							"review_child": rv.ID,
-						}, t)))
-				}
-				t.LastError = ""
-			}
-			t.Status = statusDone
-			// 交叉 C 终局：标 done 前先定合并契约（不合规直接 failed），让**首次落盘即是终态**——
-			// 避免"done 先落盘、校验在后、failed 靠第二次保存"的崩溃窗口（reconcile 不覆盖 C）。
-			if t.XRole == "C" && !crossMergeVerdictOK(res.Result) {
-				t.Status = statusFailed
-				t.LastError = "交叉C 结论未按合并契约收尾（缺合法 verdict/confidence），不发布进度、勿采信"
-				_ = os.Remove(progressPath(root, t.ProgressKey)) // 清可能残留的陈旧报告，防冒充终局
-				logBlock(lg, "CROSS", t.LastError)
-			}
-			if t.XRole == "C" && t.FableReviewerMerger && t.Status == statusDone {
-				if fableMergeDisposition(res.Result) != fableMergeTerminal {
-					t.Status = statusHeld
-					t.EmitProgress = false
-					t.LastError = "Fable Sol/ultra terminal merger retains unresolved P0/P1 or uncertainty; held for Owner"
-					logBlock(lg, "FABLE", t.LastError)
-				} else if !reviewCompleted(t, reviewStageFableSolUltra) {
-					t.CompletedReviews = append(t.CompletedReviews, reviewStageFableSolUltra)
-					t.OwnerRouteStage = routeStageTerminal
-				}
-			}
-			t.touch()
-			// 最后一步的 step_ok 事件先记(与中间步一致语义),再据终局标 done 或交叉契约违规的 failed。
-			if err := persistTaskEvent(root, t, evStepOK, "runner", statusRunning, t.Step, withRouteAttempt(map[string]any{
-				"turns": res.NumTurns, "cost_usd": res.TotalCostUSD, "final_step": true,
-			}, t)); err != nil {
-				return finishIfStopped(err)
-			}
-			if t.Status == statusDone {
-				if err := persistTaskEvent(root, t, evDone, "runner", statusDone, t.Step, withCostTelemetry(withRouteAttempt(nil, t), t)); err != nil {
-					return finishIfStopped(err)
-				}
-				// 复盘计数器：只数真 done。上面交叉 C 契约违规改判 failed 的分支不该计入
-				// "产能"，否则复盘窗口里混进从未交付的卡。
-				noteTaskDoneLogged(root, cfg, t, lg)
-			} else if t.Status == statusHeld {
-				if err := persistTaskEvent(root, t, evHeld, "runner:fable-terminal-merge", statusHeld, t.Step,
-					withCostTelemetry(map[string]any{
-						"reason": "fable_owner_hold", "route_stage": routeStageFableMerge,
-					}, t)); err != nil {
-					return finishIfStopped(err)
-				}
-			} else if err := persistTaskEvent(root, t, evFailed, "runner", statusFailed, t.Step,
-				withCostTelemetry(map[string]any{
-					"err": t.LastError, "reason": "cross_merge_contract_violation",
-				}, t)); err != nil {
-				return finishIfStopped(err)
-			}
-			if t.Status == statusHeld {
-				return nil
-			}
-			if producerInvalidated(t) || diskControlRevoked(root, t.ID) {
-				return nil
-			}
-			postComplete(root, cfg, t, res, lg)
-			// postComplete 期间任务可能被 cancel 并归档（done 态 cancel 走立即归档），
-			// 注解回写别把归档移走的文件复活。
-			if diskCanceled(root, t.ID) {
-				return nil
-			}
-			return saveAuthorizedTask(root, t)
-		}
-		t.touch()
-		// 中间步成功事件:每推进一步一条,是"步数一致"验收的锚点(枚举遗漏就红)。
-		if err := persistTaskEvent(root, t, evStepOK, "runner", statusRunning, t.Step, withRouteAttempt(map[string]any{
-			"turns": res.NumTurns, "cost_usd": res.TotalCostUSD,
-		}, t)); err != nil {
-			return finishIfStopped(err)
+// finishProviderSuccess is the existing provider-success tail: clear the lane
+// cooldown, consult the native-done gate, advance the step, and persist
+// step_ok / done / review obligation. continueLoop is true when more prompts
+// remain. Harvest mode "on" reuses this path for a verdict of done.
+func finishProviderSuccess(root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, lg *os.File, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor bool, engineName string) (continueLoop bool, err error) {
+	// 3) 成功：推进步骤（codex/gemini/远端/引擎成功不代表 claude 限额解除，全局冷却只由
+	// claude 路径清除；引擎/gemini 成功清的是自己的 cooldown-<name>.json——账各归各）。
+	if !useCodex && !remote {
+		switch {
+		case useGemini:
+			clearEngineCooldown(root, "gemini")
+		case useOpenCode:
+			clearEngineCooldown(root, openCodeCooldownName)
+		case useKimiCLI:
+			clearEngineCooldown(root, kimiCLICooldownName)
+		case useGrokBuild:
+			clearEngineCooldown(root, grokBuildCooldownName)
+		case useCursor:
+			clearEngineCooldown(root, cursorCooldownName)
+		case engineName != "":
+			clearEngineCooldown(root, engineName)
+		default:
+			clearCooldown(root)
 		}
 	}
+	// Consult contract evidence before Step++ so a held card cannot later
+	// no_more_prompts into done without artifacts.
+	if t.Step+1 >= len(t.Prompts) && nativeDoneApplies(via) {
+		if reason := nativeDoneHoldReasonMode(t, collectNativeDoneFacts(t, nativeDoneContractPrompt(t, prompt), res.Result, res), harvestMode(cfg) == harvestModeOn); reason != "" {
+			logBlock(lg, "NATIVE_DONE_GATE", reason)
+			return false, holdNativeContractEvidence(root, t, via, reason)
+		}
+	}
+	t.Attempts = 0
+	t.NotBeforeEpoch = 0
+	t.MidStep = false
+	t.Step++
+	if t.FreshSteps {
+		t.SessionID = "" // 下一步全新会话
+	}
+	t.TurnsUsed += res.NumTurns
+	t.CostUSD += res.TotalCostUSD
+	t.LastError = ""
+	// 交叉验证 A 卡的结论不落可达面：不写进日志 RESULT、不写进 LastSummary(list 摘要)——
+	// 减少引擎乙从盘上被动读到甲的表面(logs/<A>.log 与 tasks/<A>.json 都是绝对路径可 Read 的)。
+	// 甲结论仅在隔离侧车(供 C 用)与 C 卡合并 prompt 里可审计。这是被动暴露最小化,非硬沙箱(见 README)。
+	if t.XRole != "A" {
+		if s := summarizeResult(res.Result); s != "" {
+			t.LastSummary = s
+		}
+		if t.Type == typeReview {
+			if err := writeReviewOutput(lg, t, res.Result); err != nil {
+				return false, holdNativeExecution(root, t, via, "review_output_unreadable", "delivery_failure")
+			}
+		} else {
+			logBlock(lg, "RESULT", res.Result)
+		}
+	} else {
+		logBlock(lg, "RESULT", "[交叉A结论已隔离——不落可达日志,避免引擎乙从盘上读到甲;完整结论见隔离侧车与链汇总 C 卡]")
+	}
+	logSection(lg, fmt.Sprintf("步骤完成  turns=%d cost=$%.4f duration=%.0fs", res.NumTurns, res.TotalCostUSD, float64(res.DurationMS)/1000))
+
+	if t.Step >= len(t.Prompts) {
+		plannedReviewStage := pendingRequiredReviewStage(t)
+		if t.ReviewAfter && reviewAfterEligibleType(t) && (t.SolMaxAdversarialReview || plannedReviewStage != "") {
+			// Persist the completed implementation as held/pending before the reviewer child. A crash
+			// anywhere after this write cannot expose a done Opus implementation without its review
+			// obligation, and tick can reconcile by ReviewOf without rerunning the model step.
+			t.Status = statusHeld
+			t.ReviewObligationPending = true
+			t.LastError = "implementation complete; waiting for mandatory review obligation to persist"
+			t.touch()
+			if err := saveAuthorizedTask(root, t); err != nil {
+				return false, err
+			}
+			if !admissionAllowsFollowOn(root, t) || producerInvalidated(t) {
+				return false, nil
+			}
+			childCfg := configForGeneratedChildren(root, cfg, lg)
+			rv, err := ensureReviewAfterTask(root, childCfg, t, lg)
+			if err != nil || rv == nil {
+				if err == nil {
+					err = fmt.Errorf("review helper returned no child")
+				}
+				t.LastError = "mandatory review obligation was not persisted: " + err.Error()
+				t.touch()
+				if saveErr := persistTaskEvent(root, t, evHeld, "runner:review-obligation", statusHeld, t.Step,
+					withCostTelemetry(map[string]any{"reason": "mandatory_review_persist_failed", "err": err.Error()}, t)); saveErr != nil {
+					return false, errors.Join(err, saveErr)
+				}
+				logBlock(lg, "REVIEW", t.LastError)
+				return false, nil
+			}
+			t.ReviewTaskID = rv.ID
+			t.ReviewObligationPending = false
+			if plannedReviewStage != "" {
+				t.Status = statusHeld
+				t.LastError = "required Owner review gate queued: " + plannedReviewStage
+				t.touch()
+				if err := persistTaskEvent(root, t, evStepOK, "runner", statusRunning, t.Step, withRouteAttempt(map[string]any{
+					"turns": res.NumTurns, "cost_usd": res.TotalCostUSD, "final_step": true,
+				}, t)); err != nil {
+					return false, finishIfStopped(err)
+				}
+				return false, finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:owner-review-plan", statusHeld, t.Step,
+					withCostTelemetry(map[string]any{
+						"reason": "required_review_pending", "review_stage": plannedReviewStage,
+						"review_child": rv.ID,
+					}, t)))
+			}
+			t.LastError = ""
+		}
+		t.Status = statusDone
+		// 交叉 C 终局：标 done 前先定合并契约（不合规直接 failed），让**首次落盘即是终态**——
+		// 避免"done 先落盘、校验在后、failed 靠第二次保存"的崩溃窗口（reconcile 不覆盖 C）。
+		if t.XRole == "C" && !crossMergeVerdictOK(res.Result) {
+			t.Status = statusFailed
+			t.LastError = "交叉C 结论未按合并契约收尾（缺合法 verdict/confidence），不发布进度、勿采信"
+			_ = os.Remove(progressPath(root, t.ProgressKey)) // 清可能残留的陈旧报告，防冒充终局
+			logBlock(lg, "CROSS", t.LastError)
+		}
+		if t.XRole == "C" && t.FableReviewerMerger && t.Status == statusDone {
+			if fableMergeDisposition(res.Result) != fableMergeTerminal {
+				t.Status = statusHeld
+				t.EmitProgress = false
+				t.LastError = "Fable Sol/ultra terminal merger retains unresolved P0/P1 or uncertainty; held for Owner"
+				logBlock(lg, "FABLE", t.LastError)
+			} else if !reviewCompleted(t, reviewStageFableSolUltra) {
+				t.CompletedReviews = append(t.CompletedReviews, reviewStageFableSolUltra)
+				t.OwnerRouteStage = routeStageTerminal
+			}
+		}
+		t.touch()
+		// 最后一步的 step_ok 事件先记(与中间步一致语义),再据终局标 done 或交叉契约违规的 failed。
+		if err := persistTaskEvent(root, t, evStepOK, "runner", statusRunning, t.Step, withRouteAttempt(map[string]any{
+			"turns": res.NumTurns, "cost_usd": res.TotalCostUSD, "final_step": true,
+		}, t)); err != nil {
+			return false, finishIfStopped(err)
+		}
+		if t.Status == statusDone {
+			if err := persistTaskEvent(root, t, evDone, "runner", statusDone, t.Step, withCostTelemetry(withRouteAttempt(nil, t), t)); err != nil {
+				return false, finishIfStopped(err)
+			}
+			// 复盘计数器：只数真 done。上面交叉 C 契约违规改判 failed 的分支不该计入
+			// "产能"，否则复盘窗口里混进从未交付的卡。
+			noteTaskDoneLogged(root, cfg, t, lg)
+		} else if t.Status == statusHeld {
+			if err := persistTaskEvent(root, t, evHeld, "runner:fable-terminal-merge", statusHeld, t.Step,
+				withCostTelemetry(map[string]any{
+					"reason": "fable_owner_hold", "route_stage": routeStageFableMerge,
+				}, t)); err != nil {
+				return false, finishIfStopped(err)
+			}
+		} else if err := persistTaskEvent(root, t, evFailed, "runner", statusFailed, t.Step,
+			withCostTelemetry(map[string]any{
+				"err": t.LastError, "reason": "cross_merge_contract_violation",
+			}, t)); err != nil {
+			return false, finishIfStopped(err)
+		}
+		if t.Status == statusHeld {
+			return false, nil
+		}
+		if producerInvalidated(t) || diskControlRevoked(root, t.ID) {
+			return false, nil
+		}
+		postComplete(root, cfg, t, res, lg)
+		// postComplete 期间任务可能被 cancel 并归档（done 态 cancel 走立即归档），
+		// 注解回写别把归档移走的文件复活。
+		if diskCanceled(root, t.ID) {
+			return false, nil
+		}
+		return false, saveAuthorizedTask(root, t)
+	}
+	t.touch()
+	// 中间步成功事件:每推进一步一条,是"步数一致"验收的锚点(枚举遗漏就红)。
+	if err := persistTaskEvent(root, t, evStepOK, "runner", statusRunning, t.Step, withRouteAttempt(map[string]any{
+		"turns": res.NumTurns, "cost_usd": res.TotalCostUSD,
+	}, t)); err != nil {
+		return false, finishIfStopped(err)
+	}
+	return true, nil
 }
 
 // finalizeCanceled 按取消收尾：执行进程（组）已被击杀或已自然结束，本步产物丢弃，

@@ -2277,7 +2277,13 @@ func invokeGrokBuild(ctx context.Context, root string, cfg *Config, t *Task, pro
 		return nil, "", err
 	}
 	if err := probeGrokBuildLifecycleState(t, home); err != nil {
-		return nil, "", err
+		if permissionClassError(err) {
+			// A read-only or unwritable Grok state dir cannot prove lifecycle
+			// identity. Skip the probe, keep the diagnostic, and continue the attempt.
+			fmt.Fprintf(os.Stderr, "警告: 跳过 Grok lifecycle-state probe（权限）: %v\n", err)
+		} else {
+			return nil, "", err
+		}
 	}
 	// runTaskVia performs the shared value-blind preflight before reaching this adapter. Keep the
 	// direct adapter seam used by focused tests and maintenance callers: when there is no persisted

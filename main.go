@@ -92,6 +92,8 @@ func main() {
 		err = cmdWorkflow(os.Args[2:])
 	case "doctor":
 		err = cmdDoctor(os.Args[2:])
+	case "harvest":
+		err = cmdHarvest(os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Println("cardex", version)
 	case "help", "-h", "--help":

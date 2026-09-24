@@ -334,6 +334,41 @@ type Task struct {
 	// Goal is the stage execution / native-goal fact. Ordinary cards omit it and
 	// keep current eligible()/tick semantics.
 	Goal *TaskGoalBinding `json:"goal,omitempty"`
+
+	// Verify is the card's explicit acceptance command (sh -c in Dir). Harvest runs it after the
+	// provider process has exited; empty means the outcome is judged from the worktree alone.
+	Verify string `json:"verify,omitempty"`
+	// Req links the card to a shared-requirements item (req_<16 hex>); Manager names the
+	// management profile that owns follow-up (e.g. "yvonne"). Both are routing-neutral metadata.
+	Req     string `json:"req,omitempty"`
+	Manager string `json:"manager,omitempty"`
+	// BaseCommit is the worktree HEAD recorded at first dispatch, so harvest can tell which
+	// commits the card produced.
+	BaseCommit string `json:"base_commit,omitempty"`
+	// Verdict is the latest harvest conclusion (done|needs_review|retry|attention); Harvest holds
+	// the evidence behind it. Both are empty for cards that never went through harvest.
+	Verdict string           `json:"verdict,omitempty"`
+	Harvest *HarvestEvidence `json:"harvest,omitempty"`
+}
+
+// HarvestEvidence is the outcome-based readback of one finished attempt: what the worktree
+// shows, what the verify command returned, and what the agent reported.
+type HarvestEvidence struct {
+	At            string   `json:"at"`
+	Attempt       int      `json:"attempt,omitempty"`
+	Reason        string   `json:"reason,omitempty"`
+	ChangedFiles  []string `json:"changed_files,omitempty"`
+	Insertions    int      `json:"insertions,omitempty"`
+	Deletions     int      `json:"deletions,omitempty"`
+	NewCommits    []string `json:"new_commits,omitempty"`
+	VerifyCommand string   `json:"verify_command,omitempty"`
+	VerifyExit    *int     `json:"verify_exit,omitempty"`
+	VerifyTail    string   `json:"verify_tail,omitempty"`
+	ReportPath    string   `json:"report_path,omitempty"`
+	ReportExcerpt string   `json:"report_excerpt,omitempty"`
+	FinalText     string   `json:"final_text,omitempty"`
+	PatchPath     string   `json:"patch_path,omitempty"`
+	Diagnostics   string   `json:"diagnostics,omitempty"`
 }
 
 func (t *Task) touch() { t.UpdatedAt = time.Now().Format(time.RFC3339) }

@@ -251,6 +251,8 @@ var validEfforts = map[string]bool{
 	"low": true, "medium": true, "high": true, "xhigh": true, "max": true,
 }
 
+var reqIDRE = regexp.MustCompile(`^req_[0-9a-f]{16}$`)
+
 func cmdAdd(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
 	rootFlag := fs.String("root", "", "数据目录")
@@ -298,9 +300,16 @@ func cmdAdd(args []string) error {
 	writePaths := fs.String("write-paths", "", "逗号分隔的仓相对写路径")
 	writeResources := fs.String("write-resources", "", "逗号分隔的封闭资源 kind:id")
 	dependsOn := fs.String("depends-on", "", "逗号分隔的前置任务 ID；仅 durably done 才算满足")
+	verify := fs.String("verify", "", "验收命令（在 -dir 内 sh -c 执行，如 \"go test ./...\"）；收割时据此判定完成")
+	req := fs.String("req", "", "关联的共享需求 ID（req_ + 16 位十六进制）")
+	manager := fs.String("manager", "", "负责跟进本卡的管理 profile（如 yvonne），用于唤醒摘要归属")
+	dryRun := fs.Bool("dry-run", false, "只打印规范化后的卡片 JSON（路由/档位/写域/步骤数），不入队")
 	_ = fs.Parse(args)
 	if *maxAttempts < 0 {
 		return fmt.Errorf("-max-attempts 不能为负数")
+	}
+	if r := strings.TrimSpace(*req); r != "" && !reqIDRE.MatchString(r) {
+		return fmt.Errorf("-req %q 不是合法的需求 ID（应为 req_ + 16 位十六进制）", r)
 	}
 
 	root := resolveRoot(*rootFlag)
@@ -548,6 +557,17 @@ func cmdAdd(args []string) error {
 	}
 	if err := applyTaskDependsOn(t, *dependsOn); err != nil {
 		return err
+	}
+	t.Verify = strings.TrimSpace(*verify)
+	t.Req = strings.TrimSpace(*req)
+	t.Manager = strings.TrimSpace(*manager)
+	if *dryRun {
+		out, err := json.MarshalIndent(t, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(out))
+		return nil
 	}
 	if err := saveTask(root, t); err != nil {
 		return err

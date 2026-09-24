@@ -56,6 +56,9 @@ type ManagerWakeConfig struct {
 	HermesBin     string                    `json:"hermes_bin,omitempty"`
 	WatchdogSec   int                       `json:"watchdog_sec,omitempty"`
 	Subscriptions []ManagerWakeSubscription `json:"subscriptions,omitempty"`
+	// InflightTTLMin expires an unacknowledged inflight delivery after this many minutes
+	// (0 = default 30) so one stuck subscription cannot fail-close forever.
+	InflightTTLMin int `json:"inflight_ttl_min,omitempty"`
 }
 
 var (

@@ -347,6 +347,11 @@ type Config struct {
 	// closed at delivery/install and is visible in doctor/readback; it never
 	// authorizes a management model turn on its own.
 	ManagerWake *ManagerWakeConfig `json:"manager_wake,omitempty"`
+
+	// HarvestMode decides how a finished attempt without a protocol-perfect terminal is judged:
+	// "off" (default) keeps the legacy unknown-outcome hold; "dry-run" records the harvest
+	// verdict but keeps the legacy status; "on" applies the harvest verdict.
+	HarvestMode string `json:"harvest_mode,omitempty"`
 }
 
 // StakesRule 是一个 stakes 档位的复核深度规则（config.stakes_policy 的值）。

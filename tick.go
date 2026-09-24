@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -19,8 +20,8 @@ var tickRunTask = runTaskVia
 
 // tick 是调度的最小单元：抢锁 → 排空队列（drain）。
 // 每轮循环在冷却/红线允许的前提下，把就绪任务派发到并行槽位（最多 max_parallel 个），
-// 全部跑完或没有可派发任务时才返回。同一工作目录同一时刻只跑一个任务，
-// 避免两个会话并发改同一个仓库。launchd 每隔 poll_interval_sec 调一次兜底。
+// 全部跑完或没有可派发任务时才返回。同一工作目录的写卡串行，
+// 不同 worktree 并行（跨工作区冲突留到合并）。launchd 每隔 poll_interval_sec 调一次兜底。
 func tick(root string, cfg *Config, force, quiet bool) error {
 	return tickFilter(root, cfg, force, quiet, "")
 }
@@ -195,12 +196,15 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 						laneMetrics.AddWaits(1)
 						continue
 					}
+					liveWriters := mergeLiveWriterTasks(activeWriters, reconstructLiveWriterClaims(root))
 					if taskHasLiveWriterProof(root, t) {
 						laneMetrics.AddConflicts(1)
+						emitWriterDeferral(root, t, "live_writer_proof", nil)
 						continue
 					}
-					if writerConflictsWithActive(t, mergeLiveWriterTasks(activeWriters, reconstructLiveWriterClaims(root))) {
+					if writerConflictsWithActive(t, liveWriters) {
 						laneMetrics.AddConflicts(1)
+						emitWriterDeferral(root, t, "write_conflict", writerConflictsWithActiveIDs(t, liveWriters))
 						continue
 					}
 					if ownerRoutingPolicyWaitReason(cfg, t) != "" {
@@ -302,19 +306,27 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 						evidence := currentAutomaticCodexBudgetEvidence(cfg, dispatchNow())
 						allowed, reason := automaticCodexBudgetAllowed(t, evidence, cfg.AutomaticCodexBudgetStopPercent)
 						if !allowed {
-							t.Status = statusHeld
+							// Non-terminal deferral: the card stays queued and becomes
+							// eligible again after NotBeforeEpoch. emitTaskEvent records
+							// the skip without a status transition; saveTask persists the
+							// backoff. Missing evidence takes the same path.
+							t.Status = statusQueued
+							t.NotBeforeEpoch = now.Add(30 * time.Minute).Unix()
 							t.LastError = reason
 							t.touch()
-							if err := persistTaskEvent(root, t, evHeld, "runner:automatic-codex-budget", statusHeld, t.Step, withCostTelemetry(map[string]any{
-								"reason": reason, "route_stage": t.OwnerRouteStage,
-								"budget_source": evidence.Source, "used_percent": evidence.UsedPercent,
-								"evidence_available": evidence.Available,
-							}, t)); err != nil {
+							if err := saveTask(root, t); err != nil {
 								if !quiet {
-									fmt.Fprintf(os.Stderr, "警告: automatic Codex budget hold persist failed for %s: %v\n", t.ID, err)
+									fmt.Fprintf(os.Stderr, "警告: automatic Codex budget defer save failed for %s: %v\n", t.ID, err)
 								}
 								continue
 							}
+							emitTaskEvent(root, t.ID, evDeferred, "tick", statusQueued, t.Step, map[string]any{
+								"reason":        "automatic_codex_budget",
+								"detail":        reason,
+								"budget_source": evidence.Source,
+								"used_percent":  evidence.UsedPercent,
+								"window":        codexBudgetWindowLabel(evidence.WindowKind, evidence.WindowMinutes),
+							})
 							continue
 						}
 					}
@@ -403,6 +415,22 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 			// 重扫超时：不动任何在跑任务，回循环顶用空闲槽位尝试派发新就绪任务，并做取消对账。
 		}
 	}
+}
+
+func emitWriterDeferral(root string, t *Task, reason string, blocked []string) {
+	if t == nil {
+		return
+	}
+	if deferredEventRepeats(root, t.ID, reason, blocked) {
+		return
+	}
+	detail := map[string]any{"reason": reason}
+	if reason == "write_conflict" {
+		ids := append([]string(nil), blocked...)
+		sort.Strings(ids)
+		detail["blocked_by"] = ids
+	}
+	emitTaskEvent(root, t.ID, evDeferred, "tick", statusQueued, t.Step, detail)
 }
 
 // noFallback 判断该模型的任务是否禁止降级到 codex（设计类模型宁可排队等 claude）。

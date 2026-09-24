@@ -149,7 +149,7 @@ func printUsage() {
 
 调度与执行
   run       [-root ROOT] [-force] [-quiet] [ID]
-            无 ID：排空就绪队列（tick drain），最多 max_parallel 路并行（同目录串行）。
+            无 ID：排空就绪队列（tick drain），最多 max_parallel 路并行（同一工作目录的写卡串行）。
             另一实例已持同一 root 时跳过本轮（exit 0）；不要把它当成单卡启动。
             有 ID：只启动该任务，不排空其余就绪卡（cardex run -root ROOT ID）。
             同一 root 已持锁且该 ID 未派发则失败（非 0，非静默跳过），排队卡保持 queued；

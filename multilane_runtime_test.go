@@ -61,6 +61,46 @@ func joinResources(in []ResourceClaim) string {
 	return out
 }
 
+func TestWriterClaimsConflictTable(t *testing.T) {
+	t.Parallel()
+	claim := func(id, dir string, explicit, valid bool, domain, lineage string, paths, reals []string, resources []ResourceClaim) liveWriterClaim {
+		return liveWriterClaim{
+			taskID: id, dir: dir, dirKey: dir, repoKey: "repo-a", explicit: explicit, valid: valid,
+			domainID: domain, lineage: lineage, paths: paths, reals: reals, resources: resources,
+		}
+	}
+	res := []ResourceClaim{{Kind: resourceDatabase, ID: "auth.primary"}}
+	tests := []struct {
+		name string
+		a, b liveWriterClaim
+		want bool
+	}{
+		{"same dir legacy/legacy", claim("a", "/work", false, true, "", "", nil, nil, nil), claim("b", "/work", false, true, "", "", nil, nil, nil), true},
+		{"same dir legacy/explicit", claim("a", "/work", false, true, "", "", nil, nil, nil), claim("b", "/work", true, true, "auth", "auth-line", []string{"internal/auth"}, nil, nil), true},
+		{"different dirs same repo legacy/legacy", claim("a", "/main", false, true, "", "", nil, nil, nil), claim("b", "/wt", false, true, "", "", nil, nil, nil), false},
+		{"different dirs explicit path overlap", claim("a", "/main", true, true, "auth-main", "line-main", []string{"runner.go"}, nil, nil), claim("b", "/wt", true, true, "auth-wt", "line-wt", []string{"runner.go"}, nil, nil), false},
+		{"same dir explicit path overlap", claim("a", "/work", true, true, "auth-main", "line-main", []string{"runner.go"}, nil, nil), claim("b", "/work", true, true, "auth-other", "line-other", []string{"runner.go"}, nil, nil), true},
+		{"same lineage different dirs", claim("a", "/main", true, true, "d1", "shared-line", []string{"a.go"}, nil, nil), claim("b", "/wt", true, true, "d2", "shared-line", []string{"b.go"}, nil, nil), true},
+		{"same resource different repos",
+			liveWriterClaim{taskID: "a", dirKey: "/a", repoKey: "repo-a", explicit: true, valid: true, domainID: "da", lineage: "la", resources: res},
+			liveWriterClaim{taskID: "b", dirKey: "/b", repoKey: "repo-b", explicit: true, valid: true, domainID: "db", lineage: "lb", resources: res},
+			true},
+		{"invalid explicit different dirs", claim("a", "/main", true, false, "same", "same-line", []string{"runner.go"}, nil, nil), claim("b", "/wt", true, false, "same", "same-line", []string{"runner.go"}, nil, nil), false},
+		{"invalid explicit same dir", claim("a", "/work", true, false, "same", "same-line", nil, nil, nil), claim("b", "/work", true, false, "other", "other-line", nil, nil, nil), true},
+		{"reals overlap different dirs", claim("a", "/main", true, true, "d1", "l1", nil, []string{"/real/runner.go"}, nil), claim("b", "/wt", true, true, "d2", "l2", nil, []string{"/real/runner.go"}, nil), true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := writerClaimsConflict(tc.a, tc.b); got != tc.want {
+				t.Fatalf("writerClaimsConflict()=%v want %v", got, tc.want)
+			}
+			if got := writerClaimsConflict(tc.b, tc.a); got != tc.want {
+				t.Fatalf("writerClaimsConflict() reverse=%v want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWriterClaimsAllowDisjointSameRepoAndSerializeOverlap(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -127,7 +167,7 @@ func TestWriterClaimsSymlinkAliasAndWorktreeLogicalPath(t *testing.T) {
 	mustWriteFile(t, filepath.Join(main, ".git", "HEAD"), "ref: refs/heads/main\n")
 	mustWriteFile(t, filepath.Join(main, "internal", "auth", "token.go"), "package auth\n")
 	wt := t.TempDir()
-	mustWriteFile(t, filepath.Join(main, ".git", "worktrees", "lane", "commondir"), "gitdir\n")
+	mustWriteFile(t, filepath.Join(main, ".git", "worktrees", "lane", "HEAD"), "ref: refs/heads/lane\n")
 	mustWriteFile(t, wt+"/.git", "gitdir: "+filepath.Join(main, ".git", "worktrees", "lane")+"\n")
 	mustWriteFile(t, filepath.Join(wt, "internal", "auth", "token.go"), "package auth\n")
 	wa := &Task{ID: "wt-a", Dir: main, Type: typeSequence, WriteDomain: &WriteDomain{
@@ -136,8 +176,8 @@ func TestWriterClaimsSymlinkAliasAndWorktreeLogicalPath(t *testing.T) {
 	wb := &Task{ID: "wt-b", Dir: wt, Type: typeSequence, WriteDomain: &WriteDomain{
 		ID: "auth-wt", Lineage: "auth-wt-lineage", Component: "auth", Paths: []string{"internal/auth"},
 	}}
-	if !writerConflictsWithActive(wb, []*Task{wa}) {
-		t.Fatal("same logical path in separate worktrees must serialize")
+	if writerConflictsWithActive(wb, []*Task{wa}) {
+		t.Fatal("same logical path in separate worktrees must stay concurrent; merge resolves the files")
 	}
 }
 
@@ -173,7 +213,7 @@ func linkedGitWorktrees(t *testing.T) (mainDir, worktreeDir string) {
 	mustWriteFile(t, filepath.Join(mainDir, "internal", "auth", "token.go"), "package auth\n")
 	mustWriteFile(t, filepath.Join(mainDir, "internal", "billing", "bill.go"), "package billing\n")
 	worktreeDir = t.TempDir()
-	mustWriteFile(t, filepath.Join(mainDir, ".git", "worktrees", "lane", "commondir"), "gitdir\n")
+	mustWriteFile(t, filepath.Join(mainDir, ".git", "worktrees", "lane", "HEAD"), "ref: refs/heads/lane\n")
 	mustWriteFile(t, worktreeDir+"/.git", "gitdir: "+filepath.Join(mainDir, ".git", "worktrees", "lane")+"\n")
 	mustWriteFile(t, filepath.Join(worktreeDir, "internal", "auth", "token.go"), "package auth\n")
 	mustWriteFile(t, filepath.Join(worktreeDir, "internal", "billing", "bill.go"), "package billing\n")
@@ -185,15 +225,21 @@ func TestLegacyWritersSerializeOnSharedRepoCanonicalAliasAndStayConcurrentWhenUn
 	mainDir, wtDir := linkedGitWorktrees(t)
 	legacyMain := &Task{ID: "legacy-main", Dir: mainDir, Type: typeSequence}
 	legacyWT := &Task{ID: "legacy-wt", Dir: wtDir, Type: typeSequence}
-	if !writerConflictsWithActive(legacyWT, []*Task{legacyMain}) || !writerConflictsWithActive(legacyMain, []*Task{legacyWT}) {
-		t.Fatal("legacy writers in linked worktrees of the same git common dir must serialize")
+	if writerConflictsWithActive(legacyWT, []*Task{legacyMain}) || writerConflictsWithActive(legacyMain, []*Task{legacyWT}) {
+		t.Fatal("legacy writers in different worktrees of one repo must run concurrently")
 	}
 
 	explicitMain := &Task{ID: "explicit-main", Dir: mainDir, Type: typeSequence, WriteDomain: &WriteDomain{
 		ID: "auth-tokens", Lineage: "auth-tokens-lineage", Component: "auth", Paths: []string{"internal/auth"},
 	}}
-	if !writerConflictsWithActive(explicitMain, []*Task{legacyWT}) || !writerConflictsWithActive(legacyWT, []*Task{explicitMain}) {
-		t.Fatal("mixed explicit/legacy writers sharing a git common dir must serialize")
+	if writerConflictsWithActive(explicitMain, []*Task{legacyWT}) || writerConflictsWithActive(legacyWT, []*Task{explicitMain}) {
+		t.Fatal("mixed explicit/legacy writers in different worktrees must run concurrently")
+	}
+	explicitOverlap := &Task{ID: "explicit-wt-auth", Dir: wtDir, Type: typeSequence, WriteDomain: &WriteDomain{
+		ID: "auth-wt", Lineage: "auth-wt-lineage", Component: "auth", Paths: []string{"internal/auth"},
+	}}
+	if writerConflictsWithActive(explicitOverlap, []*Task{explicitMain}) {
+		t.Fatal("explicit path overlap across worktrees must stay concurrent")
 	}
 
 	explicitBilling := &Task{ID: "explicit-bill", Dir: wtDir, Type: typeSequence, WriteDomain: &WriteDomain{
@@ -390,8 +436,8 @@ func TestGitIdentityFromNestedTaskDirAndUnreadableMetadata(t *testing.T) {
 	nested := filepath.Join(repo, "internal", "auth")
 	legacyNested := &Task{ID: "legacy-nested", Dir: nested, Type: typeSequence}
 	legacyRoot := &Task{ID: "legacy-root", Dir: repo, Type: typeSequence}
-	if !writerConflictsWithActive(legacyNested, []*Task{legacyRoot}) || !writerConflictsWithActive(legacyRoot, []*Task{legacyNested}) {
-		t.Fatal("nested Task.Dir must resolve to the same git identity as the worktree root")
+	if writerConflictsWithActive(legacyNested, []*Task{legacyRoot}) || writerConflictsWithActive(legacyRoot, []*Task{legacyNested}) {
+		t.Fatal("a nested working directory is not the repo root and must stay concurrent")
 	}
 	top, common, unc := resolveGitIdentity(nested)
 	if unc || top == "" || common == "" {

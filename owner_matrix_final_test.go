@@ -298,8 +298,11 @@ func TestFinalOwnerAutomaticCodexBudgetReadsOnlyCodexProvider(t *testing.T) {
 	if !evidence.Available || evidence.UsedPercent != 66 || evidence.Source != "usage_feed:codex" {
 		t.Fatalf("automatic Codex gate consumed the wrong provider sample: %+v", evidence)
 	}
-	if ok, _ := automaticCodexBudgetAllowed(&Task{AutomaticCodex: true}, evidence, 65); ok {
-		t.Fatal("codex=66% must stop even when claude=12%")
+	if ok, reason := automaticCodexBudgetAllowed(&Task{AutomaticCodex: true}, evidence, 65); ok || !strings.Contains(reason, "window=5h") {
+		t.Fatalf("codex=66%% primary must stop with window=5h: ok=%v reason=%q", ok, reason)
+	}
+	if evidence.WindowMinutes != 300 || evidence.WindowKind != "primary" {
+		t.Fatalf("primary window not recorded: %+v", evidence)
 	}
 	if err := os.WriteFile(path, claudeOnly, 0o600); err != nil {
 		t.Fatal(err)

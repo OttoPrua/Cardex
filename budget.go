@@ -237,9 +237,14 @@ func codexSnapshotExhausted(cfg *Config, now time.Time) bool {
 		e.Source == "codex_app.get_usage_limits" && e.Reason == "actual Codex quota exhausted"
 }
 
-// latestFeedSampleForProvider takes the newest primary/5h sample for exactly one provider. Automatic
-// Codex gates must never consume the legacy Claude percentage merely because both share one CodexBar file.
-func latestFeedSampleForProvider(path, provider string) (*feedSample, error) {
+func primaryFeedWindow(s feedSample) bool {
+	return s.WindowMinutes == windowHours*60 || s.WindowKind == "primary"
+}
+
+// selectFeedSample prefers the newest 5-hour/primary sample. When allowLongestFallback
+// is set and no primary sample exists, it returns the newest sample of the longest
+// remaining window (weekly CodexBar rows are 10080 minutes / secondary).
+func selectFeedSample(path, provider string, allowLongestFallback bool) (*feedSample, error) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	if provider == "" {
 		return nil, fmt.Errorf("用量源 provider 不能为空")
@@ -252,7 +257,7 @@ func latestFeedSampleForProvider(path, provider string) (*feedSample, error) {
 	if len(data) > 256*1024 {
 		data = data[len(data)-256*1024:]
 	}
-	var best *feedSample
+	var primary, longest *feedSample
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -262,24 +267,44 @@ func latestFeedSampleForProvider(path, provider string) (*feedSample, error) {
 		if json.Unmarshal([]byte(line), &s) != nil || strings.ToLower(strings.TrimSpace(s.Provider)) != provider {
 			continue
 		}
-		// 5 小时窗口：windowMinutes 300，或标记为 primary。
-		if s.WindowMinutes != windowHours*60 && s.WindowKind != "primary" {
+		if primaryFeedWindow(s) {
+			if primary == nil || s.SampledAt > primary.SampledAt {
+				cp := s
+				primary = &cp
+			}
 			continue
 		}
-		if best == nil || s.SampledAt > best.SampledAt {
+		if !allowLongestFallback || s.WindowMinutes <= 0 {
+			continue
+		}
+		if longest == nil || s.WindowMinutes > longest.WindowMinutes ||
+			(s.WindowMinutes == longest.WindowMinutes && s.SampledAt > longest.SampledAt) {
 			cp := s
-			best = &cp
+			longest = &cp
 		}
 	}
-	if best == nil {
-		return nil, fmt.Errorf("用量源里没有 %s 的 5 小时窗口样本", provider)
+	if primary != nil {
+		return primary, nil
 	}
-	return best, nil
+	if allowLongestFallback && longest != nil {
+		return longest, nil
+	}
+	if allowLongestFallback {
+		return nil, fmt.Errorf("用量源里没有 %s 的用量样本", provider)
+	}
+	return nil, fmt.Errorf("用量源里没有 %s 的 5 小时窗口样本", provider)
 }
 
-// latestFeedSample preserves the legacy Claude redline API and behavior.
+// latestFeedSampleForProvider prefers a 5-hour/primary sample and otherwise falls
+// back to the longest window. Automatic Codex gates use this. They must never
+// consume the legacy Claude percentage merely because both share one CodexBar file.
+func latestFeedSampleForProvider(path, provider string) (*feedSample, error) {
+	return selectFeedSample(path, provider, true)
+}
+
+// latestFeedSample preserves the legacy Claude redline API and behavior: primary/5h only.
 func latestFeedSample(path string) (*feedSample, error) {
-	return latestFeedSampleForProvider(path, "claude")
+	return selectFeedSample(path, "claude", false)
 }
 
 // ---- 分时段红线 ----
@@ -654,11 +679,13 @@ func toFloat(v any) (float64, bool) {
 // Available=false 表示该源不可用（未配置/端点失败/凭据缺失/字段缺失/样本过期），
 // worstAvailable 忽略这类读数——数据不足不该锁队列，也不该假装保守。
 type percentRead struct {
-	Source    string
-	Available bool
-	Percent   int
-	Reason    string // 不可用原因披露文案（quota 命令展示用）
-	AgeSuffix string // "，样本 3m 前" 之类
+	Source        string
+	Available     bool
+	Percent       int
+	Reason        string // 不可用原因披露文案（quota 命令展示用）
+	AgeSuffix     string // "，样本 3m 前" 之类
+	WindowKind    string
+	WindowMinutes int
 }
 
 // collectPercentReads 采集所有百分比通道的当前读数（可用与不可用都保留，供 quota 展示）。
@@ -682,7 +709,7 @@ func readUsageFeedProviderPercent(cfg *Config, now time.Time, provider string) p
 		r.Reason = "未配置"
 		return r
 	}
-	s, err := latestFeedSampleForProvider(cfg.UsageFeed, provider)
+	s, err := selectFeedSample(cfg.UsageFeed, provider, provider != "claude")
 	if err != nil {
 		r.Reason = err.Error()
 		return r
@@ -714,6 +741,8 @@ func readUsageFeedProviderPercent(cfg *Config, now time.Time, provider string) p
 	}
 	r.Available = true
 	r.Percent = s.UsedPercent
+	r.WindowKind = s.WindowKind
+	r.WindowMinutes = s.WindowMinutes
 	r.AgeSuffix = fmt.Sprintf("，样本 %s 前", age.Round(time.Minute))
 	return r
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,6 +131,146 @@ func TestTickEnforcesDisjointLanesAndLegacySerial(t *testing.T) {
 	}
 	if got := overlapTick(root2, cfg, 80*time.Millisecond); got != 1 {
 		t.Fatalf("legacy same-dir must serialize in tick, concurrent=%d", got)
+	}
+}
+
+func TestTickWriteConflictDeferredEventDedupes(t *testing.T) {
+	orig := tickRunTask
+	t.Cleanup(func() { tickRunTask = orig })
+	release := make(chan struct{})
+	tickRunTask = func(ctx context.Context, root string, cfg *Config, tk *Task, via string) error {
+		<-release
+		finishTickTask(root, tk)
+		return nil
+	}
+
+	root := testRoot(t)
+	dir := t.TempDir()
+	cfg := defaultConfig("claude")
+	cfg.MaxParallel = 4
+	cfg.DrainRescanSec = 1
+	cfg.ClaudeBin = "/usr/bin/true"
+	first := newTask(root, cfg, typeSequence, "legacy running", dir, []string{"p"}, 9)
+	if err := saveTask(root, first); err != nil {
+		t.Fatal(err)
+	}
+	waiter := newTask(root, cfg, typeSequence, "legacy waiting", dir, []string{"p"}, 1)
+	if err := saveTask(root, waiter); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(2500 * time.Millisecond)
+		close(release)
+	}()
+	if err := tick(root, cfg, true, true); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(eventsPath(root, waiter.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deferred := 0
+	var blocked []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var ev TaskEvent
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatal(err)
+		}
+		if ev.Type != evDeferred {
+			continue
+		}
+		deferred++
+		if ev.Detail["reason"] != "write_conflict" {
+			t.Fatalf("deferred reason=%v", ev.Detail["reason"])
+		}
+		blocked = detailBlockedBy(ev.Detail["blocked_by"])
+	}
+	if deferred != 1 {
+		t.Fatalf("waiting card must record one deferred write_conflict, got %d\n%s", deferred, data)
+	}
+	if len(blocked) != 1 || blocked[0] != first.ID {
+		t.Fatalf("blocked_by=%v want [%s]", blocked, first.ID)
+	}
+}
+
+func TestTickAutomaticCodexWeeklyBudgetDefersQueued(t *testing.T) {
+	orig := tickRunTask
+	t.Cleanup(func() { tickRunTask = orig })
+	var ran atomic.Int32
+	tickRunTask = func(ctx context.Context, root string, cfg *Config, tk *Task, via string) error {
+		ran.Add(1)
+		finishTickTask(root, tk)
+		return nil
+	}
+
+	root := testRoot(t)
+	feed := filepath.Join(t.TempDir(), "usage.jsonl")
+	now := time.Now().UTC()
+	writeFeed := func(percent int) {
+		t.Helper()
+		line, err := json.Marshal(map[string]any{
+			"provider": "codex", "sampledAt": now.Format(time.RFC3339),
+			"usedPercent": percent, "windowMinutes": 10080, "windowKind": "secondary",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(feed, append(line, '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := defaultConfig("claude")
+	cfg.CodexBin = "/usr/bin/true"
+	cfg.AutomaticCodexBudgetStopPercent = 65
+	cfg.UsageFeed = feed
+	cfg.UsageFeedMaxAgeMin = 90
+	cfg.MaxParallel = 2
+	cfg.DrainRescanSec = 1
+
+	writeFeed(66)
+	over := newTask(root, cfg, typeSequence, "weekly over stop", t.TempDir(), []string{"p"}, 5)
+	over.PreferRunner = "codex"
+	over.AutomaticCodex = true
+	if err := saveTask(root, over); err != nil {
+		t.Fatal(err)
+	}
+	before := time.Now().Unix()
+	if err := tick(root, cfg, true, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadTask(root, over.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != statusQueued {
+		t.Fatalf("status=%s want queued", got.Status)
+	}
+	if got.NotBeforeEpoch < before+29*60 {
+		t.Fatalf("NotBeforeEpoch=%d want about 30m after %d", got.NotBeforeEpoch, before)
+	}
+	if ran.Load() != 0 {
+		t.Fatalf("over-stop card was dispatched %d times", ran.Load())
+	}
+	ev, ok := lastTaskEvent(root, over.ID)
+	if !ok || ev.Type != evDeferred || ev.Detail["reason"] != "automatic_codex_budget" || ev.Detail["window"] != "weekly" {
+		t.Fatalf("deferred budget event: ok=%v ev=%+v", ok, ev)
+	}
+	if !strings.Contains(fmt.Sprint(ev.Detail["detail"]), "window=weekly") {
+		t.Fatalf("reason detail=%v", ev.Detail["detail"])
+	}
+
+	writeFeed(40)
+	evidence := currentAutomaticCodexBudgetEvidence(cfg, now.Add(time.Second))
+	if !evidence.Available || evidence.UsedPercent != 40 || evidence.WindowMinutes != 10080 || evidence.WindowKind != "secondary" {
+		t.Fatalf("weekly 40%% evidence: %+v", evidence)
+	}
+	allowed, reason := automaticCodexBudgetAllowed(&Task{AutomaticCodex: true}, evidence, 65)
+	if !allowed || !strings.Contains(reason, "window=weekly") {
+		t.Fatalf("weekly 40%% must be allowed, allowed=%v reason=%q", allowed, reason)
 	}
 }
 

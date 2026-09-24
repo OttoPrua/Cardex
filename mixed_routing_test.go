@@ -287,8 +287,9 @@ func TestMixedAutomaticCodexBudgetRuntimeHold(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if got.Status != statusHeld || !strings.Contains(got.LastError, "automatic Codex held") || got.LastRouteAttempt != nil {
-					t.Fatalf("budget did not hold before invocation: %+v", got)
+				if got.Status != statusQueued || got.NotBeforeEpoch <= time.Now().Unix() || got.Attempts != 0 ||
+					!strings.Contains(got.LastError, "automatic Codex held") || got.LastRouteAttempt != nil {
+					t.Fatalf("budget did not defer before invocation: %+v", got)
 				}
 			})
 		}

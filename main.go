@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const version = "0.10.19"
+const version = "0.10.20"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -161,6 +161,8 @@ func printUsage() {
   daemon                           # 前台常驻轮询（不装 launchd 时用）
   list                             # 任务看板（-json 机器可读，-all 含已归档状态）
   log <id> [-n 60]                 # 查看任务执行日志
+  digest [-manager M] [-last N]    # 终态摘要（读 outbox + 卡片，含收割结论），只读
+  harvest [-held] [-apply] [ID...] # 按工作区结果收割判定（默认 dry-run，不改状态）
   quota                            # 5 小时额度视图：队列消耗/红线状态/外部用量源
   board     [-port 8787] [-addr 127.0.0.1] [-ttl 10]
             只读 Web 看板：项目/阶段/任务三层视图 + 额度燃尽曲线（默认只听本机回环）

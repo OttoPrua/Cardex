@@ -193,8 +193,8 @@ func writerClaimForTask(t *Task) liveWriterClaim {
 	}
 	c.taskID = t.ID
 	c.dir = t.Dir
-	// dirKey is the canonical working directory. Symlink aliases and trailing
-	// "/." spellings of one directory share a key; linked worktrees do not.
+	// dirKey is the canonical worktree root (or the directory itself outside git), so
+	// sub-directories of one worktree serialize while separate linked worktrees do not.
 	c.dirKey = physicalDirKey(t.Dir)
 	top, common, unc := resolveGitIdentity(t.Dir)
 	if unc {
@@ -207,6 +207,9 @@ func writerClaimForTask(t *Task) liveWriterClaim {
 			c.lineage = t.WriteDomain.Lineage
 		}
 		return c
+	}
+	if top != "" {
+		c.dirKey = physicalDirKey(top)
 	}
 	if common != "" {
 		c.repoKey = common

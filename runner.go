@@ -1461,15 +1461,16 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		}
 		evidence := currentAutomaticCodexBudgetEvidence(cfg, dispatchNow())
 		if allowed, reason := automaticCodexBudgetAllowed(t, evidence, cfg.AutomaticCodexBudgetStopPercent); !allowed {
-			t.Status = statusHeld
+			t.Status = statusQueued
+			t.NotBeforeEpoch = dispatchNow().Add(30 * time.Minute).Unix()
 			t.LastError = reason
 			t.touch()
-			return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:automatic-codex-budget", statusHeld, t.Step,
-				withCostTelemetry(map[string]any{
-					"reason": reason, "route_stage": t.OwnerRouteStage,
+			return finishIfStopped(persistTaskEvent(root, t, evRetry, "runner:automatic-codex-budget", statusQueued, t.Step,
+				map[string]any{
+					"reason": "automatic_codex_budget", "detail": reason, "route_stage": t.OwnerRouteStage,
 					"budget_source": evidence.Source, "used_percent": evidence.UsedPercent,
-					"evidence_available": evidence.Available,
-				}, t)))
+					"evidence_available": evidence.Available, "not_before": t.NotBeforeEpoch,
+				}))
 		}
 		if err := beginAutomaticSolInvocation(t); err != nil {
 			t.Status = statusHeld

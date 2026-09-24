@@ -436,8 +436,8 @@ func TestGitIdentityFromNestedTaskDirAndUnreadableMetadata(t *testing.T) {
 	nested := filepath.Join(repo, "internal", "auth")
 	legacyNested := &Task{ID: "legacy-nested", Dir: nested, Type: typeSequence}
 	legacyRoot := &Task{ID: "legacy-root", Dir: repo, Type: typeSequence}
-	if writerConflictsWithActive(legacyNested, []*Task{legacyRoot}) || writerConflictsWithActive(legacyRoot, []*Task{legacyNested}) {
-		t.Fatal("a nested working directory is not the repo root and must stay concurrent")
+	if !writerConflictsWithActive(legacyNested, []*Task{legacyRoot}) || !writerConflictsWithActive(legacyRoot, []*Task{legacyNested}) {
+		t.Fatal("nested Task.Dir must resolve to the same worktree as the worktree root")
 	}
 	top, common, unc := resolveGitIdentity(nested)
 	if unc || top == "" || common == "" {

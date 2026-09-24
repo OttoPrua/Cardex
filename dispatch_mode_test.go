@@ -928,8 +928,11 @@ func TestDispatchModeDailySnapshotActualAdmission(t *testing.T) {
 					if invoked != nil || got.Status != statusDone || got.LastRouteAttempt == nil || got.LastRouteAttempt.RequestedModel != "kimi-code/k3" || got.RouteReason != codexSnapshotExhaustedReason || got.MaxAttempts != 1 {
 						t.Fatalf("daily snapshot actual Kimi path: %+v args=%v", got, invoked)
 					}
-				} else if !os.IsNotExist(invoked) || got.Status != statusHeld || got.Attempts != 0 {
-					t.Fatalf("invalid evidence invoked alternate or consumed attempt: %+v args=%v", got, invoked)
+				} else {
+					deferred := got.Status == statusQueued && got.NotBeforeEpoch > now.Unix()
+					if !os.IsNotExist(invoked) || (got.Status != statusHeld && !deferred) || got.Attempts != 0 {
+						t.Fatalf("invalid evidence invoked alternate or consumed attempt: %+v args=%v", got, invoked)
+					}
 				}
 			})
 		}

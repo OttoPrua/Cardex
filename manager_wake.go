@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -94,6 +95,8 @@ var (
 	// never sets it. Values: after_claimed, after_starting, after_start,
 	// after_spawned, after_start_revert.
 	managerWakeCrashAt string
+	// managerWakeNow is the inflight TTL clock. Tests replace it so expiry is deterministic.
+	managerWakeNow = time.Now
 )
 
 // wakeQueueStartFailed is the only definite pre-spawn cmd.Start failure.
@@ -153,6 +156,7 @@ type managerWakeMetrics struct {
 	QueueAttempts    int    `json:"queue_attempts"`
 	QueueSuccesses   int    `json:"queue_successes"`
 	QueueFailures    int    `json:"queue_failures"`
+	InflightExpired  int    `json:"inflight_expired,omitempty"`
 	LastErrorClass   string `json:"last_err_class,omitempty"`
 	LastWatchdogAt   string `json:"last_watchdog_at,omitempty"`
 	WatchdogSec      int    `json:"watchdog_sec"`
@@ -973,6 +977,65 @@ func clearManagerWakeInflight(root, subID string) error {
 	return durableUnlinkFile(path)
 }
 
+func managerWakeInflightTTL(mw *ManagerWakeConfig) time.Duration {
+	if mw != nil && mw.InflightTTLMin > 0 {
+		return time.Duration(mw.InflightTTLMin) * time.Minute
+	}
+	return 30 * time.Minute
+}
+
+func managerWakeInflightPastTTL(rec *managerWakeInflight, ttl time.Duration) (time.Duration, bool) {
+	if rec == nil || ttl <= 0 {
+		return 0, false
+	}
+	updated, err := time.Parse(time.RFC3339Nano, rec.UpdatedAt)
+	if err != nil {
+		updated, err = time.Parse(time.RFC3339, rec.UpdatedAt)
+		if err != nil {
+			return 0, false
+		}
+	}
+	age := managerWakeNow().Sub(updated)
+	return age, age > ttl
+}
+
+func managerWakeInflightExpiredDir(root string) string {
+	return filepath.Join(managerWakeInflightDir(root), "expired")
+}
+
+func expireManagerWakeInflight(root, subID string, rec *managerWakeInflight, age time.Duration, metrics *managerWakeMetrics) error {
+	src := managerWakeInflightPath(root, subID)
+	if src == "" || rec == nil {
+		return fmt.Errorf("invalid_subscription_id")
+	}
+	dir := managerWakeInflightExpiredDir(root)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := syncDirAfterRename(dir); err != nil {
+		return err
+	}
+	stamp := managerWakeNow().UTC().Format("20060102T150405.000000000Z")
+	dst := filepath.Join(dir, subID+"-"+stamp+".json")
+	if _, err := os.Stat(dst); err == nil {
+		dst = filepath.Join(dir, subID+"-"+stamp+"-2.json")
+	}
+	if err := os.Rename(src, dst); err != nil {
+		return err
+	}
+	if err := syncDirAfterRename(dir); err != nil {
+		return err
+	}
+	if err := syncDirAfterRename(filepath.Dir(src)); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "manager-wake: inflight expired for %s (phase=%s, age=%s)\n", subID, rec.Phase, age)
+	if metrics != nil {
+		metrics.InflightExpired++
+	}
+	return nil
+}
+
 func receiptsCoverInflight(receipts map[string]bool, ids []string) bool {
 	if len(ids) == 0 {
 		return false
@@ -1032,7 +1095,7 @@ func unresolvedManagerWakeInflightExists(root string, mw *ManagerWakeConfig) boo
 	return false
 }
 
-func reconcileManagerWakeInflight(root string, sub ManagerWakeSubscription, cur *managerWakeCursor, metrics *managerWakeMetrics, rows []managerWakeOutboxRow) ([]managerWakeOutboxRow, error) {
+func reconcileManagerWakeInflight(root string, sub ManagerWakeSubscription, cur *managerWakeCursor, metrics *managerWakeMetrics, rows []managerWakeOutboxRow, ttl time.Duration) ([]managerWakeOutboxRow, error) {
 	rec, class, err := loadManagerWakeInflight(root, sub.ID)
 	if class == "inflight_unreadable" || class == "invalid_subscription_id" {
 		metrics.LastErrorClass = class
@@ -1061,6 +1124,12 @@ func reconcileManagerWakeInflight(root string, sub ManagerWakeSubscription, cur 
 			metrics.LastErrorClass = class
 			noteManagerWakeError(root, metrics, class)
 			return nil, fmt.Errorf("%s", class)
+		}
+		return nil, nil
+	}
+	if age, expired := managerWakeInflightPastTTL(rec, ttl); expired {
+		if err := expireManagerWakeInflight(root, sub.ID, rec, age, metrics); err != nil {
+			return nil, failDeliveryUncertain(root, cur, metrics)
 		}
 		return nil, nil
 	}
@@ -1743,7 +1812,79 @@ func emptyDash(s string) string {
 	return s
 }
 
+func managerWakeOverlapWarnings(mw *ManagerWakeConfig) []string {
+	if mw == nil {
+		return nil
+	}
+	type projSub struct {
+		id       string
+		projects map[string]string
+		events   map[string]bool
+	}
+	var selected []projSub
+	for _, sub := range mw.Subscriptions {
+		if !sub.Enabled || len(sub.Projects) == 0 {
+			continue
+		}
+		projects := map[string]string{}
+		for _, p := range sub.Projects {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			key := strings.ToLower(p)
+			if _, ok := projects[key]; !ok {
+				projects[key] = p
+			}
+		}
+		if len(projects) == 0 {
+			continue
+		}
+		events := map[string]bool{}
+		if len(sub.EventTypes) == 0 {
+			for _, et := range []string{evDone, evHeld, evFailed, evNeedsOwner, evCanceled} {
+				events[et] = true
+			}
+		} else {
+			for _, et := range sub.EventTypes {
+				events[et] = true
+			}
+		}
+		selected = append(selected, projSub{id: sub.ID, projects: projects, events: events})
+	}
+	var warnings []string
+	for i := 0; i < len(selected); i++ {
+		for j := i + 1; j < len(selected); j++ {
+			a, b := selected[i], selected[j]
+			shareEvent := false
+			for et := range a.events {
+				if b.events[et] {
+					shareEvent = true
+					break
+				}
+			}
+			if !shareEvent {
+				continue
+			}
+			var shared []string
+			for key, name := range a.projects {
+				if _, ok := b.projects[key]; ok {
+					shared = append(shared, name)
+				}
+			}
+			sort.Strings(shared)
+			for _, name := range shared {
+				warnings = append(warnings, fmt.Sprintf("subscriptions %s and %s overlap on project %s", a.id, b.id, name))
+			}
+		}
+	}
+	return warnings
+}
+
 func managerWakeOnce(root string, mw *ManagerWakeConfig) error {
+	for _, warning := range managerWakeOverlapWarnings(mw) {
+		fmt.Fprintf(os.Stderr, "manager-wake: %s\n", warning)
+	}
 	killHandlerOnce.Do(installKillHandler)
 	if fn := managerWakeOnceEntered; fn != nil {
 		fn()
@@ -1803,7 +1944,8 @@ func managerWakeOnceLocked(root string, mw *ManagerWakeConfig) error {
 
 	bin := strings.TrimSpace(mw.CodexBin)
 	pending := 0
-	destSeen, destClass, destErr := preloadDestinationEventIDs(root, mw, rows)
+	ttl := managerWakeInflightTTL(mw)
+	destSeen, skips, destClass, destErr := preloadDestinationEventIDs(root, mw, rows, ttl)
 	if destClass != "" {
 		if destClass == "delivery_uncertain" {
 			return failDeliveryUncertain(root, nil, &metrics)
@@ -1814,14 +1956,39 @@ func managerWakeOnceLocked(root string, mw *ManagerWakeConfig) error {
 		}
 		return fmt.Errorf("%s", destClass)
 	}
+	var subErrs []error
+	seenSkip := map[string]bool{}
 	for _, sub := range mw.Subscriptions {
 		if !sub.Enabled {
 			continue
 		}
-		if err := deliverSubscription(root, sub, rows, bin, &metrics, destSeen); err != nil {
-			saveManagerWakeMetrics(root, metrics)
-			return err
+		if class, ok := skips[sub.ID]; ok {
+			seenSkip[sub.ID] = true
+			cur, _, _ := loadManagerWakeCursor(root, sub.ID)
+			subErrs = append(subErrs, noteWakeClass(root, cur, &metrics, class))
+			continue
 		}
+		if err := deliverSubscription(root, sub, rows, bin, &metrics, destSeen, ttl); err != nil {
+			subErrs = append(subErrs, err)
+		}
+	}
+	var orphanSkips []string
+	for id := range skips {
+		if seenSkip[id] {
+			continue
+		}
+		orphanSkips = append(orphanSkips, id)
+	}
+	sort.Strings(orphanSkips)
+	for _, id := range orphanSkips {
+		class := skips[id]
+		cur, curClass, _ := loadManagerWakeCursor(root, id)
+		if curClass != "" || cur == nil {
+			noteManagerWakeError(root, &metrics, class)
+			subErrs = append(subErrs, fmt.Errorf("%s", class))
+			continue
+		}
+		subErrs = append(subErrs, noteWakeClass(root, cur, &metrics, class))
 	}
 	for _, sub := range mw.Subscriptions {
 		if !sub.Enabled {
@@ -1844,10 +2011,13 @@ func managerWakeOnceLocked(root string, mw *ManagerWakeConfig) error {
 		}
 	}
 	metrics.Pending = pending
-	if metrics.LastErrorClass == "" {
+	if len(subErrs) == 0 && metrics.LastErrorClass == "" {
 		clearManagerWakeError(root)
 	}
 	saveManagerWakeMetrics(root, metrics)
+	if len(subErrs) > 0 {
+		return errors.Join(subErrs...)
+	}
 	return nil
 }
 
@@ -1965,15 +2135,37 @@ func seedDestinationEventIDs(dest map[string]map[string]bool, thread string, ids
 	return true
 }
 
-func preloadDestinationEventIDs(root string, mw *ManagerWakeConfig, rows []managerWakeOutboxRow) (map[string]map[string]bool, string, error) {
+type wakePreloadSkips struct {
+	m map[string]string
+}
+
+func (s *wakePreloadSkips) add(subID, class string) bool {
+	if class == "" {
+		return false
+	}
+	if _, ok := closedManagerWakeSubID(subID); !ok {
+		return false
+	}
+	if s.m == nil {
+		s.m = map[string]string{}
+	}
+	if _, exists := s.m[subID]; !exists {
+		s.m[subID] = class
+	}
+	return true
+}
+
+func preloadDestinationEventIDs(root string, mw *ManagerWakeConfig, rows []managerWakeOutboxRow, ttl time.Duration) (map[string]map[string]bool, map[string]string, string, error) {
 	dest := map[string]map[string]bool{}
+	skips := &wakePreloadSkips{}
 	enabled := map[string]bool{}
 	configThread := map[string]string{}
 	if mw != nil {
 		for _, sub := range mw.Subscriptions {
 			id, ok := closedManagerWakeSubID(sub.ID)
 			if !ok {
-				return dest, "invalid_subscription_id", fmt.Errorf("invalid_subscription_id")
+				skips.add(strings.TrimSpace(sub.ID), "invalid_subscription_id")
+				continue
 			}
 			if sub.Enabled {
 				enabled[id] = true
@@ -1981,34 +2173,40 @@ func preloadDestinationEventIDs(root string, mw *ManagerWakeConfig, rows []manag
 			configThread[id] = sub.ThreadID
 		}
 	}
-	if class, err := inventoryPersistedWakeReceipts(root, dest, configThread); class != "" {
-		return dest, class, err
+	if class, err := inventoryPersistedWakeReceipts(root, dest, configThread, skips); class != "" {
+		return dest, nil, class, err
 	}
 	for id, thread := range configThread {
 		rec, class, err := loadManagerWakeReceipt(root, id)
 		if class != "" {
-			if err != nil {
-				return dest, class, err
+			if err == nil {
+				err = fmt.Errorf("%s", class)
 			}
-			return dest, class, fmt.Errorf("%s", class)
+			if skips.add(id, class) {
+				continue
+			}
+			return dest, nil, class, err
 		}
 		if rec == nil {
 			continue
 		}
 		if class, err := seedPersistedWakeReceipt(dest, rec, thread); class != "" {
-			return dest, class, err
+			if skips.add(id, class) {
+				continue
+			}
+			return dest, nil, class, err
 		}
 	}
-	if class, err := scanInflightDestinationInventory(root, dest, enabled); class != "" {
-		return dest, class, err
+	if class, err := scanInflightDestinationInventory(root, dest, enabled, skips, ttl); class != "" {
+		return dest, nil, class, err
 	}
-	if class, err := validatePersistedReceiptMembership(root, configThread, rows); class != "" {
-		return dest, class, err
+	if class, err := validatePersistedReceiptMembership(root, configThread, rows, skips); class != "" {
+		return dest, nil, class, err
 	}
-	return dest, "", nil
+	return dest, skips.m, "", nil
 }
 
-func scanInflightDestinationInventory(root string, dest map[string]map[string]bool, enabled map[string]bool) (string, error) {
+func scanInflightDestinationInventory(root string, dest map[string]map[string]bool, enabled map[string]bool, skips *wakePreloadSkips, ttl time.Duration) (string, error) {
 	entries, err := os.ReadDir(managerWakeInflightDir(root))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -2016,7 +2214,6 @@ func scanInflightDestinationInventory(root string, dest map[string]map[string]bo
 		}
 		return "inflight_unreadable", fmt.Errorf("inflight_unreadable")
 	}
-	orphanUncertain := false
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -2030,44 +2227,59 @@ func scanInflightDestinationInventory(root string, dest map[string]map[string]bo
 		}
 		rec, class, err := loadManagerWakeInflight(root, id)
 		if class != "" {
-			if err != nil {
-				return class, err
+			if err == nil {
+				err = fmt.Errorf("%s", class)
 			}
-			return class, fmt.Errorf("%s", class)
+			if skips.add(id, class) {
+				continue
+			}
+			return class, err
 		}
 		if rec == nil {
+			continue
+		}
+		if _, expired := managerWakeInflightPastTTL(rec, ttl); expired {
 			continue
 		}
 		if rec.Phase == inflightPhaseClaimed {
 			continue
 		}
 		if rec.Phase != inflightPhaseStarting && rec.Phase != inflightPhaseSpawned {
+			if skips.add(id, "delivery_uncertain") {
+				continue
+			}
 			return "delivery_uncertain", fmt.Errorf("delivery_uncertain")
 		}
 		if _, ok := closedWakeDestID(rec.ThreadID); !ok {
+			if skips.add(id, "delivery_uncertain") {
+				continue
+			}
 			return "delivery_uncertain", fmt.Errorf("delivery_uncertain")
 		}
 		receipts, rclass, rerr := loadManagerWakeReceiptIDs(root, id)
 		if rclass != "" {
-			if rerr != nil {
-				return rclass, rerr
+			if rerr == nil {
+				rerr = fmt.Errorf("%s", rclass)
 			}
-			return rclass, fmt.Errorf("%s", rclass)
+			if skips.add(id, rclass) {
+				continue
+			}
+			return rclass, rerr
 		}
 		if !seedDestinationEventIDs(dest, rec.ThreadID, rec.WakeEventIDs) {
+			if skips.add(id, "delivery_uncertain") {
+				continue
+			}
 			return "delivery_uncertain", fmt.Errorf("delivery_uncertain")
 		}
 		if !receiptsCoverInflight(receipts, rec.WakeEventIDs) && !enabled[id] {
-			orphanUncertain = true
+			skips.add(id, "delivery_uncertain")
 		}
-	}
-	if orphanUncertain {
-		return "delivery_uncertain", fmt.Errorf("delivery_uncertain")
 	}
 	return "", nil
 }
 
-func inventoryPersistedWakeReceipts(root string, dest map[string]map[string]bool, configThread map[string]string) (string, error) {
+func inventoryPersistedWakeReceipts(root string, dest map[string]map[string]bool, configThread map[string]string, skips *wakePreloadSkips) (string, error) {
 	entries, err := os.ReadDir(managerWakeReceiptDir(root))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -2088,15 +2300,21 @@ func inventoryPersistedWakeReceipts(root string, dest map[string]map[string]bool
 		}
 		rec, class, err := loadManagerWakeReceipt(root, id)
 		if class != "" {
-			if err != nil {
-				return class, err
+			if err == nil {
+				err = fmt.Errorf("%s", class)
 			}
-			return class, fmt.Errorf("%s", class)
+			if skips.add(id, class) {
+				continue
+			}
+			return class, err
 		}
 		if rec == nil {
 			continue
 		}
 		if class, err := seedPersistedWakeReceipt(dest, rec, configThread[id]); class != "" {
+			if skips.add(id, class) {
+				continue
+			}
 			return class, err
 		}
 	}
@@ -2126,7 +2344,7 @@ func seedPersistedWakeReceipt(dest map[string]map[string]bool, rec *managerWakeR
 	return "", nil
 }
 
-func validatePersistedReceiptMembership(root string, configThread map[string]string, rows []managerWakeOutboxRow) (string, error) {
+func validatePersistedReceiptMembership(root string, configThread map[string]string, rows []managerWakeOutboxRow, skips *wakePreloadSkips) (string, error) {
 	seen := map[string]bool{}
 	entries, err := os.ReadDir(managerWakeReceiptDir(root))
 	if err != nil {
@@ -2146,12 +2364,18 @@ func validatePersistedReceiptMembership(root string, configThread map[string]str
 		}
 		ids, class, err := loadManagerWakeReceiptIDs(root, id)
 		if class != "" {
-			if err != nil {
-				return class, err
+			if err == nil {
+				err = fmt.Errorf("%s", class)
 			}
-			return class, fmt.Errorf("%s", class)
+			if skips.add(id, class) {
+				continue
+			}
+			return class, err
 		}
 		if class := validateReceiptMembership(ids, rows); class != "" {
+			if skips.add(id, class) {
+				continue
+			}
 			return class, fmt.Errorf("%s", class)
 		}
 		seen[id] = true
@@ -2162,12 +2386,18 @@ func validatePersistedReceiptMembership(root string, configThread map[string]str
 		}
 		ids, class, err := loadManagerWakeReceiptIDs(root, id)
 		if class != "" {
-			if err != nil {
-				return class, err
+			if err == nil {
+				err = fmt.Errorf("%s", class)
 			}
-			return class, fmt.Errorf("%s", class)
+			if skips.add(id, class) {
+				continue
+			}
+			return class, err
 		}
 		if class := validateReceiptMembership(ids, rows); class != "" {
+			if skips.add(id, class) {
+				continue
+			}
 			return class, fmt.Errorf("%s", class)
 		}
 	}
@@ -2187,7 +2417,7 @@ func markDestinationEventIDs(dest map[string]map[string]bool, thread string, row
 	_ = seedDestinationEventIDs(dest, thread, ids)
 }
 
-func deliverSubscription(root string, sub ManagerWakeSubscription, rows []managerWakeOutboxRow, bin string, metrics *managerWakeMetrics, destSeen map[string]map[string]bool) error {
+func deliverSubscription(root string, sub ManagerWakeSubscription, rows []managerWakeOutboxRow, bin string, metrics *managerWakeMetrics, destSeen map[string]map[string]bool, ttl time.Duration) error {
 	closed, cfgClass := closedManagerWakeSubscription(sub)
 	id, ok := closedManagerWakeSubID(sub.ID)
 	if !ok {
@@ -2212,7 +2442,7 @@ func deliverSubscription(root string, sub ManagerWakeSubscription, rows []manage
 	if class := validateCursorAgainstOutbox(cur, rows); class != "" {
 		return noteWakeClass(root, cur, metrics, class)
 	}
-	retry, err := reconcileManagerWakeInflight(root, sub, cur, metrics, rows)
+	retry, err := reconcileManagerWakeInflight(root, sub, cur, metrics, rows, ttl)
 	if err != nil {
 		return err
 	}

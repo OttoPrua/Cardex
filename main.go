@@ -74,6 +74,8 @@ func main() {
 		err = cmdAdmission(os.Args[2:])
 	case "manager-wake":
 		err = cmdManagerWake(os.Args[2:])
+	case "digest":
+		err = cmdDigest(os.Args[2:])
 	case "log":
 		err = cmdLog(os.Args[2:])
 	case "clean":

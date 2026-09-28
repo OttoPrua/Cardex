@@ -1,29 +1,48 @@
-# cardex
+# Cardex
 
-**Queue local Agent tasks. Track progress, pause work, and take over when needed.**
+**Coordinate multiple AI coding tools from one management conversation. Keep your development goal moving.**
 
-[中文](README.md) | **English** · [Download](https://github.com/OttoPrua/cardex/releases/latest) · [Setup guide (中文)](docs/getting-started.md) · [Dispatch Agent (中文)](docs/dispatch-agent.md)
+[中文](README.md) | **English** · [Download Release](https://github.com/OttoPrua/Cardex/releases/latest) · [Supported tools](#supported-tools-models-and-connections) · [Install](#install-and-get-started)
 
-Cardex is a local command-line scheduler. It saves goals or steps as task cards, invokes your installed and authenticated Claude Code / Codex CLI, and keeps task state and logs on disk. It ships as a single Go binary. Scheduling and the board do not call a model; task execution uses your provider's quota.
+![Cross-tool management: a goal flows through a Codex or Hermes manager session and Cardex to execution tools, with results returned to the manager.](docs/images/cardex-overview.en.png)
 
-![Workflow diagram: a goal enters a local queue through a dispatcher, runs through an execution CLI, and reports state to the board. This is a diagram, not a product screenshot.](docs/images/cardex-flow.svg)
+> **Cardex is a local development task scheduler.** The management Agent owns goals, decomposition and follow-up. Configured tools such as Claude Code, Codex and Grok execute the work; task records, state and logs stay on disk.
+>
+> **Use your subscriptions or APIs.** Inventory CLIs, authentication status and available models, then save routing presets after confirmation. Your choices take priority. The manager must be able to access the Cardex machine; cloud conversations need that connection first. Each tool uses its own subscription or API configuration.
 
-## What it does
+## Supported tools, models and connections
 
-| Need | Feature |
-|---|---|
-| Delegate a fix or feature | Save a task with `add`, execute it with `run ID` |
-| Run a sequence of steps | Separate prompts with `---`; Claude can resume a shared session, subject to executor-specific support |
-| Continue after a quota reset | Supported runners record cooldowns and resume; authentication failures or uncertain results can require intervention |
-| See what is happening | `list`, `log ID`, and the local web `board` |
-| Have an Agent organize your tasks | A separate dispatcher role and the bundled [cardex-dispatch skill](skills/cardex-dispatch/SKILL.md) |
-| Use advanced orchestration | Optional runners, dependencies, reviews, and [workflows](docs/workflows.en.md) |
+> **Use subscriptions or APIs.** Cardex schedules configured coding CLIs rather than a single model vendor. Claude, GPT / Codex, Grok, Kimi, GLM, MiniMax, MiMo and DeepSeek families are accessible through the appropriate runner or engine profile. Exact model IDs, reasoning levels and quotas depend on the tool catalog and your account access.
 
-## Start from a Codex or Hermes management session
+| Adapted execution tool | Cardex runner | Models and connection path |
+|---|---|---|
+| **Claude Code** | `claude` | Claude models, using the CLI's configured subscription login or API credentials |
+| **Codex CLI** | `codex` | GPT / Codex models, using the CLI's configured account or API provider |
+| **Grok Build** | `grok-build` | Grok models and reasoning levels available in its CLI catalog |
+| **Cursor Agent** | `cursor` | Models available to the Cursor account, including adapted Grok / Fable routes |
+| **Kimi CLI** | `kimi-cli` | Kimi models, reusing its login and model configuration |
+| **OpenCode** | `opencode` | Configured `provider/model` IDs, including OpenCode Go, Zen, third-party APIs or local model services |
+| **Antigravity** | `agy` | Native `agy` execution; the current adapter selects an available Claude Opus and does not silently substitute Gemini / Sonnet when Opus is absent |
 
-Use a dedicated **Codex or Hermes session as the manager**. Cardex keeps and schedules the local queue; provider CLIs execute tasks. The manager's model and a task's execution model are independent.
+> **Built-in subscription / API engine presets:** Kimi Code (`kimi`), GLM Coding Plan (`glm-cn` / `glm-global`), MiniMax Coding Plan (`minimax-cn` / `minimax-global`), Xiaomi MiMo (`mimo`), OpenCode Go (`opencode-go`) and Ollama Cloud (`ollama`). These profiles use Claude Code with Anthropic-compatible endpoints and editable model mappings. List them with `cardex engines`; add one with `cardex engines add NAME`.
+>
+> **OpenCode is an execution tool; OpenCode Go is a service plan.** These are available adapters and configuration paths, not a claim that every model, plan and feature has been tested. Chat subscriptions do not automatically grant API / CLI access. The legacy `gemini` runner is retired.
 
-Install the binary and dispatch skill on that machine. macOS / Linux:
+### APIs and compatible formats
+
+| API format | Connection path | Where to configure it |
+|---|---|---|
+| **Anthropic Messages compatible** | Cardex `engines` → Claude Code → API / gateway | Cardex engine profile: `base_url`, model mappings and `auth_env` or `auth_file` |
+| **OpenAI Chat Completions compatible** (`/v1/chat/completions`) | Cardex → OpenCode → custom provider | Configure the compatible provider and endpoint in OpenCode; select `provider/model` in Cardex |
+| **OpenAI Responses compatible** (`/v1/responses`) | Cardex → Codex CLI or OpenCode → configured provider | Configure the provider in that CLI; Codex uses `wire_api = "responses"`, while OpenCode needs the matching provider package |
+
+> **Metered APIs, custom gateways and local model services are usable through a matching protocol and runner.** Cardex does not translate these three protocols or turn any URL in `engines` into a universal API connector. The model must also meet the runner's tool-calling and streaming requirements. Verify one small real task before expanding dispatch.
+
+Configuration references: [Cardex configuration](docs/config.en.md) · [Engine implementation and presets](engines.go) · [OpenCode providers](https://opencode.ai/docs/providers/#custom-provider) · [Codex providers](https://developers.openai.com/codex/config-advanced/). Protocol documentation checked on 2026-09-28.
+
+## Install and get started
+
+Install the binary and dispatch skill on the machine that will run Cardex. macOS / Linux:
 
 ```sh
 curl -fsSL https://github.com/OttoPrua/Cardex/releases/latest/download/install.sh -o /tmp/cardex-install.sh && sh /tmp/cardex-install.sh --manager codex
@@ -35,76 +54,122 @@ Windows PowerShell:
 & ([scriptblock]::Create((Invoke-RestMethod -ErrorAction Stop https://github.com/OttoPrua/Cardex/releases/latest/download/install.ps1))) -Manager codex
 ```
 
-For Hermes, replace `codex` with `hermes`. The installer verifies the archive, installs the binary and skill, inventories local CLIs, then instructs the **deploying Agent to continue in the same conversation**: identify existing subscriptions, guide login, propose model/effort/review routes, ask whether to adopt them, and save the accepted presets. Existing configuration and backups are preserved.
+For Hermes, replace `codex` with `hermes`. After binary and skill installation, the manager continues subscription login, API configuration and model routing in the same conversation.
 
-You can give your Agent this request before installation:
+Give this request to a management Agent that can operate your machine:
 
 ```text
 Install and configure Cardex using https://github.com/OttoPrua/Cardex/blob/main/docs/getting-started.md.
-After installation, read the installed cardex-dispatch skill and continue in this conversation.
-Ask step by step which existing subscriptions I want to use, help configure them, then show
-routes based on verified available models and ask whether I want to adopt them.
-Save after confirmation, respect my overrides and reuse the presets. Do not stop at "installed".
+Read the installed cardex-dispatch skill and continue in this conversation.
+Confirm which existing subscriptions or API services I want to use, help configure them, show routes based on
+verified available models, and ask whether to adopt them before saving.
+Recommend single-card dispatch, a single-stage workflow or sustained development based on
+scope, dependencies and risk. Explain responsibilities and acceptance timing.
+Keep simple work in one card; do not add multiple models or extra reviews by default.
+Reuse existing configuration and queues. Do not stop at "installed".
 ```
 
-The management Agent researches recommendations; Cardex does not automatically fetch rankings or change models. Once the guide has saved your presets:
+> **Continue in the same conversation:** identify the manager and machine → inventory subscriptions / APIs → configure and verify → confirm routing → choose a working method for the task.
+>
+> The installer prints a handoff; the deploying Agent conducts the follow-up and orchestration. Sign in through each provider's own service. Do not paste passwords or secrets into chat.
+
+[Setup (中文)](docs/getting-started.md) · [Dispatch Agent, examples and skill (中文)](docs/dispatch-agent.md) · [Configuration](docs/config.en.md)
+
+<details>
+<summary>Try a first CLI task</summary>
+
+After configuring and confirming a `routine` preset:
 
 ```sh
 cardex presets
-cardex add -preset routine -dry-run -dir . "Read this project and explain its entry point and run command. Do not edit files."
-cardex add -preset routine -dir . "Read this project and explain its entry point and run command. Do not edit files."
-cardex run TASK_ID               # Use the ID returned by add; this calls a model
+cardex add -preset routine -dry-run -dir . "Explain this project's entry point. Do not edit files."
+cardex add -preset routine -dir . "Explain this project's entry point. Do not edit files."
+cardex run TASK_ID   # ID returned by add; this calls a model
 cardex log TASK_ID
-cardex board                    # Open http://127.0.0.1:8787
+cardex board
 ```
 
-`routine` must exist first. `add -dry-run` prints a card without saving or executing it. `run TASK_ID` targets one card; bare `run` processes the ready queue. If a scheduler is active, queued cards may start immediately; use `add -hold` to prepare work.
+`-dry-run` does not save or execute a card. A running scheduler may start queued work immediately; use `add -hold` to prepare work. `run TASK_ID` targets one card; bare `run` processes the ready queue. Reuse existing configuration rather than replacing it with a starter.
 
-For a minimal CLI setup, `cardex setup -runner claude` or `-runner codex` creates a new configuration; follow with `cardex doctor`. Setup refuses to overwrite existing configuration. It does not install, authenticate, or invoke a model. Codex starts with its CLI default model and medium effort. The [setup guide (中文)](docs/getting-started.md) covers PATH, manual downloads, subscriptions, presets and troubleshooting.
+</details>
 
-Build from source with Go 1.24+: `go build -o cardex .` (use `cardex.exe` on Windows).
+## Three ways to work
 
-## Windows status
+![Single-card dispatch, single-stage workflow and sustained development: choose by complexity, self-check small tasks and review combined results for coordinated work.](docs/images/cardex-work-modes.en.png)
 
-Releases include a native Windows executable. **This does not mean every Windows feature has been fully validated.** Check configuration and basic task execution on your machine before unattended use; real model execution also depends on your CLI, authentication, permissions, and project tools.
+> **Assess complexity first. Start with an MVP.** Keep diagnosis, implementation, checks and ordinary fixes in one card for simple tasks. Do not add design cards, multiple models or extra reviewers by default.
+>
+> **Single-card dispatch:** one fix, script or independent change; check the result against its completion criteria.
+>
+> **Single-stage workflow:** one design card branches into execution cards. Once all required cards finish, one acceptance card checks the combined result.
+>
+> **Sustained development:** keep working toward one goal using either method below. Run independent work in parallel; serialize dependencies and conflicting writes. A card can contain multiple model and tool calls.
 
-- `install-launchd` is macOS only. Use foreground `daemon` or Windows Task Scheduler on Windows.
-- Hosted PTY Goal is unsupported on Windows.
-- Automatic cross-engine transitions requiring strict process-exit proof are unavailable. See the [Windows guide](docs/windows.md) for native test coverage and process lifecycle behavior.
-- Advanced Bash / SSH / rsync examples require those tools. Keep native Windows and WSL paths separate.
+See the [workflow guide](docs/workflows.en.md). These are recommended practices organized by the management Agent using existing tasks, dependencies and workflow mechanisms.
 
-## Configuration and daily use
+## Sustained development: two dispatch methods
 
-Data lives under `~/.cardex` by default, including `config.json`, task records, and logs. Select another root with `CARDEX_ROOT` or `-root` on each command. Useful starting settings are `max_parallel` (1), `step_timeout_min` (60 minutes), and `poll_interval_sec` (300 seconds). Run one successful task before tuning concurrency or model routing.
+![Staged cycles review each round; native Goal sessions may run in parallel, followed by one overall acceptance review arranged by the manager after all required directions finish.](docs/images/cardex-goal-methods.en.png)
+
+> **Staged cycles:** repeat design → execution cards → round acceptance. Move to the next round after acceptance passes, and stop when the goal is met. Keep ordinary fixes within the current bounded task.
+>
+> **Native Goal sessions:** one or more independent conversations continuously implement, test and fix their assigned directions. Once all required directions finish and terminal states are verified, gather the artifacts for one overall acceptance review. An individual session finishing does not mean the whole goal has passed.
+>
+> **Review the combined result.** Check completion criteria, interfaces and actual artifacts, with depth proportional to risk. Preserve completed work, fix specific issues and recheck affected parts. The two methods can be combined.
+
+> **Current boundary:** the management Agent explicitly arranges orchestration and overall acceptance. The released version does not automatically collect all Goal completions and create an overall acceptance card. The dispatch skill's full mode and acceptance rules are also being refined. Native Goal requires actual support in the execution tool and adapter.
+
+## Conversations pause. Saved progress stays local.
+
+![Local task cards, state, logs, code, artifacts and result records help a manager read progress, verify execution state, then resume or rebuild context.](docs/images/cardex-local-progress.en.png)
+
+> **Keep and reuse saved work.** Cardex stores task records; execution Agents write code and artifacts to their working directories. Use `list`, `log` and `board` to inspect progress. Prefer change summaries and necessary files for routine follow-up.
+>
+> After a quota limit or unexpected exit, verify execution state before continuing through the runner's supported recovery path. Persistence helps recovery; it does not guarantee lossless resumption or preserve all internal model state. A new card need not require a new session, and session reuse does not guarantee a server-side cache hit.
+
+## Planned dispatch automation
+
+> **In development; not released as a complete capability.** Move confirmed preferences, session continuation and batch acceptance into program rules, reusing existing mechanisms and starting with the smallest working loop.
+
+<details>
+<summary>Session reuse, overall acceptance and lower management overhead</summary>
+
+| Situation | Planned behavior |
+|---|---|
+| All required Goal directions complete | Gather current artifacts and evidence; create one overall acceptance card without duplicates. Running, paused, failed or unknown required work cannot count as completed. |
+| Same stage and role continue implementation or fixes | Prefer a compatible, safely resumable session when the runner supports it. |
+| Independent acceptance or review | Use a separate session with criteria and necessary artifacts, without the author's full reasoning history. |
+| Tool, model or environment changes | Check compatibility; never pass a session ID across incompatible providers or silently change providers to preserve a cache. |
+| Stage or context handoff | Continue from saved essential state at a safe boundary rather than restarting for every small step. |
+| Manager follow-up | Return changes, evidence locations, blockers and next steps; notify on material changes or needed decisions. |
+| Dispatch inspection | Show the selected mode, model and session decision with its reason; label missing usage as unknown. |
+
+Task boundaries and session boundaries are separate choices. Persistence preserves work; server-side caching can reuse matching input computation. Optimize total cost and delivery quality without promising cache hits or fixed savings.
+
+[Development checklist (中文)](docs/handoffs/cardex-context-dispatch-development.md)
+
+</details>
+
+## Support and development
+
+> Releases cover **macOS, Linux and Windows**. Native Windows x64 CI is available; ARM64 artifacts have not been validated on a real device. Windows does not support hosted PTY Goal or automatic cross-runner fallback requiring strict process-exit proof. Verify subscriptions, CLIs and project tools in your own environment; see the [Windows guide (中文)](docs/windows.md).
+>
+> Scheduling and the board do not call models. Management, development and model-based review use the corresponding provider's quota. Data defaults to `~/.cardex`; select another root with `CARDEX_ROOT` or `-root`. Preserve existing queues during onboarding.
+
+<details>
+<summary>Build, checks and further documentation</summary>
+
+Requires Go 1.24+:
 
 ```sh
-cardex hold TASK_ID              # Pause a card
-cardex release TASK_ID           # Requeue it; does not execute it immediately
-cardex daemon                   # Poll continuously; Ctrl+C to exit
+go build -o cardex .  # Use cardex.exe on Windows
+go test ./...
+make test            # Bash integration checks with mock CLIs
 ```
 
-For background scheduling on macOS, use `cardex install-launchd`. For existing installations, edit the existing configuration rather than replacing it with a starter file. See the [configuration reference](docs/config.en.md) for runner and model settings.
+[Advanced guide](docs/guide.en.md) · [Runtime internals](docs/internals.en.md) · [Mixed routing (中文)](MIXED_ROUTING.md) · [Changelog](docs/changelog.en.md)
 
-## A dedicated dispatch Agent
-
-Use a separate Agent session to clarify scope, inspect the queue, create bounded tasks, and follow results. Give execution Agents only the context needed for their task. The repository includes a copyable role prompt, examples, and installation instructions in the [dispatch guide](docs/dispatch-agent.md), plus a portable [cardex-dispatch skill](skills/cardex-dispatch/SKILL.md).
-
-## Documentation
-
-| Document | Contents |
-|---|---|
-| [Getting started (中文)](docs/getting-started.md) | Installation, setup, first task, troubleshooting |
-| [Dispatch Agent (中文)](docs/dispatch-agent.md) | Role prompt, examples, skill installation |
-| [Configuration reference](docs/config.en.md) | Configuration keys and templates |
-| [Advanced guide](docs/guide.en.md) | Assembly, coordination, progress, review routing, quota, and runners |
-| [Recommended workflows](docs/workflows.en.md) | Dependencies, write domains, independent review, Goal, and integration |
-| [Mixed routing (中文)](MIXED_ROUTING.md) | Optional routing for established multi-provider setups |
-| [Runtime internals](docs/internals.en.md) | Recovery, retries, permissions, and persistent state |
-| [Changelog](docs/changelog.en.md) | Version history |
-
-The optional [perlica-low-token-manager skill](skills/perlica-low-token-manager/SKILL.md) supports long-running management sessions. Cardex was formerly ClaudeGo; existing aliases and data migration remain supported. See the [setup guide](docs/getting-started.md#已有安装与旧名称).
-
-Development checks: `go test ./...`; `make test` runs the Bash integration suite with mock CLIs.
+</details>
 
 ## License
 

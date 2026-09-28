@@ -4,9 +4,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"testing"
 	"time"
@@ -89,17 +91,42 @@ func TestWorkspaceLeaseSurvivesMapLossAndBlocksDifferentFallbackTask(t *testing.
 		if _, err := syscall.Setsid(); err != nil && !errors.Is(err, syscall.EPERM) {
 			os.Exit(2)
 		}
+		// Keep the direct shell alive until its exact durable identity is bound.
+		// An immediate background exit races bindAttemptProcess under load.
+		deadline := time.Now().Add(5 * time.Second)
+		bound := false
+		for time.Now().Before(deadline) {
+			data, _ := os.ReadFile(os.Getenv("CARDEX_TEST_ATTEMPT_FILE"))
+			var rec AttemptRecord
+			if json.Unmarshal(data, &rec) == nil && rec.State == attemptBound {
+				bound = true
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		_ = os.WriteFile(os.Getenv("CARDEX_TEST_BOUND_GATE"), nil, 0600)
+		if !bound {
+			os.Exit(3)
+		}
 		time.Sleep(900 * time.Millisecond)
 		os.Exit(0)
 	}
 
 	dir := t.TempDir()
-	_, parentID := reservedTaskExec(t, dir)
+	root, parentID := reservedTaskExec(t, dir)
+	parent, err := loadTask(root, parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundGate := filepath.Join(t.TempDir(), "bound")
 	cmd := exec.CommandContext(context.Background(), "sh", "-c",
-		`"$CARDEX_TEST_BINARY" -test.run=TestWorkspaceLeaseSurvivesMapLossAndBlocksDifferentFallbackTask >/dev/null 2>&1 &`)
+		`"$CARDEX_TEST_BINARY" -test.run=TestWorkspaceLeaseSurvivesMapLossAndBlocksDifferentFallbackTask >/dev/null 2>&1 &
+        while [ ! -f "$CARDEX_TEST_BOUND_GATE" ]; do sleep 0.01; done`)
 	cmd.Env = append(os.Environ(),
 		"CARDEX_TEST_BINARY="+os.Args[0],
 		"CARDEX_TEST_WORKSPACE_LEASE_CHILD=1",
+		"CARDEX_TEST_ATTEMPT_FILE="+attemptPath(root, parentID, parent.ActiveAttemptID),
+		"CARDEX_TEST_BOUND_GATE="+boundGate,
 	)
 	cmd.Dir = dir
 	setupProcGroup(cmd)
@@ -117,10 +144,11 @@ func TestWorkspaceLeaseSurvivesMapLossAndBlocksDifferentFallbackTask(t *testing.
 	if !workspaceProcessResidue(dir) {
 		t.Fatal("detached descendant must remain visible after process-local residue maps are lost")
 	}
+	_, secondID := reservedTaskExec(t, dir)
 	second := exec.CommandContext(context.Background(), "sh", "-c", "true")
 	second.Dir = t.TempDir() // simulate a Codex review copy distinct from the authoritative workspace
 	setupProcGroup(second)
-	if err := runCmdRegisteredForTaskWorkspace(second, "different-fallback-task", dir); !errors.Is(err, errWorkspaceExecutionLeaseBusy) {
+	if err := runCmdRegisteredForTaskWorkspace(second, secondID, dir); !errors.Is(err, errWorkspaceExecutionLeaseBusy) {
 		t.Fatalf("different task ID must not acquire the same live workspace writer lease: %v", err)
 	}
 

@@ -1263,7 +1263,7 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 				return fmt.Errorf("named mode fallback requires quota and remaining attempt authority")
 			}
 		} else if kind != fallbackQuota || current.Runner != grokBuildRunnerName || next.Runner != cursorRunnerName ||
-			current.Effort != "high" || next.Effort != "high" || mixedCursorEquivalent(current.Model) != next.Model {
+			current.Effort != next.Effort || mixedCursorEquivalent(current.Model, current.Effort) != next.Model {
 			return fmt.Errorf("mixed fallback requires quota and exact equivalent Grok model/effort")
 		}
 	} else if !independentModelOpinion(current, next) {
@@ -1305,6 +1305,7 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 	switch next.Runner {
 	case cursorRunnerName:
 		t.PreferRunner, t.CursorModel = cursorRunnerName, next.Model
+		t.Effort, t.EffortExplicit = next.Effort, true
 		t.RouteReason = mixedQuotaReason
 	case antigravityRunnerName:
 		t.PreferRunner, t.AgyModel = antigravityRunnerName, next.Model

@@ -69,3 +69,13 @@
 
 提示词模板在 `~/.cardex/templates/*.md`，可直接修改（`{{GOAL}}` `{{DIR}}` `{{FOCUS}}` 会被替换；
 `coordinate.md` 里的 `{{QUEUE}}` `{{PROGRESS}}` 在**派发时**替换为实时快照）。
+
+## 新手派发预设（v0.10.21）
+
+管理会话先按[上手引导](getting-started.md)核实订阅和 CLI 模型目录，再生成 JSON 映射并用 `cardex presets -file presets.json` 合并到 `dispatch_presets`。同名项更新，其他配置和预设保留，原配置会备份。
+
+每项可配置 `runner`、`model`、`effort`、`review_after` 和 `note`（推荐依据、来源链接与核对日期）。预设名使用小写字母开头的字母、数字、下划线或短横线，最长 64 字符。`cardex add -preset routine -file task.md` 把选择固定到新卡；之后改预设不改变已有任务。
+
+`model` 必须是对应 CLI 实际支持的标识；没有填写时沿用该执行器已有模型配置。`effort` 支持 low/medium/high/xhigh/max 中执行器实际可用的值：Grok 不支持 max；Cursor 的档位包含在模型 ID 内，预设 effort 留空；Antigravity 使用 `antigravity.effort`，预设 effort 留空。OpenCode 将 effort 映射为 variant，需核实目标 provider 支持。
+
+`review_after` 复用已有自动审核流程与路由配置，不等于指定不同模型。如果要单独钉定审查模型，创建一张 `design-review` 任务，使用审查预设并通过 `-depends-on` 关联实现卡。CLI 不会因榜单更新自动改预设；由管理会话明确刷新。

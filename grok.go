@@ -48,15 +48,11 @@ func probeGrokBuildLifecycleState(t *Task, home string) (err error) {
 			err = syncErr
 		}
 	}()
-	f, err := os.OpenFile(probePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := createPrivateProviderFile(probePath)
 	if err != nil {
 		return fmt.Errorf("create Grok lifecycle-state probe: %w", err)
 	}
 	created = true
-	if err := f.Chmod(0o600); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("chmod Grok lifecycle-state probe: %w", err)
-	}
 	if _, err := f.Write(payload); err != nil {
 		_ = f.Close()
 		return fmt.Errorf("write Grok lifecycle-state probe: %w", err)
@@ -65,11 +61,12 @@ func probeGrokBuildLifecycleState(t *Task, home string) (err error) {
 		_ = f.Close()
 		return fmt.Errorf("fsync Grok lifecycle-state probe: %w", err)
 	}
+	createdInfo, statErr := f.Stat()
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close Grok lifecycle-state probe: %w", err)
 	}
 	info, err := os.Lstat(probePath)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+	if err != nil || statErr != nil || !info.Mode().IsRegular() || !os.SameFile(createdInfo, info) || !lifecycleProbeModeValid(info) {
 		return fmt.Errorf("Grok lifecycle-state probe metadata mismatch")
 	}
 	readback, err := os.ReadFile(probePath)
@@ -283,7 +280,7 @@ func runGrokBuildAuthProbe(ctx context.Context, cfg *Config, model string) error
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, grokBuildAuthProbeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(probeCtx, cfg.GrokBuildBin, "--no-auto-update", "models")
+	cmd := providerCommandContext(probeCtx, cfg.GrokBuildBin, "--no-auto-update", "models")
 	home, _ := resolveGrokLifecycleHome(cfg)
 	cmd.Env = providerChildEnv(home, nil)
 	setupProcGroup(cmd)
@@ -384,6 +381,9 @@ func resolveGrokBuildModel(cfg *Config, t *Task) string {
 
 func resolveGrokBuildEffort(cfg *Config, t *Task) string {
 	if mixedNewGrokModel(cfg, t) != "" {
+		if t.WorkClass == "development" {
+			return "xhigh"
+		}
 		return "high"
 	}
 	if t != nil && strings.TrimSpace(t.GrokEffort) != "" {
@@ -2294,16 +2294,12 @@ func invokeGrokBuild(ctx context.Context, root string, cfg *Config, t *Task, pro
 			return nil, "", err
 		}
 	}
-	promptFile, err := os.CreateTemp("", "cardex-grok-prompt-*.txt")
+	promptFile, err := createPrivateProviderFile(filepath.Join(os.TempDir(), "cardex-grok-prompt-"+newOpaqueID("")+".txt"))
 	if err != nil {
 		return nil, "", err
 	}
 	promptPath := promptFile.Name()
 	defer os.Remove(promptPath)
-	if err := promptFile.Chmod(0o600); err != nil {
-		promptFile.Close()
-		return nil, "", err
-	}
 	if _, err := promptFile.WriteString(prompt); err != nil {
 		promptFile.Close()
 		return nil, "", err
@@ -2336,7 +2332,7 @@ func invokeGrokBuild(ctx context.Context, root string, cfg *Config, t *Task, pro
 
 	runCtx, cancel := context.WithTimeout(ctx, grokBuildStepTimeout(cfg))
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, cfg.GrokBuildBin, args...)
+	cmd := providerCommandContext(runCtx, cfg.GrokBuildBin, args...)
 	setupProcGroup(cmd)
 	cmd.Dir = t.Dir
 	cmd.Env = providerChildEnv(home, nil)
@@ -2348,7 +2344,11 @@ func invokeGrokBuild(ctx context.Context, root string, cfg *Config, t *Task, pro
 	processTimedOut := false
 	if runCtx.Err() == context.DeadlineExceeded {
 		processTimedOut = true
-		runErr = fmt.Errorf("步骤超时（%d 分钟）", cfg.StepTimeoutMin)
+		if errors.Is(runErr, errProcessExecution) {
+			runErr = fmt.Errorf("步骤超时（%d 分钟）: %w", cfg.StepTimeoutMin, runErr)
+		} else {
+			runErr = fmt.Errorf("步骤超时（%d 分钟）", cfg.StepTimeoutMin)
+		}
 	}
 	combined := stdout.String() + "\n" + stderr.String()
 	exactAuthLine := grokBuildAuthDiagnosticLine(stderr.String())

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,7 +20,7 @@ import (
 // 当失败重试。真正的超时/非零退出 ProcessState.Success()=false，不受本救援影响。
 // 远端执行器（invokeRemoteClaude/invokeRemoteCodex）自有"有结果即成功"救援，不走此路。
 func rescueWaitDelay(err error, cmd *exec.Cmd) error {
-	if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+	if !errors.Is(err, errProcessExecution) && errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
 		return nil
 	}
 	return err
@@ -58,12 +59,15 @@ var (
 )
 
 // taskProcessLease is prepared by the platform-specific helper before cmd.Start. On Unix, done is
-// closed only after EOF on an inherited pipe; on Windows the helper returns nil and the existing
-// conservative processGroupAlive implementation keeps policy fallback fail-closed.
+// closed only after EOF on an inherited pipe; Windows owns a Job Object and resumes
+// the child only after durable process binding. Cross-workspace fallback stays fail-closed.
 type taskProcessLease struct {
-	done   <-chan struct{}
-	commit func()
-	abort  func()
+	done    <-chan struct{}
+	commit  func()
+	abort   func()
+	resume  func() error      // Windows: resume the job-owned child after durable binding.
+	finish  func(error) error // Windows: reap or terminate all job descendants.
+	cleanup func()            // Windows: close the owned job on every return.
 }
 
 func pruneTaskLeaseResidueLocked(taskID string) {
@@ -277,10 +281,8 @@ func runCmdRegisteredHarvestForTask(cmd *exec.Cmd, resultInBuf func() bool, task
 }
 
 func runCmdRegisteredHarvestForTaskWorkspace(cmd *exec.Cmd, resultInBuf func() bool, taskID, workspaceDir string) error {
-	lease, leaseErr := prepareTaskProcessLease(cmd, taskID, workspaceDir)
-	if leaseErr != nil {
-		return leaseErr
-	}
+	var lease *taskProcessLease
+	leaseDir := workspaceDir
 	taskAware := taskID != ""
 	holdingGate := false
 	var launchRoot string
@@ -310,6 +312,9 @@ func runCmdRegisteredHarvestForTaskWorkspace(cmd *exec.Cmd, resultInBuf func() b
 				return errAdmissionDenied
 			}
 			launchAttemptID = current.ActiveAttemptID
+			if taskIsReadOnlyType(current) {
+				leaseDir = taskExecutionLeaseDir(launchRoot, current)
+			}
 			return nil
 		}); snapErr != nil {
 			abortLease()
@@ -318,6 +323,16 @@ func runCmdRegisteredHarvestForTaskWorkspace(cmd *exec.Cmd, resultInBuf func() b
 			}
 			return errAdmissionDenied
 		}
+	}
+	var leaseErr error
+	lease, leaseErr = prepareTaskProcessLease(cmd, taskID, leaseDir)
+	if leaseErr != nil {
+		return leaseErr
+	}
+	if lease != nil && lease.cleanup != nil {
+		defer lease.cleanup()
+	}
+	if taskAware {
 		if hook := admissionPreStartHook; hook != nil {
 			hook()
 		}
@@ -345,29 +360,37 @@ func runCmdRegisteredHarvestForTaskWorkspace(cmd *exec.Cmd, resultInBuf func() b
 	procGroups[pid] = true
 	procMu.Unlock()
 	registerTaskInvoke(taskID, pid)
+	var bindErr error
 	if taskAware {
-		if err := bindAttemptProcess(launchRoot, taskID, launchAttemptID, pid); err != nil {
-			_ = killProcGroup(pid)
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
-			_ = cmd.Wait()
-			if lease != nil && lease.done != nil {
-				timer := time.NewTimer(100 * time.Millisecond)
-				select {
-				case <-lease.done:
-					timer.Stop()
-				case <-timer.C:
-					markTaskLeaseResidue(taskID, lease.done)
-				}
-			}
-			procMu.Lock()
-			delete(procGroups, pid)
-			procMu.Unlock()
-			unregisterTaskInvoke(taskID, pid)
-			releaseGate()
-			return err
+		bindErr = bindAttemptProcess(launchRoot, taskID, launchAttemptID, pid)
+	}
+	if bindErr == nil && lease != nil && lease.resume != nil {
+		bindErr = lease.resume()
+	}
+	if err := bindErr; err != nil {
+		_ = killProcGroup(pid)
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
 		}
+		_ = cmd.Wait()
+		if lease != nil && lease.done != nil {
+			timer := time.NewTimer(100 * time.Millisecond)
+			select {
+			case <-lease.done:
+				timer.Stop()
+			case <-timer.C:
+				markTaskLeaseResidue(taskID, lease.done)
+			}
+		}
+		procMu.Lock()
+		delete(procGroups, pid)
+		procMu.Unlock()
+		unregisterTaskInvoke(taskID, pid)
+		if processGroupAlive(pid) {
+			markTaskProcessResidue(taskID, pid)
+		}
+		releaseGate()
+		return fmt.Errorf("%w: process bind failed: %v", errProcessExecution, err)
 	}
 	releaseGate()
 	defer func() {
@@ -402,6 +425,9 @@ func runCmdRegisteredHarvestForTaskWorkspace(cmd *exec.Cmd, resultInBuf func() b
 		}()
 	}
 	err := cmd.Wait()
+	if lease != nil && lease.finish != nil {
+		err = lease.finish(err)
+	}
 	// Direct-child exit normally closes the lease immediately. Give the pipe reader a bounded
 	// scheduling window; if it is still open, a descendant retained the execution lease and the
 	// policy proof must block the next writer until EOF is observed later.

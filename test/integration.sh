@@ -316,7 +316,7 @@ printf 'ok\n' > "$MOCK_DIR/plan"; echo 0 > "$MOCK_DIR/n"
 "$BIN" run -quiet
 assert "钉定任务在 claude 空闲时仍走 codex" "one(title='pin-codex')['status']=='done' and one(title='pin-codex')['runner']=='codex'"
 assert "普通任务同轮由 claude 执行" "one(title='think-claude')['status']=='done' and one(title='think-claude').get('runner') is None"
-grep -q "model_reasoning_effort=xhigh" "$MOCK_DIR/codex-calls.log" && echo "  ✔ 默认实现→Luna/xhigh 推理等级已透传" && pass=$((pass+1)) || { echo "  ✖ 默认实现推理等级未按 Luna/xhigh 新标准透传"; fail=$((fail+1)); }
+grep -q "model_reasoning_effort=max" "$MOCK_DIR/codex-calls.log" && echo "  ✔ 默认实现→Luna/max 推理等级已透传" && pass=$((pass+1)) || { echo "  ✖ 默认实现推理等级未按 Luna/max 标准透传"; fail=$((fail+1)); }
 grep -q "thinking=12345" "$MOCK_DIR/calls.log" && echo "  ✔ claude 思考预算已透传" && pass=$((pass+1)) || { echo "  ✖ MAX_THINKING_TOKENS 未透传"; fail=$((fail+1)); }
 "$BIN" add -dir "$PROJ" -runner codex -title bad-pin -file /dev/stdin <<'EOF' >/dev/null 2>&1 && { echo "  ✖ 多步非 fresh 任务不该允许钉 codex"; fail=$((fail+1)); } || { echo "  ✔ 多步非 fresh 钉 codex 被拒绝"; pass=$((pass+1)); }
 s1
@@ -455,7 +455,7 @@ for _ in $(seq 1 50); do
 done
 [ -n "$vid" ] && echo "  ✔ 挂起任务已进入 running" && pass=$((pass+1)) || { echo "  ✖ 任务未进入 running"; fail=$((fail+1)); }
 cout=$("$BIN" cancel "$vid")
-echo "$cout" | grep -q "已标记取消" && echo "  ✔ 运行中任务 cancel 返回标记提示（暂不归档）" && pass=$((pass+1)) || { echo "  ✖ cancel 输出异常: $cout"; fail=$((fail+1)); }
+echo "$cout" | grep -Eq "已标记取消|已取消并归档" && echo "  ✔ cancel 返回取消确认（后续检查归档与进程退出）" && pass=$((pass+1)) || { echo "  ✖ cancel 输出异常: $cout"; fail=$((fail+1)); }
 T0=$(python3 -c "import time;print(time.time())")
 if wait $RUNPID; then
   EL=$(python3 -c "import time;print(time.time()-$T0)")

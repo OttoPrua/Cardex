@@ -68,3 +68,11 @@ The board **only reads** this file, never writes it; a missing file simply means
 A `match` without wildcards is an **exact directory match** (so that one rule on a container directory cannot swallow every project underneath it); write `X/*` to cover a subtree (the glob is matched against the directory or any ancestor, hence any depth). Matching is case-insensitive.
 
 Prompt templates live in `~/.cardex/templates/*.md` and can be edited directly (`{{GOAL}}` `{{DIR}}` `{{FOCUS}}` are substituted; `{{QUEUE}}` `{{PROGRESS}}` in `coordinate.md` are replaced with a live snapshot **at dispatch time**).
+
+## Dispatch presets (v0.10.21)
+
+After checking subscriptions and each CLI catalog, the management session imports a name-to-preset JSON map with `cardex presets -file presets.json`. Imports merge `dispatch_presets`, preserve other settings, and back up the previous configuration. Entries support `runner`, `model`, `effort`, `review_after`, and `note` for sources and verification dates. Names start with a lowercase letter and contain at most 64 lowercase letters, digits, underscores or hyphens.
+
+`cardex add -preset routine -file task.md` freezes the selected flags into a new task. Existing tasks do not change when a preset changes. Explicit flags for the same runner can override the preset. Model IDs and reasoning levels must be supported by the actual CLI/account. Grok does not accept max; Cursor encodes effort in the model ID; Antigravity uses `antigravity.effort`. Leave preset effort empty for Cursor and Antigravity. OpenCode maps effort to its provider variant.
+
+`review_after` uses the existing automatic review configuration. To pin another reviewer model, add a `design-review` card with a review preset and `-depends-on` pointing to the implementation card. Rankings never silently rewrite saved presets.

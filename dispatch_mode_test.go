@@ -98,7 +98,7 @@ func TestDispatchModeActualLateBoundaries(t *testing.T) {
 			codexBin, capture := fakeNamedCodex(t, `{"type":"turn.completed","usage":{}}`, "", "CODEX_OK", 0)
 			cfg.CodexBin = codexBin
 			catalog := filepath.Join(t.TempDir(), "catalog.txt")
-			writeCatalog(t, catalog, grok47CatalogText("grok-4.7"))
+			writeCatalog(t, catalog, grok47CatalogText("grok-4.6"))
 			grokBin, grokArgs, _ := newGrokCatalogFake(t, catalog, 0, false)
 			cfg.GrokBuildBin = grokBin
 			isolateGrokLifecycleHome(t, cfg)
@@ -153,7 +153,7 @@ func TestDispatchModeActualLateBoundaries(t *testing.T) {
 				}
 			}
 			args, err := os.ReadFile(grokArgs)
-			if err != nil || !strings.Contains(string(args), "grok-4.7") {
+			if err != nil || !strings.Contains(string(args), "grok-4.6") {
 				t.Fatalf("daily provider not invoked: %s %v task=%+v", args, err, got)
 			}
 		})
@@ -169,7 +169,7 @@ func TestDispatchModeActualQuotaSuccessorBoundary(t *testing.T) {
 			bin, capture := fakeNamedCodex(t, `{"type":"turn.failed","error":{"message":"quota exhausted"}}`, "", "", 1)
 			cfg.CodexBin = bin
 			catalog := filepath.Join(t.TempDir(), "catalog.txt")
-			writeCatalog(t, catalog, grok47CatalogText("grok-4.7"))
+			writeCatalog(t, catalog, grok47CatalogText("grok-4.6"))
 			grok, grokArgs, _ := newGrokCatalogFake(t, catalog, 0, false)
 			cfg.GrokBuildBin = grok
 			isolateGrokLifecycleHome(t, cfg)
@@ -373,7 +373,7 @@ func TestDispatchModeExactClockAndDailyTable(t *testing.T) {
 					t.Fatalf("priority %+v", r)
 				}
 			} else {
-				want := map[string]string{"development": "grok-4.7", "simple-development": "grok-4.6", "gpt-complex": "gpt-6-astra", "gpt-short": "gpt-5.6-sol", "management": "gemini-3.8-flash-high"}[class]
+				want := map[string]string{"development": "grok-4.6", "simple-development": "grok-4.6", "gpt-complex": "gpt-6-astra", "gpt-short": "gpt-5.6-sol", "management": "gemini-3.8-flash-high"}[class]
 				if r.Legs[0].Model != want {
 					t.Fatalf("daily %+v", r)
 				}
@@ -459,10 +459,10 @@ func TestDispatchModeQueuedRebindAndFrozenHistory(t *testing.T) {
 	}
 	goal := modeTask("development")
 	goal.Goal = &TaskGoalBinding{BudgetTokens: 40}
-	if route, ok := resolveMixedOwnerRouteAt(cfg, goal, now); !ok || route.Name != "mixed_development" || route.Legs[0].Runner != grokBuildRunnerName {
+	if route, ok := resolveMixedOwnerRouteAt(cfg, goal, now); !ok || route.Name != "mixed_development_grok46_xhigh" || route.Legs[0].Runner != grokBuildRunnerName {
 		t.Fatalf("native Goal inherited mode override: %+v", route)
 	}
-	if !refreshUnstartedDispatchMode(cfg, queued, end) || queued.GrokModel != "grok-4.7" || queued.AutomaticCodex {
+	if !refreshUnstartedDispatchMode(cfg, queued, end) || queued.GrokModel != "grok-4.6" || queued.AutomaticCodex {
 		t.Fatalf("expiry %+v", queued)
 	}
 	if err := closedOwnerTaskStateError(queued); err != nil {
@@ -488,7 +488,7 @@ func TestDispatchModeQuotaTransitionPreservesAuthority(t *testing.T) {
 	if err := queuePolicyFallback(cfg, &expired, fallbackQuota, auth); err != nil {
 		t.Fatal(err)
 	}
-	if expired.PreferRunner != grokBuildRunnerName || expired.GrokModel != "grok-4.7" || expired.KimiModel != "" || expired.Attempts != 1 {
+	if expired.PreferRunner != grokBuildRunnerName || expired.GrokModel != "grok-4.6" || expired.KimiModel != "" || expired.Attempts != 1 {
 		t.Fatalf("expiry must resolve daily, not yesterday's Kimi: %+v", expired)
 	}
 	dispatchNow = func() time.Time { return now }
@@ -613,7 +613,7 @@ func TestDispatchModeFreshSnapshotAdmitsKimiWithoutCodex(t *testing.T) {
 		t.Fatal("in-window snapshot pin was cleared")
 	}
 	rebound := admitted
-	if !refreshUnstartedDispatchMode(cfg, &rebound, end) || rebound.PreferRunner != grokBuildRunnerName || rebound.GrokModel != "grok-4.7" ||
+	if !refreshUnstartedDispatchMode(cfg, &rebound, end) || rebound.PreferRunner != grokBuildRunnerName || rebound.GrokModel != "grok-4.6" ||
 		rebound.Attempts != 0 || rebound.LastRouteAttempt != nil || rebound.MaxAttempts != 3 {
 		t.Fatalf("expired unstarted snapshot pin did not return to daily %+v", rebound)
 	}
@@ -727,7 +727,7 @@ func TestDispatchModeExhaustedSnapshotDoesNotOutliveWindow(t *testing.T) {
 	codexBin, codexCapture := fakeNamedCodex(t, `{"type":"turn.completed","usage":{}}`, "", "CODEX_OK", 0)
 	cfg.CodexBin = codexBin
 	catalog := filepath.Join(t.TempDir(), "catalog.txt")
-	writeCatalog(t, catalog, grok47CatalogText("grok-4.7"))
+	writeCatalog(t, catalog, grok47CatalogText("grok-4.6"))
 	grokBin, grokArgs, _ := newGrokCatalogFake(t, catalog, 0, false)
 	cfg.GrokBuildBin = grokBin
 	isolateGrokLifecycleHome(t, cfg)
@@ -784,7 +784,7 @@ func TestDispatchModeExhaustedSnapshotDoesNotOutliveWindow(t *testing.T) {
 				t.Fatal("expired window invoked Kimi")
 			}
 			args, err := os.ReadFile(grokArgs)
-			if err != nil || !strings.Contains(string(args), "grok-4.7") {
+			if err != nil || !strings.Contains(string(args), "grok-4.6") {
 				t.Fatalf("daily successor missing: %s %v", args, err)
 			}
 			got, err := loadTask(root, task.ID)
@@ -945,7 +945,7 @@ func TestDispatchModeAssemblyDoesNotImplicitlySelectGPT(t *testing.T) {
 	task := modeTask(defaultMixedWorkClass(typeAssembly))
 	task.Type = typeAssembly
 	route, ok := resolveMixedOwnerRouteAt(cfg, task, now)
-	if !ok || route.Legs[0].Runner != grokBuildRunnerName || route.Legs[0].Model != "grok-4.7" {
+	if !ok || route.Legs[0].Runner != grokBuildRunnerName || route.Legs[0].Model != "grok-4.6" {
 		t.Fatalf("implicit GPT selection: %+v", route)
 	}
 	task.WorkClass = "gpt-complex"

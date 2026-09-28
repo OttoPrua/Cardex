@@ -1671,6 +1671,55 @@ func TestPreparedTerminalJournalAttemptIdentityBlocksCommit(t *testing.T) {
 	})
 }
 
+func TestPostCompleteAnnotationsKeepDurableDone(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+	tk := newTask(root, testCfg(), typeSequence, "completion annotations", t.TempDir(), []string{"p"}, 5)
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	tk.Status = statusDone
+	if err := persistTaskEvent(root, tk, evDone, "test", statusDone, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	initialRevision := tk.Revision
+	tk.ReviewTaskID = "t0927-0000-abcd"
+	if err := savePostCompleteTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.ReviewTaskID != tk.ReviewTaskID || fresh.Revision != initialRevision+1 || !taskDurablyDone(root, fresh) {
+		t.Fatalf("annotations must retain committed completion: %+v", fresh)
+	}
+	if err := savePostCompleteTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	if tk.Revision != fresh.Revision {
+		t.Fatal("repeated annotation save must be a no-op")
+	}
+
+	// A later control transition must fence the old producer, even when it
+	// only wants to write a harmless completion annotation.
+	fresh.Status = statusCanceled
+	if err := persistTaskEvent(root, fresh, evCanceled, "test", statusCanceled, 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	tk.LastError = "late annotation"
+	if err := savePostCompleteTask(root, tk); !errors.Is(err, errStaleTaskWrite) {
+		t.Fatalf("stale completion annotation accepted: %v", err)
+	}
+	current, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Status != statusCanceled || current.LastError == tk.LastError {
+		t.Fatal("late producer overwrote cancellation")
+	}
+}
+
 func TestForeignTransitionRecordDoesNotSatisfyDurableDone(t *testing.T) {
 	t.Parallel()
 	root := testRoot(t)

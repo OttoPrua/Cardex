@@ -39,6 +39,7 @@ var (
 	errProducerInvalidated  = errors.New("producer writes stopped after rejected CAS")
 	errTransitionCrash      = errors.New("injected transition crash")
 	errAdmissionDenied      = errors.New("admission denied")
+	errProcessExecution     = errors.New("post-start process execution failed")
 	errAttemptEpochConsumed = errors.New("current attempt epoch already consumed")
 	errAttemptEpochUnused   = errors.New("current attempt epoch has not been consumed")
 	terminalizeWaitTimeout  = 45 * time.Second
@@ -111,6 +112,9 @@ type transitionRequest struct {
 	Detail               map[string]any
 	NeedsOwner           bool
 	RequireSchedulerLock bool
+	// Only the post-completion save uses this: annotations need a new committed
+	// revision, while replaying an ordinary terminal transition stays idempotent.
+	UpdateTerminalAnnotations bool
 }
 
 var (
@@ -133,6 +137,15 @@ func controlDir(root string) string {
 
 func attemptsDir(root, taskID string) string {
 	return filepath.Join(controlDir(root), "attempts", taskID)
+}
+
+// Read-only tasks retain an execution lease in their existing control directory,
+// without occupying the product workspace's writer lease.
+func taskExecutionLeaseDir(root string, t *Task) string {
+	if taskIsReadOnlyType(t) {
+		return attemptsDir(root, t.ID)
+	}
+	return t.Dir
 }
 
 func attemptPath(root, taskID, attemptID string) string {
@@ -577,7 +590,7 @@ func validateTransitionRecord(rec *TransitionRecord, taskID, transitionID string
 
 func closedTransitionEventType(evType string) bool {
 	switch evType {
-	case evQueued, evDispatched, evStepOK, evLimitPaused, evHeld, evRetry, evCanceled, evDone, evFailed, evCloseout, evNeedsOwner:
+	case evQueued, evDispatched, evStepOK, evLimitPaused, evHeld, evRetry, evCanceled, evDone, evFailed, evCloseout, evNeedsOwner, evAdmissionDenied:
 		return true
 	default:
 		return false
@@ -650,7 +663,7 @@ func commitTaskTransitionLocked(root string, t *Task, req transitionRequest) err
 		req.Status = t.Status
 	}
 	closeAttempt, terminal, clearID := transitionAttemptDisposition(req)
-	if terminal && req.EventType != evNeedsOwner &&
+	if terminal && req.EventType != evNeedsOwner && !req.UpdateTerminalAnnotations &&
 		current.effectiveControlState() == controlTerminal && current.Status == req.Status &&
 		current.LastCommittedTransitionID != "" &&
 		transitionDurablyCommitted(root, current.ID, current.LastCommittedTransitionID) {
@@ -920,7 +933,7 @@ func transitionAttemptDisposition(req transitionRequest) (closeAttempt, terminal
 		return false, false, false
 	}
 	if req.EventType == evAdmissionDenied {
-		return true, false, true
+		return true, req.Status == statusHeld, true
 	}
 	switch req.Status {
 	case statusDone, statusFailed, statusHeld, statusCanceled:
@@ -1027,6 +1040,9 @@ func reserveDispatchAttempt(root string, t *Task) error {
 				return err
 			}
 		}
+		if err := os.MkdirAll(attemptsDir(root, current.ID), 0755); err != nil {
+			return err
+		}
 		id := newAttemptID()
 		now := time.Now().Format(time.RFC3339Nano)
 		rec := &AttemptRecord{
@@ -1039,7 +1055,7 @@ func reserveDispatchAttempt(root string, t *Task) error {
 			State:            attemptReserved,
 			CreatedAt:        now,
 			UpdatedAt:        now,
-			WorkspaceLeaseID: canonicalWorkspaceID(current.Dir),
+			WorkspaceLeaseID: canonicalWorkspaceID(taskExecutionLeaseDir(root, current)),
 		}
 		if err := writeAttempt(root, rec); err != nil {
 			return err
@@ -1136,10 +1152,12 @@ func abandonReservedAttemptForAdmission(root string, t *Task) error {
 	if t == nil {
 		return errAdmissionDenied
 	}
-	t.Status = statusQueued
-	t.LastError = "admission denied before provider invoke"
+	// Admission may fail after Start (identity/bind/storage failure). Never automatically
+	// requeue an unobserved process outcome, including a persistent pre-start denial.
+	t.Status = statusHeld
+	t.LastError = "admission denied; held for custody recovery before a new attempt"
 	t.touch()
-	if err := persistTaskEvent(root, t, evAdmissionDenied, "runner:admission", statusQueued, t.Step,
+	if err := persistTaskEvent(root, t, evAdmissionDenied, "runner:admission", statusHeld, t.Step,
 		withCostTelemetry(map[string]any{
 			"reason": "admission_denied", "reason_class": "admission_denied",
 		}, t)); err != nil {
@@ -1224,7 +1242,7 @@ func bindAttemptProcess(root, taskID, attemptID string, pid int) error {
 				}
 			}
 		}
-		ws := canonicalWorkspaceID(t.Dir)
+		ws := canonicalWorkspaceID(taskExecutionLeaseDir(root, t))
 		if rec.WorkspaceLeaseID != "" && rec.WorkspaceLeaseID != ws {
 			return errAdmissionDenied
 		}
@@ -1266,7 +1284,11 @@ func producerGone(t *Task, rec *AttemptRecord) bool {
 		if anyTaskProcAlive(t.ID) || taskProcessResidue(t.ID) {
 			return false
 		}
-		if policyFallbackProcessProofSupported() && workspaceLeaseHeld(t.Dir) {
+		leaseDir := t.Dir
+		if rec != nil && rec.WorkspaceLeaseID != "" {
+			leaseDir = rec.WorkspaceLeaseID
+		}
+		if policyFallbackProcessProofSupported() && workspaceLeaseHeld(leaseDir) {
 			return false
 		}
 	}

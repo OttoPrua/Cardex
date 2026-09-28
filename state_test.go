@@ -101,9 +101,6 @@ func TestHelperProcessAcquireLock(t *testing.T) {
 // 已过审的跨进程测试模板(TestRecordEventCrossProcessNoSeqCollision).
 func TestAcquireLockStealsAtomicallyNoDoubleOccupancy(t *testing.T) {
 	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("Windows 行为未验证, 平台纳入与否待裁(01-BACKLOG §3 #61);当前 CI 只跑 POSIX")
-	}
 	if testing.Short() {
 		t.Skip("跨进程 fork+exec 较慢, -short 模式跳过")
 	}

@@ -2,6 +2,14 @@
 
 **中文** | [English](changelog.en.md) · 返回 [README](../README.md)
 
+## 2026-09-28 · v0.10.21：安装引导、派发预设与 Windows 生命周期
+
+- 从本机 0.10.20 集成版本继续发布：保留结果收割、管理会话唤醒摘要、工作目录写者隔离、额度延后与终态依赖修复；新普通开发使用已验证的 Grok 4.6/xhigh 本地策略，既有任务身份不变。
+- 新增用户级一键安装脚本，随包提供 Codex/Hermes 派发 skill。管理会话盘点已有订阅，结合当前编程评测与 CLI 可用模型推荐预设；第三方订阅仍由各自 CLI 执行。
+- `setup -inventory` 无模型盘点；`setup` 首次配置；`presets -file` 备份并合并预设；`add -preset` 固化新卡的 runner、模型、思考档与复核选项。
+- 合入 Windows Job Object、进程身份、跨进程控制锁、批处理入口与路径参数处理。Windows hosted PTY Goal 与跨 runner 自动 fallback 仍不可用；真实账号/模型调用需在用户环境验证。
+- 精简中英文 README，补管理 Agent 示例、订阅配置与图示。发布包含 macOS/Linux/Windows amd64 和 arm64 及 SHA256 校验文件。
+
 ## 2026-09-22 · v0.10.19：Grok 稳定模型与恢复身份
 
 - 新 Grok attempt 使用 `stable` 配置时，从 CLI 模型目录解析具体默认模型（当前 `grok-4.7`），不自动选择 Fast。显式模型钉定、重试和续跑保留既有身份；请求模型与实际 `grok-4.7-build` 分别记录。

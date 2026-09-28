@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="310" viewBox="0 0 1080 310" role="img" aria-labelledby="title desc">
+<title id="title">Cardex: goal to execution</title><desc id="desc">A dispatcher turns your goal into local task cards. Claude Code or Codex executes a task. Persistent state and logs return to your board.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64d8c4"/></marker></defs>
+<rect width="1080" height="310" rx="24" fill="#101b2d"/>
+<g font-family="system-ui, sans-serif"><text x="38" y="45" fill="#64d8c4" font-size="16" font-weight="700" letter-spacing="3">CARDEX / LOCAL AGENT QUEUE</text>
+<text x="38" y="79" fill="#ffffff" font-size="25" font-weight="600">A clear task. A visible result.</text>
+<g fill="#1b2d46" stroke="#3e5878"><rect x="38" y="116" width="180" height="93" rx="12"/><rect x="268" y="116" width="220" height="93" rx="12"/><rect x="538" y="116" width="220" height="93" rx="12"/><rect x="808" y="116" width="234" height="93" rx="12"/></g>
+<g fill="#ffffff" font-size="19" font-weight="600"><text x="58" y="150">Your goal</text><text x="288" y="150">Local task queue</text><text x="558" y="150">Execution CLI</text><text x="828" y="150">Progress &amp; logs</text></g>
+<g fill="#b9c9dd" font-size="15"><text x="58" y="182">Codex / Hermes</text><text x="288" y="182">add / hold / run ID</text><text x="558" y="182">Claude Code / Codex</text><text x="828" y="182">list / log / board</text></g>
+<g stroke="#64d8c4" stroke-width="2.5" marker-end="url(#arrow)"><path d="M225 162 H260"/><path d="M495 162 H530"/><path d="M765 162 H800"/></g>
+<text x="38" y="261" fill="#b9c9dd" font-size="16">Saved on your machine</text><text x="363" y="261" fill="#b9c9dd" font-size="16">Uses your installed CLIs</text><text x="719" y="261" fill="#b9c9dd" font-size="16">Inspect, pause, and take over</text>
+</g></svg>

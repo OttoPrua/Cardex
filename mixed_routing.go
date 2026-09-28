@@ -158,7 +158,15 @@ func resolveMixedOwnerRouteAt(cfg *Config, t *Task, now time.Time) (ownerRoute, 
 		if t.WorkClass == "simple-development" {
 			leg.Model, cursor = "grok-4.6", "cursor-grok-4.6-high"
 		}
-		legs := []policyLeg{leg, {Runner: cursorRunnerName, Model: cursor, Effort: "high", Stage: routeStageFallbackReview, ReadOnly: leg.ReadOnly}}
+		// Keep old admitted route names bound to their original model/effort.
+		// Only new development work receives the Owner's 4.6/xhigh default.
+		if t.WorkClass == "development" && (t.OwnerRouteName == "" ||
+			t.OwnerRouteName == "mixed_development_grok46_xhigh" ||
+			t.OwnerRouteName == "mixed_daily_development_grok46_xhigh") {
+			name += "_grok46_xhigh"
+			leg.Model, leg.Effort, cursor = "grok-4.6", "xhigh", "cursor-grok-4.6-xhigh"
+		}
+		legs := []policyLeg{leg, {Runner: cursorRunnerName, Model: cursor, Effort: leg.Effort, Stage: routeStageFallbackReview, ReadOnly: leg.ReadOnly}}
 		if mode != "" {
 			legs = append(legs, kimi)
 		}
@@ -404,12 +412,14 @@ func cmdDispatchMode(args []string) error {
 	return json.NewEncoder(os.Stdout).Encode(out)
 }
 
-func mixedCursorEquivalent(model string) string {
-	switch model {
-	case "grok-4.7":
+func mixedCursorEquivalent(model, effort string) string {
+	switch model + "/" + effort {
+	case "grok-4.7/high":
 		return "grok-4.7-high"
-	case "grok-4.6":
+	case "grok-4.6/high":
 		return "cursor-grok-4.6-high"
+	case "grok-4.6/xhigh":
+		return "cursor-grok-4.6-xhigh"
 	default:
 		return ""
 	}
@@ -718,9 +728,7 @@ func mixedNewGrokModel(cfg *Config, t *Task) string {
 		return ""
 	}
 	switch t.WorkClass {
-	case "development":
-		return "grok-4.7"
-	case "simple-development":
+	case "development", "simple-development":
 		return "grok-4.6"
 	default:
 		return ""

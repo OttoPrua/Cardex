@@ -1,5 +1,13 @@
 # cardex changelog
 
+## 2026-09-28 · v0.10.21: onboarding, dispatch presets and Windows lifecycle
+
+- Continues the local 0.10.20 integration, including harvest, manager wake digests, work-directory writer isolation, quota deferral and terminal dependency fixes. Preserves admitted task identities.
+- Adds user-level installers and a Codex/Hermes dispatch skill. The manager inventories subscriptions and recommends persisted presets using coding benchmarks and the actual CLI model catalog.
+- Adds `setup -inventory`, first-run `setup`, backed-up preset imports and `add -preset` with per-task overrides.
+- Integrates Windows process jobs, process identity, control locks and batch launcher handling. Hosted PTY Goal and automatic cross-runner fallback remain unsupported; real account/model use requires user-environment validation.
+- Ships concise READMEs, a workflow illustration, onboarding and manager examples, with macOS/Linux/Windows amd64 and arm64 archives and SHA256 checksums.
+
 ## 2026-09-22 · v0.10.19: stable Grok models and preserved execution identity
 
 - New Grok attempts configured with `stable` resolve the concrete CLI catalog default (currently `grok-4.7`), excluding Fast defaults. Explicit pins, retries and resumes preserve their identity; requested and actual `grok-4.7-build` models remain distinct.

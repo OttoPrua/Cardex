@@ -235,7 +235,7 @@ func probeGrokCatalogDefault(ctx context.Context, cfg *Config) (string, error) {
 // sees the stored id and does not probe again.
 func freezeGrokAttemptModel(ctx context.Context, cfg *Config, t *Task) error {
 	if model := mixedNewGrokModel(cfg, t); model != "" {
-		t.GrokModel, t.GrokEffort = model, "high"
+		t.GrokModel, t.GrokEffort = model, resolveGrokBuildEffort(cfg, t)
 		return nil
 	}
 	if t == nil {

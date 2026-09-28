@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +50,9 @@ func providerChildEnv(home string, extra map[string]string) []string {
 		kimiLegacyEngineEnvFlag,
 	}
 	values := make(map[string]string, len(keys)+len(extra)+1)
+	if runtime.GOOS == "windows" {
+		keys = append(keys, "SystemRoot", "WINDIR", "ComSpec", "PATHEXT", "APPDATA", "LOCALAPPDATA")
+	}
 	extraAllowed := map[string]bool{
 		"NO_COLOR": true, "KIMI_CODE_NO_AUTO_UPDATE": true, "KIMI_CODE_HOME": true,
 		"KIMI_MODEL_THINKING_EFFORT": true,
@@ -62,6 +66,9 @@ func providerChildEnv(home string, extra map[string]string) []string {
 	}
 	if strings.TrimSpace(home) != "" {
 		values["HOME"] = home
+		if runtime.GOOS == "windows" {
+			values["USERPROFILE"] = home
+		}
 	}
 	for key, value := range extra {
 		if extraAllowed[key] {

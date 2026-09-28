@@ -57,8 +57,8 @@ func readmeConfigSectionKeys(content string) []string {
 }
 
 // TestReadmeConfigKeys asserts that:
-//  1. The five required items (board + four config keys) appear literally in both README files.
-//  2. Every config key cited in each README's config-reference section actually exists in config.go.
+//  1. README links lead to config references containing required settings.
+//  2. Every config key cited in each configuration reference actually exists in config.go.
 //  3. The four required config keys also exist in config.go (guards against drift in config.go itself).
 func TestReadmeConfigKeys(t *testing.T) {
 	t.Parallel()
@@ -67,7 +67,6 @@ func TestReadmeConfigKeys(t *testing.T) {
 	// Terms that MUST appear in both READMEs after this commit.
 	// "board" is the command; the rest are config.go JSON field names.
 	required := []string{
-		"board",
 		"default_review_host",
 		"remote_mirror_root",
 		"default_review_sync",
@@ -81,8 +80,15 @@ func TestReadmeConfigKeys(t *testing.T) {
 		"codex_fallback_model",
 	}
 
-	readmes := []string{"README.md", "README.en.md"}
-	for _, name := range readmes {
+	sources := map[string]string{"README.md": "docs/config.md", "README.en.md": "docs/config.en.md"}
+	for readme, name := range sources {
+		intro, err := os.ReadFile(readme)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(intro), "board") || !strings.Contains(string(intro), name) {
+			t.Errorf("%s must introduce board and link its configuration reference %s", readme, name)
+		}
 		data, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)

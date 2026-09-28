@@ -1703,7 +1703,7 @@ func goalAttemptAcceptsTerminal(root string, t *Task, rec *AttemptRecord) error 
 	}
 	want := ""
 	if t != nil {
-		want = canonicalWorkspaceID(t.Dir)
+		want = canonicalWorkspaceID(taskExecutionLeaseDir(root, t))
 	}
 	if want != "" && rec.WorkspaceLeaseID != want {
 		return fmt.Errorf("%w: attempt workspace mismatch", errGoalAttemptRequired)

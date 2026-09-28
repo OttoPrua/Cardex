@@ -834,7 +834,7 @@ func invokeKimiCLI(ctx context.Context, root string, cfg *Config, t *Task, promp
 		t.LastRouteAttempt.RequestedEngine = requestedEngine
 		t.LastRouteAttempt.ActualEngine = actualEngine
 	}
-	cmd := exec.CommandContext(runCtx, cfg.KimiCLIBin, args...)
+	cmd := providerCommandContext(runCtx, cfg.KimiCLIBin, args...)
 	setupProcGroup(cmd)
 	cmd.Dir = t.Dir
 	cmd.Env = cmdEnv
@@ -844,7 +844,11 @@ func invokeKimiCLI(ctx context.Context, root string, cfg *Config, t *Task, promp
 	stdout, stderr := stdoutBuf.String(), stderrBuf.String()
 	combined := stdout + "\n" + stderr
 	if runCtx.Err() == context.DeadlineExceeded {
-		runErr = fmt.Errorf("步骤超时（%d 分钟）", cfg.StepTimeoutMin)
+		if errors.Is(runErr, errProcessExecution) {
+			runErr = fmt.Errorf("步骤超时（%d 分钟）: %w", cfg.StepTimeoutMin, runErr)
+		} else {
+			runErr = fmt.Errorf("步骤超时（%d 分钟）", cfg.StepTimeoutMin)
+		}
 	}
 	res := parseKimiCLIJSONLForEngine(providerJSONObservation(kimiCLIRunnerName, stdout, stderr), actualEngine)
 	preserveKimiCLIProcessError(res, stderr, runErr)

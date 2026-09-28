@@ -114,13 +114,14 @@ type OwnerProviderTargets struct {
 }
 
 type Config struct {
-	ClaudeBin         string `json:"claude_bin"`
-	PollIntervalSec   int    `json:"poll_interval_sec"`
-	LimitFallbackMin  int    `json:"limit_fallback_min"`
-	CooldownMarginSec int    `json:"cooldown_margin_sec"`
-	StepTimeoutMin    int    `json:"step_timeout_min"`
-	MaxAttempts       int    `json:"max_attempts_per_step"`
-	RetryBackoffMin   int    `json:"retry_backoff_min"`
+	DispatchPresets   map[string]DispatchPreset `json:"dispatch_presets,omitempty"`
+	ClaudeBin         string                    `json:"claude_bin"`
+	PollIntervalSec   int                       `json:"poll_interval_sec"`
+	LimitFallbackMin  int                       `json:"limit_fallback_min"`
+	CooldownMarginSec int                       `json:"cooldown_margin_sec"`
+	StepTimeoutMin    int                       `json:"step_timeout_min"`
+	MaxAttempts       int                       `json:"max_attempts_per_step"`
+	RetryBackoffMin   int                       `json:"retry_backoff_min"`
 	// MaxParallel: 单次 tick 内最多并行跑几个任务（同一工作目录始终串行）。1 为纯串行。
 	MaxParallel int  `json:"max_parallel"`
 	ResumeFirst bool `json:"resume_first"`

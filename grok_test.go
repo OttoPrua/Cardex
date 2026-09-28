@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	priorProfile, hadProfile := os.LookupEnv("USERPROFILE")
 	priorHome, hadHome := os.LookupEnv("HOME")
 	priorOwnerRouting, hadOwnerRouting := os.LookupEnv("CARDEX_REQUIRE_OWNER_ROUTING")
 	home, err := os.MkdirTemp("", "cardex-test-home-")
@@ -57,6 +59,11 @@ func TestMain(m *testing.M) {
 		if err := os.Setenv("HOME", home); err != nil {
 			return err
 		}
+		if runtime.GOOS == "windows" {
+			if err := os.Setenv("USERPROFILE", home); err != nil {
+				return err
+			}
+		}
 		return os.Unsetenv("CARDEX_REQUIRE_OWNER_ROUTING")
 	}()
 	if setupErr != nil {
@@ -68,6 +75,16 @@ func TestMain(m *testing.M) {
 	procWaitDelay = 200 * time.Millisecond
 	managerWakeQueueTimeout = time.Second
 	code := m.Run()
+	if runtime.GOOS == "windows" {
+		if hadProfile {
+			err = os.Setenv("USERPROFILE", priorProfile)
+		} else {
+			err = os.Unsetenv("USERPROFILE")
+		}
+		if err != nil {
+			code = 1
+		}
+	}
 	if hadHome {
 		err = os.Setenv("HOME", priorHome)
 	} else {

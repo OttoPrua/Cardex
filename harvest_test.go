@@ -417,6 +417,30 @@ func TestRunTaskGrokHarvestOnVerifyPassIsDone(t *testing.T) {
 	if got.Verdict != harvestVerdictDone || got.Harvest == nil || got.Harvest.Reason != harvestReasonVerifyPassed {
 		t.Fatalf("harvest %+v verdict %q", got.Harvest, got.Verdict)
 	}
+	if !taskDurablyDone(root, got) {
+		t.Fatalf("completed task lost its committed done revision: revision=%d transition=%s", got.Revision, got.LastCommittedTransitionID)
+	}
+	child := newTask(root, cfg, typeSequence, "dependent delivery", t.TempDir(), []string{"deliver"}, 1)
+	child.DependsOn = []string{got.ID}
+	if err := saveTask(root, child); err != nil {
+		t.Fatal(err)
+	}
+	if !dagAllowsTask(root, []*Task{got, child}, child.ID) {
+		t.Fatal("verified completion must unblock its dependent without a manual release")
+	}
+	events, _, err := loadTaskEvents(root, got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doneEvents := 0
+	for _, event := range events {
+		if event.Type == evDone {
+			doneEvents++
+		}
+	}
+	if doneEvents != 1 {
+		t.Fatalf("unchanged post-completion must not emit another done event: %d", doneEvents)
+	}
 }
 
 func TestRunTaskGrokHarvestOffKeepsUnknownOutcomeHold(t *testing.T) {

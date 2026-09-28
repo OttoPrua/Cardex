@@ -23,7 +23,7 @@ func mixedTestConfig() *Config {
 func TestMixedRoutingActualConsumers(t *testing.T) {
 	cfg := mixedTestConfig()
 	for _, tc := range []struct{ class, runner, model, effort string }{
-		{"development", grokBuildRunnerName, "grok-4.7", "high"},
+		{"development", grokBuildRunnerName, "grok-4.6", "xhigh"},
 		{"simple-development", grokBuildRunnerName, "grok-4.6", "high"},
 		{"gpt-complex", "codex", "gpt-6-astra", "high"},
 		{"gpt-short", "codex", "gpt-5.6-sol", "xhigh"},
@@ -80,7 +80,7 @@ func TestMixedAdmissionDefaultsAndOldIdentity(t *testing.T) {
 	}
 	task.RouteClass = routeClassGeneral
 	route, ok := resolveOwnerRoute(cfg, task)
-	if !ok || route.Legs[0].Model != "grok-4.7" {
+	if !ok || route.Legs[0].Model != "grok-4.6" || route.Legs[0].Effort != "xhigh" {
 		t.Fatalf("ordinary general was not native Grok: %+v", route)
 	}
 	old := *task
@@ -157,11 +157,11 @@ func TestMixedQuotaStrictAndSameModel(t *testing.T) {
 		if string(before) != string(after) {
 			t.Fatal("denied transition mutated task")
 		}
-		task.LastRouteAttempt = &RouteAttemptReadback{RequestedRunner: grokBuildRunnerName, RequestedModel: task.GrokModel, RequestedEffort: "high"}
+		task.LastRouteAttempt = &RouteAttemptReadback{RequestedRunner: grokBuildRunnerName, RequestedModel: task.GrokModel, RequestedEffort: task.GrokEffort}
 		if err := queuePolicyFallback(cfg, task, fallbackQuota, auth); err != nil {
 			t.Fatal(err)
 		}
-		if task.PreferRunner != cursorRunnerName || task.CursorModel != mixedCursorEquivalent(task.LastRouteAttempt.RequestedModel) || task.LastRouteAttempt.RequestedEffort != "high" {
+		if task.PreferRunner != cursorRunnerName || task.CursorModel != mixedCursorEquivalent(task.LastRouteAttempt.RequestedModel, task.LastRouteAttempt.RequestedEffort) || task.Effort != task.LastRouteAttempt.RequestedEffort {
 			t.Fatalf("fallback mismatch %+v", task)
 		}
 		if _, ok := resolveOwnerRouteReadback(cfg, task); !ok {
@@ -306,11 +306,11 @@ func TestMixedNewManualGoalDefaultsAndFrozenIdentity(t *testing.T) {
 		if err := freezeGrokAttemptModel(context.Background(), cfg, task); err != nil {
 			t.Fatal(err)
 		}
-		want := "grok-4.7"
+		want, effort := "grok-4.6", "xhigh"
 		if class == "simple-development" {
-			want = "grok-4.6"
+			effort = "high"
 		}
-		if task.GrokModel != want || task.GrokEffort != "high" {
+		if task.GrokModel != want || task.GrokEffort != effort {
 			t.Fatalf("manual freeze %+v", task)
 		}
 		task.SessionID = "admitted-session"
@@ -321,7 +321,7 @@ func TestMixedNewManualGoalDefaultsAndFrozenIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := strings.Join(args, " ")
-		if !strings.Contains(text, "--model "+want) || !strings.Contains(text, "--reasoning-effort high") {
+		if !strings.Contains(text, "--model "+want) || !strings.Contains(text, "--reasoning-effort "+effort) {
 			t.Fatalf("goal argv %v", args)
 		}
 	}
@@ -374,7 +374,7 @@ func TestMixedAddAndYvonneEmitClassification(t *testing.T) {
 			t.Fatal(err)
 		}
 		route, ok := resolveOwnerRoute(cfg, card)
-		want := "grok-4.7"
+		want := "grok-4.6"
 		if i == 1 {
 			want = "gpt-6-astra"
 		}

@@ -1,222 +1,109 @@
 # cardex
 
-新 Owner 混合路由（Astra / Sol / 原生 Grok / Gemini 管理）：见 [配置、精确模型及只读验收命令](MIXED_ROUTING.md)。
+**把开发任务交给本地 Agent 队列，随时看进度、暂停和接管。**
 
-**中文** | [English](README.en.md)
+**中文** | [English](README.en.md) · [下载 Release](https://github.com/OttoPrua/cardex/releases/latest) · [新手配置](docs/getting-started.md) · [独立派发 Agent](docs/dispatch-agent.md)
 
-[![LINUX DO](https://img.shields.io/badge/LINUX%20DO-社区分享-ffb003?logo=discourse&logoColor=white)](https://linux.do)
+Cardex 是本地命令行调度器：把目标或步骤保存为任务卡，调用你已经安装、登录的 Claude Code / Codex 等 CLI 执行，记录状态、日志和结果。单个 Go 二进制；调度和看板本身不调用模型，执行任务使用对应服务的额度。
 
-> 本项目原名 ClaudeGo，2026-07-31 更名为 cardex（旧命令名 `claudego` 仍可通过兼容软链继续用，见下方「快速开始」）。
+![Cardex 工作方式：目标经过派发 Agent 进入本地队列，再由执行 CLI 完成，状态返回看板。流程示意，非产品截图。](docs/images/cardex-flow.svg)
 
-**把 Claude 订阅的 5 小时限额窗口榨干。** 本地任务队列 + 调度器：任务撞到限额自动挂起并记下重置时间，到点自动 `--resume` 接回**同一个会话**继续干。单个 Go 二进制，无外部依赖，**编排本身不花一分额度**。
+## 可以做什么
 
-```bash
-cardex add -title "重构鉴权" -dir ~/Projects/myapp -file steps.md   # 把活丢进队列
-cardex install-launchd                                            # 之后它自己跑
-```
-
-## 能办到什么
-
-| 你的处境 | cardex 做的事 |
+| 想做的事 | 用法 |
 |---|---|
-| 限额一撞，人就得守着等窗口重开 | 自动挂起 + 记住重置时刻，到点自动续跑同一会话——**你睡觉时队列在跑** |
-| 一个目标要手写十几段 prompt | `assemble`：让 Claude 先调研项目，再把目标拆成 prompt 序列**自动入队** |
-| 几个会话并行干活，进度只在脑子里 | `brief` 回收结构化进度，`plan` 读实时队列做分工、分工任务自动入队 |
-| 什么活都用最贵的模型 | 按任务路由模型：机械活 haiku、常规实现 sonnet、高风险最强档；贵模型只做编排与仲裁 |
-| 冷却期彻底停摆 | 冷却期把单步编排卡改道 `codex exec`（走另一份额度），管线不断档 |
-| 手里还有 Kimi/GLM/MiniMax 这些订阅在吃灰 | 引擎档案一键接入（`cardex engines add kimi`）：钉定主跑或纳入自定义降级链，每家独立冷却独立记账，统一能力分级排序 |
-| 改完还得自己盯着审 | 完成后自动派对抗式审核卡；只读审核还能分流到第二台机器跑 |
-| “现在到底跑到哪了” | `cardex list` + Web 看板（kanban / 额度燃尽 / 落地进度）+ 每张卡的事件账本 |
+| 把一个修复或功能交出去 | `add` 保存任务，`run ID` 执行指定卡 |
+| 多个步骤接着做 | 用 `---` 分隔 prompt；Claude 可在同一会话续跑，其他执行器受各自适配器限制 |
+| 限额后稍后继续 | 支持的执行器记录冷却时间并恢复；认证失败、结果不明等情况会暂停等待处理 |
+| 知道任务跑到哪里 | `list`、`log ID`、本地 Web 看板 `board` |
+| 让 Agent 帮你拆分和派发 | 使用[独立派发 Agent](docs/dispatch-agent.md)与仓内配套 skill |
+| 配置多种执行器、依赖和审核 | 按需要开启高级功能，见[进阶指南](docs/guide.md)和[工作流](docs/workflows.md) |
 
-## 快速开始
+## 从 Codex / Hermes 管理会话开始
 
-```bash
-make build && make install     # 编译并装到 /opt/homebrew/bin
-cardex init                    # 初始化 ~/.cardex（数据目录可用 CARDEX_ROOT 覆盖；旧变量名 CLAUDEGO_ROOT 仍兼容读一次并提示）
-cardex doctor                  # 自检：claude CLI、目录、配置
+推荐用一个独立的 **Codex 或 Hermes 会话管理任务**。Cardex 在本机保存与调度队列，各 provider CLI 执行任务；管理会话的模型和执行卡的模型可以不同。
+
+在管理会话所在机器安装程序和配套 skill。macOS / Linux：
+
+```sh
+curl -fsSL https://github.com/OttoPrua/Cardex/releases/latest/download/install.sh -o /tmp/cardex-install.sh && sh /tmp/cardex-install.sh --manager codex
 ```
 
-旧名 `claudego` 命令仍要保留：`make install install-shim` 会额外铺一条 `claudego → cardex` 的兼容软链（`ln -sf`，跟随二进制升级），过渡期用，改名收尾后可移除。
+Windows PowerShell：
 
-三种最常用的入队方式，挑一个开始：
-
-```bash
-# ① 步骤已经想清楚了：steps.md 里用单独一行 --- 分隔每一步
-cardex add -title "重构鉴权" -dir ~/Projects/myapp -priority 5 -review-after -file steps.md
-
-# ② 只有一个目标：让 Claude 先调研，再自动生成任务序列入队
-cardex assemble -dir ~/Projects/myapp "给上传模块加断点续传，含测试"
-
-# ③ 手上的会话刚被限额打断：直接接管续跑（会话 id 用 cardex sessions 查）
-cardex adopt <session-id> -dir ~/Projects/myapp
+```powershell
+& ([scriptblock]::Create((Invoke-RestMethod -ErrorAction Stop https://github.com/OttoPrua/Cardex/releases/latest/download/install.ps1))) -Manager codex
 ```
 
-让它自己跑起来：
-
-```bash
-cardex run                   # 先手动跑一轮验证
-cardex install-launchd       # 后台调度：每 5 分钟 tick 一次，开机自启（macOS）
-cardex list                  # 看板：标题列＝「标题 ▸ 最新进度」
-cardex log <id>              # 某张卡的细节；cmd <id> 打印手动接管命令
-cardex board                 # Web 看板 http://127.0.0.1:8787
-```
-
-非 macOS：`cardex daemon` 前台常驻，或让 systemd timer / cron / Windows 任务计划程序每 5 分钟拉一次 `cardex run`。核心是纯 Go，三大平台都能编译；单实例锁已跨平台，定时并发不会撞车。
-
-## 五种任务类型
-
-| 类型 | 用途 | 默认权限 / 模型 |
-|---|---|---|
-| `design-review` | 设计审核 session：只读审查代码/架构，产出 P0/P1/P2 分级报告 | 只读工具；默认来源档位 Opus，按 Opus 实际链派发 |
-| `prompt-assembly` | prompt 装配 session：调研项目后把目标拆成 prompt 序列，**产出的任务自动入队** | 只读工具；默认来源档位 Opus，按 Opus 实际链派发 |
-| `sequence` | 预设 prompt 序列：多个步骤在同一个会话中依次执行（`--resume` 串联，上下文连续） | acceptEdits；默认 Sonnet→目录稳定 Grok/high（CLI 1.0.40 为 grok-4.7），eligible 串行接力 Kimi K3/max；复杂前端按风险追加 Sol 最终门 |
-| `coordinate` | 分工协调 session：读**实时**队列快照 + 各会话进度报告，把目标拆成分工任务（含模型建议）自动入队 | 只读工具；默认来源档位 Opus，按 Opus 实际链派发 |
-| `progress-pull` | 进度回收 session：`--resume` 某个会话，让它输出结构化进度报告并落盘 | 只读工具；默认 Haiku→目录稳定 Grok/high（CLI 1.0.40 为 grok-4.7），eligible 接力仅 Kimi/既证 OpenCode Go 轻量车道 |
-
-任务可以链式衔接：`assemble`（装配）→ 产出 `sequence` 入队 → 执行完成 → `review_after` 自动入队一个 `design-review` 审查刚才的改动。
-
-**桌面端也在管辖范围内**：Claude Code 桌面端与 CLI 共用 `~/.claude/projects` 会话存储和订阅额度，所以桌面端里开的会话同样可以被列出、回收进度、`--resume` 接管。
-
-## 两种推荐工作流
-
-- **直派串联**：一个闭合目标按“设计 → 开发 → 独立审核 → 默认 held 的集成 → 明示 live 门”推进。
-- **联邦多管理线**：中央 manager 管整体 DAG 与最终收口；多个子模块 manager 各自循环“设计 → 开发 → 独立审核 → 默认 held 的模块集成”，再 join 到默认 held 的整体集成与最终复核。
-
-两种模式都用 Cardex 的 `depends_on`、规范化 write-domain/resource claims、独立 reviewer、持久 task/event/attempt 证据和 held live gate；management session 不写 product bytes，也不绕过 Cardex 另派重复 writer。详见[推荐工作流](docs/workflows.md)。该页把 attempt/producer/lease 漂移时禁止审核采信与重派写成 operator/policy 门（操作员必须遵守），不是当前调度器已机器拒绝审核采信或 redispatch 的宣称。联邦写卡要同 tick 并行须配置 `max_parallel` > 1（默认 1）。工作流管理的独立审核与 `-review-after` / `-stakes high` 自动复审子卡不是同一条路：已有独立 reviewer 时不要再开自动复审。审核终局 JSON 只认 `pass|concerns|block`，不是 ACCEPT/HELD。
-
-`cardex workflow` 可以把两种拓扑落成耐久记录：绑定 `serial`/`federated` 模式、模块目标、写域、有界轮次和候选身份，并创建一张默认 held 的集成卡。带门的集成卡在 tick 派发与 `cardex release` 时都会**重新**核验独立审核 `verdict=pass`（`p0`/`p1` 皆空）、候选一致与 reviewer custody；durable review `done` 不够。每一步转移都是显式命令——tick 只读地咨询集成门，不自动推进 workflow。live 与 cutover 在本树没有释放路径。
-
-Goal 模式是「给目标，不是每一步」：设计节点只读（须绑定已完成的独立设计任务（不限模型品牌）或外部收据，不改变现有 `model=fable` Cursor 路由），执行阶段绑在同一张 Task 上连续诊断/实现/测试/修复。Grok 原生 `/goal` 是 `manual-only`：完整完成与同 session 重启已手工证明；自动协议与进行中的 pause/resume 仍未验证。`grok -p` 是单回合，不是 goal 证明。Kimi/Codex/Claude/Cursor/agy/OpenCode 有原生候选但适配器未证明，记为 `manual-only`/`unverified`，不是一律 unsupported；Gemini 仍拒绝。复制：
-
-```bash
-cardex workflow init ... -engine grok-build -design-receipt /path/to/design-receipt.json
-cardex workflow writer <id> -mode manual
-cardex workflow goal-run <id> -manual -budget 350000
-# 在 Grok TUI（字面路径+摘要，不要 $(cat)；TUI 不是 shell）：
-#   /goal Read and implement the complete stage contract at <abs-path>; verify SHA256 <digest> before any write. --budget 350000
-#   /goal status
-cardex workflow goal-sync <id>    # 不启动 provider，但会更新阶段事实
-cardex workflow show <id>         # 普通记录仍是顶层 id/goal/status；Goal 字段为附加
-cardex workflow design-result <id> -design-receipt R -decision stop|input|successor|accept|revise -observation failed|paused|needs-input|budget_limited|complete
-```
-
-provider 预算是软的；`step_timeout_min` 是硬截止。进行中 pause/resume 未验证。`goal-sync` 只在原生 `last_classifier_verdict=achieved`、当前 session/goal/attempt 一致、冻结 InputDigest 匹配、进程/后代/lease 已释放时接受 done。Goal `repair` 拒绝快捷入口。详见[推荐工作流 · Goal 模式](docs/workflows.md)。区分 provider native goal、阶段 Goal 与看板投影。
-
-## 低 Token 管理会话（可选 Skill）
-
-仓内附带 [`perlica-low-token-manager`](skills/perlica-low-token-manager/SKILL.md)，供长期项目管理 Agent 作为便携附件加载。它不改变 Cardex 调度器，也不要注入普通 Writer、Reviewer、测试或发布卡；执行卡只接收自己的有界任务合同。
-
-Codex 本机安装：
-
-```bash
-mkdir -p ~/.codex/skills
-cp -R skills/perlica-low-token-manager ~/.codex/skills/
-```
-
-其他 Agent 可直接附上整个 `skills/perlica-low-token-manager/` 目录，并要求它先读 `SKILL.md`。推荐入口：
+使用 Hermes 时将 `codex` 换为 `hermes`。安装器校验下载包，安装二进制和 skill，盘点本机 CLI；保留现有配置与备份，不代办订阅或登录。随后在管理会话说：
 
 ```text
-Use $perlica-low-token-manager to coordinate this project from durable state,
-delegate bounded execution, and wake only on material changes.
+使用 cardex-dispatch 配置 Cardex，盘点我已有的 CLI 和订阅。
+结合 Artificial Analysis 当前 coding 评测和我实际可用的模型，
+推荐各任务等级的模型、思考档和是否复核；展示后按推荐保存，我手调的设置优先。
+后续任务沿用保存的预设。
 ```
 
-推荐用法只有四条：manager 只保留目标、DAG、边界与方向决策；长扫描、源码修改、测试和独立审核交给 Cardex 卡或新鲜有界 worker；只在 material terminal、Owner 决策或资源冲突时唤醒；回调只报 delta 与耐久指针。统计时把 management-session token 与 Cardex/Provider 执行 token 分开，不能靠隐藏执行消耗来制造“节省”。
+管理 Agent 负责研究并生成建议，Cardex 不自动联网更新排名。推荐保存在本地，执行时直接复用：
 
-## 怎么做到的
-
-```
-                 ┌──────────────────────────────────────────────┐
-   cardex add    │                    任务队列 (~/.cardex/tasks)  │
-   assemble ────▶│  queued ──▶ running ──▶ done                 │
-   review  plan  │               │  └──▶ failed（退避重试后）      │
-   adopt  brief  │               ▼                              │
-                 │         limit_paused ──(到达重置时间)──┐        │
-                 └───────────────────────────────────┼────────┘
-                                                     │
-   launchd / daemon 每 5 分钟 tick ──▶ 派发规则选一个任务 ─┘
-                                      │
-                                      ▼
-                    claude -p --model <模型> --resume <会话> ...
+```sh
+cardex presets                 # 查看已保存建议
+cardex add -preset routine -dry-run -dir . "阅读项目，说明入口和运行方式；不要修改文件。"
+cardex add -preset routine -dir . "阅读项目，说明入口和运行方式；不要修改文件。"
+cardex run TASK_ID              # 替换成 add 返回的 ID；执行并调用模型
+cardex log TASK_ID
+cardex board                   # http://127.0.0.1:8787
 ```
 
-四件事撑起整个循环：
+`routine` 需先由引导流程保存。`-dry-run` 只展示任务卡；无 ID 的 `run` 会处理整个就绪队列。CLI 最小起点仍可用 `cardex setup -runner claude` 或 `-runner codex`，再运行 `doctor`。完整步骤、手动下载、PATH、订阅和模型配置见[新手指南](docs/getting-started.md)。
 
-1. **编排零额度**——调度器是纯 Go 本地代码，只读写 `~/.cardex` 下的 JSON 文件，自己不调用任何模型；派发、退避、看板、账本一律不花额度，只有任务真正执行时才 `claude -p`。
-2. **限额是可恢复状态，不是失败**——撞限额时从错误里解析重置时间戳，写全局冷却（`cooldown.json`），期间一个探测调用都不发；到点后向**同一个会话**发续跑提示，从中断处接着做，不重发原 prompt、不重复劳动。
-3. **派发有序、落盘即安全**——续跑优先 →`priority` 大者优先 → 类型顺序（审核便宜先跑，装配会派生新工作放最后）→ 同级 FIFO。每一步成功立刻原子写盘，进程被杀不丢进度；单实例锁保证 launchd 多次触发不并发。
-4. **失败分类而非盲目重试**——认证/权限失败直接 `held` 等人处理，输入超长直接 `failed`（同 prompt 再送必然再超长），判不出来的才走退避重试，不把额度打进注定失败的重试里。
+源码构建需要 Go 1.24+：`go build -o cardex .`（Windows 输出 `cardex.exe`）。
 
-## 更进一步
+## Windows 当前支持到哪里
 
-跑顺之后按需要挑，每条在[进阶指南](docs/guide.md)里都有完整说明：
+Release 提供 Windows 原生可执行文件，但**不代表所有功能已在 Windows 完整验证**。基础配置、任务卡与调度应先按[新手指南](docs/getting-started.md#windows-使用边界)验证；真实模型执行还取决于本机 CLI、登录、权限及项目工具链。
 
-- **[进度回收 → 分工协调 → 自动推进](docs/guide.md#进度回收--分工协调--自动推进)**——多会话并行时的编排闭环：回收进度 → 协调任务读实时队列做分工 → 自动逐个推进，随时接管。
-- **[文件化状态与人工把关](docs/guide.md#文件化状态fresh_steps与人工把关-hold)**——状态放文件里、每步开新会话，永不撞上下文上限；`-hold` 让分工产出先挂起，人工审完再放行。
-- **[审核分流](docs/guide.md#审核分流把只读审核负载摊到第二台机器)**——实现在本机跑、对抗审核改到第二台机器跑，平衡两侧额度；同步失败自动回落本机，闭环不断。
-- **[交叉验证](docs/guide.md#交叉验证fable-顶替双引擎独立作答--对抗式交叉查漏)**——两个不同引擎对同一问题独立作答，再对抗式交叉查漏；设计档模型撞周限额时的顶替方案。
-- **[Web 看板](docs/guide.md#web-看板board-命令)**——项目横排 kanban + **剩余**额度燃尽曲线 + 按「设计/落地/修复/审核」拆分的进度 + 目标锚定的「落地进度」+ 进度双口径（现有卡 / 含预估余量，计划锚点或历史膨胀率，口径全披露），数据不足一律显式披露，绝不编造估算；对队列数据只读（唯一写入是看板自己的项目折叠状态）。
-- **[5 小时额度红线](docs/guide.md#5-小时额度红线保底额度)**——给突发/交互任务留余量：本地账本 + CodexBar 用量源 + 订阅端点三通道，分歧时取最保守值；支持分时段红线。
-- **[Codex 备用执行器](docs/guide.md#codex-备用执行器限额空窗不断档)**——claude 冷却期把单步编排卡切给 codex；设计档模型钉定不降级，交叉验证的引擎独立性不被偷换。
-- **[Antigravity 原生执行器](docs/guide.md#antigravity-原生执行器gemini-仅历史)**——`-runner agy` 使用本机 OAuth 与代理环境，派发前从 `agy models` 动态选择实际广告的最高 Claude Opus；无 Opus 时 fail closed。Gemini 仅保留历史卡解码/展示，不能创建或执行新卡。
-- **[多订阅引擎](docs/guide.md#多订阅引擎engine-profileskimi--glm--minimax--mimo--opencode-go--ollama-cloud)**——Kimi Code / GLM Coding Plan / MiniMax / 小米 MiMo / OpenCode Go / Ollama Cloud 订阅经引擎档案接入：复用 claude CLI + 环境注入，独立冷却、独立记账、统一能力分级（评测源锚定 Claude 各档），降级顺序自定义。
-- **[存量角色会话的接管](docs/guide.md#存量角色会话的接管此前手动维护的-审核装配执行-session)**——手工养的审核/装配/执行 session 按角色收编进队列。
+- `install-launchd` 仅适用于 macOS；Windows 可先前台运行 `daemon`，或使用任务计划程序。
+- Windows 不支持 hosted PTY Goal。
+- 依赖严格进程退出证明的自动跨引擎切换不可用；原生测试范围与进程管理行为见 [Windows 说明](docs/windows.md)。
+- Bash / SSH / rsync 等高级示例有额外环境要求；Windows 原生路径与 WSL 路径不要混用。
 
-想知道异常路径上到底怎么处理的（派发规则全文、限额恢复、失败分类、卡死巡逻、事件账本、幂等墓碑、权限边界）→ [运行时内核](docs/internals.md)。
+## 日常配置与操作
 
-## 配置速查（~/.cardex/config.json）
+配置和任务默认保存在 `~/.cardex`（Windows 为用户目录下的 `.cardex`）。用 `CARDEX_ROOT` 或每条命令的 `-root` 切换数据目录。运行 `cardex setup` 可交互选择 Claude 或 Codex；需要指定 CLI 路径时用 `-bin`。既有安装请修改现有配置，勿用新手示例覆盖任务数据。
 
-常用键，全量表见[配置参考](docs/config.md)：
+常调参数是 `max_parallel`（默认 1）、`step_timeout_min`（默认 60 分钟）和 `poll_interval_sec`（默认 300 秒）。先跑通一张卡，再调整并发或混合模型路由。Codex 初始配置沿用 Codex CLI 自己的模型设置，思考档为 `medium`；保存预设后按预设选择。高级路由和显式模型设置见[配置参考](docs/config.md)。
 
-| 键 | 默认 | 说明 |
-|---|---|---|
-| `poll_interval_sec` | 300 | launchd/daemon 轮询间隔 |
-| `limit_fallback_min` | 30 | 解析不到重置时间时的等待 |
-| `step_timeout_min` | 60 | 单步硬超时（防跑飞） |
-| `max_attempts_per_step` | 3 | 单步失败重试上限 |
-| `retry_backoff_min` | 5 | 非限额错误的重试退避基数（分钟） |
-| `resume_first` | true | 被打断任务优先续跑 |
-| `type_order` | 进度回收>协调>审核>序列>装配 | 同优先级时的类型顺序 |
-| `type_defaults.*.model` | 装配/协调/审核 Opus；落地 Sonnet；回收 Haiku | 各类型默认来源档位；Codex 主路由再映射到实际 GPT-5.6 模型；Fable 仅供显式最难裁决 |
-| `max_parallel` | 1 | 单次 tick 并行任务数（写类任务同目录串行，只读类型豁免）。默认 1 时联邦不重叠写域也不会同 tick 并行 |
-| `default_runner` | ""（历史 Claude） | 未显式钉执行器的新卡默认主路由；支持 `codex` 或已启用的 `agy`。Gemini 已退休，配置为默认执行器会拒绝加载 |
-| `owner_routing_enforced` | `false` | Final Owner 矩阵的加载期硬锁。设为 `true` 后，全部风险/审核分支、精确 provider/runner/model/effort、Fable 单次 Sol/ultra 终局以及显式 Sol gate 任一漂移都会拒绝加载；新 `sequence` 卡必须写 `route_class=backend|general`，backend 还必须明确任务字段 risk_class，缺失/歧义按 high-risk fail closed。受管 board/tick 配合 `CARDEX_REQUIRE_OWNER_ROUTING=1` 防止删键静默降级 |
-| `automatic_codex_budget_stop_percent` / `owner_provider_targets` | `0` / 空 | Final Owner 模式严格要求自动 Codex 在 provider-specific 已用 65% 时停止，证据不可用同样 held；仅带可见持久原因的 Owner-pinned critical 卡可绕过。provider targets 固定为 Grok 70–80%、Kimi/OpenCode 15–25%、direct Sol 5–10%，只做政策读回，不改已有卡 |
-| `queue_budget_tokens` 等 | 0（关） | 5 小时额度红线，见[进阶指南](docs/guide.md#5-小时额度红线保底额度) |
-| `no_fallback_models` | ["claude-fable-5","fable"] | 这些设计档模型冷却期不降级 codex，宁可排队等 claude |
-| `codex_bin` / `codex_fallback` | 空 / false | 冷却期备用执行器，见[进阶指南](docs/guide.md#codex-备用执行器限额空窗不断档) |
-| `codex_fallback_model` | "" | 非 Opus claude 卡降级到 codex 时的通用模型；空回退 `codex_model` |
-| `codex_fallback_opus_model` / `codex_fallback_opus_reasoning` | `gpt-5.6-sol` / `xhigh` | Opus 档 claude 卡降级到 codex 时的默认模型与思考档；默认不因 `stakes=low` 降档 |
-| `codex_tier_models` / `codex_tier_reasoning` | 见内置映射 | 只负责人工显式 Codex 与旧通用兼容径。Final Owner 模式移除全局 Codex fallback；每个自动 Sol 都是解析器显式 route gate，同一 lineage 最多一次 |
-| `grok_build_bin` / `grok_build` | 空 / 关闭 | Grok 主腿；`grok_build.max_parallel` 为独立并发上限，空/0 默认 24。模型、认证、代理和限额先做 value-blind preflight，失败不消耗语义 attempt |
-| `kimi_cli_opus.max_parallel` | 24 | Kimi 原生腿的独立并发上限；仍受全局 `max_parallel` 与写域互斥约束 |
-| `cursor_bin` / `cursor_model` / `cursor_fable` | 空 / 关闭 | 显式 Fable 主跑 `claude-fable-5-thinking-max`，始终是 general、只读决策/方案综合角色。仅确认 quota 或 eligible 已证明前语义失败后，串行一份只读 Grok 标准稳定版/xhigh（当前 4.7） answer，再由唯一一次 fresh Sol/ultra 接收原问题/证据与 Grok 答案，从第一性重建、对抗并修复后直接终局；没有 blind Sol answer B、Sol/max 第三腿或 review-of-review，未决 P0/P1/uncertainty 转 Owner held |
-| `antigravity_bin` / `antigravity` | 空 / 关闭 | `agy` 原生路由；复用本机 OAuth，动态选择 `agy models` 中最高实际 Opus。thinking 模型不另传 `--effort`；无 Opus 即 `MODEL_UNAVAILABLE` |
-| `gemini_*` | 仅历史兼容 | 旧卡仍可解码/展示；新卡、默认路由、fallback、workflow 与运行时执行全部拒绝 |
-| `engines` | {}（空） | 多订阅引擎档案（Kimi/GLM/MiniMax/MiMo/OpenCode Go/Ollama Cloud），`cardex engines add <名>` 并入预设，见[进阶指南](docs/guide.md#多订阅引擎engine-profileskimi--glm--minimax--mimo--opencode-go--ollama-cloud) |
-| `fallback_order` | ["codex"] | claude 冷却/红线时的改道顺序；Gemini 项会拒绝加载，Antigravity 只接受显式 `agy` pin |
-| `model_tiers` | {}（空） | 自定义分级表（模型→档位，优先于内置标准线）：无更强模型的机队按牌面定档 |
-| `default_review_host` / `remote_mirror_root` / `default_review_sync` | "" | 审核分流三件套：三键齐备时本地实现卡的自动审核默认分流到远端 |
-| `remote_hosts.<name>.codex_only` | false | 主机级额度硬边界：为 true 时该远端只运行 Codex，自动审核也不会调用 Claude |
+```sh
+cardex hold TASK_ID              # 暂停该卡
+cardex release TASK_ID           # 恢复排队，不等于立即执行
+cardex daemon                   # 前台持续调度，Ctrl+C 退出
+```
 
-提示词模板在 `~/.cardex/templates/*.md`，可直接修改（`{{GOAL}}` `{{DIR}}` `{{FOCUS}}` 会被替换；`coordinate.md` 里的 `{{QUEUE}}` `{{PROGRESS}}` 在**派发时**替换为实时快照）。
+需要长期运行时，macOS 可用 `cardex install-launchd`。开启后台调度后，就绪卡可能自动执行；只想准备任务时，使用 `add -hold`。
 
-**权限默认收紧**：任务默认**不**使用 `--dangerously-skip-permissions`——审核/装配是只读工具白名单，`sequence` 默认 `acceptEdits` + 常用构建测试命令白名单。需要完全自主时对单张卡加 `-skip-permissions`，详见[运行时内核 · 权限与安全](docs/internals.md#权限与安全)。
+## 独立派发 Agent
 
-## 文档
+推荐把“接收需求、确定范围、创建任务卡、跟进结果”放在单独的 Agent 会话里。执行 Agent 只接收当前任务需要的目标、目录、约束和验收方式。无需先搭建复杂多 Agent 架构。
 
-| 文档 | 内容 |
+[角色提示词、三个实用案例与安装方法 →](docs/dispatch-agent.md) · [cardex-dispatch skill →](skills/cardex-dispatch/SKILL.md)
+
+## 更多文档
+
+| 文档 | 适合什么时候读 |
 |---|---|
-| [推荐工作流](docs/workflows.md) | 直派串联、联邦多管理线、写域/资源防冲突、审核 custody、证据门与机器化路线图 |
-| [进阶指南](docs/guide.md) | 分工协调闭环、文件化状态、审核分流、交叉验证、Web 看板、额度红线、codex 备用执行器 |
-| [运行时内核](docs/internals.md) | 派发规则、限额恢复、失败分类、卡死巡逻、事件账本、幂等墓碑、权限与安全 |
-| [配置参考](docs/config.md) | `~/.cardex/config.json` 全量键表 + 模板说明 |
-| [更新记录](docs/changelog.md) | 按主题归并的版本变化 |
+| [新手配置](docs/getting-started.md) | 安装、首次配置、第一张卡、排错 |
+| [独立派发 Agent](docs/dispatch-agent.md) | 复制角色提示词，按案例派发任务 |
+| [配置参考](docs/config.md) | 查所有配置键与 prompt 模板 |
+| [进阶指南](docs/guide.md) | 装配、协调、进度回收、审核分流、额度与多引擎 |
+| [推荐工作流](docs/workflows.md) | 依赖、写域、独立审核、Goal 与集成门 |
+| [混合路由](MIXED_ROUTING.md) | 已有多执行器环境的精确路由；不是新手必配项 |
+| [运行时内核](docs/internals.md) | 恢复、重试、权限和持久状态的实际行为 |
+| [更新记录](docs/changelog.md) | 版本变化 |
 
-## 测试
+长期管理会话也可按需加载 [perlica-low-token-manager](skills/perlica-low-token-manager/SKILL.md)。原项目名为 ClaudeGo；旧命令软链和数据迁移见[新手指南](docs/getting-started.md#已有安装与旧名称)。
 
-```bash
-make test   # mock claude 跑完整状态机：调度/限额暂停/冷却/续跑/装配入队/失败退避/模型路由/进度回收/分工协调
-```
+开发检查：`go test ./...`；`make test` 运行基于 Bash 和 mock CLI 的集成测试。
 
 ## 许可
 

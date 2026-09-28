@@ -8,7 +8,14 @@ All acceptance below comes from fresh parent checks, not the held author output.
 
 ## Behavior
 
-`daily` names the saved 日常派发模式 table: development → native Grok 4.7/high,
+2026-09-28 Owner update: new development tasks use Grok 4.6/xhigh and the
+equivalent Cursor 4.6/xhigh quota fallback. New route names carry the
+`_grok46_xhigh` suffix so admitted historical 4.7/high tasks keep their model
+and effort. Only eligible unstarted queued tasks follow the new default;
+running, held and terminal tasks are not rewritten. Simple development remains
+4.6/high. Manual Goal model freezing uses the same new defaults.
+
+The original `daily` table was: development → native Grok 4.7/high,
 simple-development → pinned Grok 4.6/high, complex GPT → Astra/high (explicit
 medium retained), short GPT → Sol/xhigh or max, management → agy Gemini 3.8 Flash
 High. Proven exhausted Grok may use equivalent Cursor; capable Kimi K3/max is the

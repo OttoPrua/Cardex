@@ -148,7 +148,7 @@ func invokeClaudeCLI(ctx context.Context, cfg *Config, t *Task, prompt, model st
 
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(cfg.StepTimeoutMin)*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, cfg.ClaudeBin, args...)
+	cmd := providerCommandContext(ctx, cfg.ClaudeBin, args...)
 	setupProcGroup(cmd)
 	cmd.Dir = t.Dir
 	if env != nil {
@@ -168,7 +168,11 @@ func invokeClaudeCLI(ctx context.Context, cfg *Config, t *Task, prompt, model st
 	// 结果 JSON 已在 stdout 却被 ErrWaitDelay 误判失败、白白重试。远端两支已有"有结果即成功"救援。
 	runErr = rescueWaitDelay(runErr, cmd)
 	if ctx.Err() == context.DeadlineExceeded {
-		runErr = fmt.Errorf("步骤超时（%d 分钟）", cfg.StepTimeoutMin)
+		if errors.Is(runErr, errProcessExecution) {
+			runErr = fmt.Errorf("步骤超时（%d 分钟）: %w", cfg.StepTimeoutMin, runErr)
+		} else {
+			runErr = fmt.Errorf("步骤超时（%d 分钟）", cfg.StepTimeoutMin)
+		}
 	}
 	combined := stdout.String() + "\n" + stderr.String()
 	res := parseClaudeJSON(stdout.String())
@@ -392,11 +396,11 @@ func invokeCodex(ctx context.Context, root string, cfg *Config, t *Task, prompt 
 		sandbox = "workspace-write"
 		// codex 沙箱默认禁写 .git，导致收工 commit 失败（活干了提交不了）。
 		// 普通仓放行 <dir>/.git；linked worktree 的 .git 是文件，还要放行 git-dir 与 git-common-dir。
-		extra = []string{"-c", codexWritableRootsArg(t.Dir)}
+		extra = []string{"-c", providerCodexWritableRootsArg(t.Dir)}
 	case workDir != t.Dir:
 		// 复审副本模式:跑在副本内的 workspace-write,顺带放行副本 .git(git apply/commit 等)。
 		sandbox = "workspace-write"
-		extra = []string{"-c", codexWritableRootsArg(workDir)}
+		extra = []string{"-c", providerCodexWritableRootsArg(workDir)}
 	}
 	outFile := filepath.Join(os.TempDir(), "cardex-codex-"+t.ID+".txt")
 	defer os.Remove(outFile)
@@ -416,7 +420,7 @@ func invokeCodex(ctx context.Context, root string, cfg *Config, t *Task, prompt 
 	}
 
 	// ctx 已在函数头部按 StepTimeoutMin 限时(建副本与 codex 执行共用同一条步预算,见上方注释)。
-	cmd := exec.CommandContext(ctx, cfg.CodexBin, args...)
+	cmd := providerCommandContext(ctx, cfg.CodexBin, args...)
 	setupProcGroup(cmd)
 	// CG-R3:workDir 在启用副本时指向副本,否则等于 t.Dir——两处必须同源(-C 与 cmd.Dir),
 	// 否则 codex 沙箱只在 -C 那侧生效、cmd.Dir 定位却在原仓,相对路径行为错乱。
@@ -445,7 +449,11 @@ func invokeCodex(ctx context.Context, root string, cfg *Config, t *Task, prompt 
 	// 被下方 `runErr != nil` 判定标 IsError、白白重试。同 runReviewSync/invokeClaude 的同类救援。
 	runErr = rescueWaitDelay(runErr, cmd)
 	if ctx.Err() == context.DeadlineExceeded {
-		runErr = fmt.Errorf("步骤超时（%d 分钟）", cfg.StepTimeoutMin)
+		if errors.Is(runErr, errProcessExecution) {
+			runErr = fmt.Errorf("步骤超时（%d 分钟）: %w", cfg.StepTimeoutMin, runErr)
+		} else {
+			runErr = fmt.Errorf("步骤超时（%d 分钟）", cfg.StepTimeoutMin)
+		}
 	}
 	combined := stdout.String() + "\n" + stderr.String()
 	last, _ := os.ReadFile(outFile)
@@ -1920,6 +1928,13 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		} else {
 			_ = invoke()
 		}
+		if errors.Is(runErr, errProcessExecution) {
+			t.Status = statusHeld
+			t.LastError = errProcessExecution.Error()
+			t.touch()
+			return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:process", statusHeld, t.Step,
+				withCostTelemetry(map[string]any{"reason": "process_execution_failed", "reason_class": "post_start_failure"}, t)))
+		}
 		if errors.Is(runErr, errAdmissionDenied) {
 			return finishIfStopped(abandonReservedAttemptForAdmission(root, t))
 		}
@@ -2820,7 +2835,7 @@ func finishProviderSuccess(root string, cfg *Config, t *Task, via, prompt string
 		if diskCanceled(root, t.ID) {
 			return false, nil
 		}
-		return false, saveAuthorizedTask(root, t)
+		return false, finishIfStopped(savePostCompleteTask(root, t))
 	}
 	t.touch()
 	// 中间步成功事件:每推进一步一条,是"步数一致"验收的锚点(枚举遗漏就红)。
@@ -3582,6 +3597,48 @@ func reconcileMandatoryReviewObligations(root string, cfg *Config, tasks []*Task
 			_ = lg.Close()
 		}
 	}
+}
+
+// savePostCompleteTask keeps post-completion annotations bound to a committed
+// terminal event. A plain save would advance Revision past the done transition
+// and make an otherwise completed task permanently fail the dependency gate.
+func savePostCompleteTask(root string, t *Task) error {
+	if producerInvalidated(t) {
+		return errStaleTaskWrite
+	}
+	if !schedulerWriteAllowed(root) {
+		invalidateProducer(t)
+		return errSchedulerLockLost
+	}
+	current, err := loadTask(root, t.ID)
+	if err != nil {
+		return err
+	}
+	if err := assertTaskWriteAuthority(root, current, t); err != nil {
+		return err
+	}
+	before, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	after, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(before, after) {
+		return nil
+	}
+	evType := evDone
+	if t.Status == statusFailed {
+		evType = evFailed
+	} else if t.Status != statusDone {
+		return fmt.Errorf("post-completion task has unexpected status %q", t.Status)
+	}
+	return commitTaskTransition(root, t, transitionRequest{
+		EventType: evType, Actor: "runner:postComplete", Status: t.Status, Step: t.Step,
+		Detail:               withCostTelemetry(map[string]any{"reason": "post_complete_annotations"}, t),
+		RequireSchedulerLock: true, UpdateTerminalAnnotations: true,
+	})
 }
 
 // postComplete 处理任务链：进度报告落盘；装配/协调任务产出的新任务入队；review_after 自动入队设计审核。

@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const version = "0.10.20"
+const version = "0.10.21"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -26,6 +26,10 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "presets":
+		err = cmdPresets(os.Args[2:])
+	case "setup":
+		err = cmdSetup(os.Args[2:])
 	case "init":
 		err = cmdInit(os.Args[2:])
 	case "add":
@@ -112,7 +116,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Print(`cardex — 围绕 Claude 5 小时用量限额的本地任务队列
+	fmt.Print(`cardex — 本地多 Agent 任务队列与调度器
 
 用法: cardex <命令> [选项]
 
@@ -178,6 +182,9 @@ func printUsage() {
   clean                            # 把 done/failed/canceled 归档到 archive/
 
 系统
+  presets [-root ROOT] [-file presets.json] # 查看/合并派发预设，add -preset NAME 使用
+  setup [-inventory] [-runner claude|codex] [-bin PATH] [-root ROOT]
+                                   # 新手配置引导；已有配置不覆盖，不启动模型
   init                             # 初始化数据目录（默认 ~/.cardex，可用 CARDEX_ROOT / -root 覆盖；
                                    # 旧根 ~/.claudego 仍兼容读，迁移见 migrate）
   migrate   [-root 源] [-to 目标] [-dry-run]
@@ -261,6 +268,7 @@ var reqIDRE = regexp.MustCompile(`^req_[0-9a-f]{16}$`)
 
 func cmdAdd(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
+	preset := fs.String("preset", "", "已保存的派发预设（cardex presets 查看）")
 	rootFlag := fs.String("root", "", "数据目录")
 	typ := fs.String("type", typeSequence, "任务类型")
 	title := fs.String("title", "", "任务标题")
@@ -321,6 +329,9 @@ func cmdAdd(args []string) error {
 	root := resolveRoot(*rootFlag)
 	cfg, err := loadConfig(root)
 	if err != nil {
+		return err
+	}
+	if err := applyDispatchPreset(fs, cfg, *preset); err != nil {
 		return err
 	}
 	if *runner != "" && *runner != "claude" && *runner != "codex" && *runner != antigravityRunnerName && *runner != "gemini" &&
@@ -2296,7 +2307,7 @@ func cmdDoctor(args []string) error {
 
 	cfg, err := loadConfig(root)
 	check("配置文件", err, "运行 cardex init")
-	if cfg != nil {
+	if cfg != nil && doctorNeedsClaude(cfg) {
 		_, err = os.Stat(cfg.ClaudeBin)
 		if err != nil {
 			_, err = exec.LookPath(cfg.ClaudeBin)

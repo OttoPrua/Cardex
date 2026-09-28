@@ -17,7 +17,7 @@ import (
 // running-side reentry skips as tombstone-exhausted and holds the card.
 // GREEN: the denied Start rolls back the pending write first; the order hook
 // therefore observes an unconsumed tombstone before abandon. Exact attempt
-// closure stays truthful, retry remains eligible, and a later real start still
+// closure stays truthful, retry requires an explicit new attempt, and a later real start still
 // finalizes (at-most-once).
 func TestDeniedPresemanticStartDoesNotConsumeResumeTombstone(t *testing.T) {
 	for _, tc := range []struct {
@@ -169,14 +169,8 @@ func TestDeniedPresemanticStartDoesNotConsumeResumeTombstone(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Status != statusQueued {
-				t.Fatalf("status=%s, want queued (retry eligible)", got.Status)
-			}
-			events := readAllEventsRaw(t, root, tk.ID)
-			for _, ev := range events {
-				if ev.Type == evHeld {
-					t.Fatalf("unexpected held after denied Start: %v", eventTypes(events))
-				}
+			if got.Status != statusHeld || eligible(got, time.Now()) || got.ActiveAttemptID != "" {
+				t.Fatalf("denied start must be held with closed custody: %+v", got)
 			}
 			assertNoSemanticCompletion(t, root, tk.ID)
 
@@ -184,6 +178,13 @@ func TestDeniedPresemanticStartDoesNotConsumeResumeTombstone(t *testing.T) {
 				if _, err := setAdmissionPaused(root, false, "ops", "resume"); err != nil {
 					t.Fatalf("re-open admission: %v", err)
 				}
+			}
+			if err := cmdSetStatus([]string{"-root", root, tk.ID}, "retry"); err != nil {
+				t.Fatalf("explicit new attempt after denied Start: %v", err)
+			}
+			got, err = loadTask(root, tk.ID)
+			if err != nil {
+				t.Fatal(err)
 			}
 			if err := runTask(context.Background(), root, cfg, got, false); err != nil {
 				t.Fatalf("retry after denied Start: %v", err)

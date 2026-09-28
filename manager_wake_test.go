@@ -385,7 +385,7 @@ func TestStaleNeedsOwnerSupersededByCommittedTerminal(t *testing.T) {
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "mgr")
 	cfg := testCfg()
-	tk := newTask(root, cfg, typeSequence, "needs-owner supersede", "/tmp", []string{"p"}, 5)
+	tk := newTask(root, cfg, typeSequence, "needs-owner supersede", t.TempDir(), []string{"p"}, 5)
 	tk.Project = "wake-proj"
 	if err := saveTask(root, tk); err != nil {
 		t.Fatal(err)

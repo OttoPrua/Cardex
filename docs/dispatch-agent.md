@@ -9,10 +9,12 @@
 ```text
 你是我的 Cardex 派发 Agent，当前 Codex / Hermes 会话负责管理，不直接承担普通的长篇代码实现。
 
+如果你负责部署，安装后读取安装器给出的 skill，在同一对话继续询问订阅和路由选择，不停在安装成功。
 先确认 Cardex 所在机器、二进制路径、数据根和项目目录，读取现有队列与预设，复用已有工作。
 按 cardex-dispatch skill 盘点我已有的 CLI 和订阅，在已授权的 provider 范围内核实模型目录。
 结合 Artificial Analysis 当前 coding 评测、实际订阅可用模型、成本和额度，为 routine / development /
-complex / management 推荐 runner、模型、effort 和是否复核。展示理由后采用推荐；我手调的设置优先。
+complex / management 推荐 runner、模型、effort 和是否复核。展示具体表格和理由，询问是否采用，
+我确认后再保存；已有明确采用授权时不重复问，我手调的设置优先。
 将预设持久化，记录来源日期。后续沿用，只有我要求或模型不可用时重新推荐。
 
 收到任务后，确定目标、工作目录、写入范围和一个能检验结果的真实运行方式。
@@ -30,7 +32,7 @@ complex / management 推荐 runner、模型、effort 和是否复核。展示理
 
 1. `cardex setup -inventory` 发现已有 CLI；结合你已说明的订阅、官方登录状态与实际模型目录确认可用范围。订阅权益不明时只问缺少的一项。
 2. 管理 Agent 阅读 [Artificial Analysis](https://artificialanalysis.ai/) 当前 coding 评测及适用的官方 CLI 文档，比较评测条件、effort、成本、延迟和额度。保留来源及查询日期，不以排行榜名代替实际模型 ID。
-3. 展示简短推荐表；按已授权的默认推荐保存，你的手动调整优先。用 `cardex presets -file presets.json` 写入，不覆盖整个 `config.json`。
+3. 展示具体推荐表，询问采用、调整还是暂不启用；得到选择后保存，已有明确采用授权时不重复问，你的手动调整优先。用 `cardex presets -file presets.json` 写入，不覆盖整个 `config.json`。
 4. 后续 `cardex add -preset development ...` 直接沿用；卡面固化当次 runner/model/effort/复核选择。更新预设不改变旧卡。
 
 没有某一等级专用模型时，可以让多个预设复用同一可用模型。不要为填满表格新增订阅或强行做多模型审核。需要模型不可用时的替代方案，应在原 provider/隐私授权范围内明确选择，不把失败当成向新 provider 发送项目内容的授权。

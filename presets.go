@@ -238,7 +238,7 @@ func printSetupInventory() error {
 		}
 		entries = append(entries, entry{item[0], item[1], path, err == nil, "not_checked"})
 	}
-	out := map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "executors": entries, "next": "在 Codex 或 Hermes 管理会话中使用 cardex-dispatch：说明已有订阅，核实 CLI 登录和模型目录，再保存推荐预设。", "note": "CLI 存在不证明订阅、认证或模型可用；订阅凭据保留在各自官方 CLI 中。"}
+	out := map[string]any{"os": runtime.GOOS, "arch": runtime.GOARCH, "executors": entries, "next": "当前部署 Agent 请读取已安装的 cardex-dispatch skill，在同一对话继续：先询问 owner 希望接入哪些已有订阅，逐步核实登录和模型，展示路由建议并确认采用后保存；复用已有答案与配置，不停在安装完成。", "note": "CLI 存在不证明订阅、认证或模型可用；订阅凭据保留在各自官方 CLI 中。"}
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)

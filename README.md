@@ -35,13 +35,15 @@ Windows PowerShell：
 & ([scriptblock]::Create((Invoke-RestMethod -ErrorAction Stop https://github.com/OttoPrua/Cardex/releases/latest/download/install.ps1))) -Manager codex
 ```
 
-使用 Hermes 时将 `codex` 换为 `hermes`。安装器校验下载包，安装二进制和 skill，盘点本机 CLI；保留现有配置与备份，不代办订阅或登录。随后在管理会话说：
+使用 Hermes 时将 `codex` 换为 `hermes`。安装器校验下载包，安装程序和 skill，盘点本机 CLI，并在输出末尾提示**当前部署 Agent 在同一对话继续配置**：确认已有订阅 → 引导所选 CLI 登录 → 展示模型/思考档/复核推荐 → 询问是否采用 → 保存预设。保留现有配置与备份。
+
+也可以直接把下面这段发给 Agent，让它完成安装和后续引导：
 
 ```text
-使用 cardex-dispatch 配置 Cardex，盘点我已有的 CLI 和订阅。
-结合 Artificial Analysis 当前 coding 评测和我实际可用的模型，
-推荐各任务等级的模型、思考档和是否复核；展示后按推荐保存，我手调的设置优先。
-后续任务沿用保存的预设。
+请按 https://github.com/OttoPrua/Cardex/blob/main/docs/getting-started.md 安装并配置 Cardex。
+安装后读取 cardex-dispatch skill，在当前对话继续逐步询问我已有且希望使用的订阅，
+协助完成配置，再根据实际可用模型展示推荐路由并问我是否采用。
+我确认后保存，手调设置优先，后续任务直接复用；不要只停在安装成功。
 ```
 
 管理 Agent 负责研究并生成建议，Cardex 不自动联网更新排名。推荐保存在本地，执行时直接复用：

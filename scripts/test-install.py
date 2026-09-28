@@ -66,6 +66,10 @@ with tempfile.TemporaryDirectory(prefix='cardex-installer-check-') as scratch:
         assert (result.returncode == 0) == success, result.stdout + result.stderr
         return result
     first = install()
+    assert 'CARDEX_AGENT_ONBOARDING' in first.stdout, first.stdout
+    assert 'NEXT_OWNER_QUESTION:' in first.stdout, first.stdout
+    assert 'SAME conversation' in first.stdout, first.stdout
+    assert str(home / '.agents/skills/cardex-dispatch') in first.stdout, first.stdout
     binary = home / ('AppData/Local/Cardex/bin/cardex.exe' if windows else '.local/bin/cardex')
     assert binary.is_file()
     assert (home / '.agents/skills/cardex-dispatch/SKILL.md').read_bytes() == skill_data

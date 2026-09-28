@@ -81,5 +81,14 @@ else cp -R "$tmp/skill" "$skill_root/cardex-dispatch"
 fi
 printf '\nInstalled: %s\nDispatch skill: %s\n' "$bin_dir/cardex" "$skill_root/cardex-dispatch"
 printf 'For this terminal, run: export PATH="$HOME/.local/bin:$PATH"\n'
-printf 'In your %s management session, ask: Use cardex-dispatch to guide my subscriptions and recommend a dispatch preset.\n\n' "$manager"
 "$bin_dir/cardex" setup -inventory
+printf '\nCARDEX_AGENT_ONBOARDING\n'
+printf 'For the Agent performing the owner-requested deployment: continue setup in this SAME conversation.\n'
+printf 'Read the installed skill: %s/SKILL.md\n' "$skill_root/cardex-dispatch"
+printf 'Use the binary at %s; manager=%s. Installation is complete; subscription and routing setup is still pending unless already configured.\n' "$bin_dir/cardex" "$manager"
+cat <<'HANDOFF'
+Reuse existing configuration and earlier answers. Unless the owner explicitly requested installation only, ask the next missing onboarding question now; do not finish with just an installation summary or ask the owner to start another chat.
+NEXT_OWNER_QUESTION: After summarizing detected CLIs, ask which existing subscriptions the owner wants to use (including services whose CLI is not installed). CLI presence does not prove login or entitlement. Ask in the owner's language, one step at a time; never ask for secrets in chat.
+Configure and verify the selected services, then show concrete available model/effort/review routes and ask whether to adopt, adjust, or defer. Wait for the choice unless adoption was already explicitly authorized; silence is not acceptance. Preserve manual settings, save accepted presets and read them back. Do not launch a model test or queued work without task authorization.
+If you ran this command yourself in a terminal, let your deployment Agent read the installed SKILL.md to continue.
+HANDOFF

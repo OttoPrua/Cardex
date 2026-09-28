@@ -4,7 +4,17 @@
 
 这三层可以来自不同产品。例如，在 Codex 会话里管理任务，由 Cardex 调用已登录的 Grok CLI；这不会把 Grok 订阅变成 Codex 原生模型，也不需要把订阅密钥复制到管理会话。
 
-## 1. 一个命令安装程序与配套 skill
+## 1. 让部署 Agent 安装，并在同一对话继续引导
+
+把下面这段交给你当前的 Codex / Hermes Agent；它执行下方对应系统的安装命令后，应继续问你下一步，无需你再发起一次配置请求：
+
+```text
+请按 https://github.com/OttoPrua/Cardex/blob/main/docs/getting-started.md 安装并配置 Cardex。
+安装完成后直接读取安装器给出的 cardex-dispatch/SKILL.md，在当前对话继续引导我，
+不要只回复安装成功。先告诉我检测到了哪些 CLI，再逐步确认我已有且希望使用的订阅，
+协助完成所选服务的配置和登录。基于实际可用模型给出任务路由推荐表，
+询问我采用推荐、调整部分还是暂不启用；我确认后保存。后续任务沿用，不要每次重问。
+```
 
 在管理会话中让 Agent 执行与你的系统匹配的一行命令。默认装入当前用户目录，不需要管理员权限。macOS / Linux：
 
@@ -18,7 +28,7 @@ Hermes 管理会话把 `--manager codex` 换成 `--manager hermes`。Windows Pow
 & ([scriptblock]::Create((Invoke-RestMethod -ErrorAction Stop https://github.com/OttoPrua/Cardex/releases/latest/download/install.ps1))) -Manager codex
 ```
 
-Hermes 使用 `-Manager hermes`。安装器校验下载包的 SHA-256，安装二进制和 `cardex-dispatch` skill，再输出本机 CLI 盘点；**不改现有 Cardex 配置、CLI 登录或 shell 配置，不启动任务**。已有二进制和变更过的 skill 会保留备份。企业环境若限制脚本执行，按本机政策下载 Release 包手动安装即可，无需放宽全局执行策略。
+Hermes 使用 `-Manager hermes`。安装器校验下载包的 SHA-256，安装二进制和 `cardex-dispatch` skill，再输出本机 CLI 盘点和给当前部署 Agent 的接续指令；**不改现有 Cardex 配置、CLI 登录或 shell 配置，不启动任务**。已有二进制和变更过的 skill 会保留备份。企业环境若限制脚本执行，按本机政策下载 Release 包手动安装即可，无需放宽全局执行策略。
 
 | 文件 | macOS / Linux | Windows |
 |---|---|---|
@@ -26,7 +36,7 @@ Hermes 使用 `-Manager hermes`。安装器校验下载包的 SHA-256，安装�
 | Codex skill | `~/.agents/skills/cardex-dispatch` | `%USERPROFILE%\.agents\skills\cardex-dispatch` |
 | Hermes skill | `${HERMES_HOME:-~/.hermes}/skills/cardex-dispatch` | `%HERMES_HOME%\skills\cardex-dispatch`，未设置时用 `%USERPROFILE%\.hermes` |
 
-自定义 skill 根目录用 `--skill-dir PATH` / `-SkillDir PATH`。此处 Codex 路径依据[官方 Skills 文档](https://learn.chatgpt.com/docs/build-skills)，Hermes 依据[官方 Skills 指南](https://hermes-agent.nousresearch.com/docs/guides/work-with-skills)。若当前会话尚未发现新 skill，让它直接读取安装后的 `SKILL.md`，或新开管理会话。
+自定义 skill 根目录用 `--skill-dir PATH` / `-SkillDir PATH`。此处 Codex 路径依据[官方 Skills 文档](https://learn.chatgpt.com/docs/build-skills)，Hermes 依据[官方 Skills 指南](https://hermes-agent.nousresearch.com/docs/guides/work-with-skills)。若当前会话尚未自动发现新 skill，部署 Agent 应直接读取安装器输出的绝对 `SKILL.md` 路径，继续当前对话，不要求你重开会话。
 
 安装器会打印绝对路径。可直接用该路径，或为当前终端添加 PATH：
 
@@ -38,15 +48,18 @@ export PATH="$HOME/.local/bin:$PATH"
 $env:PATH = "$env:LOCALAPPDATA\Cardex\bin;$env:PATH"
 ```
 
-随后在管理会话发送：
+安装器是命令行程序，不能自己生成 Agent 对话；它会在成功输出的末尾给出 `CARDEX_AGENT_ONBOARDING` 接续提示、skill 绝对路径和下一步该问的内容。执行安装的 Agent 读取这些提示后继续沟通。**在普通终端里单独运行安装脚本，只会打印提示；需要由部署 Agent 承接对话。**
 
-```text
-使用 cardex-dispatch 帮我完成本机 Cardex 配置。
-先确认本会话作为管理 Agent、Cardex 所在机器和数据目录，再盘点我已有的 CLI/订阅。
-结合 Artificial Analysis 当前 coding 评测、CLI 实际模型目录和我的订阅权限，
-推荐各任务等级的模型、思考档及是否复核，展示后按推荐保存；我提出调整时以调整为准。
-后续任务沿用保存的预设，不要每次重新问；不要安装我没选的付费服务。
-```
+### 部署 Agent 应怎样问
+
+| 阶段 | Agent 主动完成 | 给 owner 的问题示例 |
+|---|---|---|
+| 安装结束 | 说明当前管理会话、机器、数据目录和检测到的 CLI | “检测到了 Codex 和 Grok，但还没确认订阅。你已有并希望接入哪些订阅？不知道套餐也可以说产品名。” |
+| 订阅配置 | 核实所选 CLI、登录状态和模型目录；逐个补齐配置 | “这个服务需要你在官方登录页面完成登录，完成后告诉我，我继续检查。” |
+| 路由推荐 | 按实际可用模型展示任务等级、模型、思考档、复核方式与理由 | “按你的订阅，我推荐上表规则。采用推荐、调整部分，还是暂不启用？” |
+| 确认保存 | 合并预设、读回并做无模型 dry-run | “规则已保存。后续任务将沿用这些预设。” |
+
+每次只问当前缺少的信息；已有答案和手调配置直接复用。某个服务未验证通过时，明确列为待完成，并询问是否先用已验证的服务继续。**首次推荐等你确认后再保存，沉默不视为同意**；如果你之前已明确授权“直接采用推荐”，则展示后按该授权执行，无需再问。确认路由不会自动启动整条队列或消耗额度做模型测试。登录被打断时留在同一对话等你完成，接着做剩余步骤。
 
 不使用安装脚本时，也可从 [Release](https://github.com/OttoPrua/Cardex/releases/latest) 下载系统对应包，解压后直接运行其中的 `cardex` / `cardex.exe`，并把 `skills/cardex-dispatch` 复制到上表的 skill 根目录。包内附带上手与配置文档。
 
@@ -71,7 +84,7 @@ cardex setup -inventory
 
 管理 Agent 查阅 [Artificial Analysis](https://artificialanalysis.ai/) 的当前 coding 评测，如 [Terminal-Bench](https://artificialanalysis.ai/zh/evaluations/terminalbench-4-0)，记录日期和来源。排名是参考，还要比较评测使用的推理档、Agent 框架、价格、延迟、限额，以及账号实际可用模型。不要将评测名直接当成 CLI 模型 ID，也不要把榜首自动推荐给全部任务。网页不可访问时说明推荐依据和不确定性，不声称“最新排名”。
 
-**这一步由管理 Agent 联网研究，Cardex 不会自动抓排名或悄悄更新模型。** 展示推荐后，在你已授权采用推荐的范围内直接保存；你可以手调任何一项。以后按保存值执行，只有你要求刷新、订阅变化或模型不可用时再调整。已有管理或 owner 路由约束要保留；不可为导入预设覆盖它们。
+**这一步由管理 Agent 联网研究，Cardex 不会自动抓排名或悄悄更新模型。** 展示具体推荐后，Agent 主动询问是否采用，得到选择后再保存；已有明确采用授权时不重复问。你可以手调任何一项。以后按保存值执行，只有你要求刷新、订阅变化或模型不可用时再调整。已有管理或 owner 路由约束要保留；不可为导入预设覆盖它们。
 
 首次使用 Claude 或 Codex 时，最低配置入口是：
 

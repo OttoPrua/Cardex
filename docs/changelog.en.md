@@ -1,5 +1,11 @@
 # cardex changelog
 
+## 2026-09-28 · v0.10.22: same-conversation deployment onboarding
+
+- Installers hand the deploying Agent an explicit continuation, installed skill path and next owner question after CLI inventory.
+- The skill guides subscription selection, login/configuration, concrete route recommendations, confirmation and preset readback in the current conversation, preserving existing answers and overrides.
+- READMEs and the setup guide include an Agent-ready installation request. The installer prints guidance; it does not create Agent turns or call models.
+
 ## 2026-09-28 · v0.10.21: onboarding, dispatch presets and Windows lifecycle
 
 - Continues the local 0.10.20 integration, including harvest, manager wake digests, work-directory writer isolation, quota deferral and terminal dependency fixes. Preserves admitted task identities.

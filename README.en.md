@@ -35,13 +35,16 @@ Windows PowerShell:
 & ([scriptblock]::Create((Invoke-RestMethod -ErrorAction Stop https://github.com/OttoPrua/Cardex/releases/latest/download/install.ps1))) -Manager codex
 ```
 
-For Hermes, replace `codex` with `hermes`. The installer verifies the archive, installs the binary and skill, and inventories local CLIs. It preserves configuration, backs up replaced files, and does not purchase subscriptions or log in. Then ask your management session:
+For Hermes, replace `codex` with `hermes`. The installer verifies the archive, installs the binary and skill, inventories local CLIs, then instructs the **deploying Agent to continue in the same conversation**: identify existing subscriptions, guide login, propose model/effort/review routes, ask whether to adopt them, and save the accepted presets. Existing configuration and backups are preserved.
+
+You can give your Agent this request before installation:
 
 ```text
-Use cardex-dispatch to configure Cardex and inventory my existing CLIs and subscriptions.
-Use current Artificial Analysis coding evaluations and models actually available to my accounts
-to recommend a model, effort, and review policy per task level. Show and save your recommendations;
-my manual choices take precedence. Reuse the saved presets for subsequent tasks.
+Install and configure Cardex using https://github.com/OttoPrua/Cardex/blob/main/docs/getting-started.md.
+After installation, read the installed cardex-dispatch skill and continue in this conversation.
+Ask step by step which existing subscriptions I want to use, help configure them, then show
+routes based on verified available models and ask whether I want to adopt them.
+Save after confirmation, respect my overrides and reuse the presets. Do not stop at "installed".
 ```
 
 The management Agent researches recommendations; Cardex does not automatically fetch rankings or change models. Once the guide has saved your presets:

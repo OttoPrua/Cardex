@@ -1621,7 +1621,7 @@ func TestWorkflowShowReportsBoundGoalIdentity(t *testing.T) {
 }
 
 func TestOrdinaryWorkflowShowJSONTopLevelKeys(t *testing.T) {
-	t.Parallel()
+	// Captures process-wide stdout; run before the parallel test group.
 	root, dir := workflowTestRoot(t)
 	wf := initTestWorkflow(t, root, dir)
 	first := captureWorkflowShow(t, root, wf.ID)
@@ -1846,7 +1846,7 @@ func TestDesignResultKeepsActualModelDespiteDisplayLabel(t *testing.T) {
 }
 
 func TestCopyableNativeGoalIsLiteralPathDigest(t *testing.T) {
-	t.Parallel()
+	// Captures process-wide stdout; run before the parallel test group.
 	root, dir := workflowTestRoot(t)
 	cfg := workflowTestCfg(t, root)
 	wf := initTestWorkflow(t, root, dir)

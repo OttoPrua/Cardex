@@ -22,6 +22,14 @@ if ($Version) { $base = "https://github.com/OttoPrua/Cardex/releases/download/v$
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ('cardex-install-' + [guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($tmp)
 $stagedBinary = $null
+# .NET hashing works in both Windows PowerShell and PowerShell 7, even when
+# inherited module search paths do not expose Get-FileHash.
+function Get-SHA256([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '') }
+    finally { $hasher.Dispose(); $stream.Dispose() }
+}
 try {
     function Get-Asset([string]$Name) {
         $destination = Join-Path $tmp $Name
@@ -44,7 +52,7 @@ try {
     if ($matched.Count -ne 1) { throw 'Missing or duplicate SHA256SUMS entry' }
     Get-Asset $asset
     $archive = Join-Path $tmp $asset
-    if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash -ne $matched[0].Hash) {
+    if ((Get-SHA256 $archive) -ne $matched[0].Hash) {
         throw 'SHA256 mismatch; installation was not changed'
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -88,7 +96,7 @@ try {
         $oldSkill = Join-Path $skillDir 'SKILL.md'
         $files = @(Get-ChildItem -LiteralPath $skillDir -Force)
         if ((Test-Path -LiteralPath $oldSkill -PathType Leaf) -and $files.Count -eq 1) {
-            $sameSkill = (Get-FileHash -LiteralPath $oldSkill).Hash -eq (Get-FileHash -LiteralPath $newSkill).Hash
+            $sameSkill = (Get-SHA256 $oldSkill) -eq (Get-SHA256 $newSkill)
         }
         if (-not $sameSkill) {
             [void][IO.Directory]::CreateDirectory($backupDir)

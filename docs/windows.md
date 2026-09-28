@@ -1,6 +1,6 @@
 # Windows 原生与 WSL
 
-Cardex 使用一条代码主线和一套产品版本号。构建产物按平台与架构区分，例如 `cardex_<version>_windows_amd64.exe` 和 `cardex_<version>_darwin_arm64`；发布、安装和运行验收分别进行，不维护 Windows/Mac 永久分支。相同版本号不代表所有平台能力均已验收。
+Cardex 使用一条代码主线和一套产品版本号。构建产物按平台与架构区分，例如 `cardex_<version>_windows_amd64.zip` 和 `cardex_<version>_darwin_arm64.tar.gz`；发布、安装和运行验收分别进行，不维护 Windows/Mac 永久分支。相同版本号不代表所有平台能力均已验收。
 
 ## 原生 Windows（experimental）
 
@@ -32,8 +32,11 @@ WSL 使用 Linux 构建及 Unix 进程/锁实现。它的测试结果不等于 W
 在 Windows 原生 Go 环境运行：
 
 ```powershell
-go test . -run '^(TestWindows|TestAcquireLockStealsAtomicallyNoDoubleOccupancy|TestDeniedPresemanticStartDoesNotConsumeResumeTombstone|TestReleaseLockRefusesForeignPID)' -count=1 -timeout=90s
+go test . -run '^(TestWindows|TestExecutionLease|TestSetup|TestPreset|TestAcquireLockStealsAtomicallyNoDoubleOccupancy|TestDeniedPresemanticStartDoesNotConsumeResumeTombstone|TestReleaseLockRefusesForeignPID)' -count=1 -timeout=180s
 go vet ./...
+go build -trimpath -o bin/cardex.exe .
+python scripts/smoke.py bin/cardex.exe
+python scripts/test-install.py bin/cardex.exe
 ```
 
 也可在 Mac 上用 `GOOS=windows GOARCH=amd64 go test -c -o cardex.test.exe .` 生成测试程序，再在 Windows 执行相同 `-test.run` 选择。交叉编译只是准备步骤；必须保留实际 Windows 运行结果。现有全套测试仍包含 POSIX shell fixtures，这个选择不宣称原生全套测试均通过。Mac 的 provider、admission、进程 lease 和 Goal 受影响回归独立运行。

@@ -38,7 +38,11 @@ jobs:
         with:
           go-version: '1.26.1'
           cache: false
-      - run: go test ./... -count=1 -timeout=10m
+      - name: Go tests with the Kimi file-descriptor prerequisite
+        run: |
+          sudo sysctl -w kern.maxfiles=262144 kern.maxfilesperproc=65536
+          ulimit -n 65536
+          go test ./... -count=1 -timeout=10m
       - run: go vet ./...
       - run: go build -trimpath -o bin/cardex .
       - run: python3 scripts/smoke.py bin/cardex

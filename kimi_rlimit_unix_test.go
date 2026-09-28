@@ -12,7 +12,7 @@ import (
 )
 
 func TestInvokeKimiCLIRejectsLowOpenFileLimitBeforeSpawn(t *testing.T) {
-	t.Parallel()
+	// RLIMIT_NOFILE is process-wide; keep this test outside the parallel group.
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "spawned")
 	bin := filepath.Join(dir, "kimi")

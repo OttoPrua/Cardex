@@ -16,7 +16,7 @@ func fakeHostedGrokBin(t *testing.T) string {
 	dir := t.TempDir()
 	py := filepath.Join(dir, "grok.py")
 	body := `#!/usr/bin/env python3
-import json, os, sys, urllib.parse
+import json, os, sys, time, urllib.parse
 args = sys.argv[1:]
 cwd = ""
 sid = ""
@@ -90,8 +90,14 @@ while True:
             write_state("paused", event="goal_paused")
         elif line.startswith("/goal resume"):
             write_state("active", event="goal_resumed")
-        elif line.startswith("/goal clear") or line.startswith("/quit"):
+        elif line.startswith("/goal clear"):
             write_state("complete", "achieved", "goal_completed")
+        elif line.startswith("/quit"):
+            # Native completion precedes process exit. Closing the PTY master
+            # during this cleanup window sends SIGHUP and loses the clean exit.
+            time.sleep(0.2)
+            with open(os.path.join(sess, "clean-exit"), "w") as f:
+                f.write("quit handled")
             break
         elif line.startswith("/goal ") and not line.startswith("/goal status"):
             write_state("active", event="goal_started")
@@ -173,6 +179,9 @@ func TestHostedGoalInjectPauseStopAndSync(t *testing.T) {
 		t.Fatal("hosted supervisor did not return after stop")
 	}
 
+	if _, err := os.Stat(filepath.Join(grokGoalSessionDir(home, dir, sess), "clean-exit")); err != nil {
+		t.Fatalf("PTY closed before provider finished /quit cleanup: %v", err)
+	}
 	synced, err := syncWorkflowGoal(root, cfg, wf, GoalSyncRequest{GrokHome: home, GrokCWD: dir})
 	if err != nil {
 		t.Fatalf("goal-sync: %v", err)

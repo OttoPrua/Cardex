@@ -70,9 +70,9 @@ with tempfile.TemporaryDirectory(prefix='cardex-installer-check-') as scratch:
     assert binary.is_file()
     assert (home / '.agents/skills/cardex-dispatch/SKILL.md').read_bytes() == skill_data
     if source_binary:
-        version = subprocess.run([str(binary), 'version'], env=env, text=True, capture_output=True, check=True)
+        version = subprocess.run([str(binary), 'version'], env=env, text=True, encoding="utf-8", capture_output=True, check=True)
         assert version.stdout.startswith('cardex '), version.stdout
-        inventory = subprocess.run([str(binary), 'setup', '-inventory'], env=env, text=True, capture_output=True, check=True)
+        inventory = subprocess.run([str(binary), 'setup', '-inventory'], env=env, text=True, encoding="utf-8", capture_output=True, check=True)
         assert 'executors' in json.loads(inventory.stdout), inventory.stdout
         assert '"executors"' in first.stdout, first.stdout
     else:

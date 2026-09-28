@@ -239,7 +239,10 @@ func hostedControlLoop(root string, t *Task, grokHome string, master, ctl *os.Fi
 			confirmHostedControl(root, t, grokHome, action, line)
 			if action == goalControlStop {
 				_ = injectPTYMaster(master, "/quit")
-				_ = master.Close()
+				// Native completion is not process exit. Closing the controlling
+				// PTY here sends SIGHUP while the TUI handles /quit or cleanup.
+				// runHostedGrokGoal owns it until Wait/output drain completes;
+				// the existing context deadline still bounds an unresponsive TUI.
 			}
 		}
 	}

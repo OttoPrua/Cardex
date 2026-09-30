@@ -2,7 +2,7 @@ BIN := bin/cardex
 PREFIX ?= /opt/homebrew/bin
 
 build:
-	go build -o $(BIN) .
+	go build -o $(BIN) ./cmd/cardex
 
 test: build
 	bash test/integration.sh

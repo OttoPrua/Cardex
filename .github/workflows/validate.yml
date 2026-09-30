@@ -18,9 +18,9 @@ jobs:
           go-version: '1.26.1'
           cache: false
       - name: Native Windows lifecycle and onboarding
-        run: go test . -run '^(TestWindows|TestExecutionLease|TestSetup|TestPreset|TestAcquireLockStealsAtomicallyNoDoubleOccupancy|TestDeniedPresemanticStartDoesNotConsumeResumeTombstone|TestReleaseLockRefusesForeignPID)' -count=1 -timeout=180s -v
+        run: go test ./cmd/cardex -run '^(TestWindows|TestExecutionLease|TestSetup|TestPreset|TestAcquireLockStealsAtomicallyNoDoubleOccupancy|TestDeniedPresemanticStartDoesNotConsumeResumeTombstone|TestReleaseLockRefusesForeignPID)' -count=1 -timeout=180s -v
       - run: go vet ./...
-      - run: go build -trimpath -o bin/cardex.exe .
+      - run: go build -trimpath -o bin/cardex.exe ./cmd/cardex
       - name: CLI and board smoke
         run: python scripts/smoke.py bin/cardex.exe
       - name: Windows installer
@@ -44,6 +44,6 @@ jobs:
           ulimit -n 65536
           go test ./... -count=1 -timeout=10m
       - run: go vet ./...
-      - run: go build -trimpath -o bin/cardex .
+      - run: go build -trimpath -o bin/cardex ./cmd/cardex
       - run: python3 scripts/smoke.py bin/cardex
       - run: python3 scripts/test-install.py bin/cardex

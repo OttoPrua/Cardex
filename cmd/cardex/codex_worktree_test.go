@@ -980,7 +980,7 @@ func TestReadmeCopyPhaseContractMatchesImplementation(t *testing.T) {
 		}},
 	}
 	for _, d := range docs {
-		data, err := os.ReadFile(d.file)
+		data, err := os.ReadFile(testRepoPath(t, d.file))
 		if err != nil {
 			t.Fatalf("read %s: %v", d.file, err)
 		}

@@ -38,7 +38,7 @@
 
 > **支持按量 API、自建网关和本地模型服务，但需选对协议与执行工具。** Cardex 不会自动把 Chat Completions、Responses 和 Anthropic Messages 相互转换，也不能把任意 URL 填进 `engines` 就当作通用 API。模型还需满足执行工具的工具调用、流式输出等要求；先验证一个真实小任务，再扩大派发。
 
-配置依据：[Cardex 配置](docs/config.md) · [引擎实现与内置预设](engines.go) · [OpenCode provider 官方文档](https://opencode.ai/docs/providers/#custom-provider) · [Codex provider 官方文档](https://developers.openai.com/codex/config-advanced/)。协议说明核对于 2026-09-28。
+配置依据：[Cardex 配置](docs/config.md) · [引擎实现与内置预设](cmd/cardex/engines.go) · [OpenCode provider 官方文档](https://opencode.ai/docs/providers/#custom-provider) · [Codex provider 官方文档](https://developers.openai.com/codex/config-advanced/)。协议说明核对于 2026-09-28。
 
 ## 安装与新手引导
 
@@ -142,12 +142,12 @@ Windows PowerShell：
 需要 Go 1.24+：
 
 ```sh
-go build -o cardex .  # Windows 输出 cardex.exe
+go build -o cardex ./cmd/cardex  # Windows 输出 cardex.exe
 go test ./...
 make test            # Bash / mock CLI 集成检查
 ```
 
-[进阶指南](docs/guide.md) · [运行时机制](docs/internals.md) · [混合路由](MIXED_ROUTING.md) · [更新记录](docs/changelog.md)
+[进阶指南](docs/guide.md) · [运行时机制](docs/internals.md) · [混合路由](docs/mixed-routing.md) · [更新记录](docs/changelog.md)
 
 </details>
 

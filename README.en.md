@@ -38,7 +38,7 @@
 
 > **Metered APIs, custom gateways and local model services are usable through a matching protocol and runner.** Cardex does not translate these three protocols or turn any URL in `engines` into a universal API connector. The model must also meet the runner's tool-calling and streaming requirements. Verify one small real task before expanding dispatch.
 
-Configuration references: [Cardex configuration](docs/config.en.md) · [Engine implementation and presets](engines.go) · [OpenCode providers](https://opencode.ai/docs/providers/#custom-provider) · [Codex providers](https://developers.openai.com/codex/config-advanced/). Protocol documentation checked on 2026-09-28.
+Configuration references: [Cardex configuration](docs/config.en.md) · [Engine implementation and presets](cmd/cardex/engines.go) · [OpenCode providers](https://opencode.ai/docs/providers/#custom-provider) · [Codex providers](https://developers.openai.com/codex/config-advanced/). Protocol documentation checked on 2026-09-28.
 
 ## Install and get started
 
@@ -162,12 +162,12 @@ Task boundaries and session boundaries are separate choices. Persistence preserv
 Requires Go 1.24+:
 
 ```sh
-go build -o cardex .  # Use cardex.exe on Windows
+go build -o cardex ./cmd/cardex  # Use cardex.exe on Windows
 go test ./...
 make test            # Bash integration checks with mock CLIs
 ```
 
-[Advanced guide](docs/guide.en.md) · [Runtime internals](docs/internals.en.md) · [Mixed routing (中文)](MIXED_ROUTING.md) · [Changelog](docs/changelog.en.md)
+[Advanced guide](docs/guide.en.md) · [Runtime internals](docs/internals.en.md) · [Mixed routing (中文)](docs/mixed-routing.md) · [Changelog](docs/changelog.en.md)
 
 </details>
 

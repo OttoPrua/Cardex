@@ -35,6 +35,7 @@ var (
 	killHandlerOnce sync.Once
 	taskExecRoot    sync.Map // taskID -> cardex root, for durable attempt PID bind
 	afterCmdStart   func(*exec.Cmd)
+	afterCmdResume  func(*exec.Cmd)
 	// procWaitDelay is the setupProcGroup WaitDelay. Production is 10s; tests may shrink it.
 	procWaitDelay = 10 * time.Second
 )
@@ -59,15 +60,15 @@ var (
 )
 
 // taskProcessLease is prepared by the platform-specific helper before cmd.Start. On Unix, done is
-// closed only after EOF on an inherited pipe; Windows owns a Job Object and resumes
-// the child only after durable process binding. Cross-workspace fallback stays fail-closed.
+// closed only after EOF on an inherited pipe; Windows owns a Job Object. Both platforms
+// resume the child only after durable process binding. Cross-workspace fallback stays fail-closed.
 type taskProcessLease struct {
 	done    <-chan struct{}
 	commit  func()
 	abort   func()
-	resume  func() error      // Windows: resume the job-owned child after durable binding.
+	resume  func() error      // Release the child to execute after durable binding.
 	finish  func(error) error // Windows: reap or terminate all job descendants.
-	cleanup func()            // Windows: close the owned job on every return.
+	cleanup func()            // Close parent gate/job handles on every return.
 }
 
 func pruneTaskLeaseResidueLocked(taskID string) {
@@ -393,6 +394,9 @@ func runCmdRegisteredHarvestForTaskWorkspace(cmd *exec.Cmd, resultInBuf func() b
 		return fmt.Errorf("%w: process bind failed: %v", errProcessExecution, err)
 	}
 	releaseGate()
+	if hook := afterCmdResume; hook != nil {
+		hook(cmd)
+	}
 	defer func() {
 		procMu.Lock()
 		delete(procGroups, pid)

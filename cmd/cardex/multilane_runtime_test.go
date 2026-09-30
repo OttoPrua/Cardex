@@ -488,6 +488,14 @@ func TestWriterClaimsReconstructAfterAbruptParentDeath(t *testing.T) {
 	if lease != nil && lease.commit != nil {
 		lease.commit()
 	}
+	if lease != nil && lease.cleanup != nil {
+		defer lease.cleanup()
+	}
+	if lease != nil && lease.resume != nil {
+		if err := lease.resume(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Cleanup(func() {
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()

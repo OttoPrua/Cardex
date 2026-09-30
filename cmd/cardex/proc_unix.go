@@ -94,6 +94,15 @@ func prepareTaskProcessLease(cmd *exec.Cmd, taskID, workspaceDir string) (*taskP
 		}
 		return nil, err
 	}
+	gateReader, gateWriter, err := os.Pipe()
+	if err != nil {
+		_ = reader.Close()
+		_ = writer.Close()
+		if workspaceLease != nil {
+			_ = workspaceLease.Close()
+		}
+		return nil, err
+	}
 	done := make(chan struct{})
 	go func() {
 		_, _ = io.Copy(io.Discard, reader)
@@ -104,18 +113,46 @@ func prepareTaskProcessLease(cmd *exec.Cmd, taskID, workspaceDir string) (*taskP
 	if workspaceLease != nil {
 		cmd.ExtraFiles = append(cmd.ExtraFiles, workspaceLease)
 	}
+	gateFD := 3 + len(cmd.ExtraFiles)
+	cmd.ExtraFiles = append(cmd.ExtraFiles, gateReader)
+	// Keep the same PID/PGID alive until its identity has been durably bound. Without
+	// this gate a short-lived git/provider process can exit before the parent binds
+	// it (notably on macOS), or execute even when the bind write fails.
+	path, args := cmd.Path, cmd.Args
+	if len(args) > 0 {
+		args = args[1:]
+	}
+	cmd.Path = "/bin/sh"
+	cmd.Args = append([]string{"sh", "-c", fmt.Sprintf(
+		"IFS= read -r cardex_start <&%d || exit 125; [ \"$cardex_start\" = go ] || exit 125; exec %d<&-; exec \"$@\"", gateFD, gateFD),
+		"cardex-start-gate", path}, args...)
 	return &taskProcessLease{
 		done: done,
 		commit: func() {
 			// The direct child now owns the inherited copy; close only Cardex's parent copy.
 			_ = writer.Close()
+			_ = gateReader.Close()
 			if workspaceLease != nil {
 				_ = workspaceLease.Close()
 			}
 		},
+		resume: func() error {
+			_, err := io.WriteString(gateWriter, "go\n")
+			closeErr := gateWriter.Close()
+			if err != nil {
+				return err
+			}
+			return closeErr
+		},
+		cleanup: func() {
+			_ = gateReader.Close()
+			_ = gateWriter.Close()
+		},
 		abort: func() {
 			_ = writer.Close()
 			_ = reader.Close()
+			_ = gateReader.Close()
+			_ = gateWriter.Close()
 			if workspaceLease != nil {
 				_ = workspaceLease.Close()
 			}

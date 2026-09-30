@@ -75,6 +75,8 @@ Strict acceptance is still the original shape and terminal checks from 0.10.19. 
 go build -o bin/cardex .
 ```
 
+For current checkouts after the source move, build with `go build -o bin/cardex ./cmd/cardex`. The command above records the original candidate build.
+
 Candidate: `/Users/ottoprua/Projects/cardex-worktrees/mixed-routing-20260922/bin/cardex`
 
 `bin/` is gitignored. This stage does not install, push, or change service config.

@@ -82,14 +82,14 @@ func TestReadmeConfigKeys(t *testing.T) {
 
 	sources := map[string]string{"README.md": "docs/config.md", "README.en.md": "docs/config.en.md"}
 	for readme, name := range sources {
-		intro, err := os.ReadFile(readme)
+		intro, err := os.ReadFile(testRepoPath(t, readme))
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !strings.Contains(string(intro), "board") || !strings.Contains(string(intro), name) {
 			t.Errorf("%s must introduce board and link its configuration reference %s", readme, name)
 		}
-		data, err := os.ReadFile(name)
+		data, err := os.ReadFile(testRepoPath(t, name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}

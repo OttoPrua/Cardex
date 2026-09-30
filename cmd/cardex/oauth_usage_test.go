@@ -636,7 +636,7 @@ func TestOAuthUsageRefetchFailureKeepsStaleUntilExpiry(t *testing.T) {
 // TestLoadOAuthAccessTokenHardIsolatesWhenCredsPathSet — P1-4 反例(硬隔离)。
 // 老版 OAuthUsageCredsPath 非空但读不到会 fall through 到 ~/.claude——
 // Windows 上 UserHomeDir 读 USERPROFILE 命中真实用户凭据,测试隔离失效。
-// 新语义:显式指定即硬信,读不到就返回 ''(不再兜底),自定义部署"我不要摸别的路径"的严格语义也回来了。
+// 新语义:显式指定即硬信,读不到就返回 ”(不再兜底),自定义部署"我不要摸别的路径"的严格语义也回来了。
 func TestLoadOAuthAccessTokenHardIsolatesWhenCredsPathSet(t *testing.T) {
 	dir := t.TempDir()
 	// 在 HOME/.claude/.credentials.json 塞一份"真实"凭据(硬隔离应绝不读它)。
@@ -773,7 +773,7 @@ func TestReadmeUtilizationContractMatchesImplementation(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		data, err := os.ReadFile(c.file)
+		data, err := os.ReadFile(testRepoPath(t, c.file))
 		if err != nil {
 			t.Fatalf("read %s: %v", c.file, err)
 		}

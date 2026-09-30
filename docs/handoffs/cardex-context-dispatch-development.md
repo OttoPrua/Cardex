@@ -27,7 +27,7 @@ README 已按 owner 确认的方向制作配图，自动规则仍明确标为待
 
 ## 先看实际路径
 
-优先复用现有实现，不创建第二套调度器、队列或管理状态库。检查：
+优先复用现有实现，不创建第二套调度器、队列或管理状态库。Go 源码、同包测试、嵌入资源与 fixtures 位于 `cmd/cardex/`；下列 Go 文件名均相对该目录。检查：
 - `main.go`、`presets.go`、`setup.go`：add、预设、首次配置与 inventory。
 - `config.go`、`mixed_routing.go`、`routing_policy.go`：配置、现有路由、显式选择与冻结身份。
 - `runner.go`、`grok.go`、`kimi.go` 和其他执行器：实际启动参数、SessionID、FreshSteps、续跑限制和结果解析。

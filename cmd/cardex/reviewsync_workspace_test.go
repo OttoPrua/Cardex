@@ -857,12 +857,7 @@ func TestSyncDistributesPowerShellVerifyScript(t *testing.T) {
 // ② 该目标里去掉 CARDEX_REQUIRE_SYNC_SCRIPTS=1 → 关键字缺失红。
 func TestVerifyAcceptSyncMakefileTargetExists(t *testing.T) {
 	t.Parallel()
-	// 定位仓根:测试文件位于 <repo>/reviewsync_workspace_test.go,cwd 就是 <repo>。
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	mkPath := filepath.Join(repoRoot, "Makefile")
+	mkPath := testRepoPath(t, "Makefile")
 	body, err := os.ReadFile(mkPath)
 	if err != nil {
 		t.Fatalf("Makefile 应存在于仓根: %v", err)
@@ -933,12 +928,8 @@ func TestVerifyAcceptSyncMakefileTargetExists(t *testing.T) {
 //   ③ 只漂 exec 行 pattern(:27)不动 @echo 展示行(:26) → 两处不一致 → 本挡红(R3 兄弟洞闭合)。
 func TestAcceptSyncMakefilePatternCoversAllEnvGatedTests(t *testing.T) {
 	t.Parallel()
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
 	// 从 Makefile 提出 -run 后面的 pattern 字符串(单引号包裹)。
-	mkBody, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	mkBody, err := os.ReadFile(testRepoPath(t, "Makefile"))
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
@@ -967,7 +958,7 @@ func TestAcceptSyncMakefilePatternCoversAllEnvGatedTests(t *testing.T) {
 
 	// 读本测试文件,枚举所有 `func Test*(t *testing.T)` 函数;
 	// 函数体从 `func TestX(` 一直到下一个 `\nfunc `(或文件尾)。
-	self, err := os.ReadFile(filepath.Join(repoRoot, "reviewsync_workspace_test.go"))
+	self, err := os.ReadFile("reviewsync_workspace_test.go")
 	if err != nil {
 		t.Fatalf("read self test file: %v", err)
 	}
@@ -1062,11 +1053,7 @@ func TestAcceptSyncMakefilePatternCoversAllEnvGatedTests(t *testing.T) {
 //   ③ 把 exec 行 recipe 命令换成 @echo(伪装成显示) → 找不到 exec 行 → 本挡红。
 func TestAcceptSyncExecutionLineCarriesRunPattern(t *testing.T) {
 	t.Parallel()
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	mkBody, err := os.ReadFile(filepath.Join(repoRoot, "Makefile"))
+	mkBody, err := os.ReadFile(testRepoPath(t, "Makefile"))
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
@@ -1132,18 +1119,14 @@ func TestAcceptSyncExecutionLineCarriesRunPattern(t *testing.T) {
 //   ③ templates/fix-cycle.md 删掉「按类闭合」章节 → 本挡红。
 func TestIntegrationShTemplateRenderContract(t *testing.T) {
 	t.Parallel()
-	repoRoot, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
 	read := func(rel string) string {
-		body, err := os.ReadFile(filepath.Join(repoRoot, rel))
+		body, err := os.ReadFile(rel)
 		if err != nil {
 			t.Fatalf("read %s: %v", rel, err)
 		}
 		return string(body)
 	}
-	integration := read("test/integration.sh")
+	integration := read(testRepoPath(t, "test/integration.sh"))
 	contracts := []struct {
 		name             string
 		templatePath     string

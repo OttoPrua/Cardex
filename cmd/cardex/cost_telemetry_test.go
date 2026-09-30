@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // terminalEventTypes 是必须携带成本遥测的事件类型集合。
@@ -89,30 +90,25 @@ func TestWithCostTelemetryBranches(t *testing.T) {
 
 // ---- 端到端：提前取消场景（本功能的承重验收）----
 
-// fakeClaudeCancelOnNthCall 造一个假 claude：正常回成功结果，但在**第 n 次**被调用时先把盘上的
-// 任务文件改成 canceled——模拟"人在第 n 步执行途中按下 cancel / tick 对账把 ctx 撤了"。
-// 这样第 n-1 步的用量已经落到卡面，取消发生在其后：正是 retro-77 里丢账最多的那条路。
-func fakeClaudeCancelOnNthCall(t *testing.T, root, taskID string, n int) string {
+// fakeClaudeBlockOnNthCall blocks the nth semantic invocation after the previous
+// step's usage has been persisted, so cancellation exercises a real running process.
+func fakeClaudeBlockOnNthCall(t *testing.T, n int) (bin, started string) {
 	t.Helper()
 	dir := t.TempDir()
 	counter := filepath.Join(dir, "calls")
-	taskFile := filepath.Join(tasksDir(root), taskID+".json")
+	started = filepath.Join(dir, "started")
 	script := "#!/bin/sh\n" +
+		"case \"$1\" in --version|-v) echo 'claude 1.0'; exit 0;; esac\n" +
 		"n=$(cat " + shSingleQuote(counter) + " 2>/dev/null || echo 0)\n" +
 		"n=$((n+1)); printf '%s' \"$n\" > " + shSingleQuote(counter) + "\n" +
 		"if [ \"$n\" -eq " + strconv.Itoa(n) + " ]; then\n" +
-		// 用 awk 而非 sed -i：-i 的就地语义在 BSD/GNU 之间不兼容（BSD 要求后备缀参数）。
-		"  awk '{gsub(/\"status\": \"running\"/, \"\\\"status\\\": \\\"canceled\\\"\"); print}' " +
-		shSingleQuote(taskFile) + " > " + shSingleQuote(taskFile+".tmp") + " && mv " +
-		shSingleQuote(taskFile+".tmp") + " " + shSingleQuote(taskFile) + "\n" +
-		"fi\n" +
-		"cat <<'JSON_EOF'\n" + mkOKResultJSON("sess-cancel") + "\nJSON_EOF\n" +
-		"exit 0\n"
-	path := filepath.Join(dir, "claude")
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		"  : > " + shSingleQuote(started) + "\n  exec sleep 60\nfi\n" +
+		"cat <<'JSON_EOF'\n" + mkOKResultJSON("sess-cancel") + "\nJSON_EOF\n"
+	bin = filepath.Join(dir, "claude")
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	return bin, started
 }
 
 // TestCanceledMidRunCarriesAccumulatedCost 是本功能的承重测试：一张卡跑完第 1 步（用量已落卡面）
@@ -121,44 +117,77 @@ func fakeClaudeCancelOnNthCall(t *testing.T, root, taskID string, n int) string 
 // 【突变致死】把 runner.go finalizeCanceled 的 withCostTelemetry(detail, t) 换回裸 detail → 报红。
 func TestCanceledMidRunCarriesAccumulatedCost(t *testing.T) {
 	t.Parallel()
-	root := testRoot(t)
-	work := t.TempDir()
-	// 先建卡拿到 ID，假 claude 才能定位任务文件。
-	cfg := runTaskCfg(t, "placeholder")
-	tk := newTask(root, cfg, typeSequence, "两步·第二步途中被取消", work, []string{"step-1", "step-2"}, 5)
-	if err := saveTask(root, tk); err != nil {
-		t.Fatal(err)
-	}
-	cfg.ClaudeBin = fakeClaudeCancelOnNthCall(t, root, tk.ID, 2)
+	for _, action := range []string{"context", "cli"} {
+		t.Run(action, func(t *testing.T) {
+			root := testRoot(t)
+			work := t.TempDir()
+			bin, started := fakeClaudeBlockOnNthCall(t, 2)
+			cfg := runTaskCfg(t, bin)
+			tk := newTask(root, cfg, typeSequence, "两步·第二步途中被取消", work, []string{"step-1", "step-2"}, 5)
+			if err := saveTask(root, tk); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- runTask(ctx, root, cfg, tk, false) }()
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				if _, err := os.Stat(started); err == nil {
+					break
+				}
+				select {
+				case err := <-done:
+					t.Fatalf("runner exited before second step: %v", err)
+				default:
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("second step did not start")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			if action == "cli" {
+				if err := cmdSetStatus([]string{"-root", root, tk.ID}, "cancel"); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				cancel()
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("canceled runner did not finish")
+			}
 
-	if err := runTask(context.Background(), root, cfg, tk, false); err != nil {
-		t.Fatal(err)
-	}
-
-	// 取消卡会被归档，事件账本随之搬到 archive/events/。
-	events, _, err := loadTaskEvents(root, tk.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var canceled *TaskEvent
-	for i := range events {
-		if events[i].Type == evCanceled {
-			canceled = &events[i]
-		}
-	}
-	if canceled == nil {
-		t.Fatalf("提前取消应留一条 canceled 终态事件, got %v", eventTypes(events))
-	}
-	cost, unavailable := assertCostTelemetry(t, *canceled)
-	if unavailable {
-		t.Fatalf("第 1 步已烧掉 $0.01/1 turn，取消事件却报 cost_unavailable —— 这正是 retro-77 的丢账形态: %+v",
-			canceled.Detail)
-	}
-	if cost <= 0 {
-		t.Errorf("canceled 事件的 cost_total = %v, 应为第 1 步累计的 0.01", cost)
-	}
-	if turns, _ := canceled.Detail[evDetailTurnsTotal].(float64); turns != 1 {
-		t.Errorf("canceled 事件的 turns_total = %v, 应为 1", turns)
+			// 取消卡会被归档，事件账本随之搬到 archive/events/。
+			events, _, err := loadTaskEvents(root, tk.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var canceled *TaskEvent
+			for i := range events {
+				if events[i].Type == evCanceled {
+					canceled = &events[i]
+				}
+			}
+			if canceled == nil {
+				t.Fatalf("提前取消应留一条 canceled 终态事件, got %v", eventTypes(events))
+			}
+			cost, unavailable := assertCostTelemetry(t, *canceled)
+			if unavailable {
+				t.Fatalf("第 1 步已烧掉 $0.01/1 turn，取消事件却报 cost_unavailable —— 这正是 retro-77 的丢账形态: %+v",
+					canceled.Detail)
+			}
+			if cost <= 0 {
+				t.Errorf("canceled 事件的 cost_total = %v, 应为第 1 步累计的 0.01", cost)
+			}
+			if turns, _ := canceled.Detail[evDetailTurnsTotal].(float64); turns != 1 {
+				t.Errorf("canceled 事件的 turns_total = %v, 应为 1", turns)
+			}
+		})
 	}
 }
 

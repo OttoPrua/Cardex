@@ -22,7 +22,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -980,7 +979,7 @@ func TestReadmeCopyPhaseContractMatchesImplementation(t *testing.T) {
 		}},
 	}
 	for _, d := range docs {
-		data, err := os.ReadFile(d.file)
+		data, err := os.ReadFile(testRepoPath(t, d.file))
 		if err != nil {
 			t.Fatalf("read %s: %v", d.file, err)
 		}
@@ -1076,15 +1075,27 @@ func TestCopyUntrackedListChecksCtxBeforeFirstCopy(t *testing.T) {
 //
 // 【为什么单独一条】只查一次的实现能让上面那条测试全绿,但真实病灶——"子预算在搬到一半时到期"
 // (大仓/NFS 停顿/超大 untracked 面)——原样存活:循环照样一路搬到底。
-// 【构造为什么是确定的】第一条故意做成 32MiB:watcher 一看到目标文件**被创建**就 cancel,此刻
-// io.Copy 才刚开始搬这 32MiB(毫秒级),ctx 因此必定在"第一条搬完、第二条开搬之前"就已死透。
-// 检测延迟是微秒级、拷贝是毫秒级,量级差三个数量级,不是靠竞速取胜。
+// 用受控 context 在第一条落地后的下一次 Err 查询时撤销预算。旧 watcher 假设 32MiB
+// 拷贝一定比 goroutine 调度慢，快速文件系统/并行测试负载下仍会整表先拷完。
 // 【杀的突变】把 ctx 检查从循环体内挪到循环外(只查一次)→ b/c 照样被搬完,末条断言红。
+type cancelAfterCopyContext struct {
+	context.Context
+	cancel     context.CancelFunc
+	copiedPath string
+}
+
+func (c cancelAfterCopyContext) Err() error {
+	if _, err := os.Stat(c.copiedPath); err == nil {
+		c.cancel()
+	}
+	return c.Context.Err()
+}
+
 func TestCopyUntrackedListStopsMidLoop(t *testing.T) {
 	t.Parallel()
 	src := t.TempDir()
 	dst := t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "a-big.bin"), make([]byte, 32<<20), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(src, "a-big.bin"), []byte("first file"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range []string{"b.txt", "c.txt"} {
@@ -1096,26 +1107,17 @@ func TestCopyUntrackedListStopsMidLoop(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	stop := make(chan struct{})
-	defer close(stop)
-	go func() {
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			if _, err := os.Stat(filepath.Join(dst, "a-big.bin")); err == nil {
-				cancel() // 第一条刚开搬就掐掉子预算
-				return
-			}
-			runtime.Gosched()
-		}
-	}()
+	controlled := cancelAfterCopyContext{Context: ctx, cancel: cancel, copiedPath: filepath.Join(dst, "a-big.bin")}
 
-	err := copyUntrackedList(ctx, src, dst, rels)
+	err := copyUntrackedList(controlled, src, dst, rels)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("子预算中途死掉,拷贝腿应报 ctx 错, got %v", err)
+	}
+	if data, err := os.ReadFile(controlled.copiedPath); err != nil || string(data) != "first file" {
+		t.Fatalf("第一条应在取消前完整落地, got %q, %v", data, err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "b.txt")); !os.IsNotExist(err) {
+		t.Fatalf("取消后第二条不应开搬, got %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dst, "c.txt")); err == nil {
 		t.Fatal("子预算中途死掉后仍把整张表搬完——ctx 只在进循环前查了一次,大仓/NFS 场景照旧失控")

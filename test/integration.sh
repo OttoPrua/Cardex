@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-go build -o bin/cardex .
+go build -o bin/cardex ./cmd/cardex
 BIN="$PWD/bin/cardex"
 
 TMP=$(mktemp -d)

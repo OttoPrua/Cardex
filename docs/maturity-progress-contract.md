@@ -85,7 +85,7 @@ Cardex 的三档进度现在有明确边界：
 
 ## 回归基准
 
-仓内 `testdata/perlica-progress-reference-v1.json` 的文件名保留其 `perlica-54-slices-v1` 分母身份；内容已升级为 v2 schema，并为 54 个切片固定五类归属。它只代表 `2026-08-09T23:02:58+08:00` 的历史快照，不代表当前状态。测试必须重算得到：
+仓内 `cmd/cardex/testdata/perlica-progress-reference-v1.json` 的文件名保留其 `perlica-54-slices-v1` 分母身份；内容已升级为 v2 schema，并为 54 个切片固定五类归属。它只代表 `2026-08-09T23:02:58+08:00` 的历史快照，不代表当前状态。测试必须重算得到：
 
 - `96/216 = 44.44%`
 - 相对上次同步 `+5` 点、`+2.31pp`

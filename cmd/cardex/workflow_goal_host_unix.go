@@ -81,14 +81,19 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 		return fmt.Errorf("hosted goal: Foreground and Setctty cannot both be set")
 	}
 	restore := func() error { return nil }
-	if cmd.Cancel == nil {
-		cmd.Cancel = func() error {
-			if cmd.Process == nil {
-				return os.ErrProcessDone
-			}
-			return killProcGroup(cmd.Process.Pid)
+	// CommandContext installs a direct-child-only Cancel by default. Override it
+	// for the hosted process group, retaining a direct-child fallback as well.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
 		}
+		groupErr := killProcGroup(cmd.Process.Pid)
+		if directErr := cmd.Process.Kill(); directErr != nil && groupErr != nil {
+			return directErr
+		}
+		return nil
 	}
+	cmd.WaitDelay = time.Second
 	userHome, _ := os.UserHomeDir()
 	cmd.Env = providerChildEnv(userHome, map[string]string{
 		"GROK_HOME":                grokHome,
@@ -119,9 +124,13 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 	}
 	stopCtl := make(chan struct{})
 	output := os.Stdout
-	outputDone := make(chan error, 1)
-	prevHook := afterCmdStart
-	afterCmdStart = func(started *exec.Cmd) {
+	type outputResult struct {
+		err      error
+		reported bool
+	}
+	outputDone := make(chan outputResult, 1)
+	prevHook := afterCmdResume
+	afterCmdResume = func(started *exec.Cmd) {
 		if prevHook != nil {
 			prevHook(started)
 		}
@@ -129,7 +138,16 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 		// caller's output stream; do not create a private-payload log or hide prompts.
 		go func() {
 			_, err := io.Copy(output, master)
-			outputDone <- err
+			reported := false
+			if err != nil && !errors.Is(err, syscall.EIO) {
+				// A failed caller sink must not stop draining the PTY and leave
+				// its producer blocked forever on terminal output. Report the
+				// loss immediately and drain remaining bytes until child exit.
+				fmt.Fprintf(os.Stderr, "warning: hosted PTY output may be incomplete: %v\n", err)
+				reported = true
+				_, _ = io.Copy(io.Discard, master)
+			}
+			outputDone <- outputResult{err: err, reported: reported}
 		}()
 		_ = slave.Close()
 		readyDeadline := time.Now().Add(3 * time.Second)
@@ -153,7 +171,7 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 		go hostedControlLoop(root, t, grokHome, master, ctl, stopCtl)
 	}
 	defer func() {
-		afterCmdStart = prevHook
+		afterCmdResume = prevHook
 		close(stopCtl)
 		if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 			_, _ = w.Write([]byte("\n"))
@@ -170,10 +188,10 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 		// slave or a stalled caller must not extend the execution deadline.
 		timer := time.NewTimer(time.Second)
 		select {
-		case err := <-outputDone:
+		case result := <-outputDone:
 			// Unix PTY readers commonly report EIO when the slave closes.
-			if err != nil && !errors.Is(err, syscall.EIO) {
-				fmt.Fprintf(os.Stderr, "warning: hosted PTY output may be incomplete: %v\n", err)
+			if result.err != nil && !errors.Is(result.err, syscall.EIO) && !result.reported {
+				fmt.Fprintf(os.Stderr, "warning: hosted PTY output may be incomplete: %v\n", result.err)
 			}
 		case <-ctx.Done():
 			fmt.Fprintln(os.Stderr, "warning: hosted PTY output may be incomplete: execution deadline reached before output drain")

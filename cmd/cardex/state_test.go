@@ -62,14 +62,16 @@ func TestReleaseLockRefusesForeignPID(t *testing.T) {
 
 // TestHelperProcessAcquireLock 是跨进程锁测试的 helper 子进程入口, 受 GO_TEST_HELPER_LOCK=1 门控.
 // 无环境变量时直接返回, 主 test 二进制可把它当空测试跑过. 有环境变量时按参数在指定时刻起跑
-// acquireLock, 拿到锁则 hold 短时间(远小于 TTL)后 release、以 exit 0 汇报; 没拿到 exit 1.
+// acquireLock, 拿到锁则等全部竞争者完成后 release、以 exit 0 汇报; 没拿到 exit 1.
 func TestHelperProcessAcquireLock(t *testing.T) {
 	if os.Getenv("GO_TEST_HELPER_LOCK") != "1" {
 		return
 	}
 	root := os.Getenv("HELPER_ROOT")
 	ttlMs, _ := strconv.Atoi(os.Getenv("HELPER_TTL_MS"))
-	holdMs, _ := strconv.Atoi(os.Getenv("HELPER_HOLD_MS"))
+	index := os.Getenv("HELPER_INDEX")
+	resultPath := filepath.Join(root, "acquire-result-"+index)
+	releasePath := filepath.Join(root, "release-acquire-winner")
 	startAtMicro, _ := strconv.ParseInt(os.Getenv("HELPER_START_AT_UNIX_MICRO"), 10, 64)
 	// 统一起跑时刻: 所有 helper 尽量同时进 acquireLock, 才能在 stale 锁上触发多方并发强夺.
 	if wait := time.Until(time.UnixMicro(startAtMicro)); wait > 0 {
@@ -77,24 +79,37 @@ func TestHelperProcessAcquireLock(t *testing.T) {
 	}
 	ttl := time.Duration(ttlMs) * time.Millisecond
 	if !acquireLock(root, ttl) {
+		if err := os.WriteFile(resultPath, []byte("lost"), 0o644); err != nil {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
-	// hold << ttl: 保证 loser 在 acquireLock 内两次 os.Link 尝试都发生在 winner 未 release 前,
-	// staleLock 见 winner 新挂锁 mtime 新鲜返回 false, loser 立刻 return false. 若 hold 逼近或
-	// 超过 TTL, loser 有机会在 winner release 后第二次 os.Link 成功 → 假 winner. hold=50ms 远
-	// 小于 ttl=1s, 稳挡.
-	time.Sleep(time.Duration(holdMs) * time.Millisecond)
+	if err := os.WriteFile(resultPath, []byte("won"), 0o644); err != nil {
+		os.Exit(2)
+	}
+	// Keep the winner alive until every contender has attempted acquisition.
+	// A fixed 50ms hold can expire before a delayed contender is scheduled.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if _, err := os.Stat(releasePath); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			releaseLock(root)
+			os.Exit(3)
+		}
+		time.Sleep(time.Millisecond)
+	}
 	releaseLock(root)
 	os.Exit(0)
 }
 
 // TestAcquireLockStealsAtomicallyNoDoubleOccupancy (CG-R1 修复反例 · state.go:acquireLock 强夺唯一化)
 // 预置 stale 锁 (mtime>TTL 的空文件模拟"陈旧遗留"), 起 N=5 个 helper 子进程同时进 acquireLock
-// 强夺分支. 旧法裸 os.Remove(path) 让多个进程都 Remove 后 os.Link 挂锁双持; 新法 os.Rename 是
-// POSIX 原子, path 只能被一方成功搬走, 恰 1 个进程返回 true.
+// 强夺分支. 仅靠 Rename 后复核仍会让第三竞争者在锁名空窗内 Link 新锁；稳定的内核 guard
+// 串行化 acquire/release，全部竞争者完成时应恰 1 个存活赢家。
 //
-// 【反例】把 acquireLock 里 os.Rename 改回 os.Remove(path), 本测试会看到 2+ 个 helper 子进程
-// exit 0 → winners > 1 → 断言直接报红.
+// 【反例】去掉 acquireLock 的内核 guard，保留原 Rename/Link 实现，仍能复现 winners > 1。
 //
 // 【为什么必须跨进程】单进程内多 goroutine 共享 os.Getpid(), acquireLock 里的 PID 判据无法区分
 // 竞争者, 无法真实再现"多方同时进强夺"的原子性缺陷. helper-process 模式复用 events_test.go 里
@@ -126,7 +141,7 @@ func TestAcquireLockStealsAtomicallyNoDoubleOccupancy(t *testing.T) {
 			"GO_TEST_HELPER_LOCK=1",
 			"HELPER_ROOT="+root,
 			"HELPER_TTL_MS=1000",
-			"HELPER_HOLD_MS=50",
+			"HELPER_INDEX="+strconv.Itoa(i),
 			"HELPER_START_AT_UNIX_MICRO="+strconv.FormatInt(startAt.UnixMicro(), 10),
 		)
 		// stdout/stderr 直连便于定位子进程 panic; 目标是"winners>1 必红".
@@ -136,6 +151,27 @@ func TestAcquireLockStealsAtomicallyNoDoubleOccupancy(t *testing.T) {
 			t.Fatalf("helper 子进程 %d Start 失败: %v", i, err)
 		}
 		cmds = append(cmds, cmd)
+	}
+	releasePath := filepath.Join(root, "release-acquire-winner")
+	defer os.WriteFile(releasePath, nil, 0o644)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		ready := 0
+		for i := 0; i < workers; i++ {
+			if _, err := os.Stat(filepath.Join(root, "acquire-result-"+strconv.Itoa(i))); err == nil {
+				ready++
+			}
+		}
+		if ready == workers {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("contenders did not finish acquisition")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := os.WriteFile(releasePath, nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
 	winners := 0
 	for i, cmd := range cmds {
@@ -153,7 +189,7 @@ func TestAcquireLockStealsAtomicallyNoDoubleOccupancy(t *testing.T) {
 		}
 	}
 	if winners != 1 {
-		t.Fatalf("跨进程强夺 stale 锁: winners=%d(应恰 1); 反例注入: acquireLock 里 os.Rename 改回 os.Remove(path) → 多方 Remove-Link 双持, 本断言即红.", winners)
+		t.Fatalf("跨进程强夺 stale 锁: winners=%d(应恰 1); acquire/release 的锁名空窗必须受稳定内核 guard 保护.", winners)
 	}
 }
 

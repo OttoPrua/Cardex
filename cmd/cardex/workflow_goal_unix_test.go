@@ -3,7 +3,6 @@
 package main
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -52,16 +51,6 @@ func openTestPTY() (*os.File, *os.File, error) {
 	return master, slave, nil
 }
 
-func ptyStartDenied(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "operation not permitted") ||
-		strings.Contains(s, "operation not supported by device") ||
-		errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.ENOTTY) || errors.Is(err, syscall.ENODEV)
-}
-
 func waitPTYChild(t *testing.T, cmd *exec.Cmd, master *os.File, wantOK bool) {
 	t.Helper()
 	done := make(chan error, 1)
@@ -85,19 +74,6 @@ func waitPTYChild(t *testing.T, cmd *exec.Cmd, master *os.File, wantOK bool) {
 			t.Fatal("child did not consume TTY input; likely SIGTTIN without foreground ownership")
 		}
 	}
-}
-
-func skipIfGoalPTYUnavailable(t *testing.T) {
-	t.Helper()
-	master, slave, err := openGoalPTY()
-	if err != nil {
-		if ptyStartDenied(err) {
-			t.Skipf("pty unavailable: %v", err)
-		}
-		t.Fatalf("openGoalPTY: %v", err)
-	}
-	master.Close()
-	slave.Close()
 }
 
 func TestManualGoalProcGroupTakesPTYForeground(t *testing.T) {

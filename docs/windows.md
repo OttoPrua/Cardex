@@ -9,7 +9,7 @@ Windows amd64 已用真实 Windows 上的受控本地进程验证：配置/状�
 在 PowerShell 中构建并使用明确的数据目录：
 
 ```powershell
-go build -o .\cardex.exe .
+go build -o .\cardex.exe ./cmd/cardex
 .\cardex.exe --version
 .\cardex.exe init -root 'D:\Cardex Data'
 .\cardex.exe list -root 'D:\Cardex Data'
@@ -32,11 +32,11 @@ WSL 使用 Linux 构建及 Unix 进程/锁实现。它的测试结果不等于 W
 在 Windows 原生 Go 环境运行：
 
 ```powershell
-go test . -run '^(TestWindows|TestExecutionLease|TestSetup|TestPreset|TestAcquireLockStealsAtomicallyNoDoubleOccupancy|TestDeniedPresemanticStartDoesNotConsumeResumeTombstone|TestReleaseLockRefusesForeignPID)' -count=1 -timeout=180s
+go test ./cmd/cardex -run '^(TestWindows|TestExecutionLease|TestSetup|TestPreset|TestAcquireLockStealsAtomicallyNoDoubleOccupancy|TestDeniedPresemanticStartDoesNotConsumeResumeTombstone|TestReleaseLockRefusesForeignPID)' -count=1 -timeout=180s
 go vet ./...
-go build -trimpath -o bin/cardex.exe .
+go build -trimpath -o bin/cardex.exe ./cmd/cardex
 python scripts/smoke.py bin/cardex.exe
 python scripts/test-install.py bin/cardex.exe
 ```
 
-也可在 Mac 上用 `GOOS=windows GOARCH=amd64 go test -c -o cardex.test.exe .` 生成测试程序，再在 Windows 执行相同 `-test.run` 选择。交叉编译只是准备步骤；必须保留实际 Windows 运行结果。现有全套测试仍包含 POSIX shell fixtures，这个选择不宣称原生全套测试均通过。Mac 的 provider、admission、进程 lease 和 Goal 受影响回归独立运行。
+也可在 Mac 上用 `GOOS=windows GOARCH=amd64 go test -c -o cardex.test.exe ./cmd/cardex` 生成测试程序，再在 Windows 执行相同 `-test.run` 选择。交叉编译只是准备步骤；必须保留实际 Windows 运行结果。现有全套测试仍包含 POSIX shell fixtures，这个选择不宣称原生全套测试均通过。Mac 的 provider、admission、进程 lease 和 Goal 受影响回归独立运行。

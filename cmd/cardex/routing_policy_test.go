@@ -1267,7 +1267,10 @@ func TestProcessResidueSurvivesAttemptResetUntilGroupIsDead(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows policy fallback is deliberately fail-closed because descendant liveness is not provable")
 	}
-	cmd := exec.CommandContext(context.Background(), "sh", "-c", "sleep 30")
+	// Own the sole process in this group so Wait proves the entire fixture is reaped.
+	// A shell may fork sleep; reaping only the shell can leave a child zombie in the
+	// group until init runs, and the conservative residue probe must keep that group.
+	cmd := exec.CommandContext(context.Background(), "sleep", "30")
 	setupProcGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

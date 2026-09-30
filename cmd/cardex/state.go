@@ -67,7 +67,20 @@ type lockInfo struct {
 // Rename 之间, path 可能被他人 Link 新鲜锁 (B 过 staleLock 判据后停顿至 A 完成 Rename+Link,
 // B 的 Rename 会搬走 A 的新鲜锁双持). 核 stale 内容: 若属存活异 PID, os.Link 归还目标路径
 // 并按抢占失败返回, 让 A 的锁不被误删。tombstones.go / events.go 同类闭合。
+// Moving a stale lock temporarily removes its public name. A third contender
+// can otherwise Link into that gap before a live owner's lock is restored.
+// Serialize acquisition/release on a stable kernel-locked file, which is never
+// renamed or removed and is automatically unlocked when a process dies.
 func acquireLock(root string, ttl time.Duration) bool {
+	acquired := false
+	err := withControlFileLock(root, ".scheduler-owner", func() error {
+		acquired = acquireLockUnderGuard(root, ttl)
+		return nil
+	})
+	return err == nil && acquired
+}
+
+func acquireLockUnderGuard(root string, ttl time.Duration) bool {
 	path := lockPath(root)
 	for i := 0; i < 2; i++ {
 		tmp := fmt.Sprintf("%s.acq-%d-%d", path, os.Getpid(), time.Now().UnixNano())
@@ -169,6 +182,13 @@ func schedulerWriteAllowed(root string) bool {
 // 再核内容: 属自身 PID 才 Remove; 内容变了(存活异 PID) 则 Link 归还, 让归属复原。
 // tombstones.go / events.go 同类闭合。
 func releaseLock(root string) {
+	_ = withControlFileLock(root, ".scheduler-owner", func() error {
+		releaseLockUnderGuard(root)
+		return nil
+	})
+}
+
+func releaseLockUnderGuard(root string) {
 	path := lockPath(root)
 	data, err := os.ReadFile(path)
 	if err != nil {

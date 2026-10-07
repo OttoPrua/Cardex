@@ -8,6 +8,49 @@ import (
 	"testing"
 )
 
+func TestLexicalHistoricalRootDoesNotAdmitMissingDirectories(t *testing.T) {
+	t.Parallel()
+	missing := filepath.Join(t.TempDir(), "gone-worktree")
+	if _, err := NormalizePathClaim(missing, "internal/auth/token.go"); !errors.Is(err, errWriteDomainCanonicalization) {
+		t.Fatalf("new admission must not canonicalize a missing repo root: %v", err)
+	}
+	real := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(real, "internal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	mustSymlink(t, real, alias)
+	gone := filepath.Join(alias, "missing-wt")
+	got, err := canonicalHistoricalRoot(gone)
+	if err != nil {
+		t.Fatalf("historical missing root through a parent alias: %v", err)
+	}
+	resolvedReal, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(resolvedReal, "missing-wt")
+	if got != want {
+		t.Fatalf("historical parent-symlink root=%q want %q", got, want)
+	}
+	if _, err := NormalizePathClaim(gone, "internal/auth/token.go"); !errors.Is(err, errWriteDomainCanonicalization) {
+		t.Fatalf("new admission must stay strict under a missing aliased worktree: %v", err)
+	}
+	lex, err := lexicalWriteDomain(WriteDomain{
+		ID: "auth-tokens", Lineage: "auth-tokens-lineage", Component: "auth",
+		Paths: []string{"internal/auth/token.go"},
+	})
+	if err != nil || len(lex.Paths) != 1 || lex.Paths[0] != "internal/auth/token.go" {
+		t.Fatalf("lexical historical claim: %+v err=%v", lex, err)
+	}
+	if _, err := lexicalWriteDomain(WriteDomain{
+		ID: "auth-tokens", Lineage: "auth-tokens-lineage", Component: "auth",
+		Paths: []string{"../secret"},
+	}); !errors.Is(err, errWriteDomainTraversal) {
+		t.Fatalf("lexical historical traversal: %v", err)
+	}
+}
+
 func TestNormalizePathClaimRejectsTraversalEmptyAndAmbiguous(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()

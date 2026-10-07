@@ -88,6 +88,7 @@ const (
 	grokBuildCooldownName                    = "grok-build"
 	grokBuildReadOnlySandboxDefault          = "read-only"
 	grokBuildReadOnlySandboxMacOSNoopNetwork = "cardex-macos-readonly-noop-network"
+	grokBuildWriteSandboxDefault             = "workspace"
 	grokBuildAuthCooldownPrefix              = "auth: "
 
 	routeReasonGrokExplicit            = "grok_build_explicit"
@@ -2412,6 +2413,55 @@ func resolvedGrokBuildReadOnlySandbox(cfg *Config) string {
 	default:
 		return grokBuildReadOnlySandboxDefault
 	}
+}
+
+func validateGrokWriteSandboxProfile(name string) error {
+	if name == "" {
+		return nil
+	}
+	if strings.TrimSpace(name) != name {
+		return fmt.Errorf("grok_build.write_sandbox_profile %q 非法（名称必须精确且不能包含首尾空白）", name)
+	}
+	switch strings.ToLower(name) {
+	case "off", "bypass", "unrestricted", "full-unrestricted", "danger-full-access",
+		"none", "disable", "disabled", "always-approve":
+		return fmt.Errorf("grok_build.write_sandbox_profile %q 非法（禁止 off/bypass/unrestricted）", name)
+	}
+	if strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") ||
+		strings.ContainsRune(name, filepath.Separator) {
+		return fmt.Errorf("grok_build.write_sandbox_profile %q 非法（不能是路径）", name)
+	}
+	if !grokSandboxProfileIdent(name) {
+		return fmt.Errorf("grok_build.write_sandbox_profile %q 非法（名称必须是精确标识）", name)
+	}
+	return nil
+}
+
+func grokSandboxProfileIdent(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for i, r := range name {
+		ok := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z')
+		if i > 0 {
+			ok = ok || (r >= '0' && r <= '9') || r == '-' || r == '_'
+		}
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func resolvedGrokBuildWriteSandbox(cfg *Config) string {
+	if cfg == nil || cfg.GrokBuild == nil {
+		return grokBuildWriteSandboxDefault
+	}
+	name := cfg.GrokBuild.WriteSandboxProfile
+	if name == "" || validateGrokWriteSandboxProfile(name) != nil {
+		return grokBuildWriteSandboxDefault
+	}
+	return name
 }
 
 var grokBuildQuotaRe = regexp.MustCompile(`(?i)(?:^|[^0-9])429(?:[^0-9]|$)|too many requests|rate limit|usage limit|quota (?:exceeded|exhausted)|insufficient (?:quota|credits)|out of (?:credits|usage)|额度(?:不足|已用完)|配额(?:不足|已用尽)|限额(?:不足|已用尽)`)

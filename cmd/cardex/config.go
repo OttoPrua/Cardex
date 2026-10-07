@@ -72,8 +72,12 @@ type GrokBuildRoute struct {
 	Model                  string `json:"model"`
 	Effort                 string `json:"effort"`
 	ReadOnlySandboxProfile string `json:"read_only_sandbox_profile,omitempty"`
-	LimitFallbackMin       int    `json:"limit_fallback_min,omitempty"`
-	KimiOpusFallback       bool   `json:"kimi_opus_fallback,omitempty"`
+	// WriteSandboxProfile is an explicit owner-named Grok `--sandbox` profile
+	// for write-capable native Goal. Empty keeps the default `workspace`.
+	// Cardex never writes sandbox.toml or derives extra write roots.
+	WriteSandboxProfile string `json:"write_sandbox_profile,omitempty"`
+	LimitFallbackMin    int    `json:"limit_fallback_min,omitempty"`
+	KimiOpusFallback    bool   `json:"kimi_opus_fallback,omitempty"`
 	// FableClaudeFallback/FableFirstPrinciples 仅用于读取并收口已经进入旧链的卡；Owner 路由
 	// 不再从这两个兼容字段创建新链，新 Fable 卡只走 CursorFableRoute。
 	FableClaudeFallback   bool                     `json:"fable_claude_fallback,omitempty"`
@@ -115,6 +119,7 @@ type OwnerProviderTargets struct {
 
 type Config struct {
 	DispatchPresets   map[string]DispatchPreset `json:"dispatch_presets,omitempty"`
+	ConfirmedDispatch *ConfirmedDispatchPolicy  `json:"confirmed_dispatch,omitempty"`
 	ClaudeBin         string                    `json:"claude_bin"`
 	PollIntervalSec   int                       `json:"poll_interval_sec"`
 	LimitFallbackMin  int                       `json:"limit_fallback_min"`
@@ -950,6 +955,9 @@ func validateGrokBuild(cfg *Config) error {
 	default:
 		return fmt.Errorf("grok_build.read_only_sandbox_profile %q 非法（可选 %s/%s）",
 			r.ReadOnlySandboxProfile, grokBuildReadOnlySandboxDefault, grokBuildReadOnlySandboxMacOSNoopNetwork)
+	}
+	if err := validateGrokWriteSandboxProfile(r.WriteSandboxProfile); err != nil {
+		return err
 	}
 	// The Grok menu still rejects max; xhigh remains the top effort for 4.6 and 4.7.
 	if r.Effort == "max" {

@@ -324,6 +324,10 @@ type Task struct {
 	DependsOn []string `json:"depends_on,omitempty"`
 	// WorkflowID binds this card to a durable serial/federated workflow record.
 	WorkflowID string `json:"workflow_id,omitempty"`
+	// SessionStage names one direction or round. It is not a second session policy.
+	SessionStage string `json:"session_stage,omitempty"`
+	// SessionRole is author or reviewer for a workflow stage card.
+	SessionRole string `json:"session_role,omitempty"`
 	// IntegrationGate latches dispatch and `cardex release` closed until a
 	// machine-re-derived review verdict=pass with empty p0/p1 matches the frozen
 	// candidate and passes custody. Absent gates leave a card's behavior unchanged.
@@ -334,6 +338,9 @@ type Task struct {
 	// Goal is the stage execution / native-goal fact. Ordinary cards omit it and
 	// keep current eligible()/tick semantics.
 	Goal *TaskGoalBinding `json:"goal,omitempty"`
+	// DispatchDecision records the direct shape actually admitted. A saved Goal
+	// policy does not turn an ordinary add into a native Goal.
+	DispatchDecision *DispatchDecision `json:"dispatch_decision,omitempty"`
 
 	// Verify is the card's explicit acceptance command (sh -c in Dir). Harvest runs it after the
 	// provider process has exited; empty means the outcome is judged from the worktree alone.

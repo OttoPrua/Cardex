@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const version = "0.10.24"
+const version = "0.10.25"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -204,12 +204,14 @@ func printUsage() {
                                    # （kimi / glm-cn / glm-global / minimax-cn / minimax-global /
                                    #   mimo / opencode-go / ollama），add 后配好密钥即可
                                    #   -runner <引擎名> 钉定主跑，或加入 fallback_order 参与降级链
-  workflow  init|list|show|writer|goal-run|goal-sync|design-result|design-repair|
+  workflow  init|list|show|writer|goal-run|goal-sync|design-bind|design-result|design-repair|
             freeze-candidate|review|ingest-review|repair|
             try-release-integration|mark
                                    # 串联/联邦工作流的耐久记录：绑定目标、写域、轮次上限、
                                    # 候选身份与集成门。Goal 模式：writer -mode manual +
-                                   # goal-run -manual 前台 /goal；goal-sync 不启动 provider，
+                                   # goal-run -manual|-hosted [-sandbox NAME] 前台 /goal；
+                                   # -sandbox 选择已存在且适用的 Grok profile，仅本次调用；
+                                   # goal-sync 不启动 provider，
                                    # 但会更新阶段事实。每一步都是显式命令，tick 不自动推进。
                                    # 集成卡默认 held，只有机器核验 verdict=pass（p0/p1 皆空）、
                                    # 候选与 custody 一致才可能释放；live/cutover 始终是另外的门
@@ -317,6 +319,7 @@ func cmdAdd(args []string) error {
 	verify := fs.String("verify", "", "验收命令（在 -dir 内 sh -c 执行，如 \"go test ./...\"）；收割时据此判定完成")
 	req := fs.String("req", "", "关联的共享需求 ID（req_ + 16 位十六进制）")
 	manager := fs.String("manager", "", "负责跟进本卡的管理 profile（如 yvonne），用于唤醒摘要归属")
+	workMode := fs.String("work-mode", "", "工作方式：direct（默认，普通提交）| staged | goal。staged/goal 不写卡，改走 cardex workflow")
 	dryRun := fs.Bool("dry-run", false, "只打印规范化后的卡片 JSON（路由/档位/写域/步骤数），不入队")
 	_ = fs.Parse(args)
 	if *maxAttempts < 0 {
@@ -578,6 +581,11 @@ func cmdAdd(args []string) error {
 	t.Verify = strings.TrimSpace(*verify)
 	t.Req = strings.TrimSpace(*req)
 	t.Manager = strings.TrimSpace(*manager)
+	decision, err := ordinaryDirectDecision(cfg, strings.TrimSpace(*workMode))
+	if err != nil {
+		return err
+	}
+	t.DispatchDecision = decision
 	if *dryRun {
 		out, err := json.MarshalIndent(t, "", "  ")
 		if err != nil {

@@ -180,6 +180,55 @@ func canonicalizeRepoRoot(repoRoot string) (string, error) {
 	return resolved, nil
 }
 
+// canonicalHistoricalRoot resolves a recorded repository root that may have
+// disappeared. Existing ancestors are evaluated through symlinks so aliases
+// collide. The directory is not created. New admission uses canonicalizeRepoRoot.
+func canonicalHistoricalRoot(repoRoot string) (string, error) {
+	if strings.TrimSpace(repoRoot) == "" {
+		return "", errWriteDomainEmptyClaim
+	}
+	if strings.TrimSpace(repoRoot) != repoRoot || !filepath.IsAbs(repoRoot) {
+		return "", errWriteDomainAmbiguousClaim
+	}
+	root := filepath.Clean(repoRoot)
+	if !filepath.IsAbs(root) {
+		return "", errWriteDomainAmbiguousClaim
+	}
+	_, err := os.Lstat(root)
+	if err == nil {
+		return canonicalizeRepoRoot(repoRoot)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", errWriteDomainCanonicalization
+	}
+	var missing []string
+	cur := root
+	for {
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return root, nil
+		}
+		_, lerr := os.Lstat(parent)
+		if lerr == nil {
+			resolved, rerr := evalStable(parent)
+			if rerr != nil {
+				return "", rerr
+			}
+			missing = append([]string{filepath.Base(cur)}, missing...)
+			out := filepath.Clean(filepath.Join(append([]string{resolved}, missing...)...))
+			if !filepath.IsAbs(out) {
+				return "", errWriteDomainCanonicalization
+			}
+			return out, nil
+		}
+		if !errors.Is(lerr, os.ErrNotExist) {
+			return "", errWriteDomainCanonicalization
+		}
+		missing = append([]string{filepath.Base(cur)}, missing...)
+		cur = parent
+	}
+}
+
 func lexicalPathClaim(raw string) (string, error) {
 	if strings.TrimSpace(raw) == "" {
 		return "", errWriteDomainEmptyClaim
@@ -225,6 +274,59 @@ func lexicalPathClaim(raw string) (string, error) {
 		}
 	}
 	return trimmed, nil
+}
+
+// lexicalWriteDomain validates identifiers, closed resources, and path claims
+// without requiring the repository directory to exist. Traversal and escape
+// still fail closed. Used only for historical load of disappeared roots.
+func lexicalWriteDomain(domain WriteDomain) (WriteDomain, error) {
+	if !validIntegrationID(domain.ID) || !validIntegrationID(domain.Lineage) || !validIntegrationID(domain.Component) {
+		return WriteDomain{}, fmt.Errorf("%w: id=%q lineage=%q component=%q", errWriteDomainMalformedID, domain.ID, domain.Lineage, domain.Component)
+	}
+	if len(domain.Paths) == 0 {
+		return WriteDomain{}, errWriteDomainEmptyClaim
+	}
+	out := WriteDomain{
+		ID:        domain.ID,
+		Lineage:   domain.Lineage,
+		Component: domain.Component,
+		Paths:     make([]string, 0, len(domain.Paths)),
+		Resources: make([]ResourceClaim, 0, len(domain.Resources)),
+	}
+	seenPath := map[string]bool{}
+	for _, raw := range domain.Paths {
+		if strings.TrimSpace(raw) == "" {
+			return WriteDomain{}, errWriteDomainEmptyClaim
+		}
+		path, err := lexicalPathClaim(raw)
+		if err != nil {
+			return WriteDomain{}, err
+		}
+		if seenPath[path] {
+			return WriteDomain{}, fmt.Errorf("%w: path %s", errWriteDomainDuplicateClaim, path)
+		}
+		seenPath[path] = true
+		out.Paths = append(out.Paths, path)
+	}
+	seenRes := map[string]bool{}
+	for _, res := range domain.Resources {
+		if !closedResourceKinds[res.Kind] {
+			return WriteDomain{}, fmt.Errorf("%w: %q", errWriteDomainUnknownResource, res.Kind)
+		}
+		if strings.TrimSpace(res.ID) == "" {
+			return WriteDomain{}, errWriteDomainEmptyClaim
+		}
+		if !validResourceID(res.ID) {
+			return WriteDomain{}, fmt.Errorf("%w: resource %q", errWriteDomainMalformedID, res.ID)
+		}
+		key := res.Kind + "\x00" + res.ID
+		if seenRes[key] {
+			return WriteDomain{}, fmt.Errorf("%w: resource %s %s", errWriteDomainDuplicateClaim, res.Kind, res.ID)
+		}
+		seenRes[key] = true
+		out.Resources = append(out.Resources, ResourceClaim{Kind: res.Kind, ID: res.ID})
+	}
+	return out, nil
 }
 
 func resolveThroughExistingPrefix(root, full string) (string, error) {

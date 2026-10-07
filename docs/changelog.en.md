@@ -1,5 +1,13 @@
 # cardex changelog
 
+## 2026-10-08 · v0.10.25: direction dispatch, overall acceptance and Goal completion
+
+- Add explicit `workflow fanout`, `accept` / `accept -complete`, `goal-round`, `goal-direction` and `goal-launch` commands. Execution directions consume completed design work; acceptance covers current members and candidate artifacts. A completed direction or round limit does not accept the overall goal. Ordinary `add` remains direct even with a saved Goal preference.
+- Sync each native direction against its own task, session and attempt. Hosted Goal completion waits for current final-turn evidence, actual process exit and output drain before existing terminal checks produce a completion event and manager-wake outbox entry. Message delivery still needs the existing consumer.
+- Add explicit sandbox selection, bounded write-scope amendments bound to design results, and a single-use bootstrap recovery entry. Recovery requires original refusal/exit evidence, exact identity and authorization, and retains the original deadline. Unknown outcomes, expired allowances and missing original returns do not allow automatic retry.
+- Read inactive historical workflows whose old directories are missing while retaining historical states. Update the dispatch skill, onboarding and both READMEs, placing Agent-led installation first.
+- Keep native Windows x64 CI and x64 / ARM64 archives. Hosted PTY remains unsupported on Windows; ARM64 is build-only coverage. No new board UI is included, and publication does not replace local services or production queues.
+
 ## 2026-09-28 · v0.10.22: same-conversation deployment onboarding
 
 - Installers hand the deploying Agent an explicit continuation, installed skill path and next owner question after CLI inventory.

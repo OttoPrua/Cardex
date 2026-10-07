@@ -2,6 +2,14 @@
 
 **中文** | [English](changelog.en.md) · 返回 [README](../README.md)
 
+## 2026-10-08 · v0.10.25：多方向派发、整体验收与 Goal 收尾
+
+- 新增显式 `workflow fanout`、`accept` / `accept -complete`、`goal-round`、`goal-direction` 与 `goal-launch`：按已完成设计创建执行方向，验收绑定当前成员和候选产物；单个方向完成或达到轮次上限不代表总目标通过。普通 `add` 保持单卡直派，不因保存的 Goal 偏好被阻止。
+- 原生方向按自己的 task / session / attempt 同步；托管 Goal 等待当前最终回合证据、实际进程退出和输出排空后收尾，经现有终态校验写入完成事件及管理唤醒 outbox。实际消息送达仍依赖已有消费者。
+- 补充显式 sandbox 选择、绑定设计结果的有限写域扩展，以及启动前失败的单次恢复入口。恢复须有原始拒绝与退出证据、精确身份和授权，保留原硬时限；未知结果、过期预算或缺少原始返回不能自动重试。
+- 修复无活跃写入占用的历史 workflow 因旧目录缺失而无法读取的问题；保留历史状态。更新派发 skill、新手指南及中英文 README，将 Agent 安装引导前置。
+- Windows 保持 x64 原生 CI 与 x64 / ARM64 发行包；hosted PTY 仍不支持 Windows，ARM64 仍为构建验证。此次发布不包含新看板界面，不自动替换本机服务或生产队列。
+
 ## 2026-09-28 · v0.10.22：部署 Agent 在同一对话继续引导
 
 - 安装器在 CLI 盘点后输出接续指令、skill 绝对路径和下一步 owner 问题，避免部署 Agent 停在“安装成功”。

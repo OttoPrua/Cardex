@@ -55,7 +55,7 @@ func testWakeCfg(bin, project, thread, subID string) *ManagerWakeConfig {
 func heldCommittedTask(t *testing.T, root, project, title string) *Task {
 	t.Helper()
 	cfg := testCfg()
-	tk := newTask(root, cfg, typeSequence, title, "/tmp", []string{"p"}, 5)
+	tk := newTask(root, cfg, typeSequence, title, t.TempDir(), []string{"p"}, 5)
 	tk.Project = project
 	if err := saveTask(root, tk); err != nil {
 		t.Fatal(err)
@@ -86,7 +86,7 @@ func TestProductionCommittedTransitionWakeSeam(t *testing.T) {
 	writeWakeConfig(t, root, bin, "wake-proj", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "mgr", true)
 	cfg := testCfg()
 
-	queued := newTask(root, cfg, typeSequence, "queued no wake", "/tmp", []string{"p"}, 5)
+	queued := newTask(root, cfg, typeSequence, "queued no wake", t.TempDir(), []string{"p"}, 5)
 	if err := saveTask(root, queued); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestProductionCommittedTransitionWakeSeam(t *testing.T) {
 		t.Fatalf("unjournaled event emitted wake rows: %+v", rows)
 	}
 
-	prepared := newTask(root, cfg, typeSequence, "prepared no wake", "/tmp", []string{"p"}, 5)
+	prepared := newTask(root, cfg, typeSequence, "prepared no wake", t.TempDir(), []string{"p"}, 5)
 	if err := saveTask(root, prepared); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestProductionCommittedTransitionWakeSeam(t *testing.T) {
 		t.Fatalf("prepared transition emitted wake rows: %+v", rows)
 	}
 
-	held := newTask(root, cfg, typeSequence, "committed held wake", "/tmp", []string{"p"}, 5)
+	held := newTask(root, cfg, typeSequence, "committed held wake", t.TempDir(), []string{"p"}, 5)
 	if err := saveTask(root, held); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestProductionCommittedTransitionWakeSeam(t *testing.T) {
 		t.Fatalf("duplicate committed held must stay one row, got %+v", rows)
 	}
 
-	owner := newTask(root, cfg, typeSequence, "committed needs-owner wake", "/tmp", []string{"p"}, 5)
+	owner := newTask(root, cfg, typeSequence, "committed needs-owner wake", t.TempDir(), []string{"p"}, 5)
 	if err := saveTask(root, owner); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestCrashWindowWakeDedupeDeterministicIdentity(t *testing.T) {
 	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
-	tk := newTask(root, cfg, typeSequence, "crash-window dedupe", "/tmp", []string{"p"}, 5)
+	tk := newTask(root, cfg, typeSequence, "crash-window dedupe", t.TempDir(), []string{"p"}, 5)
 	if err := saveTask(root, tk); err != nil {
 		t.Fatal(err)
 	}
@@ -563,7 +563,7 @@ func TestHardWatchdogDeltaZeroNoQueue(t *testing.T) {
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "ffffffff-ffff-ffff-ffff-ffffffffffff", "mgr")
 	mw.WatchdogSec = 7
-	tk := newTask(root, testCfg(), typeSequence, "delta0", "/tmp", []string{"p"}, 5)
+	tk := newTask(root, testCfg(), typeSequence, "delta0", t.TempDir(), []string{"p"}, 5)
 	tk.Project = "wake-proj"
 	if err := saveTask(root, tk); err != nil {
 		t.Fatal(err)
@@ -802,7 +802,7 @@ func TestClosedSubscriptionRouting(t *testing.T) {
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "other-proj", "33333333-3333-3333-3333-333333333333", "mgr")
-	other := newTask(root, testCfg(), typeSequence, "other", "/tmp", []string{"p"}, 5)
+	other := newTask(root, testCfg(), typeSequence, "other", t.TempDir(), []string{"p"}, 5)
 	other.Project = "other-proj"
 	if err := saveTask(root, other); err != nil {
 		t.Fatal(err)
@@ -829,7 +829,7 @@ func TestSecretFreePayloadAndRows(t *testing.T) {
 	bin, _ := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "44444444-4444-4444-4444-444444444444", "mgr")
 	cfg := testCfg()
-	tk := newTask(root, cfg, typeSequence, "secret free", "/tmp", []string{"SECRET PROMPT TOKEN=abc"}, 5)
+	tk := newTask(root, cfg, typeSequence, "secret free", t.TempDir(), []string{"SECRET PROMPT TOKEN=abc"}, 5)
 	tk.Project = "wake-proj"
 	tk.LastError = "credential leak would be bad"
 	if err := saveTask(root, tk); err != nil {
@@ -953,7 +953,7 @@ func TestUncommittedAndStaleEventNoWake(t *testing.T) {
 	root := testRoot(t)
 	bin, logPath := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "77777777-7777-7777-7777-777777777777", "mgr")
-	tk := newTask(root, testCfg(), typeSequence, "stale wake", "/tmp", []string{"p"}, 5)
+	tk := newTask(root, testCfg(), typeSequence, "stale wake", t.TempDir(), []string{"p"}, 5)
 	tk.Project = "wake-proj"
 	if err := saveTask(root, tk); err != nil {
 		t.Fatal(err)
@@ -1011,7 +1011,7 @@ func TestManagerWakeReadbackSecretFree(t *testing.T) {
 	root := testRoot(t)
 	bin, _ := fakeCodexQueueBin(t, 0)
 	mw := testWakeCfg(bin, "wake-proj", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "mgr")
-	tk := newTask(root, testCfg(), typeSequence, "readback", "/tmp", []string{"SECRET PROMPT TOKEN=abc"}, 5)
+	tk := newTask(root, testCfg(), typeSequence, "readback", t.TempDir(), []string{"SECRET PROMPT TOKEN=abc"}, 5)
 	tk.Project = "wake-proj"
 	if err := saveTask(root, tk); err != nil {
 		t.Fatal(err)

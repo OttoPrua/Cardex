@@ -10,6 +10,39 @@
 >
 > **复用订阅或 API。** 盘点 CLI、认证状态和可用模型，确认路由建议后保存预设，手动选择优先。管理 Agent 需要能访问 Cardex 所在机器；云端对话需先连接这台机器，各工具使用各自的订阅或 API 配置。
 
+## 安装与新手引导
+
+**让 Agent 一键部署：** 把下面这段复制给能够操作本机的管理 Agent，它会继续完成安装与配置引导：
+
+```text
+请按 https://github.com/OttoPrua/Cardex/blob/main/docs/getting-started.md 安装并配置 Cardex。
+安装后读取 cardex-dispatch skill，在当前对话继续逐步确认我已有且希望使用的订阅或 API 服务，
+协助完成配置，展示可用模型的路由建议，问我是否采用后保存。
+再根据任务范围、依赖和风险，推荐单卡直派、单阶段编排或自持开发，说明分工和验收时机。
+简单任务优先一张卡完成，不默认叠加多模型和额外审核。
+复用已有配置和队列，不要只停在安装成功。
+```
+
+> **在同一对话中完成引导：** 确认管理位置 → 盘点订阅 / API → 配置并验证 → 确认模型路由 → 按任务选择工作方式。
+>
+> 安装器输出接续提示，后续询问和编排由部署 Agent 完成。订阅登录在对应服务中进行，不需要把密码或密钥发到聊天里。
+
+**手动安装：** 在运行 Cardex 的机器上执行以下命令，安装程序与派发 skill。macOS / Linux：
+
+```sh
+curl -fsSL https://github.com/OttoPrua/Cardex/releases/latest/download/install.sh -o /tmp/cardex-install.sh && sh /tmp/cardex-install.sh --manager codex
+```
+
+Windows PowerShell：
+
+```powershell
+& ([scriptblock]::Create((Invoke-RestMethod -ErrorAction Stop https://github.com/OttoPrua/Cardex/releases/latest/download/install.ps1))) -Manager codex
+```
+
+使用 Hermes 时，把 `codex` 改为 `hermes`。安装程序与 skill 后，订阅登录、API 配置和模型路由由管理 Agent 在同一对话继续引导。
+
+[安装与配置](docs/getting-started.md) · [派发 Agent、案例与 skill](docs/dispatch-agent.md) · [配置参考](docs/config.md)
+
 ## 支持的工具、模型与接入方式
 
 > **订阅和 API 都可以接入。** Cardex 调度已配置的编程 CLI，不限定为某一家模型。Claude、GPT / Codex、Grok、Kimi、GLM、MiniMax、MiMo、DeepSeek 等模型系列，可通过对应执行工具或引擎档案使用；具体模型 ID、思考强度和额度以工具目录与账户实际权限为准。
@@ -39,39 +72,6 @@
 > **支持按量 API、自建网关和本地模型服务，但需选对协议与执行工具。** Cardex 不会自动把 Chat Completions、Responses 和 Anthropic Messages 相互转换，也不能把任意 URL 填进 `engines` 就当作通用 API。模型还需满足执行工具的工具调用、流式输出等要求；先验证一个真实小任务，再扩大派发。
 
 配置依据：[Cardex 配置](docs/config.md) · [引擎实现与内置预设](cmd/cardex/engines.go) · [OpenCode provider 官方文档](https://opencode.ai/docs/providers/#custom-provider) · [Codex provider 官方文档](https://developers.openai.com/codex/config-advanced/)。协议说明核对于 2026-09-28。
-
-## 安装与新手引导
-
-先在运行 Cardex 的机器上安装程序与派发 skill。macOS / Linux：
-
-```sh
-curl -fsSL https://github.com/OttoPrua/Cardex/releases/latest/download/install.sh -o /tmp/cardex-install.sh && sh /tmp/cardex-install.sh --manager codex
-```
-
-Windows PowerShell：
-
-```powershell
-& ([scriptblock]::Create((Invoke-RestMethod -ErrorAction Stop https://github.com/OttoPrua/Cardex/releases/latest/download/install.ps1))) -Manager codex
-```
-
-使用 Hermes 时，把 `codex` 改为 `hermes`。安装程序与 skill 后，订阅登录、API 配置和模型路由由管理 Agent 在同一对话继续引导。
-
-把下面这段交给能够操作本机的管理 Agent：
-
-```text
-请按 https://github.com/OttoPrua/Cardex/blob/main/docs/getting-started.md 安装并配置 Cardex。
-安装后读取 cardex-dispatch skill，在当前对话继续逐步确认我已有且希望使用的订阅或 API 服务，
-协助完成配置，展示可用模型的路由建议，问我是否采用后保存。
-再根据任务范围、依赖和风险，推荐单卡直派、单阶段编排或自持开发，说明分工和验收时机。
-简单任务优先一张卡完成，不默认叠加多模型和额外审核。
-复用已有配置和队列，不要只停在安装成功。
-```
-
-> **在同一对话中完成引导：** 确认管理位置 → 盘点订阅 / API → 配置并验证 → 确认模型路由 → 按任务选择工作方式。
->
-> 安装器输出接续提示，后续询问和编排由部署 Agent 完成。订阅登录在对应服务中进行，不需要把密码或密钥发到聊天里。
-
-[安装与配置](docs/getting-started.md) · [派发 Agent、案例与 skill](docs/dispatch-agent.md) · [配置参考](docs/config.md)
 
 ## 三种工作方式
 

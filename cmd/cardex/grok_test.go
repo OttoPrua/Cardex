@@ -755,6 +755,62 @@ func TestValidateGrokBuildRejectsUnsupportedMax(t *testing.T) {
 	}
 }
 
+func TestValidateGrokBuildWriteSandboxProfile(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"", "workspace", "cardex-linked-git"} {
+		cfg := grokBuildTestConfig(t, "/usr/bin/true")
+		cfg.GrokBuild.WriteSandboxProfile = name
+		if err := validateGrokBuild(cfg); err != nil {
+			t.Fatalf("valid write sandbox %q rejected: %v", name, err)
+		}
+		want := grokBuildWriteSandboxDefault
+		if name != "" {
+			want = name
+		}
+		if got := resolvedGrokBuildWriteSandbox(cfg); got != want {
+			t.Fatalf("write sandbox %q resolved to %q, want %q", name, got, want)
+		}
+	}
+	for _, unsafe := range []string{
+		"off", "Off", "bypass", "unrestricted", "full-unrestricted", "danger-full-access",
+		"none", "disable", "disabled", "always-approve",
+		" off", "off ", "\toff", "workspace ", " workspace",
+		"../workspace", "profiles/off", "workspace/../off", `C:\off`,
+		"off\n", "linked git", "workspace;off",
+	} {
+		cfg := grokBuildTestConfig(t, "/usr/bin/true")
+		cfg.GrokBuild.WriteSandboxProfile = unsafe
+		if err := validateGrokBuild(cfg); err == nil || !strings.Contains(err.Error(), "write_sandbox_profile") {
+			t.Fatalf("unsafe write sandbox %q must fail closed: %v", unsafe, err)
+		}
+		if got := resolvedGrokBuildWriteSandbox(cfg); got != grokBuildWriteSandboxDefault {
+			t.Fatalf("resolver must fail closed to %q for %q, got %q", grokBuildWriteSandboxDefault, unsafe, got)
+		}
+		task := &Task{Type: typeSequence, Dir: t.TempDir()}
+		sandbox, perm, err := resolveManualGrokTuple(cfg, task)
+		if err != nil {
+			t.Fatalf("tuple for %q: %v", unsafe, err)
+		}
+		if sandbox == "off" || sandbox == "bypass" || sandbox == unsafe || perm != "auto" {
+			t.Fatalf("must not launch unsafe %q as sandbox=%q perm=%q", unsafe, sandbox, perm)
+		}
+		if sandbox != grokBuildWriteSandboxDefault {
+			t.Fatalf("fail-closed tuple want %q, got %q", grokBuildWriteSandboxDefault, sandbox)
+		}
+	}
+
+	root := testRoot(t)
+	cfg := defaultConfig("claude")
+	cfg.GrokBuildBin = "/usr/bin/true"
+	cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh", WriteSandboxProfile: "off"}
+	if err := saveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(root); err == nil || !strings.Contains(err.Error(), "write_sandbox_profile") {
+		t.Fatalf("loadConfig must reject write_sandbox_profile=off: %v", err)
+	}
+}
+
 func TestValidateGrokBuildReadOnlySandboxProfile(t *testing.T) {
 	t.Parallel()
 	cfg := grokBuildTestConfig(t, "/usr/bin/true")

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -212,6 +213,131 @@ func seedExitedAttempt(t *testing.T, root string, tk *Task, attemptID string) {
 	*tk = *loaded
 }
 
+const residualTimeoutNote = "hard timeout fired; native budget is soft; no guessed success"
+
+func cloneTaskJSON(t *testing.T, src *Task) *Task {
+	t.Helper()
+	raw, err := json.Marshal(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dst Task
+	if err := json.Unmarshal(raw, &dst); err != nil {
+		t.Fatal(err)
+	}
+	return &dst
+}
+
+// mappedRunningMutation is the pre-fix normal-sync write: native active is
+// mapped to running and BoundAttemptID is copied back onto ActiveAttemptID.
+func mappedRunningMutation(t *testing.T, src *Task) *Task {
+	t.Helper()
+	next := cloneTaskJSON(t, src)
+	next.Status = statusRunning
+	if next.Goal != nil {
+		next.Goal.Observation = goalObsRunning
+		next.Goal.ObservationNote = "matched native active"
+		next.Goal.LastNativeStatus = "active"
+		next.Goal.SyncedRevision = next.Revision
+		if next.ActiveAttemptID == "" && next.Goal.BoundAttemptID != "" {
+			next.ActiveAttemptID = next.Goal.BoundAttemptID
+		}
+	}
+	return next
+}
+
+func seedResidualActiveTimeoutGoal(t *testing.T) (root, dir, grokHome string, cfg *Config, wf *WorkflowRecord, tk *Task, before []byte) {
+	t.Helper()
+	root, dir = workflowTestRoot(t)
+	cfg = workflowTestCfg(t, root)
+	wf = initTestWorkflow(t, root, dir)
+	tk = admitManualWriter(t, root, cfg, wf)
+	sessionID := "cafecafe-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	goalID := "goal-residual-timeout"
+	attemptID := "ate7264293c6fb7e1a"
+	grokHome = t.TempDir()
+	tk.SessionID = sessionID
+	tk.Goal.NativeGoalID = goalID
+	tk.Goal.Started = true
+	tk.Goal.GrokHome = grokHome
+	seedExitedAttempt(t, root, tk, attemptID)
+	tk.Status = statusHeld
+	tk.Goal.Observation = goalObsUnknown
+	tk.Goal.ObservationNote = residualTimeoutNote
+	tk.Goal.CustodyReleased = true
+	tk.ActiveAttemptID = ""
+	revokeScheduling(tk)
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*tk = *loaded
+	writeGrokGoalFixture(t, grokHome, dir, sessionID, goalID, "active", grokNativeGoalStateFile{Phase: "Executing"})
+	before, err = os.ReadFile(taskPath(root, tk.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root, dir, grokHome, cfg, wf, tk, before
+}
+
+func captureGoalSyncCLI(t *testing.T, root, wfID string) (string, error) {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	cmdErr := cmdWorkflowGoalSync([]string{"-root", root, wfID})
+	_ = w.Close()
+	os.Stdout = old
+	raw, readErr := io.ReadAll(r)
+	_ = r.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	return string(raw), cmdErr
+}
+
+func assertResidualTimeoutUnchanged(t *testing.T, root string, tk *Task, before []byte, wantRev int64) {
+	t.Helper()
+	if tk.Status != statusHeld || tk.Goal == nil || tk.Goal.Observation != goalObsUnknown {
+		t.Fatalf("want held/unknown, status=%s obs=%v", tk.Status, tk.Goal)
+	}
+	if !strings.Contains(tk.Goal.ObservationNote, "hard timeout") {
+		t.Fatalf("timeout provenance missing: %q", tk.Goal.ObservationNote)
+	}
+	if tk.Status == statusRunning || tk.Goal.Observation == goalObsRunning {
+		t.Fatalf("revived to running: status=%s obs=%s", tk.Status, tk.Goal.Observation)
+	}
+	if tk.Status == statusDone || tk.Status == statusFailed || tk.Goal.Observation == goalObsDone || tk.Goal.Observation == goalObsFailed {
+		t.Fatalf("accepted terminal: status=%s obs=%s", tk.Status, tk.Goal.Observation)
+	}
+	if tk.ActiveAttemptID != "" {
+		t.Fatalf("ActiveAttemptID revived: %q", tk.ActiveAttemptID)
+	}
+	if tk.Goal.Continuation != "" {
+		t.Fatalf("invented continuation: %q", tk.Goal.Continuation)
+	}
+	if tk.Revision != wantRev {
+		t.Fatalf("unnecessary revision change: got %d want %d", tk.Revision, wantRev)
+	}
+	assertNoGoalEvDone(t, root, tk)
+	if failed := goalEventsOfType(t, root, tk.ID, evFailed); len(failed) != 0 {
+		t.Fatalf("invented native-failed: %+v", failed)
+	}
+	after, err := os.ReadFile(taskPath(root, tk.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("task JSON bytes changed\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
 // launchExitedManualGoal drives the shipped manual launcher with a fake grok
 // executable so bindAttemptProcess records a real PID/start identity. Tests
 // that need accepted done/failed must use this instead of stuffing a PID.
@@ -237,7 +363,7 @@ func headlessGoalStdin(t *testing.T) *os.File {
 func runManualGoalLaunch(t *testing.T, root string, cfg *Config, wf *WorkflowRecord, budget int64) error {
 	t.Helper()
 	headlessGoalStdin(t)
-	return launchManualWorkflowGoal(root, cfg, wf, budget)
+	return launchManualWorkflowGoal(root, cfg, wf, budget, "")
 }
 
 func launchExitedManualGoal(t *testing.T, root string, cfg *Config, wf *WorkflowRecord, tk *Task, goalID string) *Task {
@@ -658,6 +784,93 @@ func TestD3InventedClassifierAliasesDoNotProveDone(t *testing.T) {
 	if got.Status != statusDone {
 		t.Fatalf("total_verify_rounds>0 must not block genuine achieved, got %s %s", got.Status, got.Goal.ObservationNote)
 	}
+}
+
+func TestMissingNativeGoalIDDoesNotAuthorizeSyncOrAcceptance(t *testing.T) {
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	sessionID := "s1missng-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	tk.SessionID = sessionID
+	tk.Goal.NativeGoalID = "goal-stored"
+	seedExitedAttempt(t, root, tk, "att-missing-goal")
+	home := t.TempDir()
+	writeGrokGoalFixture(t, home, dir, sessionID, "", "complete", grokNativeGoalStateFile{
+		LastClassifierVerdict: "achieved",
+	})
+	sessDir := grokGoalSessionDir(home, dir, sessionID)
+	line, err := json.Marshal(map[string]any{
+		"method": "_x.ai/session/update",
+		"params": map[string]any{
+			"sessionId": sessionID,
+			"update": map[string]any{
+				"sessionUpdate":           "goal_updated",
+				"goal_id":                 "goal-stored",
+				"status":                  "complete",
+				"last_classifier_verdict": "achieved",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessDir, "updates.jsonl"), append(line, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := syncWorkflowGoal(root, cfg, wf, GoalSyncRequest{
+		ExpectedRevision: tk.Revision, ExpectedSession: sessionID, ExpectedGoalID: "goal-stored",
+		ExpectedAttempt: tk.Goal.BoundAttemptID, GrokHome: home, GrokCWD: dir,
+	})
+	if err == nil || !errors.Is(err, errGoalSyncRejected) || !strings.Contains(err.Error(), "missing native goal_id") {
+		t.Fatalf("blank state goal_id synced: err=%v status=%v", err, statusOf(got))
+	}
+	fresh, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status == statusDone || fresh.Goal == nil || fresh.Goal.NativeGoalID != "goal-stored" {
+		t.Fatalf("missing native goal_id changed identity or accepted done: status=%s goal=%+v", fresh.Status, fresh.Goal)
+	}
+
+	if err := cmdWorkflowGoalDirection([]string{"-root", root, wf.ID, "-direction", "native-a"}); err != nil {
+		t.Fatal(err)
+	}
+	wf, err = loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wf.NativeGoalTaskIDs) != 1 {
+		t.Fatalf("native directions = %v", wf.NativeGoalTaskIDs)
+	}
+	native, err := loadTask(root, wf.NativeGoalTaskIDs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	native.Status = statusDone
+	if native.Goal == nil || strings.TrimSpace(native.Goal.NativeGoalID) != "" {
+		t.Fatalf("admitted native direction must still lack NativeGoalID: %+v", native.Goal)
+	}
+	if err := writeTaskFile(root, native); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdWorkflowAccept([]string{"-root", root, wf.ID}); err == nil || !strings.Contains(err.Error(), "native goal_id") {
+		t.Fatalf("done native card without goal id created acceptance: %v", err)
+	}
+	wf, err = loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.AcceptanceTaskID != "" || wf.GoalCompleted {
+		t.Fatalf("missing NativeGoalID accepted the goal: acceptance=%s completed=%v", wf.AcceptanceTaskID, wf.GoalCompleted)
+	}
+}
+
+func statusOf(t *Task) string {
+	if t == nil {
+		return "<nil>"
+	}
+	return t.Status
 }
 
 func TestD3BudgetLimitedNotAchievedIsNotComplete(t *testing.T) {
@@ -1643,6 +1856,125 @@ func TestOrdinaryWorkflowShowJSONTopLevelKeys(t *testing.T) {
 	}
 }
 
+// preFixNativeStatusMatchesControl is an immutable copy of HEAD stop matching
+// (complete|failed|term only). budget_limited is excluded.
+func preFixNativeStatusMatchesControl(action, native string) bool {
+	st := normalizeNativeStatus(native)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case goalControlPause:
+		return st == "paused" || st == "user_paused" || st == "needs-input"
+	case goalControlResume:
+		return st == "active"
+	case goalControlStop:
+		return st == "complete" || st == "failed" || st == "term"
+	case goalControlStatus:
+		return st != ""
+	default:
+		return false
+	}
+}
+
+func TestPrefixtureStopMatcherExcludedBudgetLimited(t *testing.T) {
+	t.Parallel()
+	if preFixNativeStatusMatchesControl(goalControlStop, "budget_limited") {
+		t.Fatal("pre-fix matcher treated budget_limited as complete/failed/term")
+	}
+	if !nativeStatusMatchesControl(goalControlStop, "budget_limited") {
+		t.Fatal("current matcher must confirm budget_limited without aliasing it to complete")
+	}
+	if nativeStatusMatchesControl(goalControlStop, "active") || nativeStatusMatchesControl(goalControlStop, "unknown") {
+		t.Fatal("active/unknown must still reject stop")
+	}
+	mapped := mapNativeGoalToTask(nativeGoalObservation{
+		GoalID: "g1", NativeStatus: "budget_limited", BudgetLimited: true, UpdatesOK: true, SummaryOK: true,
+	}, true, false, false)
+	if mapped.AcceptDone || mapped.Observation == goalObsDone {
+		t.Fatalf("budget_limited must stay nonaccepted: %+v", mapped)
+	}
+}
+
+func TestConfirmHostedStopBudgetLimitedWithoutPTY(t *testing.T) {
+	t.Parallel()
+	root, dir := workflowTestRoot(t)
+	home := t.TempDir()
+	sid := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	gid := "goal-budget-idle"
+	writeGrokGoalFixture(t, home, dir, sid, gid, "budget_limited", grokNativeGoalStateFile{
+		LastClassifierVerdict: "not_achieved",
+		Phase:                 "Idle",
+	})
+	tk := &Task{
+		ID:              "t-budget-stop",
+		Dir:             dir,
+		SessionID:       sid,
+		ActiveAttemptID: "att-budget",
+		Goal:            &TaskGoalBinding{NativeGoalID: gid, BoundAttemptID: "att-budget", LastNativeStatus: "budget_limited"},
+	}
+	if !waitHostedControlConfirmed(root, tk, home, goalControlStop, "/goal clear", time.Second) {
+		t.Fatal("native budget_limited/Idle must confirm stop")
+	}
+	st, err := loadGoalHostStatus(root, tk.ID, "att-budget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.ControlConfirmed || st.NativeStatus != "budget_limited" {
+		t.Fatalf("stop confirmable without mapping to complete: %+v", st)
+	}
+	mapped := mapNativeGoalToTask(nativeGoalObservation{
+		GoalID: gid, NativeStatus: "budget_limited", BudgetLimited: true, UpdatesOK: true, SummaryOK: true,
+	}, true, false, false)
+	if mapped.AcceptDone || mapped.Observation == goalObsDone {
+		t.Fatalf("confirmed budget_limited stop is not accepted done: %+v", mapped)
+	}
+
+	writeGrokGoalFixture(t, home, dir, sid, gid, "active", grokNativeGoalStateFile{Phase: "Executing"})
+	tk2 := &Task{
+		ID:              "t-bytes-only",
+		Dir:             dir,
+		SessionID:       sid,
+		ActiveAttemptID: "att-bytes",
+		Goal:            &TaskGoalBinding{NativeGoalID: gid, BoundAttemptID: "att-bytes"},
+	}
+	confirmHostedControl(root, tk2, home, goalControlStop, "/goal clear")
+	st2, err := loadGoalHostStatus(root, tk2.ID, "att-bytes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st2.ControlConfirmed {
+		t.Fatal("injecting /goal clear bytes against active is not stop confirmation")
+	}
+	if st2.FailureClass != goalFailPauseNotConfirmed {
+		t.Fatalf("bytes-only want pause_not_confirmed, got %+v", st2)
+	}
+
+	writeGrokGoalFixture(t, home, dir, sid, gid, "budget_limited", grokNativeGoalStateFile{
+		LastClassifierVerdict: "not_achieved",
+		Phase:                 "Executing",
+	})
+	tk3 := &Task{
+		ID:              "t-budget-executing",
+		Dir:             dir,
+		SessionID:       sid,
+		ActiveAttemptID: "att-exec",
+		Goal:            &TaskGoalBinding{NativeGoalID: gid, BoundAttemptID: "att-exec"},
+	}
+	confirmHostedControl(root, tk3, home, goalControlStop, "/goal clear")
+	st3, err := loadGoalHostStatus(root, tk3.ID, "att-exec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st3.ControlConfirmed {
+		t.Fatal("budget_limited without Idle is not terminal stop confirmation")
+	}
+	if tk.Goal.CustodyReleased || tk3.Goal.CustodyReleased {
+		t.Fatal("stop confirmation must not release custody; Wait does")
+	}
+	obs := nativeGoalObservation{GoalID: "other", NativeStatus: "budget_limited", Phase: "idle", BudgetLimited: true, UpdatesOK: true}
+	if nativeStopConfirmed(obs, gid) {
+		t.Fatal("other goal_id must not confirm this Goal")
+	}
+}
+
 func TestGoalRunRequiresManualFlag(t *testing.T) {
 	t.Parallel()
 	if err := cmdWorkflowGoalRun([]string{"-root", t.TempDir(), "wf-nope"}); !errors.Is(err, errGoalManualRequired) {
@@ -1656,11 +1988,12 @@ func TestWorkflowFlagsAfterPositionalID(t *testing.T) {
 	manual := fs.Bool("manual", false, "")
 	budget := fs.Int64("budget", 0, "")
 	rootFlag := fs.String("root", "", "")
-	if err := parseWorkflowFlags(fs, []string{"wf-id", "-manual", "-budget", "12", "-root", "/tmp/r"}); err != nil {
+	sandbox := fs.String("sandbox", "", "")
+	if err := parseWorkflowFlags(fs, []string{"wf-id", "-manual", "-budget", "12", "-root", "/tmp/r", "-sandbox", "linked-common-dir"}); err != nil {
 		t.Fatal(err)
 	}
-	if fs.Arg(0) != "wf-id" || !*manual || *budget != 12 || *rootFlag != "/tmp/r" {
-		t.Fatalf("id=%q manual=%v budget=%d root=%q", fs.Arg(0), *manual, *budget, *rootFlag)
+	if fs.Arg(0) != "wf-id" || !*manual || *budget != 12 || *rootFlag != "/tmp/r" || *sandbox != "linked-common-dir" {
+		t.Fatalf("id=%q manual=%v budget=%d root=%q sandbox=%q", fs.Arg(0), *manual, *budget, *rootFlag, *sandbox)
 	}
 }
 
@@ -2155,5 +2488,1069 @@ func TestFakeExecutableLaunchExitGoalSyncDoesNotStuffPID(t *testing.T) {
 	}
 	if again.Status != statusDone || again.ID != got.ID {
 		t.Fatalf("second goal-sync must not redispatch: status=%s id=%s", again.Status, again.ID)
+	}
+}
+
+// fakeGrokGoalTerminalBin is a provider stand-in that writes native session
+// files and then returns. The directory encoding is the production cwd key so
+// goal-sync reads the same tree the child wrote. Mode is complete, nonzero,
+// timeout, or hold.
+func fakeGrokGoalTerminalBin(t *testing.T, cwd, mode, status, classifier, readyPath, holdPath string) string {
+	t.Helper()
+	return fakeGrokGoalTerminalBinID(t, cwd, mode, status, classifier, readyPath, holdPath, "auto-goal-1")
+}
+
+func fakeGrokGoalTerminalBinID(t *testing.T, cwd, mode, status, classifier, readyPath, holdPath, goalID string) string {
+	t.Helper()
+	dir := t.TempDir()
+	py := filepath.Join(dir, "grok.py")
+	body := fmt.Sprintf(`#!/usr/bin/env python3
+import json, os, sys, time
+args = sys.argv[1:]
+got_cwd = ""
+sid = ""
+prev = ""
+for a in args:
+    if a in ("-p", "--single", "--prompt-file"):
+        sys.stderr.write("p-not-goal\n")
+        sys.exit(2)
+    if prev == "--cwd":
+        got_cwd = a
+    if prev in ("-s", "--resume", "--session-id"):
+        sid = a
+    prev = a
+home = os.environ.get("GROK_HOME", "")
+if not home or not got_cwd or not sid:
+    sys.stderr.write("missing grok home/cwd/session\n")
+    sys.exit(2)
+enc = %q
+sess = os.path.join(home, "sessions", enc, sid)
+os.makedirs(os.path.join(sess, "goal"), exist_ok=True)
+goal = %q
+status = %q
+classifier = %q
+st = {
+    "goal_id": goal,
+    "status": status,
+    "phase": "Executing" if status == "active" else "Idle",
+    "token_budget": 0,
+    "last_classifier_verdict": classifier,
+    "total_verify_rounds": 0,
+    "total_worker_rounds": 0,
+    "history": [{"event": "goal_completed" if status == "complete" else "goal_updated"}],
+}
+with open(os.path.join(sess, "goal", "state.json"), "w") as f:
+    json.dump(st, f)
+    f.write("\n")
+with open(os.path.join(sess, "summary.json"), "w") as f:
+    json.dump({"info": {"id": sid, "cwd": got_cwd}}, f)
+    f.write("\n")
+line = {
+    "method": "_x.ai/session/update",
+    "params": {
+        "sessionId": sid,
+        "update": {
+            "sessionUpdate": "goal_updated",
+            "goal_id": goal,
+            "status": status,
+            "phase": "executing" if status == "active" else "idle",
+            "last_classifier_verdict": classifier,
+            "last_event": "goal_completed" if status == "complete" else "goal_updated",
+        },
+    },
+}
+with open(os.path.join(sess, "updates.jsonl"), "w") as f:
+    f.write(json.dumps(line) + "\n")
+ready = %q
+hold = %q
+mode = %q
+if ready:
+    with open(ready, "w") as f:
+        f.write("ready\n")
+if mode == "hold":
+    while hold and os.path.exists(hold):
+        time.sleep(0.05)
+if mode == "timeout":
+    time.sleep(30)
+if mode == "nonzero":
+    sys.exit(2)
+sys.exit(0)
+`, grokEncodeCwd(cwd), goalID, status, classifier, readyPath, holdPath, mode)
+	if err := os.WriteFile(py, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(dir, "grok")
+	script := "#!/bin/sh\nexec python3 -u " + shSingleQuote(py) + " \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return wrapper
+}
+
+func goalEventsOfType(t *testing.T, root, taskID, evType string) []TaskEvent {
+	t.Helper()
+	events, _, err := loadTaskEvents(root, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []TaskEvent
+	for _, ev := range events {
+		if ev.Type == evType {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func assertNoGoalEvDone(t *testing.T, root string, tk *Task) {
+	t.Helper()
+	if tk.Status == statusDone || tk.Status == statusCanceled {
+		t.Fatalf("status=%s obs=%s note=%s", tk.Status, tk.Goal.Observation, tk.Goal.ObservationNote)
+	}
+	if done := goalEventsOfType(t, root, tk.ID, evDone); len(done) != 0 {
+		t.Fatalf("evDone committed: %+v", done)
+	}
+	rows, class, err := loadManagerWakeOutbox(root)
+	if err != nil || class != "" {
+		t.Fatalf("outbox class=%s err=%v", class, err)
+	}
+	for _, row := range rows {
+		if row.EventType == evDone {
+			t.Fatalf("outbox has evDone: %+v", row)
+		}
+	}
+}
+
+func TestNativeDirectionReturnSyncsThatCardAndWaitsForSibling(t *testing.T) {
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	if wf.WriterTaskID != "" {
+		t.Fatalf("this fixture has no writer to route through, got %s", wf.WriterTaskID)
+	}
+	bindTestDesign(t, root, cfg, wf)
+	wf, err := loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.WriterTaskID != "" {
+		t.Fatalf("design proof assigned a writer %s", wf.WriterTaskID)
+	}
+	if err := cmdWorkflowGoalDirection([]string{"-root", root, wf.ID, "-direction", "alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdWorkflowGoalDirection([]string{"-root", root, wf.ID, "-direction", "beta"}); err != nil {
+		t.Fatal(err)
+	}
+	wf, err = loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.WriterTaskID != "" || len(wf.NativeGoalTaskIDs) != 2 {
+		t.Fatalf("writer=%s natives=%v", wf.WriterTaskID, wf.NativeGoalTaskIDs)
+	}
+	alphaID, betaID := wf.NativeGoalTaskIDs[0], wf.NativeGoalTaskIDs[1]
+	alpha, err := loadTask(root, alphaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beta, err := loadTask(root, betaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alpha.Goal == nil || alpha.Goal.Scope != "alpha" {
+		beta, alpha = alpha, beta
+		betaID, alphaID = alphaID, betaID
+	}
+
+	unrelated := newTask(root, cfg, typeSequence, "other workflow", dir, []string{"not this goal"}, 1)
+	unrelated.WorkflowID = "wf-other-0000-abcd"
+	if err := saveTask(root, unrelated); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdWorkflowGoalSync([]string{"-root", root, wf.ID, "-task", unrelated.ID}); err == nil || !strings.Contains(err.Error(), "unrelated") {
+		t.Fatalf("unrelated target synced: %v", err)
+	}
+	if err := cmdWorkflowGoalSync([]string{"-root", root, wf.ID}); err == nil || !strings.Contains(err.Error(), "no writer task") {
+		t.Fatalf("omitting -task guessed a direction: %v", err)
+	}
+
+	launchDirection := func(id, goalID string) {
+		t.Helper()
+		task, err := loadTask(root, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		task.Goal.GrokHome = t.TempDir()
+		if err := saveTask(root, task); err != nil {
+			t.Fatal(err)
+		}
+		cfg = workflowTestCfg(t, root)
+		cfg.GrokBuildBin = fakeGrokGoalTerminalBinID(t, dir, "complete", "complete", "achieved", "", "", goalID)
+		cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+		cfg.ManagerWake = &ManagerWakeConfig{Enabled: true}
+		saveGoalCfg(t, root, cfg)
+		headlessGoalStdin(t)
+		if err := cmdWorkflowGoalLaunch([]string{"-root", root, "-task", id, "-manual"}); err != nil {
+			t.Fatalf("normal return %s: %v", id, err)
+		}
+	}
+	launchDirection(alphaID, "goal-alpha")
+	wf, err = loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.WriterTaskID != "" {
+		t.Fatalf("sync rewrote WriterTaskID to %s", wf.WriterTaskID)
+	}
+	alpha, err = loadTask(root, alphaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beta, err = loadTask(root, betaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alpha.Status != statusDone || alpha.Goal == nil || alpha.Goal.NativeGoalID != "goal-alpha" || alpha.Goal.Observation != goalObsDone {
+		t.Fatalf("alpha was not the synced direction: status=%s goal=%+v", alpha.Status, alpha.Goal)
+	}
+	if beta.Status == statusDone || (beta.Goal != nil && beta.Goal.NativeGoalID != "") {
+		t.Fatalf("sibling was synced early: status=%s goal=%+v", beta.Status, beta.Goal)
+	}
+	if err := cmdWorkflowAccept([]string{"-root", root, wf.ID}); err == nil || !strings.Contains(err.Error(), "未创建验收卡") {
+		t.Fatalf("one verified direction created acceptance: %v", err)
+	}
+	wf, err = loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.AcceptanceTaskID != "" || wf.GoalCompleted || wf.WriterTaskID != "" {
+		t.Fatalf("early acceptance=%s completed=%v writer=%s", wf.AcceptanceTaskID, wf.GoalCompleted, wf.WriterTaskID)
+	}
+
+	betaSession := beta.SessionID
+	beta.SessionID = alpha.SessionID
+	if err := saveTask(root, beta); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdWorkflowGoalSync([]string{"-root", root, wf.ID, "-task", betaID}); err == nil || !strings.Contains(err.Error(), "shared session") {
+		t.Fatalf("shared session synced: %v", err)
+	}
+	beta, err = loadTask(root, betaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beta.Status == statusDone {
+		t.Fatal("shared session marked the sibling done")
+	}
+	beta.SessionID = betaSession
+	beta.Goal.NativeGoalID = alpha.Goal.NativeGoalID
+	if err := saveTask(root, beta); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdWorkflowGoalSync([]string{"-root", root, wf.ID, "-task", betaID}); err == nil || !strings.Contains(err.Error(), "shared native goal_id") {
+		t.Fatalf("shared native goal id synced: %v", err)
+	}
+	beta, err = loadTask(root, betaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beta.Goal.NativeGoalID = ""
+	beta.SessionID = betaSession
+	if err := saveTask(root, beta); err != nil {
+		t.Fatal(err)
+	}
+
+	launchDirection(betaID, "goal-beta")
+	wf, err = loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alpha, err = loadTask(root, alphaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beta, err = loadTask(root, betaID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.WriterTaskID != "" {
+		t.Fatalf("second return rewrote WriterTaskID to %s", wf.WriterTaskID)
+	}
+	if alpha.Status != statusDone || alpha.Goal.NativeGoalID != "goal-alpha" {
+		t.Fatalf("alpha changed after beta: status=%s goal=%s", alpha.Status, alpha.Goal.NativeGoalID)
+	}
+	if beta.Status != statusDone || beta.Goal == nil || beta.Goal.NativeGoalID != "goal-beta" || beta.SessionID == alpha.SessionID {
+		t.Fatalf("beta was not synced on its own identity: status=%s goal=%+v session=%s alpha=%s", beta.Status, beta.Goal, beta.SessionID, alpha.SessionID)
+	}
+	if err := cmdWorkflowAccept([]string{"-root", root, wf.ID}); err != nil {
+		t.Fatal(err)
+	}
+	wf, err = loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.AcceptanceTaskID == "" || wf.GoalCompleted {
+		t.Fatalf("both verified directions must create one card without accepting the goal: id=%s completed=%v", wf.AcceptanceTaskID, wf.GoalCompleted)
+	}
+	accID := wf.AcceptanceTaskID
+	if err := cmdWorkflowAccept([]string{"-root", root, wf.ID}); err != nil {
+		t.Fatal(err)
+	}
+	wf, err = loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.AcceptanceTaskID != accID || wf.GoalCompleted || wf.WriterTaskID != "" {
+		t.Fatalf("second accept changed acceptance=%s completed=%v writer=%s", wf.AcceptanceTaskID, wf.GoalCompleted, wf.WriterTaskID)
+	}
+	if _, err := syncWorkflowGoal(root, cfg, wf, GoalSyncRequest{TaskID: betaID, ExpectedSession: alpha.SessionID}); err == nil || !errors.Is(err, errGoalSyncRejected) {
+		t.Fatalf("sibling session was accepted for beta: %v", err)
+	}
+}
+
+// TestGoalAutoSync drives the shipped manual launcher. Native files are written
+// by the fake provider before it returns; the test does not call goal-sync itself.
+func TestGoalAutoSync(t *testing.T) {
+	t.Parallel()
+
+	t.Run("NaturalCompletion", func(t *testing.T) {
+		root, dir := workflowTestRoot(t)
+		cfg := workflowTestCfg(t, root)
+		wf := initTestWorkflow(t, root, dir)
+		tk := admitManualWriter(t, root, cfg, wf)
+		home := t.TempDir()
+		tk.Goal.GrokHome = home
+		if err := saveTask(root, tk); err != nil {
+			t.Fatal(err)
+		}
+		cfg.GrokBuildBin = fakeGrokGoalTerminalBin(t, dir, "complete", "complete", "achieved", "", "")
+		cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+		cfg.ManagerWake = &ManagerWakeConfig{Enabled: true}
+		saveGoalCfg(t, root, cfg)
+
+		if err := runManualGoalLaunch(t, root, cfg, wf, 12000); err != nil {
+			t.Fatalf("natural return: %v", err)
+		}
+		got, err := loadTask(root, tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != statusDone || got.Goal.Observation != goalObsDone {
+			t.Fatalf("achieved return must be done: status=%s obs=%s note=%s", got.Status, got.Goal.Observation, got.Goal.ObservationNote)
+		}
+		if got.Goal.NativeGoalID != "auto-goal-1" {
+			t.Fatalf("native goal id was not read from the session file: %q", got.Goal.NativeGoalID)
+		}
+		if !taskDurablyDone(root, got) || got.LastCommittedTransitionID == "" {
+			t.Fatalf("done must be durable: id=%q durably=%v", got.LastCommittedTransitionID, taskDurablyDone(root, got))
+		}
+		done := goalEventsOfType(t, root, got.ID, evDone)
+		if len(done) != 1 || done[0].Actor != "workflow:goal-sync" || done[0].TransitionID != got.LastCommittedTransitionID {
+			t.Fatalf("evDone actor/transition: %+v", done)
+		}
+		rec, err := loadTransition(root, got.ID, got.LastCommittedTransitionID)
+		if err != nil || rec == nil || rec.Actor != "workflow:goal-sync" || rec.EventType != evDone {
+			t.Fatalf("transition actor: %+v err=%v", rec, err)
+		}
+		rows, class, err := loadManagerWakeOutbox(root)
+		if err != nil || class != "" {
+			t.Fatalf("outbox class=%s err=%v", class, err)
+		}
+		if len(rows) != 1 || rows[0].TransitionID != got.LastCommittedTransitionID || rows[0].EventType != evDone || rows[0].TaskID != got.ID {
+			t.Fatalf("outbox rows: %+v", rows)
+		}
+		reloaded, err := loadWorkflow(root, cfg, wf.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reloaded.GoalCompleted {
+			t.Fatal("one native session complete must not accept the whole goal")
+		}
+		reloaded.DirectionTaskIDs = []string{got.ID, "t-missing-direction"}
+		if err := saveWorkflow(root, cfg, reloaded); err != nil {
+			t.Fatal(err)
+		}
+		if err := cmdWorkflowAccept([]string{"-root", root, reloaded.ID}); err == nil {
+			t.Fatal("joined acceptance must wait for every required direction")
+		}
+		again, err := loadWorkflow(root, cfg, wf.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again.GoalCompleted {
+			t.Fatal("refused joined acceptance must leave the goal unaccepted")
+		}
+	})
+
+	t.Run("CancelWithoutStopEvidence", func(t *testing.T) {
+		root, dir := workflowTestRoot(t)
+		cfg := workflowTestCfg(t, root)
+		wf := initTestWorkflow(t, root, dir)
+		tk := admitManualWriter(t, root, cfg, wf)
+		home := t.TempDir()
+		tk.Goal.GrokHome = home
+		if err := saveTask(root, tk); err != nil {
+			t.Fatal(err)
+		}
+		ready := filepath.Join(t.TempDir(), "ready")
+		hold := filepath.Join(t.TempDir(), "hold")
+		if err := os.WriteFile(hold, []byte("1"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg.GrokBuildBin = fakeGrokGoalTerminalBin(t, dir, "hold", "complete", "achieved", ready, hold)
+		cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+		cfg.ManagerWake = &ManagerWakeConfig{Enabled: true}
+		saveGoalCfg(t, root, cfg)
+
+		setErr := make(chan error, 1)
+		go func() {
+			deadline := time.Now().Add(15 * time.Second)
+			sawReady := false
+			for time.Now().Before(deadline) {
+				if _, err := os.Stat(ready); err == nil {
+					sawReady = true
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if !sawReady {
+				_ = os.Remove(hold)
+				setErr <- fmt.Errorf("provider did not reach the cancel window")
+				return
+			}
+			if !acquireLock(root, 5*time.Second) {
+				setErr <- fmt.Errorf("scheduler lock not available to record cancel")
+				_ = os.Remove(hold)
+				return
+			}
+			loaded, err := loadTask(root, tk.ID)
+			if err != nil {
+				releaseLock(root)
+				setErr <- err
+				_ = os.Remove(hold)
+				return
+			}
+			if loaded.Goal == nil {
+				releaseLock(root)
+				setErr <- fmt.Errorf("goal binding missing while running")
+				_ = os.Remove(hold)
+				return
+			}
+			loaded.Goal.CancelRequested = true
+			loaded.Goal.StopEvidence = false
+			err = saveTask(root, loaded)
+			releaseLock(root)
+			_ = os.Remove(hold)
+			setErr <- err
+		}()
+
+		launchErr := runManualGoalLaunch(t, root, cfg, wf, 12000)
+		if err := <-setErr; err != nil {
+			t.Fatalf("set cancel: %v (launch: %v)", err, launchErr)
+		}
+		if launchErr != nil {
+			t.Fatalf("cancel return: %v", launchErr)
+		}
+		got, err := loadTask(root, tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Goal.Observation != goalObsUnknown {
+			t.Fatalf("cancel without stop evidence must stay unknown: status=%s obs=%s note=%s stop=%v",
+				got.Status, got.Goal.Observation, got.Goal.ObservationNote, got.Goal.StopEvidence)
+		}
+		assertNoGoalEvDone(t, root, got)
+	})
+
+	t.Run("NonzeroExit", func(t *testing.T) {
+		root, dir := workflowTestRoot(t)
+		cfg := workflowTestCfg(t, root)
+		wf := initTestWorkflow(t, root, dir)
+		tk := admitManualWriter(t, root, cfg, wf)
+		home := t.TempDir()
+		tk.Goal.GrokHome = home
+		if err := saveTask(root, tk); err != nil {
+			t.Fatal(err)
+		}
+		cfg.GrokBuildBin = fakeGrokGoalTerminalBin(t, dir, "nonzero", "complete", "achieved", "", "")
+		cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+		cfg.ManagerWake = &ManagerWakeConfig{Enabled: true}
+		saveGoalCfg(t, root, cfg)
+
+		err := runManualGoalLaunch(t, root, cfg, wf, 12000)
+		if err == nil {
+			t.Fatal("nonzero provider exit must surface")
+		}
+		got, lerr := loadTask(root, tk.ID)
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		if got.Status != statusHeld || got.Goal.Observation != goalObsUnknown {
+			t.Fatalf("nonzero must stay held/unknown: status=%s obs=%s note=%s launch=%v",
+				got.Status, got.Goal.Observation, got.Goal.ObservationNote, err)
+		}
+		assertNoGoalEvDone(t, root, got)
+	})
+
+	t.Run("Timeout", func(t *testing.T) {
+		root, dir := workflowTestRoot(t)
+		cfg := workflowTestCfg(t, root)
+		wf := initTestWorkflow(t, root, dir)
+		tk := admitManualWriter(t, root, cfg, wf)
+		home := t.TempDir()
+		tk.Goal.GrokHome = home
+		tk.Goal.HardTimeoutSec = 2
+		if err := saveTask(root, tk); err != nil {
+			t.Fatal(err)
+		}
+		cfg.GrokBuildBin = fakeGrokGoalTerminalBin(t, dir, "timeout", "complete", "achieved", "", "")
+		cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+		cfg.ManagerWake = &ManagerWakeConfig{Enabled: true}
+		saveGoalCfg(t, root, cfg)
+
+		err := runManualGoalLaunch(t, root, cfg, wf, 12000)
+		if err != nil {
+			t.Fatalf("timeout return must stay the existing nil launch error: %v", err)
+		}
+		got, lerr := loadTask(root, tk.ID)
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		if got.Status != statusHeld || got.Goal.Observation != goalObsUnknown {
+			t.Fatalf("timeout must stay held/unknown: status=%s obs=%s note=%s",
+				got.Status, got.Goal.Observation, got.Goal.ObservationNote)
+		}
+		assertNoGoalEvDone(t, root, got)
+	})
+
+	t.Run("ActiveStaysHeld", func(t *testing.T) {
+		root, dir := workflowTestRoot(t)
+		cfg := workflowTestCfg(t, root)
+		wf := initTestWorkflow(t, root, dir)
+		tk := admitManualWriter(t, root, cfg, wf)
+		home := t.TempDir()
+		tk.Goal.GrokHome = home
+		if err := saveTask(root, tk); err != nil {
+			t.Fatal(err)
+		}
+		cfg.GrokBuildBin = fakeGrokGoalTerminalBin(t, dir, "complete", "active", "", "", "")
+		cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+		cfg.ManagerWake = &ManagerWakeConfig{Enabled: true}
+		saveGoalCfg(t, root, cfg)
+
+		if err := runManualGoalLaunch(t, root, cfg, wf, 12000); err != nil {
+			t.Fatalf("active return: %v", err)
+		}
+		got, err := loadTask(root, tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != statusHeld || got.Goal.Observation != goalObsUnknown || got.Goal.LastNativeStatus != "active" {
+			t.Fatalf("active file after return must stay held/unknown: status=%s obs=%s native=%s note=%s",
+				got.Status, got.Goal.Observation, got.Goal.LastNativeStatus, got.Goal.ObservationNote)
+		}
+		if got.Goal.Continuation != "" {
+			t.Fatalf("active return must not keep a continuation: %q", got.Goal.Continuation)
+		}
+		assertNoGoalEvDone(t, root, got)
+	})
+
+	t.Run("PausedStaysNonAccepted", func(t *testing.T) {
+		root, dir := workflowTestRoot(t)
+		cfg := workflowTestCfg(t, root)
+		wf := initTestWorkflow(t, root, dir)
+		tk := admitManualWriter(t, root, cfg, wf)
+		home := t.TempDir()
+		tk.Goal.GrokHome = home
+		if err := saveTask(root, tk); err != nil {
+			t.Fatal(err)
+		}
+		cfg.GrokBuildBin = fakeGrokGoalTerminalBin(t, dir, "complete", "paused", "", "", "")
+		cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+		cfg.ManagerWake = &ManagerWakeConfig{Enabled: true}
+		saveGoalCfg(t, root, cfg)
+
+		if err := runManualGoalLaunch(t, root, cfg, wf, 12000); err != nil {
+			t.Fatalf("paused return: %v", err)
+		}
+		got, err := loadTask(root, tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status == statusDone || got.Status == statusRunning || got.Goal.Observation == goalObsDone {
+			t.Fatalf("paused file after return must not be done or running: status=%s obs=%s note=%s",
+				got.Status, got.Goal.Observation, got.Goal.ObservationNote)
+		}
+		if got.Status != statusHeld || got.Goal.Continuation != "same-session" {
+			t.Fatalf("paused return keeps sync's non-done held continuation: status=%s obs=%s cont=%s note=%s",
+				got.Status, got.Goal.Observation, got.Goal.Continuation, got.Goal.ObservationNote)
+		}
+		assertNoGoalEvDone(t, root, got)
+	})
+}
+
+func TestGoalSyncResidualActiveAfterTimeoutStaysHeldUnknown(t *testing.T) {
+	root, dir, grokHome, cfg, wf, tk, before := seedResidualActiveTimeoutGoal(t)
+	if tk.Status != statusHeld || tk.effectiveControlState() != controlRevoking || tk.ActiveAttemptID != "" {
+		t.Fatalf("fixture must be held/revoking with empty ActiveAttemptID: status=%s control=%s active=%q",
+			tk.Status, tk.effectiveControlState(), tk.ActiveAttemptID)
+	}
+	if !tk.Goal.CustodyReleased {
+		t.Fatal("fixture must record released custody")
+	}
+
+	// Pre-fix / write-authority probe: current-revision mapped running write is
+	// stale-refused and disk bytes stay unchanged. The guard is not loosened.
+	probe := mappedRunningMutation(t, tk)
+	if probe.Revision != tk.Revision {
+		t.Fatalf("probe must keep current revision %d, got %d", tk.Revision, probe.Revision)
+	}
+	err := saveTask(root, probe)
+	if !errors.Is(err, errStaleTaskWrite) {
+		t.Fatalf("held/revoking -> running at current revision must be errStaleTaskWrite, got %v", err)
+	}
+	afterProbe, err := os.ReadFile(taskPath(root, tk.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterProbe) != string(before) {
+		t.Fatalf("stale running write mutated disk\nbefore:\n%s\nafter:\n%s", before, afterProbe)
+	}
+
+	req := GoalSyncRequest{
+		ExpectedRevision: tk.Revision,
+		ExpectedSession:  tk.SessionID,
+		ExpectedGoalID:   tk.Goal.NativeGoalID,
+		ExpectedAttempt:  tk.Goal.BoundAttemptID,
+		GrokHome:         grokHome,
+		GrokCWD:          dir,
+	}
+	got, err := syncWorkflowGoal(root, cfg, wf, req)
+	if err != nil {
+		t.Fatalf("shipped normal sync: %v", err)
+	}
+	assertResidualTimeoutUnchanged(t, root, got, before, tk.Revision)
+
+	again, err := syncWorkflowGoal(root, cfg, wf, req)
+	if err != nil {
+		t.Fatalf("repeat sync: %v", err)
+	}
+	assertResidualTimeoutUnchanged(t, root, again, before, tk.Revision)
+
+	out, cmdErr := captureGoalSyncCLI(t, root, wf.ID)
+	if cmdErr != nil {
+		t.Fatalf("cmdWorkflowGoalSync: %v\n%s", cmdErr, out)
+	}
+	if !strings.Contains(out, "status=held") || !strings.Contains(out, "observation=unknown") {
+		t.Fatalf("CLI must print held/unknown, got %q", out)
+	}
+	if strings.Contains(out, "status=running") || strings.Contains(out, "status=done") || strings.Contains(out, "observation=running") {
+		t.Fatalf("CLI revived residual-active timeout: %q", out)
+	}
+	fresh, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertResidualTimeoutUnchanged(t, root, fresh, before, tk.Revision)
+
+	if bin := strings.TrimSpace(os.Getenv("CARDEX_BIN")); bin != "" {
+		run := func() string {
+			t.Helper()
+			cmd := exec.Command(bin, "workflow", "goal-sync", wf.ID, "-root", root)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("bin/cardex workflow goal-sync: %v\n%s", err, out)
+			}
+			s := string(out)
+			t.Logf("bin/cardex workflow goal-sync: %s", strings.TrimSpace(s))
+			if !strings.Contains(s, "status=held") || !strings.Contains(s, "observation=unknown") {
+				t.Fatalf("bin/cardex must print held/unknown, got %q", s)
+			}
+			if strings.Contains(s, "status=running") || strings.Contains(s, "status=done") {
+				t.Fatalf("bin/cardex revived residual-active timeout: %q", s)
+			}
+			return s
+		}
+		first := run()
+		second := run()
+		t.Logf("repeat bin/cardex stdout first=%q second=%q", strings.TrimSpace(first), strings.TrimSpace(second))
+		fresh, err = loadTask(root, tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertResidualTimeoutUnchanged(t, root, fresh, before, tk.Revision)
+	}
+}
+
+func TestGoalSyncLiveNativeActiveStillRunning(t *testing.T) {
+	t.Parallel()
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	sessionID := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	goalID := "goal-live-active"
+	tk.SessionID = sessionID
+	tk.Goal.NativeGoalID = goalID
+	seedExitedAttempt(t, root, tk, "att-live")
+	grokHome := t.TempDir()
+	writeGrokGoalFixture(t, grokHome, dir, sessionID, goalID, "active", grokNativeGoalStateFile{Phase: "Executing"})
+	got, err := syncWorkflowGoal(root, cfg, wf, GoalSyncRequest{
+		ExpectedRevision: tk.Revision, ExpectedSession: sessionID, ExpectedGoalID: goalID,
+		ExpectedAttempt: "att-live", GrokHome: grokHome, GrokCWD: dir,
+	})
+	if err != nil {
+		t.Fatalf("live native-active: %v", err)
+	}
+	if got.Status != statusRunning || got.Goal.Observation != goalObsRunning {
+		t.Fatalf("live native-active producer must map to running, status=%s obs=%s", got.Status, got.Goal.Observation)
+	}
+}
+
+func TestGoalSyncReleasedBudgetLimitedDoesNotReviveActiveAttempt(t *testing.T) {
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	sessionID := "dddddddd-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	goalID := "goal-budget-released"
+	attemptID := "atbudget000000001"
+	grokHome := t.TempDir()
+	tk.SessionID = sessionID
+	tk.Goal.NativeGoalID = goalID
+	tk.Goal.GrokHome = grokHome
+	seedExitedAttempt(t, root, tk, attemptID)
+	tk.Status = statusHeld
+	tk.Goal.Observation = goalObsUnknown
+	tk.Goal.ObservationNote = "TUI returned; accept done only via goal-sync with native proof plus released custody"
+	tk.Goal.CustodyReleased = true
+	tk.ActiveAttemptID = ""
+	revokeScheduling(tk)
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*tk = *loaded
+	writeGrokGoalFixture(t, grokHome, dir, sessionID, goalID, "budget_limited", grokNativeGoalStateFile{
+		LastClassifierVerdict: "not_achieved",
+		Phase:                 "Idle",
+	})
+	got, err := syncWorkflowGoal(root, cfg, wf, GoalSyncRequest{
+		ExpectedRevision: tk.Revision,
+		ExpectedSession:  sessionID,
+		ExpectedGoalID:   goalID,
+		ExpectedAttempt:  attemptID,
+		GrokHome:         grokHome,
+		GrokCWD:          dir,
+	})
+	if err != nil {
+		t.Fatalf("budget_limited sync: %v", err)
+	}
+	if got.Goal == nil {
+		t.Fatal("missing goal binding")
+	}
+	if got.Goal.Observation == goalObsDone || got.Status == statusDone || got.Goal.EvidenceComplete {
+		t.Fatalf("budget_limited must stay nonaccepted: status=%s obs=%s note=%s", got.Status, got.Goal.Observation, got.Goal.ObservationNote)
+	}
+	if got.Goal.LastNativeStatus != "budget_limited" && !strings.Contains(got.Goal.ObservationNote, "budget_limited") {
+		t.Fatalf("native budget_limited must remain visible: %+v", got.Goal)
+	}
+	if got.ActiveAttemptID != "" {
+		t.Fatalf("custody-released budget_limited must not resurrect ActiveAttemptID: %q bound=%q", got.ActiveAttemptID, got.Goal.BoundAttemptID)
+	}
+	if got.Goal.BoundAttemptID != attemptID {
+		t.Fatalf("BoundAttemptID must stay %s, got %q", attemptID, got.Goal.BoundAttemptID)
+	}
+	assertNoGoalEvDone(t, root, got)
+}
+
+func TestGoalSyncIsolationStaleAndMissingCustody(t *testing.T) {
+	t.Parallel()
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	sessionID := "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	goalID := "goal-isolation"
+	tk.SessionID = sessionID
+	tk.Goal.NativeGoalID = goalID
+	seedExitedAttempt(t, root, tk, "att-iso")
+	home := t.TempDir()
+	writeGrokGoalFixture(t, home, dir, sessionID, goalID, "complete", grokNativeGoalStateFile{
+		LastClassifierVerdict: "achieved",
+	})
+	req := GoalSyncRequest{
+		ExpectedRevision: tk.Revision, ExpectedSession: sessionID, ExpectedGoalID: goalID,
+		ExpectedAttempt: "att-iso", GrokHome: home, GrokCWD: dir,
+	}
+
+	staleRev := req
+	staleRev.ExpectedRevision = req.ExpectedRevision - 1
+	if _, err := syncWorkflowGoal(root, cfg, wf, staleRev); !errors.Is(err, errGoalSyncRejected) {
+		t.Fatalf("stale revision must reject: %v", err)
+	}
+	otherSess := req
+	otherSess.ExpectedSession = "cccccccc-bbbb-4ccc-8ddd-ffffffffffff"
+	if _, err := syncWorkflowGoal(root, cfg, wf, otherSess); !errors.Is(err, errGoalSyncRejected) {
+		t.Fatalf("other session must reject: %v", err)
+	}
+	otherGoal := req
+	otherGoal.ExpectedGoalID = "goal-other"
+	if _, err := syncWorkflowGoal(root, cfg, wf, otherGoal); !errors.Is(err, errGoalSyncRejected) {
+		t.Fatalf("other goal_id must reject: %v", err)
+	}
+	oldAtt := req
+	oldAtt.ExpectedAttempt = "att-old"
+	if _, err := syncWorkflowGoal(root, cfg, wf, oldAtt); !errors.Is(err, errGoalSyncRejected) {
+		t.Fatalf("old attempt must reject: %v", err)
+	}
+
+	doneCh := make(chan struct{})
+	markTaskLeaseResidue(tk.ID, doneCh)
+	t.Cleanup(func() { close(doneCh) })
+	got, err := syncWorkflowGoal(root, cfg, wf, req)
+	if err != nil {
+		t.Fatalf("live-lease complete: %v", err)
+	}
+	if got.Status == statusDone || got.Goal.Observation == goalObsDone {
+		t.Fatalf("native complete without released custody must not be done: status=%s obs=%s", got.Status, got.Goal.Observation)
+	}
+	if got.Goal.Observation != goalObsUnknown {
+		t.Fatalf("missing custody want unknown, got %s (%s)", got.Goal.Observation, got.Goal.ObservationNote)
+	}
+}
+
+func TestGoalSyncConcurrentMappedRunningStaleGuard(t *testing.T) {
+	root, _, _, _, _, tk, before := seedResidualActiveTimeoutGoal(t)
+	const n = 8
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func() {
+			defer wg.Done()
+			fresh, err := loadTask(root, tk.ID)
+			if err != nil {
+				errs <- err
+				return
+			}
+			errs <- saveTask(root, mappedRunningMutation(t, fresh))
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if !errors.Is(err, errStaleTaskWrite) {
+			t.Fatalf("concurrent mapped-running write must be errStaleTaskWrite, got %v", err)
+		}
+	}
+	after, err := os.ReadFile(taskPath(root, tk.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("concurrent stale running writes mutated disk\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	fresh, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status != statusHeld || fresh.Goal.Observation != goalObsUnknown || fresh.ActiveAttemptID != "" {
+		t.Fatalf("concurrent probe revived task: status=%s obs=%s active=%q",
+			fresh.Status, fresh.Goal.Observation, fresh.ActiveAttemptID)
+	}
+}
+
+func assertGoalLaunchSharedConfigUnchanged(t *testing.T, root string, before []byte) {
+	t.Helper()
+	after, err := os.ReadFile(configPath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("shared config bytes must stay unchanged\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func assertGoalLaunchArgvAbsent(t *testing.T, argvPath string) {
+	t.Helper()
+	if _, err := os.Stat(argvPath); err == nil {
+		raw, _ := os.ReadFile(argvPath)
+		t.Fatalf("must not exec launcher, argv dump:\n%s", raw)
+	}
+}
+
+func TestGoalLaunchOmitsBudgetAndSandboxDefaults(t *testing.T) {
+	root, dir, argvPath, _, _, wf, tk, cfgBefore := setupInvocationSandboxLaunch(t)
+	headlessGoalStdin(t)
+	out, err := captureWorkflowCmd(t, "goal-launch", "-root", root, "-task", tk.ID, "-manual")
+	if err != nil {
+		t.Fatalf("omitted -budget/-sandbox with -manual must launch: %v\n%s", err, out)
+	}
+	assertGoalLaunchSharedConfigUnchanged(t, root, cfgBefore)
+	raw, err := os.ReadFile(argvPath)
+	if err != nil {
+		t.Fatalf("launcher must exec (argv dump missing): %v", err)
+	}
+	if dumpedArgValue(string(raw), "--sandbox") != grokBuildWriteSandboxDefault {
+		t.Fatalf("omitted -sandbox must keep prior default --sandbox %s:\n%s", grokBuildWriteSandboxDefault, raw)
+	}
+	if dumpedHasFlag(string(raw), "--budget") {
+		t.Fatalf("grok argv must not contain --budget:\n%s", raw)
+	}
+	contract, err := os.ReadFile(filepath.Join(workflowsDir(root), wf.ID+".stage-contract.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contract), "budget_tokens: 0 (soft)") {
+		t.Fatalf("omitted -budget must freeze budget_tokens 0:\n%s", contract)
+	}
+	if !strings.Contains(out, "/goal") {
+		t.Fatalf("printed instructions must include /goal:\n%s", out)
+	}
+	if strings.Contains(out, "--budget") {
+		t.Fatalf("omitted -budget must not print --budget:\n%s", out)
+	}
+	if dumpedArgValue(string(raw), "--cwd") != dir {
+		t.Fatalf("--cwd must stay worktree %q:\n%s", dir, raw)
+	}
+}
+
+func TestGoalLaunchPositiveBudgetFreezesContractAndNativeGoal(t *testing.T) {
+	root, _, argvPath, _, _, wf, tk, cfgBefore := setupInvocationSandboxLaunch(t)
+	headlessGoalStdin(t)
+	out, err := captureWorkflowCmd(t, "goal-launch", "-root", root, "-task", tk.ID, "-manual", "-budget", "12000")
+	if err != nil {
+		t.Fatalf("positive -budget must launch: %v\n%s", err, out)
+	}
+	assertGoalLaunchSharedConfigUnchanged(t, root, cfgBefore)
+	contract, err := os.ReadFile(filepath.Join(workflowsDir(root), wf.ID+".stage-contract.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contract), "budget_tokens: 12000 (soft)") {
+		t.Fatalf("contract must freeze budget_tokens 12000:\n%s", contract)
+	}
+	if !strings.Contains(out, "/goal") || !strings.Contains(out, "--budget 12000") {
+		t.Fatalf("copyable command must contain /goal and --budget 12000:\n%s", out)
+	}
+	raw, err := os.ReadFile(argvPath)
+	if err != nil {
+		t.Fatalf("launcher must exec (argv dump missing): %v", err)
+	}
+	if dumpedHasFlag(string(raw), "--budget") {
+		t.Fatalf("grok argv must not contain --budget:\n%s", raw)
+	}
+}
+
+func TestGoalLaunchRejectsBudgetMisuseBeforeExec(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		flag string
+	}{
+		{"negative", "-budget=-1"},
+		{"overflow", "-budget=9223372036854775808"},
+		{"non-numeric", "-budget=not-a-number"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _, argvPath, _, _, _, tk, cfgBefore := setupInvocationSandboxLaunch(t)
+			headlessGoalStdin(t)
+			err := cmdWorkflow([]string{"goal-launch", "-root", root, "-task", tk.ID, "-manual", tc.flag})
+			if err == nil {
+				t.Fatalf("%s must error before launch", tc.name)
+			}
+			assertGoalLaunchSharedConfigUnchanged(t, root, cfgBefore)
+			assertGoalLaunchArgvAbsent(t, argvPath)
+		})
+	}
+}
+
+func TestGoalLaunchExistingSandboxProfile(t *testing.T) {
+	root, dir, argvPath, _, _, _, tk, cfgBefore := setupInvocationSandboxLaunch(t)
+	headlessGoalStdin(t)
+	if err := cmdWorkflow([]string{"goal-launch", "-root", root, "-task", tk.ID, "-manual", "-sandbox", testInvocationSandboxProfile}); err != nil {
+		t.Fatalf("existing applicable -sandbox must launch: %v", err)
+	}
+	assertGoalLaunchSharedConfigUnchanged(t, root, cfgBefore)
+	raw, err := os.ReadFile(argvPath)
+	if err != nil {
+		t.Fatalf("launcher must exec (argv dump missing): %v", err)
+	}
+	if dumpedArgValue(string(raw), "--sandbox") != testInvocationSandboxProfile {
+		t.Fatalf("existing applicable profile must reach --sandbox %s:\n%s", testInvocationSandboxProfile, raw)
+	}
+	if dumpedArgValue(string(raw), "--cwd") != dir {
+		t.Fatalf("--cwd must stay worktree %q:\n%s", dir, raw)
+	}
+}
+
+func TestGoalLaunchSandboxSelectorRejectsBeforeExec(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"unknown-profile", "off", "workspace"} {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			root, _, argvPath, _, _, _, tk, cfgBefore := setupInvocationSandboxLaunch(t)
+			headlessGoalStdin(t)
+			err := cmdWorkflow([]string{"goal-launch", "-root", root, "-task", tk.ID, "-manual", "-sandbox", name})
+			if err == nil {
+				t.Fatalf("selector %q must reject before launch", name)
+			}
+			if !errors.Is(err, errGoalUnsupportedTuple) {
+				t.Fatalf("selector %q want errGoalUnsupportedTuple, got %v", name, err)
+			}
+			assertGoalLaunchSharedConfigUnchanged(t, root, cfgBefore)
+			assertGoalLaunchArgvAbsent(t, argvPath)
+		})
+	}
+	t.Run("mismatched-git-grant", func(t *testing.T) {
+		root, _, argvPath, home, _, _, tk, cfgBefore := setupInvocationSandboxLaunch(t)
+		writeGrokSandboxTOML(t, filepath.Join(home, "sandbox.toml"), testInvocationSandboxProfile, "workspace", []string{filepath.Join(t.TempDir(), "other.git")})
+		headlessGoalStdin(t)
+		err := cmdWorkflow([]string{"goal-launch", "-root", root, "-task", tk.ID, "-manual", "-sandbox", testInvocationSandboxProfile})
+		if err == nil {
+			t.Fatal("mismatched git grant must reject before launch")
+		}
+		if !errors.Is(err, errGoalUnsupportedTuple) {
+			t.Fatalf("want errGoalUnsupportedTuple, got %v", err)
+		}
+		assertGoalLaunchSharedConfigUnchanged(t, root, cfgBefore)
+		assertGoalLaunchArgvAbsent(t, argvPath)
+	})
+}
+
+func TestGoalLaunchUsageAndHostedManualMutex(t *testing.T) {
+	err := cmdWorkflow([]string{"goal-launch"})
+	if err == nil || !strings.Contains(err.Error(), "-budget") || !strings.Contains(err.Error(), "-sandbox") {
+		t.Fatalf("usage must name -budget and -sandbox: %v", err)
+	}
+	err = cmdWorkflow([]string{"goal-launch", "-hosted", "-manual", "-task", "x"})
+	if err == nil || !strings.Contains(err.Error(), "不能同时") {
+		t.Fatalf("-hosted and -manual together must still error: %v", err)
+	}
+
+	old := os.Stderr
+	r, w, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatal(pipeErr)
+	}
+	os.Stderr = w
+	helpErr := cmdWorkflow([]string{"goal-launch", "-h"})
+	_ = w.Close()
+	os.Stderr = old
+	helpOut, readErr := io.ReadAll(r)
+	_ = r.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	text := string(helpOut)
+	if helpErr == nil {
+		t.Fatal("goal-launch -h must return a help error")
+	}
+	if !strings.Contains(text, "-budget") || !strings.Contains(text, "-sandbox") {
+		t.Fatalf("help must name -budget and -sandbox:\n%s", text)
 	}
 }

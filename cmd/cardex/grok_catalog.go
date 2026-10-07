@@ -241,6 +241,9 @@ func freezeGrokAttemptModel(ctx context.Context, cfg *Config, t *Task) error {
 	if t == nil {
 		return fmt.Errorf("Grok catalog probe failed: no task")
 	}
+	// SessionID is bound inside launch admission, after this freeze. A session
+	// that already exists, a started attempt, or a route readback is evidence
+	// and does not receive a new catalog id.
 	if grokHasExecutionEvidence(t) && !grokModelIsConcrete(t.GrokModel) {
 		id, ok, ambiguous := grokEvidenceExecutionID(t)
 		if ambiguous || !ok {

@@ -135,6 +135,24 @@ cardex log TASK_ID
 
 将 `TASK_ID` 换成 `add` 返回的实际 ID。参数应放在 prompt 或任务 ID 前，例如 `cardex run -root PATH TASK_ID`。`-dry-run` 不创建任务也不调用模型；`run TASK_ID` 才执行这张卡。已有后台调度时，入队卡可能自动启动，只想准备可用 `add -hold`。
 
+普通 `cardex add` 自动走一张 `direct` 卡：诊断、改代码、检查、修复，加上作者自检。显式 owner 形状优先。这一张卡没有评分表、反复确认，也不设独立设计门。已经保存的 Goal 策略或 onboarding opt-in 不会挡住这次普通提交，卡面仍是 direct，不是原生 Goal。显式 `-work-mode staged` 或 `-work-mode goal` 不写卡，并指向 `cardex workflow`。入队只是队列准入；依赖、归属和容量仍单独决定能不能启动。`cardex workflow fanout` 把一张已完成的设计卡拆成各自独立的方向卡，此时不创建验收卡。`cardex workflow accept` 只在每个必要方向都完成后创建一张验收卡；方向完成本身不是整个目标验收。`cardex workflow accept -complete` 只有在这张卡的结论是绑定当前候选产物的可采纳 pass 时，才把目标标为已验收。暂停、失败、未知结论或重复事件不验收，也不再开第二张验收卡。`cardex workflow goal-round` 保留已完成的卡并开启下一轮；目标已经验收后停止。达到最大轮次只是上限，不是成功。`cardex workflow goal-direction` 与 `goal-launch` 分别准入或启动一个原生方向；启动不传 `-p`、`--single` 或 `--prompt-file`。`cardex workflow goal-sync -task <id>` 只核对此方向自己的会话、attempt 和 native goal id。省略 `-task` 仍是串行默认，只同步当前 writer。一张方向返回不会同步另一张，也不会创建验收卡。一个原生 Goal 会话完成不是整个目标验收。已创建但仍是 `design`、尚未绑定证明的 workflow，用 `cardex workflow design-bind <id> -design-receipt PATH` 补绑 Initial/LatestValid；也可以只给 `-design-task ID`。必须恰好一个当前已完成证明。已有 writer、方向、验收或执行合同不可替换。
+
+仍由管理会话组织：放行 held 的 integration / live / cutover、指定独立审核人或额外额度、Release / 生产队列 / 安装 / 对外发消息、held 或 unknown 之后的第二写者或更换 provider、把候选应用到生产数据根。手动 Goal 启动不传 `-p`、`--single` 或 `--prompt-file`。
+
+写能力 native Goal（`goal-run -manual` 与 `-hosted` 同一 argv 消费者）默认把 Grok `--sandbox workspace` 和 `--permission-mode auto` 交给已安装的 Grok CLI。`auto` 只保留权限提示，不会变成 bypass / always-approve，也不会关掉沙箱。只读 Goal/卡继续用现有只读沙箱配置，即使写沙箱 opt-in 已设置。
+
+若工作区以外还需要明确的写根，由 Owner 自己在 Grok 自定义 profile 里授权，再把精确名称写进 Cardex：
+
+1. 在项目 `.grok/sandbox.toml` 或 `~/.grok/sandbox.toml` 增加 `[profiles.NAME]`，`extends="workspace"`，`read_write` 只列字面目录。项目文件覆盖用户文件中的同名 profile。
+2. 在 `grok_build.write_sandbox_profile` 填入同一个精确 `NAME`。空或省略仍启动 `--sandbox workspace`。`off`、bypass、unrestricted 以及路径式名称会被拒绝。
+3. 单次 `goal-run` 也可以选择一个**已经存在且适用**的 profile，不改共享配置：`cardex workflow goal-run ID -manual|-hosted -sandbox NAME`。选择只作用于这次调用。未知、过宽、`off` / bypass / unrestricted / `devbox` / 只读、或不含覆盖 linked Git common-dir 的字面目录授权的名称，会在启动前拒绝。环境变量不能覆盖这个显式选择。
+
+Cardex 只把 `--sandbox NAME` 转给 Grok；它不写 `sandbox.toml`、不推导父目录、不自动授予当前机器。未知自定义 profile 会在启动前拒绝，不会回落到 `off`。权限提示与内核/Seatbelt 写根是两层；配置 opt-in 本身不是当前主机已获授权或生产已恢复的证明。
+
+`budget_limited` 不是已完成、也不是自动接受。托管 Goal 在原生 `budget_limited` / Idle 上可以确认 stop，再走真实的 Wait、输出排空和 custody 回收；只向 PTY 写入 `/goal clear` 或 `/quit` 不算释放。回收 custody 之后，由管理者用 `design-result -decision successor` 消费精确的 task / session / attempt / revision、`budget_limited` 观察、真实结果产物和已核验输入身份，并遵守轮次与 custody 限制；这不是自动接受源结果。
+
+托管 Goal 的 pause / resume / stop 在原生 permission prompt 仍待处理时不能向 PTY 注入 Esc、斜杠命令或回车：回车会选中提示的当前项（通常是允许）。此时返回 `control_unsupported` 或 `pause_not_confirmed`，请用正式 `cardex cancel` 结束该 producer。没有原子的“停掉当前 modal tool”的原生 API；未确认的控制不是 pause / complete / released。
+
 单次调整不会改动保存的预设：
 
 ```sh

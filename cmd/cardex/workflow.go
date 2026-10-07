@@ -68,6 +68,7 @@ var (
 	errWorkflowMode           = errors.New("workflow unknown mode")
 	errWorkflowRoundsExceeded = errors.New("workflow repair rounds exhausted")
 	errWorkflowParent         = errors.New("workflow parent binding")
+	errWorkflowCustody        = errors.New("workflow custody unresolved")
 )
 
 // IntegrationGate is a fail-closed dispatch latch carried on an integration
@@ -109,12 +110,18 @@ type WorkflowRecord struct {
 	Progress          WorkflowProgressCoords `json:"progress"`
 	Status            string                 `json:"status"`
 	MaterialNotify    *WorkflowNotify        `json:"material_notify,omitempty"`
-	DesignLineage     *WorkflowDesignLineage `json:"design_lineage,omitempty"`
-	DesignSession     *PersistentSessionRef  `json:"design_session,omitempty"`
-	ManagerSession    *PersistentSessionRef  `json:"manager_session,omitempty"`
-	OwnerDesignEntry  *PersistentSessionRef  `json:"owner_design_entry,omitempty"`
-	CreatedAt         string                 `json:"created_at"`
-	UpdatedAt         string                 `json:"updated_at"`
+	DesignLineage       *WorkflowDesignLineage `json:"design_lineage,omitempty"`
+	DesignSession       *PersistentSessionRef  `json:"design_session,omitempty"`
+	ManagerSession      *PersistentSessionRef  `json:"manager_session,omitempty"`
+	OwnerDesignEntry    *PersistentSessionRef  `json:"owner_design_entry,omitempty"`
+	DesignTaskID        string                 `json:"design_task_id,omitempty"`
+	DirectionTaskIDs    []string               `json:"direction_task_ids,omitempty"`
+	NativeGoalTaskIDs   []string               `json:"native_goal_task_ids,omitempty"`
+	AcceptanceTaskID    string                 `json:"acceptance_task_id,omitempty"`
+	AcceptanceCoverage  string                 `json:"acceptance_coverage,omitempty"`
+	GoalCompleted       bool                   `json:"goal_completed,omitempty"`
+	CreatedAt           string                 `json:"created_at"`
+	UpdatedAt           string                 `json:"updated_at"`
 }
 
 // WorkflowCandidate is the frozen source identity a review is bound to.
@@ -231,6 +238,14 @@ func validateWorkflowEngine(cfg *Config, engine string) error {
 }
 
 func normalizeWorkflowRecord(cfg *Config, wf *WorkflowRecord) error {
+	return normalizeWorkflowRecordOpts(cfg, wf, false)
+}
+
+func normalizeWorkflowRecordLoad(cfg *Config, wf *WorkflowRecord) error {
+	return normalizeWorkflowRecordOpts(cfg, wf, true)
+}
+
+func normalizeWorkflowRecordOpts(cfg *Config, wf *WorkflowRecord, historical bool) error {
 	if wf == nil {
 		return errWorkflowMalformed
 	}
@@ -276,11 +291,9 @@ func normalizeWorkflowRecord(cfg *Config, wf *WorkflowRecord) error {
 	if err := validateWorkflowEngine(cfg, wf.ReviewerEngine); err != nil {
 		return err
 	}
-	norm, err := NormalizeWriteDomain(workflowRepoRoot(wf), wf.WriteDomain)
-	if err != nil {
+	if err := normalizeWorkflowWriteDomain(wf, historical); err != nil {
 		return err
 	}
-	wf.WriteDomain = norm
 	if wf.EffectGates.Integration == "" {
 		wf.EffectGates.Integration = effectGateHeld
 	}
@@ -330,8 +343,111 @@ func workflowRepoRoot(wf *WorkflowRecord) string {
 	return wf.Repo
 }
 
+func existingWorkflowDir(p string) bool {
+	if strings.TrimSpace(p) == "" {
+		return false
+	}
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
+}
+
+func provenWorkflowRepoRoot(wf *WorkflowRecord) (string, bool) {
+	if wf == nil {
+		return "", false
+	}
+	if existingWorkflowDir(wf.Worktree) {
+		if top, _, unc := resolveGitIdentity(wf.Worktree); !unc && top != "" {
+			return top, true
+		}
+		return physicalDirKey(wf.Worktree), true
+	}
+	if existingWorkflowDir(wf.Repo) {
+		if top, _, unc := resolveGitIdentity(wf.Repo); !unc && top != "" {
+			return top, true
+		}
+		return physicalDirKey(wf.Repo), true
+	}
+	return "", false
+}
+
+func workflowAuditRepoKey(wf *WorkflowRecord) (key string, proven bool) {
+	if wf == nil {
+		return "", false
+	}
+	if existingWorkflowDir(wf.Worktree) {
+		if k := integrationRepoKey(wf.Worktree); k != "" {
+			return k, true
+		}
+		return physicalDirKey(wf.Worktree), true
+	}
+	if existingWorkflowDir(wf.Repo) {
+		if k := integrationRepoKey(wf.Repo); k != "" {
+			return k, true
+		}
+		return physicalDirKey(wf.Repo), true
+	}
+	return "", false
+}
+
+func normalizeWorkflowWriteDomain(wf *WorkflowRecord, historical bool) error {
+	if wf == nil {
+		return errWorkflowMalformed
+	}
+	if !historical {
+		norm, err := NormalizeWriteDomain(workflowRepoRoot(wf), wf.WriteDomain)
+		if err != nil {
+			return err
+		}
+		wf.WriteDomain = norm
+		return nil
+	}
+	if root, ok := provenWorkflowRepoRoot(wf); ok {
+		norm, err := NormalizeWriteDomain(root, wf.WriteDomain)
+		if err != nil {
+			return err
+		}
+		wf.WriteDomain = norm
+		return nil
+	}
+	if _, err := canonicalHistoricalRoot(wf.Worktree); err != nil {
+		return err
+	}
+	if _, err := canonicalHistoricalRoot(wf.Repo); err != nil {
+		return err
+	}
+	norm, err := lexicalWriteDomain(wf.WriteDomain)
+	if err != nil {
+		return err
+	}
+	wf.WriteDomain = norm
+	return nil
+}
+
+// historicalInactivePersistAllowed lets an already terminal record be rewritten
+// after its repository directory disappeared. A live writing record still uses
+// the strict normalizer. A missing directory is not itself a terminal status.
+func historicalInactivePersistAllowed(wf *WorkflowRecord) bool {
+	if wf == nil {
+		return false
+	}
+	switch wf.Status {
+	case workflowStatusOwnerChoice, workflowStatusExhausted, workflowStatusExternalBlocked:
+		_, proven := provenWorkflowRepoRoot(wf)
+		return !proven
+	default:
+		return false
+	}
+}
+
+func normalizeWorkflowRecordForSave(cfg *Config, wf *WorkflowRecord) error {
+	if historicalInactivePersistAllowed(wf) {
+		return normalizeWorkflowRecordOpts(cfg, wf, true)
+	}
+	return normalizeWorkflowRecord(cfg, wf)
+}
+
 func saveWorkflow(root string, cfg *Config, wf *WorkflowRecord) error {
-	if err := normalizeWorkflowRecord(cfg, wf); err != nil {
+	if err := normalizeWorkflowRecordForSave(cfg, wf); err != nil {
 		return err
 	}
 	wf.UpdatedAt = time.Now().Format(time.RFC3339)
@@ -360,7 +476,7 @@ func loadWorkflow(root string, cfg *Config, id string) (*WorkflowRecord, error) 
 	if err := json.Unmarshal(data, &wf); err != nil {
 		return nil, fmt.Errorf("parse workflow %s: %w", id, err)
 	}
-	if err := normalizeWorkflowRecord(cfg, &wf); err != nil {
+	if err := normalizeWorkflowRecordLoad(cfg, &wf); err != nil {
 		return nil, err
 	}
 	return &wf, nil
@@ -472,16 +588,21 @@ func auditWorkflowWriteDomains(root string, cfg *Config, incoming *WorkflowRecor
 		if !workflowClaimsActive(wf) {
 			return nil
 		}
-		repoRoot := workflowRepoRoot(wf)
-		key := integrationRepoKey(wf.Worktree)
-		if key == "" {
-			key = physicalDirKey(repoRoot)
+		key, proven := workflowAuditRepoKey(wf)
+		if !proven {
+			return fmt.Errorf("%w: workflow %s still writing but repository identity cannot be proven (worktree/repo missing); disjointness cannot be proven",
+				errWorkflowWriteOverlap, wf.ID)
+		}
+		repoRoot, ok := provenWorkflowRepoRoot(wf)
+		if !ok {
+			return fmt.Errorf("%w: workflow %s still writing but repository identity cannot be proven (worktree/repo missing); disjointness cannot be proven",
+				errWorkflowWriteOverlap, wf.ID)
 		}
 		norm, err := NormalizeWriteDomain(repoRoot, wf.WriteDomain)
 		if err != nil {
 			return err
 		}
-		if _, ok := repoRoots[key]; !ok {
+		if _, exists := repoRoots[key]; !exists {
 			repoRoots[key] = repoRoot
 		}
 		byRepo[key] = append(byRepo[key], norm)

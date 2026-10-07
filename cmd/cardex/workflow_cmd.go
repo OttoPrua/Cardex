@@ -11,7 +11,7 @@ import (
 
 func cmdWorkflow(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("用法: cardex workflow init|list|show|writer|goal-run|goal-sync|goal-control|goal-observe|bind-session|design-request|design-collect|design-result|design-repair|freeze-candidate|review|ingest-review|repair|try-release-integration|mark ...")
+		return fmt.Errorf("用法: cardex workflow init|list|show|writer|fanout|accept|goal-round|goal-direction|goal-launch|goal-run|goal-bootstrap-before-native-recovery|goal-sync|goal-control|goal-observe|bind-session|design-request|design-collect|design-bind|design-result|design-repair|freeze-candidate|review|ingest-review|repair|try-release-integration|mark ...\n  goal-run <id> -manual|-hosted [-budget N] [-sandbox NAME]  # -sandbox selects an existing applicable Grok profile for this invocation only\n  goal-bootstrap-before-native-recovery <id> -authorization FILE -manual|-hosted [-executor-capture FILE -executor-digest SHA256 -executor-call-id CALL]  # explicit single-use authorization; sidecar-missing executor JSONL is optional manager-admitted proof; ordinary goal-run stays fail-closed")
 	}
 	switch args[0] {
 	case "init":
@@ -22,8 +22,20 @@ func cmdWorkflow(args []string) error {
 		return cmdWorkflowShow(args[1:])
 	case "writer":
 		return cmdWorkflowWriter(args[1:])
+	case "fanout":
+		return cmdWorkflowFanout(args[1:])
+	case "accept":
+		return cmdWorkflowAccept(args[1:])
+	case "goal-round":
+		return cmdWorkflowGoalRound(args[1:])
+	case "goal-direction":
+		return cmdWorkflowGoalDirection(args[1:])
+	case "goal-launch":
+		return cmdWorkflowGoalLaunch(args[1:])
 	case "goal-run":
 		return cmdWorkflowGoalRun(args[1:])
+	case "goal-bootstrap-before-native-recovery":
+		return cmdWorkflowGoalBootstrapBeforeNativeRecovery(args[1:])
 	case "goal-sync":
 		return cmdWorkflowGoalSync(args[1:])
 	case "goal-control":
@@ -36,6 +48,8 @@ func cmdWorkflow(args []string) error {
 		return cmdWorkflowDesignRequest(args[1:])
 	case "design-collect":
 		return cmdWorkflowDesignCollect(args[1:])
+	case "design-bind":
+		return cmdWorkflowDesignBind(args[1:])
 	case "design-result":
 		return cmdWorkflowDesignResult(args[1:])
 	case "design-repair":
@@ -362,20 +376,54 @@ func cmdWorkflowGoalRun(args []string) error {
 	manual := fs.Bool("manual", false, "前台交互式 Grok TUI（操作者自己输入 /goal）")
 	hosted := fs.Bool("hosted", false, "前台运行 Cardex 自有 PTY 并转发输出；长期运行请用调用方受管后台任务；控制走 goal-control")
 	budget := fs.Int64("budget", 0, "软 token 预算，写入 /goal --budget（不是 grok 顶层 flag）")
+	sandbox := fs.String("sandbox", "", "existing applicable Grok --sandbox profile for this invocation only")
 	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
 	if *manual == *hosted {
 		return fmt.Errorf("%w", errGoalManualRequired)
 	}
-	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow goal-run <id> -manual|-hosted [-budget N]")
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow goal-run <id> -manual|-hosted [-budget N] [-sandbox NAME]")
 	if err != nil {
 		return err
 	}
 	if *hosted {
-		return launchHostedWorkflowGoal(root, cfg, wf, *budget)
+		return launchHostedWorkflowGoal(root, cfg, wf, *budget, *sandbox)
 	}
-	return launchManualWorkflowGoal(root, cfg, wf, *budget)
+	return launchManualWorkflowGoal(root, cfg, wf, *budget, *sandbox)
+}
+
+func cmdWorkflowGoalBootstrapBeforeNativeRecovery(args []string) error {
+	fs := flag.NewFlagSet("workflow goal-bootstrap-before-native-recovery", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	manual := fs.Bool("manual", false, "前台交互式 Grok TUI（操作者自己输入 /goal）")
+	hosted := fs.Bool("hosted", false, "前台运行 Cardex 自有 PTY 并转发输出；长期运行请用调用方受管后台任务；控制走 goal-control")
+	authorization := fs.String("authorization", "", "explicit single-use authorization file bound to workflow/writer/revision/original attempt/session/contract digest/profile digest")
+	executorCapture := fs.String("executor-capture", "", "manager-admitted original Codex executor JSONL (3-record custom_tool_call + CommandExecution + custom_tool_call_output)")
+	executorDigest := fs.String("executor-digest", "", "SHA256 of the executor-capture raw bytes")
+	executorCallID := fs.String("executor-call-id", "", "original custom_tool_call call_id")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*authorization) == "" {
+		return fmt.Errorf("%w: %s\n用法: %s", errGoalBootstrapAuthRequired, bootstrapAuthRequiredNote, bootstrapRecoveryUsage)
+	}
+	if *manual == *hosted {
+		return fmt.Errorf("%w", errGoalManualRequired)
+	}
+	executor := bootstrapExecutorCaptureAdmitted{
+		Path:   *executorCapture,
+		Digest: *executorDigest,
+		CallID: *executorCallID,
+	}
+	if err := executor.complete(); err != nil {
+		return err
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, bootstrapRecoveryUsage)
+	if err != nil {
+		return err
+	}
+	return launchBootstrapBeforeNativeRecovery(root, cfg, wf, *authorization, *hosted, executor)
 }
 
 func cmdWorkflowGoalControl(args []string) error {
@@ -525,14 +573,15 @@ func cmdWorkflowDesignCollect(args []string) error {
 func cmdWorkflowGoalSync(args []string) error {
 	fs := flag.NewFlagSet("workflow goal-sync", flag.ContinueOnError)
 	rootFlag := fs.String("root", "", "数据目录")
+	taskID := fs.String("task", "", "要同步的原生方向；省略则只同步当前 writer")
 	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
-	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow goal-sync <id>")
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow goal-sync <id> [-task T]")
 	if err != nil {
 		return err
 	}
-	t, err := syncWorkflowGoal(root, cfg, wf, GoalSyncRequest{})
+	t, err := syncWorkflowGoal(root, cfg, wf, GoalSyncRequest{TaskID: *taskID})
 	if err != nil {
 		return err
 	}
@@ -549,6 +598,31 @@ func cmdWorkflowGoalSync(args []string) error {
 		fmt.Printf("workflow %s task=%s status=%s session=%s goal_id=%s attempt=%s observation=%s\n",
 			wf.ID, t.ID, t.Status, orDash(sess), orDash(goalID), orDash(attempt), orDash(obs))
 	}
+	return nil
+}
+
+func cmdWorkflowDesignBind(args []string) error {
+	fs := flag.NewFlagSet("workflow design-bind", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	receipt := fs.String("design-receipt", "", "已完成独立设计的外部收据 JSON")
+	designTask := fs.String("design-task", "", "已完成的独立只读设计 Task ID")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag,
+		"cardex workflow design-bind <id> -design-receipt PATH | -design-task ID")
+	if err != nil {
+		return err
+	}
+	if err := bindWorkflowInitialDesign(root, cfg, wf, *receipt, *designTask); err != nil {
+		return err
+	}
+	latest := wf.DesignLineage.LatestValid
+	digest, provenance := "", ""
+	if latest != nil {
+		digest, provenance = latest.Digest, latest.Provenance
+	}
+	fmt.Printf("workflow %s design-bind digest=%s provenance=%s\n", wf.ID, digest, provenance)
 	return nil
 }
 
@@ -574,8 +648,8 @@ func cmdWorkflowDesignResult(args []string) error {
 	if t != nil {
 		id = t.ID
 	}
-	fmt.Printf("workflow %s design-result=%s observation=%s task=%s status=%s\n",
-		wf.ID, wf.DesignLineage.LastResultDecision, wf.DesignLineage.LastConsumedObservation, orDash(id), wf.Status)
+	fmt.Printf("workflow %s design-result=%s observation=%s task=%s status=%s write_paths=%s\n",
+		wf.ID, wf.DesignLineage.LastResultDecision, wf.DesignLineage.LastConsumedObservation, orDash(id), wf.Status, strings.Join(wf.WriteDomain.Paths, ","))
 	return nil
 }
 

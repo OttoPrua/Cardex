@@ -81,29 +81,30 @@ var goalWriterPublishHook func(*Task)
 
 // WorkflowDesignNode is one independent read-only design role instance.
 type WorkflowDesignNode struct {
-	Role                string `json:"role"`
-	Model               string `json:"model,omitempty"`
-	Runner              string `json:"runner,omitempty"`
-	ActualModel         string `json:"actual_model,omitempty"`
-	ActualRunner        string `json:"actual_runner,omitempty"`
-	Identity            string `json:"identity,omitempty"`
-	ReadOnly            bool   `json:"read_only"`
-	At                  string `json:"at,omitempty"`
-	ConsumedCommit      string `json:"consumed_commit,omitempty"`
-	ConsumedTree        string `json:"consumed_tree,omitempty"`
-	ConsumedReviewTask  string `json:"consumed_review_task,omitempty"`
-	ConsumedTaskID      string `json:"consumed_task_id,omitempty"`
-	ConsumedSessionID   string `json:"consumed_session_id,omitempty"`
-	ConsumedAttemptID   string `json:"consumed_attempt_id,omitempty"`
-	ConsumedObservation string `json:"consumed_observation,omitempty"`
-	ConsumedRevision    int64  `json:"consumed_revision,omitempty"`
-	DesignTaskID        string `json:"design_task_id,omitempty"`
-	DesignSessionID     string `json:"design_session_id,omitempty"`
-	ReceiptPath         string `json:"receipt_path,omitempty"`
-	ResultPath          string `json:"result_path,omitempty"`
-	Digest              string `json:"digest,omitempty"`
-	InputIdentity       string `json:"input_identity,omitempty"`
-	Provenance          string `json:"provenance,omitempty"`
+	Role                string   `json:"role"`
+	Model               string   `json:"model,omitempty"`
+	Runner              string   `json:"runner,omitempty"`
+	ActualModel         string   `json:"actual_model,omitempty"`
+	ActualRunner        string   `json:"actual_runner,omitempty"`
+	Identity            string   `json:"identity,omitempty"`
+	ReadOnly            bool     `json:"read_only"`
+	At                  string   `json:"at,omitempty"`
+	ConsumedCommit      string   `json:"consumed_commit,omitempty"`
+	ConsumedTree        string   `json:"consumed_tree,omitempty"`
+	ConsumedReviewTask  string   `json:"consumed_review_task,omitempty"`
+	ConsumedTaskID      string   `json:"consumed_task_id,omitempty"`
+	ConsumedSessionID   string   `json:"consumed_session_id,omitempty"`
+	ConsumedAttemptID   string   `json:"consumed_attempt_id,omitempty"`
+	ConsumedObservation string   `json:"consumed_observation,omitempty"`
+	ConsumedRevision    int64    `json:"consumed_revision,omitempty"`
+	DesignTaskID        string   `json:"design_task_id,omitempty"`
+	DesignSessionID     string   `json:"design_session_id,omitempty"`
+	ReceiptPath         string   `json:"receipt_path,omitempty"`
+	ResultPath          string   `json:"result_path,omitempty"`
+	Digest              string   `json:"digest,omitempty"`
+	InputIdentity       string   `json:"input_identity,omitempty"`
+	Provenance          string   `json:"provenance,omitempty"`
+	AddWritePaths       []string `json:"add_write_paths,omitempty"`
 }
 
 // WorkflowDesignLineage is optional and omitempty on ordinary records.
@@ -155,6 +156,18 @@ type TaskGoalBinding struct {
 	FailureClass      string `json:"failure_class,omitempty"`
 	PauseMessage      string `json:"pause_message,omitempty"`
 	GrokHome          string `json:"grok_home,omitempty"`
+	// LaunchSandboxSelector is invocation-scoped and never persisted.
+	LaunchSandboxSelector string `json:"-"`
+	// RecoveryOriginalAttemptID and LaunchRemainingTimeout are invocation-scoped
+	// bootstrap-before-native recovery fields and are never persisted.
+	RecoveryOriginalAttemptID string        `json:"-"`
+	LaunchRemainingTimeout    time.Duration `json:"-"`
+	SandboxProfile            string        `json:"sandbox_profile,omitempty"`
+	SandboxProfileDigest      string        `json:"sandbox_profile_digest,omitempty"`
+	GitCommonDir              string        `json:"git_common_dir,omitempty"`
+	CardexRoot                string        `json:"cardex_root,omitempty"`
+	SandboxWorktree           string        `json:"sandbox_worktree,omitempty"`
+	LauncherSandbox           string        `json:"launcher_sandbox,omitempty"`
 }
 
 // GoalCapability is owned by this adapter file. supported requires actual
@@ -171,8 +184,11 @@ type GoalCapability struct {
 }
 
 // GoalSyncRequest is the identity a sync call must match. Empty expected
-// fields mean "use the live task". Tests inject stale/other identities.
+// fields mean "use the live task". An empty TaskID keeps the serial default:
+// the workflow writer. A native direction is selected only by TaskID, never by
+// rewriting WriterTaskID.
 type GoalSyncRequest struct {
+	TaskID           string
 	ExpectedRevision int64
 	ExpectedSession  string
 	ExpectedGoalID   string
@@ -273,6 +289,7 @@ type designReceiptFile struct {
 	ConsumedTree        string               `json:"consumed_tree,omitempty"`
 	Inputs              []designReceiptInput `json:"inputs,omitempty"`
 	At                  string               `json:"at,omitempty"`
+	AddWritePaths       []string             `json:"add_write_paths,omitempty"`
 }
 
 func newGoalSessionID() string {
@@ -619,6 +636,107 @@ func bindInitialDesignProof(wf *WorkflowRecord, req designBindRequest) error {
 	return nil
 }
 
+func designProofIdentityEqual(a, b *WorkflowDesignNode) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return strings.EqualFold(a.Digest, b.Digest) &&
+		a.InputIdentity == b.InputIdentity &&
+		a.ActualModel == b.ActualModel &&
+		a.ActualRunner == b.ActualRunner &&
+		a.Identity == b.Identity &&
+		a.DesignSessionID == b.DesignSessionID &&
+		a.DesignTaskID == b.DesignTaskID &&
+		a.Provenance == b.Provenance
+}
+
+func workflowBoundInitialDesign(wf *WorkflowRecord) *WorkflowDesignNode {
+	if wf == nil || wf.DesignLineage == nil {
+		return nil
+	}
+	if wf.DesignLineage.LatestValid != nil {
+		return wf.DesignLineage.LatestValid
+	}
+	return wf.DesignLineage.Initial
+}
+
+func workflowLateInitialDesignBindBlocked(wf *WorkflowRecord) error {
+	if wf == nil {
+		return errWorkflowMalformed
+	}
+	if wf.Status != workflowStatusDesign {
+		return fmt.Errorf("%w: design-bind requires unstarted design-stage workflow, status is %s", errWorkflowMalformed, wf.Status)
+	}
+	if strings.TrimSpace(wf.WriterTaskID) != "" {
+		return fmt.Errorf("%w: design-bind refuses replacement of existing writer", errWorkflowMalformed)
+	}
+	if strings.TrimSpace(wf.ReviewerTaskID) != "" {
+		return fmt.Errorf("%w: design-bind refuses replacement of existing reviewer", errWorkflowMalformed)
+	}
+	if len(wf.DirectionTaskIDs) > 0 || len(wf.NativeGoalTaskIDs) > 0 {
+		return fmt.Errorf("%w: design-bind refuses replacement of existing directions", errWorkflowMalformed)
+	}
+	if strings.TrimSpace(wf.AcceptanceTaskID) != "" || wf.GoalCompleted {
+		return fmt.Errorf("%w: design-bind refuses replacement of existing acceptance", errWorkflowMalformed)
+	}
+	if wf.Candidate != nil || wf.Review != nil {
+		return fmt.Errorf("%w: design-bind refuses replacement of existing contract", errWorkflowMalformed)
+	}
+	if wf.CurrentRound != 0 {
+		return fmt.Errorf("%w: design-bind refuses started execution (round %d)", errWorkflowMalformed, wf.CurrentRound)
+	}
+	return nil
+}
+
+func bindWorkflowInitialDesign(root string, cfg *Config, wf *WorkflowRecord, receiptPath, designTaskID string) error {
+	if wf == nil {
+		return errWorkflowMalformed
+	}
+	receiptPath = strings.TrimSpace(receiptPath)
+	designTaskID = strings.TrimSpace(designTaskID)
+	if (receiptPath == "") == (designTaskID == "") {
+		return fmt.Errorf("%w: exactly one of -design-receipt or -design-task is required", errGoalDesignProof)
+	}
+	return withTaskControlLock(root, "workflow-admit:"+wf.ID, func() error {
+		return bindWorkflowInitialDesignLocked(root, cfg, wf, receiptPath, designTaskID)
+	})
+}
+
+func bindWorkflowInitialDesignLocked(root string, cfg *Config, wf *WorkflowRecord, receiptPath, designTaskID string) error {
+	if err := refreshWorkflow(root, cfg, wf); err != nil {
+		return err
+	}
+	if err := workflowLateInitialDesignBindBlocked(wf); err != nil {
+		return err
+	}
+	node, err := loadLateInitialDesignProof(root, receiptPath, designTaskID)
+	if err != nil {
+		return err
+	}
+	if err := designProofComplete(node); err != nil {
+		return err
+	}
+	if existing := workflowBoundInitialDesign(wf); existing != nil {
+		if designProofIdentityEqual(existing, node) {
+			fmt.Fprintln(os.Stderr, "warning: design-bind proof already bound; no state change")
+			return nil
+		}
+		return fmt.Errorf("%w: existing design proof conflicts; identical rebind is the only no-op", errGoalDesignProof)
+	}
+	wf.DesignLineage = &WorkflowDesignLineage{Initial: node, LatestValid: node, RepairCount: 0}
+	return persistWorkflow(root, cfg, wf)
+}
+
+func loadLateInitialDesignProof(root, receiptPath, designTaskID string) (*WorkflowDesignNode, error) {
+	if strings.TrimSpace(receiptPath) != "" {
+		return loadExternalDesignReceipt(receiptPath)
+	}
+	if strings.TrimSpace(root) == "" {
+		return nil, fmt.Errorf("%w: design task bind needs root", errGoalDesignProof)
+	}
+	return loadCompletedDesignTask(root, designTaskID)
+}
+
 func loadExternalDesignReceipt(path string) (*WorkflowDesignNode, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -697,7 +815,115 @@ func loadExternalDesignReceipt(path string) (*WorkflowDesignNode, error) {
 		ConsumedCommit:      rec.ConsumedCommit,
 		ConsumedTree:        rec.ConsumedTree,
 	}
+	addPaths, err := bindDesignReceiptAddWritePaths(rec.AddWritePaths, resultRaw)
+	if err != nil {
+		return nil, err
+	}
+	node.AddWritePaths = addPaths
 	return node, nil
+}
+
+func bindDesignReceiptAddWritePaths(raw []string, resultRaw []byte) ([]string, error) {
+	receiptPaths, err := uniqueTrimmedAddWritePaths(raw)
+	if err != nil {
+		return nil, err
+	}
+	if len(receiptPaths) == 0 {
+		return nil, nil
+	}
+	declared, ok := declaredAddWritePathsJSONArray(resultRaw)
+	if !ok || !equalStringSlice(declared, receiptPaths) {
+		return nil, fmt.Errorf("%w: add_write_paths is not bound to the result digest", errGoalDesignProof)
+	}
+	return receiptPaths, nil
+}
+
+func uniqueTrimmedAddWritePaths(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(raw))
+	seen := map[string]bool{}
+	for _, item := range raw {
+		p := strings.TrimSpace(item)
+		if p == "" {
+			return nil, fmt.Errorf("%w: add_write_paths contains an empty path", errGoalDesignProof)
+		}
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func equalStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// declaredAddWritePathsJSONArray reads an explicit add_write_paths JSON array
+// from the digest-verified result. A path string merely mentioned in the
+// artifact is not a declaration.
+func declaredAddWritePathsJSONArray(resultRaw []byte) ([]string, bool) {
+	var paths []string
+	if !extractAddWritePathsJSONArray(resultRaw, &paths) {
+		return nil, false
+	}
+	out, err := uniqueTrimmedAddWritePaths(paths)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+func extractAddWritePathsJSONArray(raw []byte, dest *[]string) bool {
+	if dest == nil {
+		return false
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(bytes.TrimSpace(raw), &obj) == nil {
+		return decodeAddWritePathsJSONArray(obj, dest)
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '{' {
+			continue
+		}
+		dec := json.NewDecoder(bytes.NewReader(raw[i:]))
+		obj = nil
+		if err := dec.Decode(&obj); err != nil {
+			continue
+		}
+		if decodeAddWritePathsJSONArray(obj, dest) {
+			return true
+		}
+	}
+	return false
+}
+
+func decodeAddWritePathsJSONArray(obj map[string]json.RawMessage, dest *[]string) bool {
+	field, ok := obj["add_write_paths"]
+	if !ok {
+		return false
+	}
+	trim := bytes.TrimSpace(field)
+	if len(trim) == 0 || trim[0] != '[' {
+		return false
+	}
+	var paths []string
+	if err := json.Unmarshal(field, &paths); err != nil {
+		return false
+	}
+	*dest = paths
+	return true
 }
 
 func parseDesignReceipt(path string, raw []byte) (designReceiptFile, error) {
@@ -780,6 +1006,8 @@ func parseMarkdownDesignReceipt(path, body string) (designReceiptFile, error) {
 			rec.ConsumedAttemptID = val
 		case "consumed_observation":
 			rec.ConsumedObservation = val
+		case "add_write_paths":
+			rec.AddWritePaths = splitComma(val)
 		}
 	}
 	rec.ResultPath = path
@@ -1104,15 +1332,15 @@ func withWorkflowSchedulerLock(root string, cfg *Config, fn func() error) error 
 	}
 }
 
-func launchManualWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int64) error {
-	return launchWorkflowGoal(root, cfg, wf, budget, false)
+func launchManualWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int64, sandboxProfile string) error {
+	return launchWorkflowGoal(root, cfg, wf, budget, false, sandboxProfile)
 }
 
-func launchHostedWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int64) error {
-	return launchWorkflowGoal(root, cfg, wf, budget, true)
+func launchHostedWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int64, sandboxProfile string) error {
+	return launchWorkflowGoal(root, cfg, wf, budget, true, sandboxProfile)
 }
 
-func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int64, hosted bool) error {
+func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int64, hosted bool, sandboxProfile string) error {
 	if err := refreshWorkflow(root, cfg, wf); err != nil {
 		return err
 	}
@@ -1120,8 +1348,21 @@ func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int
 	if err != nil {
 		return err
 	}
+	return launchWorkflowGoalTask(root, cfg, wf, t, budget, hosted, sandboxProfile)
+}
+
+func launchWorkflowGoalTask(root string, cfg *Config, wf *WorkflowRecord, t *Task, budget int64, hosted bool, sandboxProfile string) error {
+	if t == nil {
+		return fmt.Errorf("%w: missing Goal task", errWorkflowMalformed)
+	}
 	if t.Goal == nil {
 		return fmt.Errorf("%w: admit the writer with -mode manual before goal-run", errWorkflowMalformed)
+	}
+	t.Goal.LaunchSandboxSelector = strings.TrimSpace(sandboxProfile)
+	if t.Goal.LaunchSandboxSelector != "" {
+		if _, _, _, err := resolveExistingSandboxSelector(t, t.Goal.LaunchSandboxSelector); err != nil {
+			return err
+		}
 	}
 	if err := goalRunAllowed(root, t); err != nil {
 		return err
@@ -1166,26 +1407,41 @@ func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int
 		return err
 	}
 	releaseAdmission()
+	return executeAdmittedGoalLaunch(root, cfg, wf, t, hosted)
+}
 
+func abandonGoalLaunchUnstarted(root string, cfg *Config, t *Task) error {
+	return withWorkflowSchedulerLock(root, cfg, func() error {
+		if t != nil && t.Goal != nil && strings.TrimSpace(t.Goal.RecoveryOriginalAttemptID) != "" {
+			return abandonUnstartedRecoveryAttempt(root, t)
+		}
+		return abandonUnstartedGoalAttempt(root, t)
+	})
+}
+
+func executeAdmittedGoalLaunch(root string, cfg *Config, wf *WorkflowRecord, t *Task, hosted bool) error {
 	// SessionID is bound now. Build argv from the frozen id; do not probe again.
 	args, grokHome, err := manualGoalCommandArgs(cfg, t)
 	if err != nil {
-		_ = withWorkflowSchedulerLock(root, cfg, func() error {
-			return abandonUnstartedGoalAttempt(root, t)
-		})
+		_ = abandonGoalLaunchUnstarted(root, cfg, t)
+		return err
+	}
+	if err := verifySandboxLauncherEvidence(root, t, args); err != nil {
+		_ = abandonGoalLaunchUnstarted(root, cfg, t)
 		return err
 	}
 
 	if hook := goalLaunchBeforeStartHook; hook != nil {
 		if herr := hook(); herr != nil {
-			_ = withWorkflowSchedulerLock(root, cfg, func() error {
-				return abandonUnstartedGoalAttempt(root, t)
-			})
+			_ = abandonGoalLaunchUnstarted(root, cfg, t)
 			return fmt.Errorf("%w: %v", errGoalLaunchUnstarted, herr)
 		}
 	}
 
 	timeout := time.Duration(t.Goal.HardTimeoutSec) * time.Second
+	if t.Goal != nil && t.Goal.LaunchRemainingTimeout > 0 {
+		timeout = t.Goal.LaunchRemainingTimeout
+	}
 	if timeout <= 0 && cfg != nil && cfg.StepTimeoutMin > 0 {
 		timeout = time.Duration(cfg.StepTimeoutMin) * time.Minute
 	}
@@ -1197,6 +1453,10 @@ func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int
 
 	contractPath := filepath.Join(workflowsDir(root), wf.ID+".stage-contract.txt")
 	if hosted {
+		// Hosted PTY bytes are drained in runHostedGrokGoal
+		// (cmd/cardex/workflow_goal_host_unix.go). Feeding that stream into
+		// bootstrap-before-provider proof is an adjacent callsite outside this
+		// owned write domain; missing hosted capture refuses with no invented proof.
 		return runHostedGrokGoal(root, cfg, wf, t, ctx, args, grokHome, contractPath, t.Goal.InputDigest)
 	}
 
@@ -1207,9 +1467,7 @@ func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int
 	if goalLaunchStdin == nil && !fileIsTerminal(stdin) {
 		t.Goal.FailureClass = goalFailPTYMissing
 		_ = saveTask(root, t)
-		_ = withWorkflowSchedulerLock(root, cfg, func() error {
-			return abandonUnstartedGoalAttempt(root, t)
-		})
+		_ = abandonGoalLaunchUnstarted(root, cfg, t)
 		return fmt.Errorf("%s: interactive -manual requires a controlling TTY; use -hosted for Cardex-owned PTY", goalFailPTYMissing)
 	}
 	cmd := exec.CommandContext(ctx, cfg.GrokBuildBin, args...)
@@ -1231,6 +1489,9 @@ func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int
 	}
 	home, _ := os.UserHomeDir()
 	cmd.Env = providerChildEnv(home, map[string]string{"GROK_HOME": grokHome, "GROK_WORKFLOWS": "1"})
+	// Interactive -manual keeps a controlling TTY stderr fd. Capture of the
+	// exact short refusal is supported only when that fd is not a TTY.
+	captured := attachManualGoalLaunchStderrCapture(cmd, goalLaunchStdin == nil)
 
 	taskExecRoot.Store(t.ID, root)
 	defer taskExecRoot.Delete(t.ID)
@@ -1241,15 +1502,16 @@ func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int
 		t.Goal.FailureClass = class
 		_ = saveTask(root, t)
 		if class == goalFailPTYIoctl || class == goalFailPTYMissing {
-			_ = withWorkflowSchedulerLock(root, cfg, func() error {
-				return abandonUnstartedGoalAttempt(root, t)
-			})
+			_ = abandonGoalLaunchUnstarted(root, cfg, t)
 			return fmt.Errorf("%s: %w", class, runErr)
 		}
 	}
+	if rec, rerr := loadRequiredGoalAttempt(root, t); rerr == nil && rec != nil {
+		recordRetainedBootstrapBeforeProviderEvidence(root, t, rec, runErr, captured.capturedOutput())
+	}
 	restoreErr := restore()
 	finalErr := withWorkflowSchedulerLock(root, cfg, func() error {
-		return finalizeManualGoalLaunch(root, wf, t, ctx, runErr)
+		return finalizeManualGoalLaunch(root, cfg, wf, t, ctx, runErr)
 	})
 	if finalErr != nil {
 		return finalErr
@@ -1260,7 +1522,144 @@ func launchWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, budget int
 	return nil
 }
 
+// bootstrapRefusalCapture copies child stderr to the original sink and keeps
+// one incomplete line of at most grokBuildProcessStderrMaxBytes. A complete
+// line matches only when it equals an accepted refusal after trim. Prefixed,
+// quoted, or concatenated junk+marker without a line boundary is not a match.
+// After a match only that closed-set line is retained. It is not a full-session log.
+type bootstrapRefusalCapture struct {
+	sink           io.Writer
+	window         []byte
+	pendingCut     bool
+	matched        string
+	ttyLeftInPlace bool
+}
+
+func (c *bootstrapRefusalCapture) Write(p []byte) (int, error) {
+	if c == nil {
+		return len(p), nil
+	}
+	n := len(p)
+	var err error
+	if c.sink != nil {
+		n, err = c.sink.Write(p)
+	}
+	if c.matched != "" {
+		return n, err
+	}
+	chunk := p
+	if n >= 0 && n < len(p) {
+		chunk = p[:n]
+	}
+	for len(chunk) > 0 {
+		i := bytes.IndexByte(chunk, '\n')
+		if i < 0 {
+			c.appendPendingLine(chunk)
+			break
+		}
+		c.appendPendingLine(chunk[:i])
+		c.finishPendingLine()
+		chunk = chunk[i+1:]
+		if c.matched != "" {
+			break
+		}
+	}
+	return n, err
+}
+
+func (c *bootstrapRefusalCapture) appendPendingLine(b []byte) {
+	if c == nil || c.matched != "" || c.pendingCut {
+		return
+	}
+	max := grokBuildProcessStderrMaxBytes
+	if len(c.window)+len(b) > max {
+		c.pendingCut = true
+		c.window = c.window[:0]
+		return
+	}
+	c.window = append(c.window, b...)
+}
+
+func (c *bootstrapRefusalCapture) finishPendingLine() {
+	if c == nil || c.matched != "" {
+		return
+	}
+	if c.pendingCut {
+		c.pendingCut = false
+		c.window = c.window[:0]
+		return
+	}
+	if line, ok := matchAcceptedBootstrapBeforeProviderRefusal(string(c.window)); ok {
+		c.matched = line
+		c.window = nil
+		return
+	}
+	c.window = c.window[:0]
+}
+
+func (c *bootstrapRefusalCapture) capturedOutput() string {
+	if c == nil {
+		return ""
+	}
+	if c.matched != "" {
+		return c.matched
+	}
+	if c.pendingCut {
+		return ""
+	}
+	if line, ok := matchAcceptedBootstrapBeforeProviderRefusal(string(c.window)); ok {
+		c.matched = line
+		c.window = nil
+		return line
+	}
+	return string(c.window)
+}
+
+func (c *bootstrapRefusalCapture) preservedTTYStderr() bool {
+	return c != nil && c.ttyLeftInPlace
+}
+
+// attachManualGoalLaunchStderrCapture leaves a controlling TTY *os.File on
+// stderr in place so exec inherits that fd. Wrapping it would replace the
+// TTY with an os/exec pipe (isatty(2) false). Interactive -manual TUI
+// capture is unsupported: that launch does not produce retained proof.
+// Capture of the exact short refusal wraps stderr only when it is not a
+// TTY, or when this is the headless/test path (goalLaunchStdin set).
+// Stdin and stdout stay as the caller set them. Child stderr is the
+// original TTY fd when left in place, and an exec pipe when wrapped.
+func attachManualGoalLaunchStderrCapture(cmd *exec.Cmd, preserveTTYStderr bool) *bootstrapRefusalCapture {
+	captured := &bootstrapRefusalCapture{}
+	if cmd == nil {
+		captured.sink = io.Discard
+		return captured
+	}
+	if cmd.Stderr == nil {
+		cmd.Stderr = os.Stderr
+	}
+	sink, ok := cmd.Stderr.(io.Writer)
+	if !ok || sink == nil {
+		sink = os.Stderr
+		cmd.Stderr = sink
+	}
+	captured.sink = sink
+	if preserveTTYStderr {
+		if f, isFile := cmd.Stderr.(*os.File); isFile && fileIsTerminal(f) {
+			captured.ttyLeftInPlace = true
+			return captured
+		}
+	}
+	cmd.Stderr = captured
+	return captured
+}
+
+func restoreLaunchSandboxSelector(t *Task, selector string) {
+	if t != nil && t.Goal != nil {
+		t.Goal.LaunchSandboxSelector = strings.TrimSpace(selector)
+	}
+}
+
 func admitManualGoalLaunchLocked(root string, cfg *Config, wf *WorkflowRecord, t *Task, budget int64, hosted bool) error {
+	selector := goalLaunchSandboxSelector(t)
 	fresh, err := loadTask(root, t.ID)
 	if err != nil {
 		return err
@@ -1269,6 +1668,7 @@ func admitManualGoalLaunchLocked(root string, cfg *Config, wf *WorkflowRecord, t
 	if t.Goal == nil {
 		return fmt.Errorf("%w: admit the writer with -mode manual before goal-run", errWorkflowMalformed)
 	}
+	restoreLaunchSandboxSelector(t, selector)
 	if err := goalRunAllowed(root, t); err != nil {
 		return err
 	}
@@ -1286,6 +1686,7 @@ func admitManualGoalLaunchLocked(root string, cfg *Config, wf *WorkflowRecord, t
 		return err
 	}
 	*t = *fresh
+	restoreLaunchSandboxSelector(t, selector)
 	if budget > 0 {
 		t.Goal.BudgetTokens = budget
 	}
@@ -1305,6 +1706,7 @@ func admitManualGoalLaunchLocked(root string, cfg *Config, wf *WorkflowRecord, t
 			return err
 		}
 		*t = *reloaded
+		restoreLaunchSandboxSelector(t, selector)
 	} else if t.ActiveAttemptID != "" {
 		if err := abandonUnstartedGoalAttempt(root, t); err != nil {
 			return err
@@ -1314,6 +1716,7 @@ func admitManualGoalLaunchLocked(root string, cfg *Config, wf *WorkflowRecord, t
 			return err
 		}
 		*t = *reloaded
+		restoreLaunchSandboxSelector(t, selector)
 	}
 
 	tasks, err := loadTasks(root)
@@ -1340,6 +1743,13 @@ func admitManualGoalLaunchLocked(root string, cfg *Config, wf *WorkflowRecord, t
 	}
 	if grokSlots := countLiveRunner(root, grokBuildRunnerName); grokSlots >= providerParallelLimit(cfg, grokBuildRunnerName) {
 		return fmt.Errorf("%w: grok max_parallel reached", errAdmissionDenied)
+	}
+
+	if err := bindGoalSandboxEvidence(root, cfg, t); err != nil {
+		return err
+	}
+	if strings.TrimSpace(t.Goal.GrokHome) == "" {
+		t.Goal.GrokHome = defaultGrokHome()
 	}
 
 	contract := frozenGoalStageContract(wf, t)
@@ -1406,7 +1816,16 @@ func persistSameSessionResume(root string, t *Task) error {
 	return nil
 }
 
-func finalizeManualGoalLaunch(root string, wf *WorkflowRecord, t *Task, ctx context.Context, runErr error) error {
+func finalizeManualGoalLaunch(root string, cfg *Config, wf *WorkflowRecord, t *Task, ctx context.Context, runErr error) error {
+	// Reload drops an unsaved in-memory home. Keep the home and cwd the child
+	// actually used so sync does not read a different session tree.
+	childHome, childDir := goalChildHomeAndDir(t)
+	origAttempt := ""
+	remaining := time.Duration(0)
+	if t != nil && t.Goal != nil {
+		origAttempt = t.Goal.RecoveryOriginalAttemptID
+		remaining = t.Goal.LaunchRemainingTimeout
+	}
 	reloaded, loadErr := loadTask(root, t.ID)
 	if loadErr == nil && reloaded != nil {
 		*t = *reloaded
@@ -1414,23 +1833,41 @@ func finalizeManualGoalLaunch(root string, wf *WorkflowRecord, t *Task, ctx cont
 	if t.Goal == nil {
 		t.Goal = &TaskGoalBinding{WriterMode: goalWriterManual}
 	}
+	t.Goal.RecoveryOriginalAttemptID = origAttempt
+	t.Goal.LaunchRemainingTimeout = remaining
 
 	started := goalAttemptStarted(root, t)
-	t.Goal.Started = started
-	if !started {
-		if aerr := abandonUnstartedGoalAttempt(root, t); aerr != nil {
-			if runErr != nil {
-				return fmt.Errorf("%w: %v (abandon: %v)", errGoalLaunchUnstarted, runErr, aerr)
+	if origAttempt != "" {
+		if !started {
+			if aerr := abandonUnstartedRecoveryAttempt(root, t); aerr != nil {
+				if runErr != nil {
+					return fmt.Errorf("%w: %v (abandon: %v)", errGoalLaunchUnstarted, runErr, aerr)
+				}
+				return fmt.Errorf("%w: %v", errGoalLaunchUnstarted, aerr)
 			}
-			return fmt.Errorf("%w: %v", errGoalLaunchUnstarted, aerr)
+			if runErr != nil {
+				return fmt.Errorf("%w: %v", errGoalLaunchUnstarted, runErr)
+			}
+			return fmt.Errorf("%w", errGoalLaunchUnstarted)
 		}
-		if runErr != nil {
-			return fmt.Errorf("%w: %v", errGoalLaunchUnstarted, runErr)
+		t.Goal.Started = true
+	} else {
+		t.Goal.Started = started
+		if !started {
+			if aerr := abandonUnstartedGoalAttempt(root, t); aerr != nil {
+				if runErr != nil {
+					return fmt.Errorf("%w: %v (abandon: %v)", errGoalLaunchUnstarted, runErr, aerr)
+				}
+				return fmt.Errorf("%w: %v", errGoalLaunchUnstarted, aerr)
+			}
+			if runErr != nil {
+				return fmt.Errorf("%w: %v", errGoalLaunchUnstarted, runErr)
+			}
+			return fmt.Errorf("%w", errGoalLaunchUnstarted)
 		}
-		return fmt.Errorf("%w", errGoalLaunchUnstarted)
 	}
 
-	timedOut := ctx.Err() == context.DeadlineExceeded
+	timedOut := ctx != nil && ctx.Err() == context.DeadlineExceeded
 	custody := goalCustodyReleased(root, t)
 	t.Goal.CustodyReleased = custody
 	t.Goal.Observation = goalObsUnknown
@@ -1448,14 +1885,136 @@ func finalizeManualGoalLaunch(root string, wf *WorkflowRecord, t *Task, ctx cont
 		_ = closeAttemptRecord(root, t.ID, t.ActiveAttemptID, attemptExited)
 		t.ActiveAttemptID = ""
 	}
+	// BoundAttemptID and the frozen InputDigest stay. Sync accepts the exited
+	// attempt and rejects a digest that no longer matches this launch.
 	t.touch()
 	if err := saveTask(root, t); err != nil {
 		return err
+	}
+	// Exit 0 is not success. Only a normal return is offered to goal-sync.
+	// Timeout and nonzero exit stay held/unknown even if native files say achieved.
+	if runErr == nil && !timedOut {
+		if err := autoSyncAfterGoalReturn(root, cfg, wf, t, childHome, childDir); err != nil {
+			return err
+		}
 	}
 	if runErr != nil && !timedOut && !errors.Is(runErr, context.DeadlineExceeded) {
 		return runErr
 	}
 	return nil
+}
+
+func goalChildHomeAndDir(t *Task) (string, string) {
+	if t == nil {
+		return "", ""
+	}
+	home := ""
+	if t.Goal != nil {
+		home = strings.TrimSpace(t.Goal.GrokHome)
+	}
+	return home, strings.TrimSpace(t.Dir)
+}
+
+// autoSyncAfterGoalReturn invokes the existing goal-sync acceptor after the
+// runner has returned. syncWorkflowGoal commits evDone or evFailed only when
+// its current gates pass. A nil error is not done unless that commit happened.
+// Native active is not offered to sync: mapNativeGoalToTask would save it as
+// running, and this process has already returned.
+func autoSyncAfterGoalReturn(root string, cfg *Config, wf *WorkflowRecord, t *Task, grokHome, cwd string) error {
+	if t == nil || t.Goal == nil || wf == nil || cfg == nil {
+		return nil
+	}
+	if strings.TrimSpace(grokHome) == "" {
+		grokHome = defaultGrokHome()
+	}
+	if strings.TrimSpace(cwd) == "" {
+		cwd = t.Dir
+	}
+	if returnedNativeStillActive(t, grokHome, cwd) {
+		return holdReturnedActiveGoal(root, t)
+	}
+	req := GoalSyncRequest{
+		TaskID:          t.ID,
+		ExpectedSession: t.SessionID,
+		GrokHome:        grokHome,
+		GrokCWD:         cwd,
+	}
+	if t.Goal != nil {
+		req.ExpectedGoalID = t.Goal.NativeGoalID
+		req.ExpectedAttempt = firstNonBlank(t.Goal.BoundAttemptID, t.ActiveAttemptID)
+	}
+	_, syncErr := syncWorkflowGoal(root, cfg, wf, req)
+	// Rejection and a refused running write stay non-accepted. The pre-sync
+	// save is already held/unknown. Disk done/failed is whatever sync committed.
+	if syncErr != nil && !errors.Is(syncErr, errGoalSyncRejected) && !errors.Is(syncErr, errStaleTaskWrite) {
+		return syncErr
+	}
+	fresh, err := loadTask(root, t.ID)
+	if err != nil {
+		return err
+	}
+	*t = *fresh
+	if t.Goal != nil && (t.Status == statusRunning || t.Goal.Observation == goalObsRunning || normalizeNativeStatus(t.Goal.LastNativeStatus) == "active") {
+		return holdReturnedActiveGoal(root, t)
+	}
+	return nil
+}
+
+func returnedNativeStillActive(t *Task, grokHome, cwd string) bool {
+	if t == nil || t.SessionID == "" {
+		return false
+	}
+	goalID := ""
+	if t.Goal != nil {
+		goalID = t.Goal.NativeGoalID
+	}
+	obs, err := observeNativeGrokGoal(grokHome, cwd, t.SessionID, goalID)
+	if err != nil {
+		return false
+	}
+	return normalizeNativeStatus(obs.NativeStatus) == "active"
+}
+
+// holdReturnedActiveGoal keeps a returned runner from becoming a live writer
+// just because the native file still says active. It does not commit evDone.
+func holdReturnedActiveGoal(root string, t *Task) error {
+	if t == nil || t.Goal == nil {
+		return nil
+	}
+	switch t.Status {
+	case statusDone, statusFailed, statusCanceled:
+		return nil
+	}
+	t.Status = statusHeld
+	t.Goal.Observation = goalObsUnknown
+	t.Goal.Continuation = ""
+	t.Goal.EvidenceComplete = false
+	t.Goal.LastNativeStatus = "active"
+	t.Goal.ObservationNote = "runner returned while native state is still active; not accepted done and not a live writer"
+	if t.Goal.CustodyReleased && t.ActiveAttemptID != "" {
+		t.ActiveAttemptID = ""
+	}
+	if t.effectiveControlState() != controlRevoking && t.effectiveControlState() != controlTerminal {
+		revokeScheduling(t)
+	}
+	t.touch()
+	return saveTask(root, t)
+}
+
+// residualActiveHeldGoal is true when a held/unknown Goal has no live writer.
+// Native "active" must not revive it; auto-return holdReturnedActiveGoal is
+// not used here because it would overwrite a hard-timeout note.
+func residualActiveHeldGoal(root string, t *Task) bool {
+	if t == nil || t.Goal == nil {
+		return false
+	}
+	if t.Status != statusHeld || t.Goal.Observation != goalObsUnknown {
+		return false
+	}
+	if taskHasLiveWriterProof(root, t) {
+		return false
+	}
+	return true
 }
 
 func liveGoalLaunchSlots(root string) (int, error) {
@@ -1505,8 +2064,17 @@ func resolveManualGrokTuple(cfg *Config, t *Task) (sandbox, permission string, e
 	}
 	writeCapable := grokBuildWriteCapable(t)
 	sandbox, permission = resolvedGrokBuildReadOnlySandbox(cfg), "plan"
-	if writeCapable {
-		sandbox, permission = "workspace", "auto"
+	if sel := goalLaunchSandboxSelector(t); sel != "" {
+		if !writeCapable {
+			return "", "", fmt.Errorf("%w: sandbox selector on read-only Goal", errGoalUnsupportedTuple)
+		}
+		name, _, _, rerr := resolveExistingSandboxSelector(t, sel)
+		if rerr != nil {
+			return "", "", rerr
+		}
+		sandbox, permission = name, "auto"
+	} else if writeCapable {
+		sandbox, permission = resolvedGrokBuildWriteSandbox(cfg), "auto"
 	}
 	if strings.EqualFold(perm, "plan") {
 		permission = "plan"
@@ -1576,6 +2144,23 @@ func frozenGoalStageContract(wf *WorkflowRecord, t *Task) string {
 		fmt.Fprintf(&b, "budget_tokens: %d (soft)\n", t.Goal.BudgetTokens)
 		fmt.Fprintf(&b, "hard_timeout_seconds: %d\n", t.Goal.HardTimeoutSec)
 	}
+	if t != nil && t.Goal != nil {
+		if strings.TrimSpace(t.Goal.SandboxProfile) != "" {
+			fmt.Fprintf(&b, "sandbox_profile: %s\n", strings.TrimSpace(t.Goal.SandboxProfile))
+		}
+		if strings.TrimSpace(t.Goal.SandboxProfileDigest) != "" {
+			fmt.Fprintf(&b, "sandbox_profile_digest: %s\n", strings.TrimSpace(t.Goal.SandboxProfileDigest))
+		}
+		if strings.TrimSpace(t.Goal.CardexRoot) != "" {
+			fmt.Fprintf(&b, "cardex_root: %s\n", strings.TrimSpace(t.Goal.CardexRoot))
+		}
+		if strings.TrimSpace(t.Goal.SandboxWorktree) != "" {
+			fmt.Fprintf(&b, "worktree: %s\n", strings.TrimSpace(t.Goal.SandboxWorktree))
+		}
+		if strings.TrimSpace(t.Goal.GitCommonDir) != "" {
+			fmt.Fprintf(&b, "git_common_dir: %s\n", strings.TrimSpace(t.Goal.GitCommonDir))
+		}
+	}
 	if t != nil {
 		fmt.Fprintf(&b, "prompts:\n")
 		for i, p := range t.Prompts {
@@ -1643,7 +2228,11 @@ func printManualGoalInstructions(root string, wf *WorkflowRecord, t *Task, contr
 		fmt.Printf("Interactive TUI owner types /goal. Slave writes and exit 0 are not pause. Hosted control is a separate -hosted launch.\n")
 	}
 	fmt.Printf("grok -p is a single turn and is not goal proof.\n")
-	fmt.Printf("After the TUI returns: cardex workflow goal-sync %s\n", wf.ID)
+	if t != nil && wf != nil && t.ID != "" && t.ID != wf.WriterTaskID {
+		fmt.Printf("After the TUI returns: cardex workflow goal-sync %s -task %s\n", wf.ID, t.ID)
+	} else {
+		fmt.Printf("After the TUI returns: cardex workflow goal-sync %s\n", wf.ID)
+	}
 	fmt.Printf("goal-sync does not launch a provider; it updates stage facts.\n")
 }
 
@@ -1748,16 +2337,92 @@ func goalCustodyReleased(root string, t *Task) bool {
 	return producerGone(t, rec) && !taskHasLiveWriterProof(root, t)
 }
 
+func workflowListsGoalSyncTarget(wf *WorkflowRecord, id string) bool {
+	if wf == nil || id == "" {
+		return false
+	}
+	if wf.WriterTaskID == id {
+		return true
+	}
+	for _, nativeID := range wf.NativeGoalTaskIDs {
+		if nativeID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// goalSyncTarget resolves the card sync may update. No TaskID keeps the serial
+// writer. An explicit id must already belong to this workflow as that writer
+// or as a native direction. It is not written into WriterTaskID.
+func goalSyncTarget(root string, wf *WorkflowRecord, taskID string) (*Task, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return workflowWriterTask(root, wf)
+	}
+	if wf == nil {
+		return nil, fmt.Errorf("%w: missing workflow", errGoalSyncRejected)
+	}
+	t, err := findTaskAnywhere(root, taskID)
+	if err != nil || t == nil {
+		return nil, fmt.Errorf("%w: unknown sync target %s", errGoalSyncRejected, taskID)
+	}
+	if t.WorkflowID != wf.ID || !workflowListsGoalSyncTarget(wf, t.ID) {
+		return t, fmt.Errorf("%w: unrelated sync target %s", errGoalSyncRejected, taskID)
+	}
+	return t, nil
+}
+
+func rejectSharedNativeIdentity(root string, wf *WorkflowRecord, t *Task) error {
+	if wf == nil || t == nil {
+		return nil
+	}
+	session := strings.TrimSpace(t.SessionID)
+	goalID := ""
+	if t.Goal != nil {
+		goalID = strings.TrimSpace(t.Goal.NativeGoalID)
+	}
+	if session == "" && goalID == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	ids := make([]string, 0, 1+len(wf.NativeGoalTaskIDs))
+	if wf.WriterTaskID != "" {
+		ids = append(ids, wf.WriterTaskID)
+	}
+	ids = append(ids, wf.NativeGoalTaskIDs...)
+	for _, id := range ids {
+		if id == "" || id == t.ID || seen[id] {
+			continue
+		}
+		seen[id] = true
+		other, err := loadTask(root, id)
+		if err != nil || other == nil {
+			continue
+		}
+		if session != "" && strings.TrimSpace(other.SessionID) == session {
+			return fmt.Errorf("%w: shared session %s", errGoalSyncRejected, session)
+		}
+		if goalID != "" && other.Goal != nil && strings.TrimSpace(other.Goal.NativeGoalID) == goalID {
+			return fmt.Errorf("%w: shared native goal_id %s", errGoalSyncRejected, goalID)
+		}
+	}
+	return nil
+}
+
 func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSyncRequest) (*Task, error) {
 	if err := refreshWorkflow(root, cfg, wf); err != nil {
 		return nil, err
 	}
-	t, err := workflowWriterTask(root, wf)
+	t, err := goalSyncTarget(root, wf, req.TaskID)
 	if err != nil {
-		return nil, err
+		return t, err
 	}
 	if t.Goal == nil {
 		return t, fmt.Errorf("%w: task is not a Goal writer", errWorkflowMalformed)
+	}
+	if err := rejectSharedNativeIdentity(root, wf, t); err != nil {
+		return t, err
 	}
 
 	expectedRev := req.ExpectedRevision
@@ -1822,10 +2487,15 @@ func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSync
 	if obs.SessionID == "" || obs.SessionID != t.SessionID {
 		return t, fmt.Errorf("%w: other session", errGoalSyncRejected)
 	}
-	if expectedGoal != "" && obs.GoalID != "" && obs.GoalID != expectedGoal {
+	// A blank native goal id is not "the same goal". Terminal sync cannot
+	// adopt or keep an identity the state file did not record.
+	if strings.TrimSpace(obs.GoalID) == "" {
+		return t, fmt.Errorf("%w: missing native goal_id", errGoalSyncRejected)
+	}
+	if expectedGoal != "" && obs.GoalID != expectedGoal {
 		return t, fmt.Errorf("%w: other goal_id", errGoalSyncRejected)
 	}
-	if t.Goal.NativeGoalID != "" && obs.GoalID != "" && obs.GoalID != t.Goal.NativeGoalID {
+	if strings.TrimSpace(t.Goal.NativeGoalID) != "" && obs.GoalID != t.Goal.NativeGoalID {
 		t.Goal.FailureClass = goalFailStaleIdentity
 		_ = saveTask(root, t)
 		return t, fmt.Errorf("%w: other goal_id", errGoalSyncRejected)
@@ -1869,6 +2539,13 @@ func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSync
 		applied.Observation = goalObsUnknown
 		applied.Note = "session summary cwd/ID is required before accepted complete"
 	}
+	if (applied.AcceptDone || applied.AcceptFailed) && strings.TrimSpace(obs.GoalID) == "" {
+		applied.AcceptDone = false
+		applied.AcceptFailed = false
+		applied.Status = statusHeld
+		applied.Observation = goalObsUnknown
+		applied.Note = "native goal_id missing; not accepted done/failed"
+	}
 
 	if t.Status == statusCanceled || t.Goal.Observation == goalObsCanceled {
 		applied.AcceptDone = false
@@ -1883,6 +2560,13 @@ func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSync
 		applied.Note = "cancel requested without stop evidence; late native return is not accepted done/canceled"
 		applied.AcceptDone = false
 		applied.AcceptCanceled = false
+	}
+
+	// Residual native-active after a custody-released timeout (held/unknown,
+	// no live writer) must not revive to running. Keep the existing timeout
+	// or previous-terminal note. Live producers still map to running.
+	if applied.Status == statusRunning && residualActiveHeldGoal(root, t) {
+		return t, nil
 	}
 
 	if t.Goal.SyncedRevision == expectedRev &&
@@ -1901,12 +2585,18 @@ func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSync
 	if t.Goal.NativeGoalID == "" && obs.GoalID != "" {
 		t.Goal.NativeGoalID = obs.GoalID
 	}
-	if t.ActiveAttemptID == "" && t.Goal.BoundAttemptID != "" {
+	// BoundAttemptID is historical identity. ActiveAttemptID is the live writer.
+	// Copying the bound id back after custody reclaim resurrects an exited attempt.
+	if custody {
+		t.ActiveAttemptID = ""
+	} else if t.ActiveAttemptID == "" && t.Goal.BoundAttemptID != "" && applied.Status == statusRunning {
 		t.ActiveAttemptID = t.Goal.BoundAttemptID
 	}
 
 	switch {
 	case applied.AcceptDone:
+		// One native session done is this card only. Whole-goal acceptance
+		// stays on cardex workflow accept -complete.
 		t.Status = statusDone
 		if err := commitTaskTransition(root, t, transitionRequest{
 			EventType:            evDone,
@@ -1957,6 +2647,7 @@ type nativeGoalObservation struct {
 	SessionID       string
 	GoalID          string
 	NativeStatus    string
+	Phase           string
 	Classifier      string
 	FinalStatus     string
 	FinalClassifier string
@@ -2002,6 +2693,7 @@ func observeNativeGrokGoal(grokHome, cwd, sessionID, expectedGoalID string) (nat
 	}
 	out.GoalID = strings.TrimSpace(st.GoalID)
 	out.NativeStatus = strings.ToLower(strings.TrimSpace(st.Status))
+	out.Phase = strings.ToLower(strings.TrimSpace(st.Phase))
 	out.Classifier = strings.TrimSpace(st.LastClassifierVerdict)
 	out.PauseMessage = strings.TrimSpace(st.PauseMessage)
 	if out.NativeStatus == "budget_limited" {
@@ -2009,6 +2701,10 @@ func observeNativeGrokGoal(grokHome, cwd, sessionID, expectedGoalID string) (nat
 	}
 	if out.NativeStatus == "complete" && strings.EqualFold(out.Classifier, "not_achieved") {
 		out.NotAchieved = true
+	}
+	if out.GoalID == "" {
+		out.Contradictory = true
+		return out, fmt.Errorf("%w: missing native goal_id", errGoalSyncRejected)
 	}
 
 	if sumRaw, sumErr := os.ReadFile(summaryPath); sumErr == nil {
@@ -2031,7 +2727,7 @@ func observeNativeGrokGoal(grokHome, cwd, sessionID, expectedGoalID string) (nat
 		}
 	}
 
-	final, ok, updErr := verifyGrokGoalUpdates(updatesPath, sessionID, firstNonBlank(out.GoalID, expectedGoalID))
+	final, ok, updErr := verifyGrokGoalUpdates(updatesPath, sessionID, out.GoalID)
 	out.UpdatesOK = ok
 	out.FinalStatus = strings.TrimSpace(final.Status)
 	out.FinalClassifier = strings.TrimSpace(final.Classifier)
@@ -2048,10 +2744,10 @@ func observeNativeGrokGoal(grokHome, cwd, sessionID, expectedGoalID string) (nat
 	} else if final.SessionID != "" && final.SessionID != out.SessionID {
 		return out, fmt.Errorf("%w: other session", errGoalSyncRejected)
 	}
-	if expectedGoalID != "" && out.GoalID != "" && out.GoalID != expectedGoalID {
+	if expectedGoalID != "" && out.GoalID != expectedGoalID {
 		return out, fmt.Errorf("%w: other goal_id", errGoalSyncRejected)
 	}
-	if final.GoalID != "" && out.GoalID != "" && final.GoalID != out.GoalID {
+	if final.GoalID == "" || final.GoalID != out.GoalID {
 		out.Contradictory = true
 		return out, fmt.Errorf("%w: update goal_id contradicts state", errGoalSyncRejected)
 	}
@@ -2109,11 +2805,11 @@ func verifyGrokGoalUpdates(path, sessionID, goalID string) (grokFinalGoalUpdate,
 			return final, false, fmt.Errorf("%w: other session", errGoalSyncRejected)
 		}
 		updGoal := strings.TrimSpace(rec.Params.Update.GoalID)
-		if goalID != "" && updGoal != "" && updGoal != goalID {
-			continue
-		}
-		if updGoal == "" && goalID != "" {
+		if updGoal == "" {
 			return final, false, fmt.Errorf("updates.jsonl missing params.update.goal_id")
+		}
+		if goalID != "" && updGoal != goalID {
+			continue
 		}
 		matched = true
 		final = grokFinalGoalUpdate{
@@ -2236,6 +2932,61 @@ func samePath(a, b string) bool {
 	return ra == rb
 }
 
+func expandWorkflowWriteDomainForDesignResult(root string, cfg *Config, wf *WorkflowRecord, currentWriter *Task, paths []string) (WriteDomain, error) {
+	if wf == nil {
+		return WriteDomain{}, fmt.Errorf("%w: missing workflow for add_write_paths", errGoalDesignResult)
+	}
+	if len(paths) == 0 {
+		return wf.WriteDomain, nil
+	}
+	proposed := wf.WriteDomain
+	proposed.Paths = append([]string(nil), wf.WriteDomain.Paths...)
+	proposed.Resources = append([]ResourceClaim(nil), wf.WriteDomain.Resources...)
+	seen := map[string]bool{}
+	for _, p := range proposed.Paths {
+		seen[p] = true
+	}
+	repo := workflowRepoRoot(wf)
+	for _, raw := range paths {
+		norm, err := NormalizePathClaim(repo, raw)
+		if err != nil {
+			return WriteDomain{}, fmt.Errorf("%w: add_write_paths: %v", errGoalDesignResult, err)
+		}
+		if seen[norm] {
+			continue
+		}
+		seen[norm] = true
+		proposed.Paths = append(proposed.Paths, norm)
+	}
+	out, err := NormalizeWriteDomain(repo, proposed)
+	if err != nil {
+		return WriteDomain{}, fmt.Errorf("%w: add_write_paths: %v", errGoalDesignResult, err)
+	}
+	probeWF := *wf
+	probeWF.WriteDomain = out
+	if err := auditWorkflowWriteDomains(root, cfg, &probeWF); err != nil {
+		return WriteDomain{}, fmt.Errorf("%w: add_write_paths: %v", errGoalDesignResult, err)
+	}
+	probeTask := &Task{
+		ID:          "_design-result-add-write-paths",
+		Type:        typeSequence,
+		Dir:         wf.Worktree,
+		WriteDomain: &out,
+	}
+	live := mergeLiveWriterTasks(nil, reconstructLiveWriterClaims(root))
+	filtered := make([]*Task, 0, len(live))
+	for _, other := range live {
+		if currentWriter != nil && other != nil && other.ID == currentWriter.ID {
+			continue
+		}
+		filtered = append(filtered, other)
+	}
+	if writerConflictsWithActive(probeTask, filtered) {
+		return WriteDomain{}, fmt.Errorf("%w: add_write_paths: write-domain/resource conflict with an active writer", errGoalDesignResult)
+	}
+	return out, nil
+}
+
 func applyWorkflowDesignResult(root string, cfg *Config, wf *WorkflowRecord, decision, observation, receiptPath string) (*Task, error) {
 	decision = strings.TrimSpace(decision)
 	observation = strings.TrimSpace(observation)
@@ -2247,22 +2998,49 @@ func applyWorkflowDesignResult(root string, cfg *Config, wf *WorkflowRecord, dec
 	default:
 		return nil, fmt.Errorf("%w: decision must be stop|input|successor|accept|revise", errGoalDesignResult)
 	}
-	var out *Task
-	err := withTaskControlLock(root, "workflow-admit:"+wf.ID, func() error {
-		t, err := applyWorkflowDesignResultLocked(root, cfg, wf, decision, observation, receiptPath)
-		out = t
-		return err
-	})
-	return out, err
-}
-
-func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecord, decision, observation, receiptPath string) (*Task, error) {
-	if err := refreshWorkflow(root, cfg, wf); err != nil {
-		return nil, err
-	}
 	fresh, err := loadExternalDesignReceipt(receiptPath)
 	if err != nil {
 		return nil, err
+	}
+	if err := designProofComplete(fresh); err != nil {
+		return nil, err
+	}
+	var out *Task
+	run := func() error {
+		t, err := applyWorkflowDesignResultLocked(root, cfg, wf, decision, observation, fresh)
+		out = t
+		return err
+	}
+	if designResultRequestsWriteDomainExpansion(decision, fresh) {
+		err = withWorkflowSchedulerLock(root, cfg, func() error {
+			return withTaskControlLock(root, "global-admission", func() error {
+				return withTaskControlLock(root, "workflow-admit:"+wf.ID, run)
+			})
+		})
+	} else {
+		err = withTaskControlLock(root, "workflow-admit:"+wf.ID, run)
+	}
+	return out, err
+}
+
+func designResultRequestsWriteDomainExpansion(decision string, fresh *WorkflowDesignNode) bool {
+	if fresh == nil || len(fresh.AddWritePaths) == 0 {
+		return false
+	}
+	switch decision {
+	case goalDecisionSuccessor, goalDecisionRevise:
+		return true
+	default:
+		return false
+	}
+}
+
+func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecord, decision, observation string, fresh *WorkflowDesignNode) (*Task, error) {
+	if err := refreshWorkflow(root, cfg, wf); err != nil {
+		return nil, err
+	}
+	if fresh == nil {
+		return nil, fmt.Errorf("%w: a fresh independent design receipt is required", errGoalDesignResult)
 	}
 	if err := designProofComplete(fresh); err != nil {
 		return nil, err
@@ -2319,6 +3097,17 @@ func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecor
 	if doneStage && decision == goalDecisionSuccessor {
 		fmt.Fprintln(os.Stderr, "warning: completed stage successor normalized to revise; existing round and custody limits still apply")
 		decision = goalDecisionRevise
+	}
+	if len(fresh.AddWritePaths) > 0 && decision != goalDecisionSuccessor && decision != goalDecisionRevise {
+		return nil, fmt.Errorf("%w: add_write_paths is only for successor|revise", errGoalDesignResult)
+	}
+	var expandedDomain *WriteDomain
+	if len(fresh.AddWritePaths) > 0 {
+		got, err := expandWorkflowWriteDomainForDesignResult(root, cfg, wf, t, fresh.AddWritePaths)
+		if err != nil {
+			return nil, err
+		}
+		expandedDomain = &got
 	}
 
 	now := time.Now().Format(time.RFC3339)
@@ -2408,6 +3197,9 @@ func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecor
 			}); err != nil {
 				return nil, err
 			}
+		}
+		if expandedDomain != nil {
+			wf.WriteDomain = *expandedDomain
 		}
 		wf.CurrentRound++
 		wf.Candidate = nil

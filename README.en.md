@@ -10,6 +10,59 @@
 >
 > **Use your subscriptions or APIs.** Inventory CLIs, authentication status and available models, then save routing presets after confirmation. Your choices take priority. The manager must be able to access the Cardex machine; cloud conversations need that connection first. Each tool uses its own subscription or API configuration.
 
+## Install and get started
+
+**Let an Agent deploy Cardex:** copy this request to a management Agent that can operate your machine. It will continue through installation and configuration:
+
+```text
+Install and configure Cardex using https://github.com/OttoPrua/Cardex/blob/main/docs/getting-started.md.
+Read the installed cardex-dispatch skill and continue in this conversation.
+Confirm which existing subscriptions or API services I want to use, help configure them, show routes based on
+verified available models, and ask whether to adopt them before saving.
+Recommend single-card dispatch, a single-stage workflow or sustained development based on
+scope, dependencies and risk. Explain responsibilities and acceptance timing.
+Keep simple work in one card; do not add multiple models or extra reviews by default.
+Reuse existing configuration and queues. Do not stop at "installed".
+```
+
+> **Continue in the same conversation:** identify the manager and machine → inventory subscriptions / APIs → configure and verify → confirm routing → choose a working method for the task.
+>
+> The installer prints a handoff; the deploying Agent conducts the follow-up and orchestration. Sign in through each provider's own service. Do not paste passwords or secrets into chat.
+
+**Manual installation:** run these commands on the machine that will run Cardex to install the binary and dispatch skill. macOS / Linux:
+
+```sh
+curl -fsSL https://github.com/OttoPrua/Cardex/releases/latest/download/install.sh -o /tmp/cardex-install.sh && sh /tmp/cardex-install.sh --manager codex
+```
+
+Windows PowerShell:
+
+```powershell
+& ([scriptblock]::Create((Invoke-RestMethod -ErrorAction Stop https://github.com/OttoPrua/Cardex/releases/latest/download/install.ps1))) -Manager codex
+```
+
+For Hermes, replace `codex` with `hermes`. After binary and skill installation, the manager continues subscription login, API configuration and model routing in the same conversation.
+
+[Setup (中文)](docs/getting-started.md) · [Dispatch Agent, examples and skill (中文)](docs/dispatch-agent.md) · [Configuration](docs/config.en.md)
+
+<details>
+<summary>Try a first CLI task</summary>
+
+After configuring and confirming a `routine` preset:
+
+```sh
+cardex presets
+cardex add -preset routine -dry-run -dir . "Explain this project's entry point. Do not edit files."
+cardex add -preset routine -dir . "Explain this project's entry point. Do not edit files."
+cardex run TASK_ID   # ID returned by add; this calls a model
+cardex log TASK_ID
+cardex board
+```
+
+`-dry-run` does not save or execute a card. A running scheduler may start queued work immediately; use `add -hold` to prepare work. `run TASK_ID` targets one card; bare `run` processes the ready queue. Reuse existing configuration rather than replacing it with a starter.
+
+</details>
+
 ## Supported tools, models and connections
 
 > **Use subscriptions or APIs.** Cardex schedules configured coding CLIs rather than a single model vendor. Claude, GPT / Codex, Grok, Kimi, GLM, MiniMax, MiMo and DeepSeek families are accessible through the appropriate runner or engine profile. Exact model IDs, reasoning levels and quotas depend on the tool catalog and your account access.
@@ -39,59 +92,6 @@
 > **Metered APIs, custom gateways and local model services are usable through a matching protocol and runner.** Cardex does not translate these three protocols or turn any URL in `engines` into a universal API connector. The model must also meet the runner's tool-calling and streaming requirements. Verify one small real task before expanding dispatch.
 
 Configuration references: [Cardex configuration](docs/config.en.md) · [Engine implementation and presets](cmd/cardex/engines.go) · [OpenCode providers](https://opencode.ai/docs/providers/#custom-provider) · [Codex providers](https://developers.openai.com/codex/config-advanced/). Protocol documentation checked on 2026-09-28.
-
-## Install and get started
-
-Install the binary and dispatch skill on the machine that will run Cardex. macOS / Linux:
-
-```sh
-curl -fsSL https://github.com/OttoPrua/Cardex/releases/latest/download/install.sh -o /tmp/cardex-install.sh && sh /tmp/cardex-install.sh --manager codex
-```
-
-Windows PowerShell:
-
-```powershell
-& ([scriptblock]::Create((Invoke-RestMethod -ErrorAction Stop https://github.com/OttoPrua/Cardex/releases/latest/download/install.ps1))) -Manager codex
-```
-
-For Hermes, replace `codex` with `hermes`. After binary and skill installation, the manager continues subscription login, API configuration and model routing in the same conversation.
-
-Give this request to a management Agent that can operate your machine:
-
-```text
-Install and configure Cardex using https://github.com/OttoPrua/Cardex/blob/main/docs/getting-started.md.
-Read the installed cardex-dispatch skill and continue in this conversation.
-Confirm which existing subscriptions or API services I want to use, help configure them, show routes based on
-verified available models, and ask whether to adopt them before saving.
-Recommend single-card dispatch, a single-stage workflow or sustained development based on
-scope, dependencies and risk. Explain responsibilities and acceptance timing.
-Keep simple work in one card; do not add multiple models or extra reviews by default.
-Reuse existing configuration and queues. Do not stop at "installed".
-```
-
-> **Continue in the same conversation:** identify the manager and machine → inventory subscriptions / APIs → configure and verify → confirm routing → choose a working method for the task.
->
-> The installer prints a handoff; the deploying Agent conducts the follow-up and orchestration. Sign in through each provider's own service. Do not paste passwords or secrets into chat.
-
-[Setup (中文)](docs/getting-started.md) · [Dispatch Agent, examples and skill (中文)](docs/dispatch-agent.md) · [Configuration](docs/config.en.md)
-
-<details>
-<summary>Try a first CLI task</summary>
-
-After configuring and confirming a `routine` preset:
-
-```sh
-cardex presets
-cardex add -preset routine -dry-run -dir . "Explain this project's entry point. Do not edit files."
-cardex add -preset routine -dir . "Explain this project's entry point. Do not edit files."
-cardex run TASK_ID   # ID returned by add; this calls a model
-cardex log TASK_ID
-cardex board
-```
-
-`-dry-run` does not save or execute a card. A running scheduler may start queued work immediately; use `add -hold` to prepare work. `run TASK_ID` targets one card; bare `run` processes the ready queue. Reuse existing configuration rather than replacing it with a starter.
-
-</details>
 
 ## Three ways to work
 

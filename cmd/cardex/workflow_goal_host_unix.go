@@ -12,9 +12,52 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
+
+const (
+	hostedNaturalObserveEvery = 100 * time.Millisecond
+	hostedNaturalOutputQuiet  = 150 * time.Millisecond
+)
+
+// ptyOutputWatch records the last PTY drain byte so natural /quit waits for
+// the final-output boundary. Sending /quit is not exit, custody, or done.
+type ptyOutputWatch struct {
+	lastUnixNano atomic.Int64
+}
+
+func (w *ptyOutputWatch) note(n int) {
+	if w == nil || n <= 0 {
+		return
+	}
+	w.lastUnixNano.Store(time.Now().UnixNano())
+}
+
+func (w *ptyOutputWatch) Quiet(d time.Duration) bool {
+	if w == nil || d <= 0 {
+		return false
+	}
+	last := w.lastUnixNano.Load()
+	if last == 0 {
+		return false
+	}
+	return time.Since(time.Unix(0, last)) >= d
+}
+
+type ptyTouchReader struct {
+	r io.Reader
+	w *ptyOutputWatch
+}
+
+func (r *ptyTouchReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	if r.w != nil {
+		r.w.note(n)
+	}
+	return n, err
+}
 
 const syscallOpenNonblock = syscall.O_NONBLOCK
 
@@ -38,21 +81,52 @@ func injectPTYMaster(master *os.File, line string) error {
 }
 
 // injectHostedControl focuses the TUI prompt before slash commands. A live
-// Executing turn swallows /goal pause|resume|clear; Esc cancels/returns to
-// the prompt. Injecting the slash line alone is not pause proof.
+// Executing turn swallows /goal pause|resume|clear. Esc does not cancel a
+// turn. Enter/CR on a permission prompt chooses the focused option.
 func injectHostedControl(master *os.File, action, line string) error {
+	return injectHostedControlGuarded(master, action, line, nil)
+}
+
+func injectHostedControlGuarded(master *os.File, action, line string, beforePayload func() error) error {
+	if beforePayload != nil {
+		if err := beforePayload(); err != nil {
+			return err
+		}
+	}
 	switch strings.ToLower(strings.TrimSpace(action)) {
 	case goalControlPause, goalControlResume, goalControlStop:
 		if _, err := master.Write([]byte{0x1b}); err != nil {
 			return err
 		}
 		time.Sleep(300 * time.Millisecond)
+		if beforePayload != nil {
+			if err := beforePayload(); err != nil {
+				return err
+			}
+		}
 		if _, err := master.Write([]byte{0x1b}); err != nil {
 			return err
 		}
 		time.Sleep(200 * time.Millisecond)
+		if beforePayload != nil {
+			if err := beforePayload(); err != nil {
+				return err
+			}
+		}
 	}
 	return injectPTYMaster(master, line)
+}
+
+// injectHostedControlForSession is the hosted-loop inject site. A pending
+// native permission prompt must not receive Esc/slash/CR.
+func injectHostedControlForSession(master *os.File, action, line, grokHome, cwd, sessionID string) error {
+	check := func() error {
+		return hostedControlRefuseReason(grokHome, cwd, sessionID)
+	}
+	if err := check(); err != nil {
+		return err
+	}
+	return injectHostedControlGuarded(master, action, line, check)
 }
 
 func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ctx context.Context, args []string, grokHome, contractPath, digest string) error {
@@ -111,24 +185,38 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 		return err
 	}
 	defer ctl.Close()
-	t.Goal.Hosted = true
-	t.Goal.ControlOwner = goalControlOwnerHosted
-	t.Goal.ObservationNote = "cardex-hosted PTY; /goal injected on master, not slave"
-	t.touch()
-	_ = saveTask(root, t)
-	_ = writeGoalHostStatus(root, t.ID, attemptID, goalHostStatus{SessionID: t.SessionID, SupervisorAlive: true})
+	if err := persistHostedGoalSupervisorStart(root, t); err != nil {
+		return err
+	}
 
 	inject := copyableNativeGoalCommand(contractPath, digest, 0)
 	if t.Goal != nil {
 		inject = copyableNativeGoalCommand(contractPath, digest, t.Goal.BudgetTokens)
 	}
 	stopCtl := make(chan struct{})
+	controlDone := make(chan struct{})
+	controlStarted, controlStopped := false, false
+	stopControl := func() {
+		if !controlStopped {
+			close(stopCtl)
+			controlStopped = true
+		}
+		if controlStarted {
+			<-controlDone
+		}
+	}
 	output := os.Stdout
+	// Tee the existing bounded exact complete-line matcher into the single
+	// master io.Copy. Child stdout/stderr stay on the slave (isatty(2)).
+	// This is not a second PTY reader and not a private output log.
+	captured := &bootstrapRefusalCapture{sink: output}
 	type outputResult struct {
 		err      error
 		reported bool
 	}
 	outputDone := make(chan outputResult, 1)
+	outputWatch := &ptyOutputWatch{}
+	var hostedPersistErr error
 	prevHook := afterCmdResume
 	afterCmdResume = func(started *exec.Cmd) {
 		if prevHook != nil {
@@ -137,15 +225,16 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 		// A TUI can fill the PTY before accepting /goal. Relay through the
 		// caller's output stream; do not create a private-payload log or hide prompts.
 		go func() {
-			_, err := io.Copy(output, master)
+			_, err := io.Copy(captured, &ptyTouchReader{r: master, w: outputWatch})
 			reported := false
 			if err != nil && !errors.Is(err, syscall.EIO) {
 				// A failed caller sink must not stop draining the PTY and leave
 				// its producer blocked forever on terminal output. Report the
 				// loss immediately and drain remaining bytes until child exit.
+				// Sequential Discard continues this same reader.
 				fmt.Fprintf(os.Stderr, "warning: hosted PTY output may be incomplete: %v\n", err)
 				reported = true
-				_, _ = io.Copy(io.Discard, master)
+				_, _ = io.Copy(io.Discard, &ptyTouchReader{r: master, w: outputWatch})
 			}
 			outputDone <- outputResult{err: err, reported: reported}
 		}()
@@ -159,7 +248,7 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 		}
 		if err := injectPTYMaster(master, inject); err != nil {
 			t.Goal.FailureClass = classifyGoalLaunchError(err)
-			_ = saveTask(root, t)
+			hostedPersistErr = persistHostedGoalOwned(root, cfg, t)
 			return
 		}
 		_ = writeGoalHostStatus(root, t.ID, attemptID, goalHostStatus{
@@ -168,11 +257,15 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 			LastInjectAt:    time.Now().UTC().Format(time.RFC3339Nano),
 			SupervisorAlive: true,
 		})
-		go hostedControlLoop(root, t, grokHome, master, ctl, stopCtl)
+		controlStarted = true
+		go func() {
+			defer close(controlDone)
+			hostedControlLoop(root, t, grokHome, master, ctl, stopCtl, outputWatch)
+		}()
 	}
 	defer func() {
 		afterCmdResume = prevHook
-		close(stopCtl)
+		stopControl()
 		if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 			_, _ = w.Write([]byte("\n"))
 			_ = w.Close()
@@ -183,6 +276,9 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 	defer taskExecRoot.Delete(t.ID)
 
 	runErr := runCmdRegisteredForTaskWorkspace(cmd, t.ID, t.Dir)
+	// The observer mutates t; join it before final evidence and custody writes.
+	stopControl()
+	matchedRefusal := ""
 	if cmd.Process != nil {
 		// Drain the final TUI bytes on normal exit. A descendant retaining the
 		// slave or a stalled caller must not extend the execution deadline.
@@ -193,6 +289,7 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 			if result.err != nil && !errors.Is(result.err, syscall.EIO) && !result.reported {
 				fmt.Fprintf(os.Stderr, "warning: hosted PTY output may be incomplete: %v\n", result.err)
 			}
+			matchedRefusal = captured.capturedOutput()
 		case <-ctx.Done():
 			fmt.Fprintln(os.Stderr, "warning: hosted PTY output may be incomplete: execution deadline reached before output drain")
 		case <-timer.C:
@@ -200,27 +297,21 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 		}
 		timer.Stop()
 	}
-	if runErr != nil && t.Goal != nil && t.Goal.FailureClass == "" && cmd.ProcessState == nil {
-		t.Goal.FailureClass = classifyGoalLaunchError(runErr)
-		_ = saveTask(root, t)
-		if t.Goal.FailureClass == goalFailPTYIoctl || t.Goal.FailureClass == goalFailPTYMissing {
-			_ = withWorkflowSchedulerLock(root, cfg, func() error {
-				return abandonUnstartedGoalAttempt(root, t)
-			})
-			return fmt.Errorf("%s: %w", t.Goal.FailureClass, runErr)
-		}
+	if rec, rerr := loadRequiredGoalAttempt(root, t); rerr == nil && rec != nil {
+		recordRetainedBootstrapBeforeProviderEvidence(root, t, rec, runErr, matchedRefusal)
 	}
 	restoreErr := restore()
-	finalErr := withWorkflowSchedulerLock(root, cfg, func() error {
-		return finalizeManualGoalLaunch(root, wf, t, ctx, runErr)
-	})
-	if finalErr != nil {
-		return finalErr
-	}
-	return restoreErr
+	return completeHostedGrokGoalAfterCmd(root, cfg, wf, t, ctx, runErr, restoreErr, hostedPersistErr, cmd.ProcessState != nil)
 }
 
-func hostedControlLoop(root string, t *Task, grokHome string, master, ctl *os.File, stop <-chan struct{}) {
+func injectHostedNaturalQuit(master *os.File, grokHome, cwd, sessionID string) error {
+	if err := hostedControlRefuseReason(grokHome, cwd, sessionID); err != nil {
+		return err
+	}
+	return injectPTYMaster(master, "/quit")
+}
+
+func hostedControlLoop(root string, t *Task, grokHome string, master, ctl *os.File, stop <-chan struct{}, watch *ptyOutputWatch) {
 	if ctl == nil {
 		return
 	}
@@ -232,10 +323,47 @@ func hostedControlLoop(root string, t *Task, grokHome string, master, ctl *os.Fi
 		}
 		close(lineCh)
 	}()
+	ticker := time.NewTicker(hostedNaturalObserveEvery)
+	defer ticker.Stop()
+	quitSent := false
+	lastFP := ""
+	tryNaturalQuit := func() {
+		if quitSent || t == nil {
+			return
+		}
+		fresh, err := loadTask(root, t.ID)
+		if err == nil && fresh != nil {
+			*t = *fresh
+		}
+		expectedGoalID := ""
+		if t.Goal != nil {
+			expectedGoalID = t.Goal.NativeGoalID
+		}
+		fp := nativeGoalEvidenceFingerprint(grokHome, t.Dir, t.SessionID)
+		stable := nativeGoalEvidenceStable(lastFP, fp)
+		lastFP = fp
+		if !stable || !hostedNaturalQuitReady(grokHome, t.Dir, t.SessionID, expectedGoalID, watch.Quiet(hostedNaturalOutputQuiet)) {
+			// Missing or out-of-order current-session turn evidence keeps waiting.
+			return
+		}
+		if err := injectHostedNaturalQuit(master, grokHome, t.Dir, t.SessionID); err != nil {
+			return
+		}
+		quitSent = true
+	}
+	injectTerminalQuit := func() {
+		if quitSent {
+			return
+		}
+		_ = injectPTYMaster(master, "/quit")
+		quitSent = true
+	}
 	for {
 		select {
 		case <-stop:
 			return
+		case <-ticker.C:
+			tryNaturalQuit()
 		case action, ok := <-lineCh:
 			if !ok {
 				return
@@ -243,24 +371,43 @@ func hostedControlLoop(root string, t *Task, grokHome string, master, ctl *os.Fi
 			if action == "" {
 				continue
 			}
-			line := copyableControlCommand(action)
-			if line == "" {
-				continue
-			}
-			if err := injectHostedControl(master, action, line); err != nil {
-				continue
-			}
 			fresh, err := loadTask(root, t.ID)
 			if err == nil && fresh != nil {
 				*t = *fresh
 			}
-			confirmHostedControl(root, t, grokHome, action, line)
+			expectedGoalID := ""
+			if t.Goal != nil {
+				expectedGoalID = t.Goal.NativeGoalID
+			}
 			if action == goalControlStop {
-				_ = injectPTYMaster(master, "/quit")
-				// Native completion is not process exit. Closing the controlling
-				// PTY here sends SIGHUP while the TUI handles /quit or cleanup.
-				// runHostedGrokGoal owns it until Wait/output drain completes;
-				// the existing context deadline still bounds an unresponsive TUI.
+				obs, oerr := observeNativeGrokGoal(grokHome, t.Dir, t.SessionID, expectedGoalID)
+				if oerr == nil && nativeStopConfirmed(obs, expectedGoalID) {
+					// Already a stop-confirmable native terminal (including budget_limited/Idle).
+					// Bytes are not confirmation; native post-state is. Then quit for Wait/drain.
+					confirmHostedControl(root, t, grokHome, action, "")
+					injectTerminalQuit()
+					continue
+				}
+			}
+			if err := hostedControlRefuseReason(grokHome, t.Dir, t.SessionID); err != nil {
+				persistHostedControlUnsupported(root, t, action)
+				continue
+			}
+			line := copyableControlCommand(action)
+			if line == "" {
+				continue
+			}
+			if err := injectHostedControlForSession(master, action, line, grokHome, t.Dir, t.SessionID); err != nil {
+				if hostedControlRefuseReason(grokHome, t.Dir, t.SessionID) != nil {
+					persistHostedControlUnsupported(root, t, action)
+				}
+				continue
+			}
+			confirmed := waitHostedControlConfirmed(root, t, grokHome, action, line, 15*time.Second)
+			if action == goalControlStop && confirmed {
+				injectTerminalQuit()
+				// Native completion is not process exit. Sending /quit bytes is
+				// not release; Wait/output drain/custody reclaim still own the child.
 			}
 		}
 	}

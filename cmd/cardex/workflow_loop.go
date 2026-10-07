@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -724,6 +725,12 @@ func tryReleaseWorkflowIntegration(root string, cfg *Config, wf *WorkflowRecord)
 // dependency, an owner choice, or an exhausted set of options. Each writes one
 // material Root receipt and releases the write-domain claim.
 func markWorkflowRoute(root string, cfg *Config, wf *WorkflowRecord, kind, summary string) error {
+	return withWorkflowSchedulerLock(root, cfg, func() error {
+		return markWorkflowRouteLocked(root, cfg, wf, kind, summary)
+	})
+}
+
+func markWorkflowRouteLocked(root string, cfg *Config, wf *WorkflowRecord, kind, summary string) error {
 	if err := refreshWorkflow(root, cfg, wf); err != nil {
 		return err
 	}
@@ -738,9 +745,27 @@ func markWorkflowRoute(root string, cfg *Config, wf *WorkflowRecord, kind, summa
 	default:
 		return fmt.Errorf("%w: unknown mark kind %q", errWorkflowMalformed, kind)
 	}
-	// A terminal route stops claiming its write domain, so a successor module may
-	// take the same paths. Doing that while this workflow still has a runnable
-	// card would put two writers on one domain. Hold them first.
+	if err := workflowMayReleaseClaim(root, wf); err != nil {
+		return err
+	}
+	wf.Status = status
+	if err := emitRootNotify(root, wf, notifyKind, strings.TrimSpace(summary)); err != nil {
+		return err
+	}
+	return persistWorkflow(root, cfg, wf)
+}
+
+// workflowMayReleaseClaim is the owner/exhausted/external terminalizer gate.
+// Dispatchable cards, a still-live producer, unknown custody, and a missing
+// referenced writer keep the claim. A disappeared directory is not release
+// authority by itself.
+func workflowMayReleaseClaim(root string, wf *WorkflowRecord) error {
+	if wf == nil {
+		return errWorkflowMalformed
+	}
+	if _, proven := provenWorkflowRepoRoot(wf); !proven && !historicalInactiveEvidence(root, wf) {
+		return fmt.Errorf("%w: missing workflow root is not release authority", errWorkflowCustody)
+	}
 	live, err := workflowDispatchableCards(root, wf)
 	if err != nil {
 		return err
@@ -753,9 +778,272 @@ func markWorkflowRoute(root string, cfg *Config, wf *WorkflowRecord, kind, summa
 		return fmt.Errorf("%w: hold these cards before terminalizing the route: %s",
 			errWorkflowDuplicateRole, strings.Join(ids, ", "))
 	}
-	wf.Status = status
-	if err := emitRootNotify(root, wf, notifyKind, strings.TrimSpace(summary)); err != nil {
-		return err
+	tasks, err := loadTasks(root)
+	if err != nil {
+		return fmt.Errorf("%w: task list unreadable, unknown custody fail-closed", errWorkflowCustody)
 	}
-	return persistWorkflow(root, cfg, wf)
+	seen := map[string]bool{}
+	var ids []string
+	for _, t := range tasks {
+		if t == nil || t.WorkflowID != wf.ID || t.ID == "" {
+			continue
+		}
+		if seen[t.ID] {
+			continue
+		}
+		seen[t.ID] = true
+		ids = append(ids, t.ID)
+	}
+	for _, id := range workflowReferencedMemberIDs(wf) {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	for _, id := range ids {
+		t, err := loadReferencedMemberForClaimRelease(root, wf.ID, id)
+		if err != nil {
+			return err
+		}
+		if err := workflowCheckCardCustody(root, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func loadReferencedMemberForClaimRelease(root, workflowID, taskID string) (*Task, error) {
+	if strings.TrimSpace(taskID) == "" {
+		return nil, fmt.Errorf("%w: referenced writer missing/unreadable, unknown custody fail-closed", errWorkflowCustody)
+	}
+	livePath := taskPath(root, taskID)
+	archivePath := filepath.Join(archiveDir(root), taskID+".json")
+	liveInfo, liveStatErr := os.Stat(livePath)
+	archiveInfo, archiveStatErr := os.Stat(archivePath)
+	liveExists := liveStatErr == nil && liveInfo != nil && !liveInfo.IsDir()
+	archiveExists := archiveStatErr == nil && archiveInfo != nil && !archiveInfo.IsDir()
+	if liveStatErr != nil && !os.IsNotExist(liveStatErr) {
+		return nil, fmt.Errorf("%w: referenced writer %s missing/unreadable, unknown custody fail-closed",
+			errWorkflowCustody, taskID)
+	}
+	if archiveStatErr != nil && !os.IsNotExist(archiveStatErr) {
+		return nil, fmt.Errorf("%w: referenced writer %s missing/unreadable, unknown custody fail-closed",
+			errWorkflowCustody, taskID)
+	}
+
+	if liveExists {
+		t, err := loadTask(root, taskID)
+		if err != nil || t == nil {
+			if archiveExists {
+				return nil, fmt.Errorf("%w: referenced writer %s live record unreadable, refusing archive fallback, unknown custody fail-closed",
+					errWorkflowCustody, taskID)
+			}
+			return nil, fmt.Errorf("%w: referenced writer %s missing/unreadable, unknown custody fail-closed",
+				errWorkflowCustody, taskID)
+		}
+		if archiveExists {
+			return nil, fmt.Errorf("%w: referenced writer %s live+archive duplicates, unknown custody fail-closed",
+				errWorkflowCustody, taskID)
+		}
+		if t.ID != taskID {
+			return nil, fmt.Errorf("%w: referenced writer %s identity mismatch, unknown custody fail-closed",
+				errWorkflowCustody, taskID)
+		}
+		return t, nil
+	}
+
+	if !archiveExists {
+		return nil, fmt.Errorf("%w: referenced writer %s missing/unreadable, unknown custody fail-closed",
+			errWorkflowCustody, taskID)
+	}
+	archived, err := loadArchivedTaskFile(root, taskID)
+	if err != nil || archived == nil {
+		return nil, fmt.Errorf("%w: referenced writer %s missing/unreadable, unknown custody fail-closed",
+			errWorkflowCustody, taskID)
+	}
+	if archived.ID != taskID {
+		return nil, fmt.Errorf("%w: referenced writer %s archive identity mismatch, unknown custody fail-closed",
+			errWorkflowCustody, taskID)
+	}
+	if strings.TrimSpace(archived.WorkflowID) != strings.TrimSpace(workflowID) {
+		return nil, fmt.Errorf("%w: referenced writer %s wrong workflow binding, unknown custody fail-closed",
+			errWorkflowCustody, taskID)
+	}
+	if !archivedTerminalStatus(archived.Status) || archived.effectiveControlState() != controlTerminal {
+		return nil, fmt.Errorf("%w: referenced writer %s is not a canceled/terminal archive, unknown custody fail-closed",
+			errWorkflowCustody, taskID)
+	}
+	if !recordedAttemptCloseout(root, archived) {
+		return nil, fmt.Errorf("%w: referenced writer %s has no genuine original-attempt closeout, unknown custody fail-closed",
+			errWorkflowCustody, taskID)
+	}
+	return archived, nil
+}
+
+func archivedTerminalStatus(status string) bool {
+	switch status {
+	case statusCanceled, statusDone, statusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func historicalInactiveEvidence(root string, wf *WorkflowRecord) bool {
+	if wf == nil {
+		return false
+	}
+	switch wf.Status {
+	case workflowStatusOwnerChoice, workflowStatusExhausted, workflowStatusExternalBlocked:
+		return true
+	}
+	tasks, err := loadTasks(root)
+	if err != nil {
+		return false
+	}
+	for _, t := range tasks {
+		if t != nil && t.WorkflowID == wf.ID {
+			return true
+		}
+	}
+	return len(workflowReferencedMemberIDs(wf)) > 0
+}
+
+func workflowReferencedMemberIDs(wf *WorkflowRecord) []string {
+	if wf == nil || !workflowClaimsActive(wf) {
+		return nil
+	}
+	seen := map[string]bool{}
+	var ids []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	add(wf.WriterTaskID)
+	add(wf.ReviewerTaskID)
+	add(wf.IntegrationTaskID)
+	add(wf.AcceptanceTaskID)
+	for _, id := range wf.DirectionTaskIDs {
+		add(id)
+	}
+	for _, id := range wf.NativeGoalTaskIDs {
+		add(id)
+	}
+	return ids
+}
+
+func workflowCheckCardCustody(root string, t *Task) error {
+	if t == nil {
+		return fmt.Errorf("%w: referenced member unreadable, unknown custody fail-closed", errWorkflowCustody)
+	}
+	if taskHasLiveWriterProof(root, t) {
+		return fmt.Errorf("%w: live custody on %s is not released; directory disappearance does not authorize release",
+			errWorkflowCustody, t.ID)
+	}
+	if workflowCardHasUnresolvedCustody(root, t) {
+		if t.Status == statusHeld || t.effectiveControlState() == controlRevoking {
+			return fmt.Errorf("%w: held/revoking %s has no recorded closeout; pid absence is not release authority",
+				errWorkflowCustody, t.ID)
+		}
+		return fmt.Errorf("%w: unknown custody on %s is not released; held unknown stays writing",
+			errWorkflowCustody, t.ID)
+	}
+	return nil
+}
+
+// recordedAttemptCloseout is the normal exited-attempt record. A missing PID,
+// lease, or active attempt is not that record.
+func recordedAttemptCloseout(root string, t *Task) bool {
+	rec, err := loadRequiredGoalAttempt(root, t)
+	if err != nil || rec == nil {
+		return false
+	}
+	return rec.State == attemptExited
+}
+
+// taskHasAttemptRecord reports whether this card has any attempt file.
+// A missing directory is a positive "never recorded" fact. An unreadable
+// directory is unknown and must not be treated as absence.
+func taskHasAttemptRecord(root, taskID string) (bool, error) {
+	entries, err := os.ReadDir(attemptsDir(root, taskID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+// neverInvokedHeldTerminal is a held card that reached terminal control without
+// ever being launched. The positive facts are control terminal (not revoking),
+// scheduling explicitly disabled, no Goal, no session, no active attempt, no
+// attempt file, and no workspace lease. A never-started integration placeholder
+// and a writer terminalized before any attempt are this shape. PID absence on
+// an invoked, live, unknown, or revoking card is not.
+func neverInvokedHeldTerminal(root string, t *Task) bool {
+	if t == nil || t.Status != statusHeld {
+		return false
+	}
+	if t.ControlState != controlTerminal || t.effectiveControlState() == controlRevoking {
+		return false
+	}
+	if t.SchedulingEligible == nil || *t.SchedulingEligible {
+		return false
+	}
+	if strings.TrimSpace(t.ActiveAttemptID) != "" || t.Goal != nil || strings.TrimSpace(t.SessionID) != "" {
+		return false
+	}
+	hasAttempt, err := taskHasAttemptRecord(root, t.ID)
+	if err != nil || hasAttempt {
+		return false
+	}
+	if workspaceLeaseHeld(t.Dir) {
+		return false
+	}
+	return true
+}
+
+// neverStartedIntegrationPlaceholder is the integration-card form of
+// neverInvokedHeldTerminal. Callers that need the integration identity keep
+// this predicate; custody release uses the shared never-invoked facts.
+func neverStartedIntegrationPlaceholder(root string, t *Task) bool {
+	return t != nil && t.IntegrationGate != nil && neverInvokedHeldTerminal(root, t)
+}
+
+func workflowCardHasUnresolvedCustody(root string, t *Task) bool {
+	if t == nil {
+		return true
+	}
+	if goalCustodyReleased(root, t) && recordedAttemptCloseout(root, t) {
+		return false
+	}
+	// A real revoke stays unresolved. A held card that was never invoked does
+	// not. Every other held card still needs a recorded closeout.
+	if t.effectiveControlState() == controlRevoking || t.ControlState == controlRevoking {
+		return true
+	}
+	if neverInvokedHeldTerminal(root, t) {
+		return false
+	}
+	if t.Status == statusHeld {
+		return true
+	}
+	id := goalAttemptID(t)
+	started := t.Goal != nil && (t.Goal.Started || strings.TrimSpace(t.Goal.BoundAttemptID) != "")
+	if id == "" && !started {
+		return false
+	}
+	return !goalCustodyReleased(root, t)
 }

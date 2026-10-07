@@ -172,32 +172,40 @@ func launchBootstrapBeforeNativeRecovery(root string, cfg *Config, wf *WorkflowR
 		return fmt.Errorf("%w: grok_build_bin/grok_build not enabled", errGoalCapability)
 	}
 
-	acquired := false
-	if !holdsSchedulerLock(root) {
-		deadline := time.Now().Add(5 * time.Second)
-		for !acquired {
-			if acquireLock(root, lockTTL(cfg)) {
-				acquired = true
-				break
+	// Scheduler ownership is process-wide, so concurrent calls in one process
+	// still need the existing workflow admission lock around proof/consume/CAS.
+	// Release both admission locks before running the provider or launch hooks.
+	if err := withTaskControlLock(root, "workflow-admit:"+wf.ID, func() error {
+		acquired := false
+		if !holdsSchedulerLock(root) {
+			deadline := time.Now().Add(5 * time.Second)
+			for !acquired {
+				if acquireLock(root, lockTTL(cfg)) {
+					acquired = true
+					break
+				}
+				if time.Now().After(deadline) {
+					return fmt.Errorf("another cardex instance holds the scheduler lock; stop it before bootstrap-before-native recovery")
+				}
+				time.Sleep(20 * time.Millisecond)
 			}
-			if time.Now().After(deadline) {
-				return fmt.Errorf("another cardex instance holds the scheduler lock; stop it before bootstrap-before-native recovery")
+		}
+		releaseAdmission := func() {
+			if acquired {
+				releaseLock(root)
+				acquired = false
 			}
-			time.Sleep(20 * time.Millisecond)
 		}
-	}
-	releaseAdmission := func() {
-		if acquired {
-			releaseLock(root)
-			acquired = false
-		}
-	}
-	defer releaseAdmission()
+		defer releaseAdmission()
 
-	if err := admitBootstrapBeforeNativeRecoveryLocked(root, cfg, wf, t, authPath, hosted, executor); err != nil {
+		if err := admitBootstrapBeforeNativeRecoveryLocked(root, cfg, wf, t, authPath, hosted, executor); err != nil {
+			return err
+		}
+		releaseAdmission()
+		return nil
+	}); err != nil {
 		return err
 	}
-	releaseAdmission()
 	return executeAdmittedGoalLaunch(root, cfg, wf, t, hosted)
 }
 

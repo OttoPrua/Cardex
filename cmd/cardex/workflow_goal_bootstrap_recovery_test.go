@@ -978,8 +978,15 @@ func TestBootstrapBeforeNativeRecoveryDuplicateReplayDoesNotAdmitTwice(t *testin
 
 	root2, _, wf2, tk2, orig2, _ := bootstrapBeforeNativeRecoverableFixture(t)
 	auth2 := mintBootstrapBeforeNativeAuthorization(t, tk2, wf2, time.Time{})
+	// An enclosing scheduler may already own this process-wide lock.
+	// Both callers must still serialize authorization consumption.
+	if !acquireLock(root2, time.Minute) {
+		t.Fatal("acquire enclosing scheduler lock")
+	}
+	defer releaseLock(root2)
 	var mu sync.Mutex
 	var nOK, nErr int
+	var admissionErrors []error
 	var wg sync.WaitGroup
 	wg.Add(2)
 	for i := 0; i < 2; i++ {
@@ -991,13 +998,14 @@ func TestBootstrapBeforeNativeRecoveryDuplicateReplayDoesNotAdmitTwice(t *testin
 				nOK++
 			} else {
 				nErr++
+				admissionErrors = append(admissionErrors, err)
 			}
 			mu.Unlock()
 		}()
 	}
 	wg.Wait()
 	if nOK != 1 || nErr != 1 {
-		t.Fatalf("concurrent admit ok=%d err=%d", nOK, nErr)
+		t.Fatalf("concurrent admit ok=%d err=%d: %v", nOK, nErr, admissionErrors)
 	}
 	attempts2, err := listGoalAttemptRecords(root2, tk2.ID)
 	if err != nil {

@@ -194,6 +194,17 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 		inject = copyableNativeGoalCommand(contractPath, digest, t.Goal.BudgetTokens)
 	}
 	stopCtl := make(chan struct{})
+	controlDone := make(chan struct{})
+	controlStarted, controlStopped := false, false
+	stopControl := func() {
+		if !controlStopped {
+			close(stopCtl)
+			controlStopped = true
+		}
+		if controlStarted {
+			<-controlDone
+		}
+	}
 	output := os.Stdout
 	// Tee the existing bounded exact complete-line matcher into the single
 	// master io.Copy. Child stdout/stderr stay on the slave (isatty(2)).
@@ -246,11 +257,15 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 			LastInjectAt:    time.Now().UTC().Format(time.RFC3339Nano),
 			SupervisorAlive: true,
 		})
-		go hostedControlLoop(root, t, grokHome, master, ctl, stopCtl, outputWatch)
+		controlStarted = true
+		go func() {
+			defer close(controlDone)
+			hostedControlLoop(root, t, grokHome, master, ctl, stopCtl, outputWatch)
+		}()
 	}
 	defer func() {
 		afterCmdResume = prevHook
-		close(stopCtl)
+		stopControl()
 		if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 			_, _ = w.Write([]byte("\n"))
 			_ = w.Close()
@@ -261,6 +276,8 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 	defer taskExecRoot.Delete(t.ID)
 
 	runErr := runCmdRegisteredForTaskWorkspace(cmd, t.ID, t.Dir)
+	// The observer mutates t; join it before final evidence and custody writes.
+	stopControl()
 	matchedRefusal := ""
 	if cmd.Process != nil {
 		// Drain the final TUI bytes on normal exit. A descendant retaining the

@@ -303,6 +303,17 @@ func TestParseGeminiJSONAndStats(t *testing.T) {
 	if geminiStatsUsage([]byte(`{"weird":true}`)) != nil {
 		t.Fatal("形状不符的 stats 应返回 nil（宁缺不编造）")
 	}
+	zeros := []byte(`{"models":{"m":{"tokens":{"prompt":0,"candidates":0,"cached":0}}}}`)
+	if geminiStatsUsage(zeros) != nil {
+		t.Fatal("quota path must still skip all-zero stats")
+	}
+	raw := geminiRawFields(zeros)
+	if raw.InputTokens == nil || *raw.InputTokens != 0 || raw.OutputTokens == nil || *raw.OutputTokens != 0 {
+		t.Fatalf("raw known zeros: %+v", raw)
+	}
+	if raw.ReasoningTokens != nil || raw.CacheCreationInputTokens != nil {
+		t.Fatalf("omitted thoughts/cache_creation must stay missing: %+v", raw)
+	}
 }
 
 // ---- 假 gemini 端到端（argv/stdin 契约 + 车道语义）----

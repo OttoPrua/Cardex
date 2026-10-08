@@ -1392,8 +1392,8 @@ func TestVerifyPassesWithDeletedTrackedFile(t *testing.T) {
 //
 // 【杀的突变】
 //   ① 从 templates/design-review.md 里删掉开工自门章节 → 内嵌断言红;
-//   ② 从 templates/design-review.md 里删掉 `.claudego-fingerprint(.files)?` 剔除行
-//      → 内嵌断言红(CG-R2b 修 1 直击);
+//   ② 从 templates/design-review.md 里删掉 verify-mirror-fingerprint /
+//      .claudego-fingerprint / .claudego-scripts 镜像消费标记 → 内嵌断言红;
 //   ③ 从 templates/fix-cycle.md 里删掉"提交前机械门"章节 → 内嵌断言红;
 //   ④ 装机侧模板漂移到无自门/无机械门 → env=1 下装机断言红。
 func TestDesignReviewAndFixCycleTemplatesEmbedContractContent(t *testing.T) {
@@ -1406,10 +1406,11 @@ func TestDesignReviewAndFixCycleTemplatesEmbedContractContent(t *testing.T) {
 		t.Fatalf("loadTemplate design-review 内嵌兜底失败: %v", err)
 	}
 	drMustEmbedded := []string{
-		"开工自门",                          // 章节头
-		"verify-mirror-fingerprint",     // 自门主脚本引用
-		".claudego-fingerprint(.files)?", // CG-R2b 修 1:剔除清单同源正则(伴生文件必包含)
-		"D·原语拆解",                       // D 通道原语兜底章节标识
+		"开工自门",
+		"verify-mirror-fingerprint",
+		".claudego-fingerprint",
+		".claudego-scripts",
+		"既无",
 	}
 	for _, kw := range drMustEmbedded {
 		if !strings.Contains(drEmbedded, kw) {

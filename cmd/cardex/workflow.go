@@ -86,42 +86,42 @@ type IntegrationGate struct {
 
 // WorkflowRecord is the durable module/program goal binding.
 type WorkflowRecord struct {
-	Schema            string                 `json:"schema"`
-	ID                string                 `json:"id"`
-	Mode              string                 `json:"mode"`
-	ModuleID          string                 `json:"module_id"`
-	GoalID            string                 `json:"goal_id"`
-	Goal              string                 `json:"goal"`
-	ParentID          string                 `json:"parent_id,omitempty"`
-	Repo              string                 `json:"repo"`
-	Worktree          string                 `json:"worktree"`
-	WriteDomain       WriteDomain            `json:"write_domain"`
-	TerminalCriteria  string                 `json:"terminal_criteria"`
-	MaxRounds         int                    `json:"max_rounds"`
-	CurrentRound      int                    `json:"current_round"`
-	WriterEngine      string                 `json:"writer_engine"`
-	ReviewerEngine    string                 `json:"reviewer_engine"`
-	WriterTaskID      string                 `json:"writer_task_id,omitempty"`
-	ReviewerTaskID    string                 `json:"reviewer_task_id,omitempty"`
-	IntegrationTaskID string                 `json:"integration_task_id,omitempty"`
-	Candidate         *WorkflowCandidate     `json:"candidate,omitempty"`
-	Review            *WorkflowReview        `json:"review,omitempty"`
-	EffectGates       WorkflowEffectGates    `json:"effect_gates"`
-	Progress          WorkflowProgressCoords `json:"progress"`
-	Status            string                 `json:"status"`
-	MaterialNotify    *WorkflowNotify        `json:"material_notify,omitempty"`
-	DesignLineage       *WorkflowDesignLineage `json:"design_lineage,omitempty"`
-	DesignSession       *PersistentSessionRef  `json:"design_session,omitempty"`
-	ManagerSession      *PersistentSessionRef  `json:"manager_session,omitempty"`
-	OwnerDesignEntry    *PersistentSessionRef  `json:"owner_design_entry,omitempty"`
-	DesignTaskID        string                 `json:"design_task_id,omitempty"`
-	DirectionTaskIDs    []string               `json:"direction_task_ids,omitempty"`
-	NativeGoalTaskIDs   []string               `json:"native_goal_task_ids,omitempty"`
-	AcceptanceTaskID    string                 `json:"acceptance_task_id,omitempty"`
-	AcceptanceCoverage  string                 `json:"acceptance_coverage,omitempty"`
-	GoalCompleted       bool                   `json:"goal_completed,omitempty"`
-	CreatedAt           string                 `json:"created_at"`
-	UpdatedAt           string                 `json:"updated_at"`
+	Schema             string                 `json:"schema"`
+	ID                 string                 `json:"id"`
+	Mode               string                 `json:"mode"`
+	ModuleID           string                 `json:"module_id"`
+	GoalID             string                 `json:"goal_id"`
+	Goal               string                 `json:"goal"`
+	ParentID           string                 `json:"parent_id,omitempty"`
+	Repo               string                 `json:"repo"`
+	Worktree           string                 `json:"worktree"`
+	WriteDomain        WriteDomain            `json:"write_domain"`
+	TerminalCriteria   string                 `json:"terminal_criteria"`
+	MaxRounds          int                    `json:"max_rounds"`
+	CurrentRound       int                    `json:"current_round"`
+	WriterEngine       string                 `json:"writer_engine"`
+	ReviewerEngine     string                 `json:"reviewer_engine"`
+	WriterTaskID       string                 `json:"writer_task_id,omitempty"`
+	ReviewerTaskID     string                 `json:"reviewer_task_id,omitempty"`
+	IntegrationTaskID  string                 `json:"integration_task_id,omitempty"`
+	Candidate          *WorkflowCandidate     `json:"candidate,omitempty"`
+	Review             *WorkflowReview        `json:"review,omitempty"`
+	EffectGates        WorkflowEffectGates    `json:"effect_gates"`
+	Progress           WorkflowProgressCoords `json:"progress"`
+	Status             string                 `json:"status"`
+	MaterialNotify     *WorkflowNotify        `json:"material_notify,omitempty"`
+	DesignLineage      *WorkflowDesignLineage `json:"design_lineage,omitempty"`
+	DesignSession      *PersistentSessionRef  `json:"design_session,omitempty"`
+	ManagerSession     *PersistentSessionRef  `json:"manager_session,omitempty"`
+	OwnerDesignEntry   *PersistentSessionRef  `json:"owner_design_entry,omitempty"`
+	DesignTaskID       string                 `json:"design_task_id,omitempty"`
+	DirectionTaskIDs   []string               `json:"direction_task_ids,omitempty"`
+	NativeGoalTaskIDs  []string               `json:"native_goal_task_ids,omitempty"`
+	AcceptanceTaskID   string                 `json:"acceptance_task_id,omitempty"`
+	AcceptanceCoverage string                 `json:"acceptance_coverage,omitempty"`
+	GoalCompleted      bool                   `json:"goal_completed,omitempty"`
+	CreatedAt          string                 `json:"created_at"`
+	UpdatedAt          string                 `json:"updated_at"`
 }
 
 // WorkflowCandidate is the frozen source identity a review is bound to.
@@ -496,6 +496,61 @@ func refreshWorkflow(root string, cfg *Config, wf *WorkflowRecord) error {
 	return nil
 }
 
+// knownWorkflowSidecar distinguishes existing receipt formats from workflow
+// records. A suffix alone never exempts a potential claim from the audit.
+func knownWorkflowSidecar(path, name string) bool {
+	if !strings.HasSuffix(name, ".design-receipt.json") && !strings.HasSuffix(name, ".retained-preimage-hashes.json") {
+		return false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return false
+	}
+	for _, key := range []string{"schema", "id", "mode", "module_id", "goal_id", "goal", "parent_id", "repo", "worktree", "write_domain", "writer_engine", "reviewer_engine", "effect_gates", "current_round", "max_rounds", "writer_task_id", "reviewer_task_id", "integration_task_id", "terminal_criteria", "candidate", "review", "progress", "material_notify", "design_lineage", "design_session", "manager_session", "owner_design_entry", "design_task_id", "direction_task_ids", "native_goal_task_ids", "acceptance_task_id", "acceptance_coverage", "goal_completed", "created_at", "updated_at"} {
+		for field := range fields {
+			// encoding/json matches struct field tags case-insensitively.
+			// Presence, including null, is enough to retain a possible claim.
+			if strings.EqualFold(field, key) {
+				return false
+			}
+		}
+	}
+	hash := func(value string, size int) bool {
+		b, err := hex.DecodeString(value)
+		return err == nil && len(b) == size
+	}
+	if strings.HasSuffix(name, ".design-receipt.json") {
+		var receipt designReceiptFile
+		if json.Unmarshal(raw, &receipt) != nil {
+			return false
+		}
+		return receipt.Role == "design" && receipt.ReadOnly != nil && *receipt.ReadOnly && receipt.Status == "completed" &&
+			receipt.Runner != "" && receipt.ActualRunner != "" && receipt.Identity != "" && receipt.SessionID != "" && receipt.ResultPath != "" &&
+			hash(receipt.Digest, 32) && strings.TrimSpace(receipt.InputIdentity) != ""
+	}
+	if len(fields) != 3 {
+		return false
+	}
+	var preimage struct {
+		Meaning string            `json:"meaning"`
+		Head    string            `json:"head"`
+		Hashes  map[string]string `json:"hashes"`
+	}
+	if json.Unmarshal(raw, &preimage) != nil || strings.TrimSpace(preimage.Meaning) == "" || !hash(preimage.Head, 20) || len(preimage.Hashes) == 0 {
+		return false
+	}
+	for path, value := range preimage.Hashes {
+		if strings.TrimSpace(path) == "" || !hash(value, 32) {
+			return false
+		}
+	}
+	return true
+}
+
 // scanWorkflows reads every record file once and reports the unloadable ones
 // alongside the loadable ones instead of deciding for the caller. Listing may
 // tolerate a corrupt sibling; the write-domain audit must not, because a record
@@ -512,6 +567,9 @@ func scanWorkflows(root string, cfg *Config) (loaded []*WorkflowRecord, broken m
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".progress.json") {
+			continue
+		}
+		if knownWorkflowSidecar(filepath.Join(workflowsDir(root), name), name) {
 			continue
 		}
 		id := strings.TrimSuffix(name, ".json")

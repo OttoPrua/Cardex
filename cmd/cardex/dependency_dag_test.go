@@ -159,6 +159,51 @@ func TestAnalyzeDependencyDAGRejectsMalformedAndDuplicateIdentifiers(t *testing.
 	}
 }
 
+func TestClassifyPredecessorWaitClosedVocabulary(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		status string
+		found  bool
+		want   string
+	}{
+		{status: statusRunning, found: true, want: depWaitRunning},
+		{status: statusHeld, found: true, want: depWaitHeld},
+		{status: statusFailed, found: true, want: depWaitFailed},
+		{status: statusQueued, found: true, want: depWaitUnknown},
+		{status: statusLimitPaused, found: true, want: depWaitUnknown},
+		{status: statusCanceled, found: true, want: depWaitUnknown},
+		{status: statusDone, found: true, want: ""},
+		{status: "", found: false, want: depWaitMissing},
+	}
+	for _, tc := range cases {
+		var pred *Task
+		if tc.found {
+			pred = &Task{ID: "pred", Status: tc.status}
+		}
+		if got := ClassifyPredecessorWait(pred, tc.found); got != tc.want {
+			t.Fatalf("status=%q found=%v got %q want %q", tc.status, tc.found, got, tc.want)
+		}
+	}
+}
+
+func TestTaskDependencyWaitsClearsRecoveredPredecessors(t *testing.T) {
+	t.Parallel()
+	child := &Task{ID: "child", DependsOn: []string{"a", "b", "ghost"}}
+	byID := map[string]*Task{
+		"a": {ID: "a", Status: statusHeld},
+		"b": {ID: "b", Status: statusRunning},
+	}
+	got := TaskDependencyWaits(child, byID)
+	if len(got) != 3 || got[0].Why != depWaitHeld || got[1].Why != depWaitRunning || got[2].Why != depWaitMissing {
+		t.Fatalf("before=%+v", got)
+	}
+	byID["a"].Status = statusDone
+	got = TaskDependencyWaits(child, byID)
+	if len(got) != 2 || got[0].ID != "b" || got[1].ID != "ghost" {
+		t.Fatalf("stale wait after recovery: %+v", got)
+	}
+}
+
 func TestBindDependencyDomainsFailClosedOnUnknownDomain(t *testing.T) {
 	t.Parallel()
 	nodes := []DependencyNode{

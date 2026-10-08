@@ -39,7 +39,9 @@ cardex brief -dir ~/Projects/myapp -title 鉴权重构
 cardex brief -id t0705-xxxx -auto
 cardex brief -session <session-id> -dir ~/Projects/myapp -auto
 
-# 2) 分工。协调任务运行时注入实时队列快照 + 全部进度报告，
+# 2) 分工。协调任务运行时按该卡显式 project / workflow / depends_on 注入有界
+#    {{QUEUE}} / {{PROGRESS}}（保留必要跨项目前驱与源码指针，省略项披露数量/原因/指针；
+#    无显式范围的旧协调卡仍注入但受同一体积上限；仅必要前驱身份/状态与源/log 指针可单独超过 8192 字节上限，标题等可选散文受同一散文上限）。
 #    产出：人话分工说明（每个任务做什么/建议模型/手动接管命令，留在 log 里）
 #    + 分工任务自动入队（带 model 字段，被依赖的 priority 更高，可续跑的带 session_id）
 cardex plan -dir ~/Projects/myapp "本周把上传模块收尾并补齐测试"
@@ -51,15 +53,18 @@ cardex cmd <id>             # 想手动接管某任务：打印 claude 命令 + 
 cardex progress             # 进度一览（“现状”列看进展）；-show <KEY> 人读渲染、-in 手动导入
 ```
 
-**看板即进度**：`cardex list` 的标题列显示每个任务的「标题 ▸ 最新进度」（优先取已回收进度报告的现状，没有则回落到最近一步输出的自动摘要）；`cardex progress` 列表带独立的「现状」列，`progress -show <KEY>` 改为人读渲染（目标/进行中/完成/剩余/阻塞/关键文件，几千字接力 prompt 默认折叠、`-full` 展开）——一眼读出进展，不再是静态标题。
+**看板即进度**：`cardex list` 的标题列显示每个任务的「标题 ▸ 最新进度」（优先取已回收进度报告的现状，没有则回落到最近一步输出的自动摘要）；`cardex progress` 列表带独立的「现状」列，`progress -show <KEY>` 改为人读渲染（目标/进行中/完成/剩余/阻塞/关键文件，几千字接力 prompt 默认折叠、`-full` 展开）——一眼读出进展，不再是静态标题。排队中的依赖卡在看板 `waiting_on` / `blocked_reason` 上标明在等谁、为何等待（running / held / failed / unknown / missing）；前驱恢复后原因更新或清空，下游不会被自动跳过或取消。
+
+`cardex workflow accept` 新创建的整体验收卡 prompt 含 overall_goal、completion_criteria、design_result、design_digest 与成员产物路径。输入标准变化后不会改写在途或已通过的旧验收卡，也不会把旧卡当作新标准的覆盖。
+
+显式新卡可用 `cardex add -verify 'go test ./...' -verify-on-success`：provider 实际成功收尾时运行验收命令（含无源码改动），把实际退出码与输出尾写入既有 task/events；失败、超时或取消保留工作并 held。未加 `-verify-on-success` 的旧卡保持原收割验证。远程卡经已配置主机适配器在远端 cwd 执行，否则显式拒绝、不在本地静默跑。`goal-sync` 对已存在目录按文件系统对象（samefile，含大小写/别名）识别；缺失、其他目录、其他 session/goal/attempt 仍拒绝。
 
 **模型路由**：在 `default_runner=codex` 下，任务的 `model` 是来源档位，调度器再按 Final Owner 矩阵解析
 实际执行链：显式 Fable 走 Cursor→Grok answer→唯一 Sol/ultra reviewer-merger；非后端 Opus 走
 Grok→eligible Kimi，只有显式条件才到 Sol/xhigh；backend ordinary 走 Grok→Kimi review/repair→条件 Sol/xhigh，
 backend high-risk 走 Grok→Kimi second view→mandatory Sol/max；Sonnet/Haiku 走 Grok→eligible Kimi，
 无全局 Codex fallback。
-协调模板按"最难裁决→Fable / 模糊长程跨仓高风险→Opus / 复杂落地→Sonnet+xhigh /
-常规落地→Sonnet+xhigh / 机械→Haiku+high"显式发卡。来源档位和实际模型分开记录；只有明确续接
+协调与装配默认模板按风险选择单卡/自检或一次聚焦复审，不再内嵌个人路由矩阵。来源档位和实际模型分开记录；只有明确续接
 旧 Claude session 的卡保留 Claude 执行器。
 
 **生产 profile**：装配、协调和例行审核仍以 Opus 作为来源档位，普通 `sequence` 默认 Sonnet；只有
@@ -80,6 +85,11 @@ backend high-risk 走 Grok→Kimi second view→mandatory Sol/max；Sonnet/Haiku
   （无需续跑提示）、codex 备用执行器可接管**任意一步**（不再限单步任务）、审计友好（状态变更全在 git 里）。
 - `plan -hold` / `assemble -hold`：分工产出的任务先挂起（held），人工审完 `cardex release <id>` 放行——
   "拆分 → 把关 → 推进 → 审核 → 更新状态" 的完整循环。
+
+### 失败后重新入队
+
+- `cardex retry <id>`：失败/终态/限额暂停卡重新入队，**保留**执行会话与进度（下一步仍 `--resume`）。既有自动重试策略不变。
+- `cardex retry -fresh <id>`：仅当 retry 已合法且本卡 custody 已回收时开**新**执行会话（不 `--resume`）。保留工作目录、源码、完成步骤、失败历史与额度。不绕过 held/集成门/sealed/no-retry/原生 Goal 身份与 custody；LastError 文本不是许可；不改 provider/model。本卡仍有活着或去向未知的 attempt/进程时拒绝；其他卡占用同一工作区由既有调度/lease 准入串行，不在这里加总闸。
 
 ### 审核分流（把只读审核负载摊到第二台机器）
 
@@ -150,6 +160,8 @@ cardex add -type sequence -session <老执行会话ID> -file 下一批步骤.md
 
 # 或者放弃挂载：把老会话里沉淀的角色要求改进 templates/*.md，以后每轮全新开（上下文更便宜）
 ```
+
+通用默认模板不含个人路由矩阵或私有路径。`cardex templates status -root ROOT` 显示来源与差异：没有可信 shipped 基准的已有副本是 UNKNOWN；字节刚好等于当前内置是 current-equality，不等于历史上未修改。`cardex templates init -root ROOT` 不覆盖已有用户文件。`cardex templates refresh -root ROOT NAME` 先把选定文件的原字节备份到 `templates/.refresh-backup/`，再写成当前内置并记下 digest。未选定的自定义文件保持原样。顶层 `cardex status` 仍是任务看板（`list` 别名）。
 
 注意：headless 续跑既有会话是**分叉**（fork 出新 session id，原桌面会话不受影响）；任务首轮跑完后，
 后续轮次应挂任务里最新的 session_id（`cardex list -json` 可见），或直接对同一任务追加步骤。
@@ -873,8 +885,9 @@ cardex add -dir ~/proj "常规改动"                                  # 缺省 
 
 复盘按**事件账本**算成本，所以每条终态事件（`done` / `failed` / `canceled`，以及 `held`）都必须回答"这张卡花了多少"：
 
-- 卡上有累计用量 → 事件 `detail` 带 `cost_total` / `turns_total`（该卡**累计**用量，跨限额中断续跑仍累加）；
-- 卡上没有任何用量 → 带 `cost_unavailable: true` 与 `cost_unavailable_reason`，**不许静默省掉字段**。
+- 卡上有已知累计用量（含显式 0）→ 事件 `detail` 带 `cost_total` / `turns_total`（该卡**累计**用量，跨限额中断续跑仍累加）；
+- 遗留卡或从未观察到用量 → 带 `cost_unavailable: true` 与 `cost_unavailable_reason`，**不许静默省掉字段**。
+- 新卡另有 `raw_usage`：按字段区分已知零 / 省略 / 部分缺失，并命名观察窗口（`provider_call` / `native_goal` / `native_goal_complete` / `native_post_complete_followup`）。加权额度账本与货币等价分开；订阅折算不是实付。重复终态/native sync 只记同一身份的真增量。管理会话（Codex/Perlica）不自动记到执行卡上。缺失用量不是完成门。
 
 **为什么无数据也要显式落标记**：省掉字段，复盘就只能猜；而"这张卡没花钱"与"这张卡花没花钱我们不知道"
 在账面上会长得一模一样，报出的总额系统性偏低且偏低多少无从得知。`retro-77` 样本里 10 张卡有 9 张查不到

@@ -215,6 +215,20 @@ function tierBadge(model, tier) {
     label);
 }
 
+function waitChips(t) {
+  if (!Array.isArray(t.waiting_on) || !t.waiting_on.length) return [];
+  return t.waiting_on.map((w) => metaChip(`等待 ${w.id} (${w.why})`, {
+    kind: 'wait',
+    mono: true,
+    title: `dependency wait ${w.why}`,
+  }));
+}
+
+function waitCalloutText(t) {
+  const parts = (t.waiting_on || []).map((w) => `${w.id}（${w.why}）`);
+  return `等待依赖：${parts.join('；')}`;
+}
+
 function metaChip(text, opts) {
   const o = opts || {};
   return h('span', {
@@ -1855,7 +1869,10 @@ function taskRow(t) {
   // step 是 0-based（契约如此），展示成「第 N/M 步」必须 +1，与活动流文案对齐。
   if (t.steps_total > 1) tags.push(metaChip(`第 ${t.step + 1}/${t.steps_total} 步`));
   if (t.status === 'running' && t.elapsed_minutes > 0) tags.push(metaChip(`已跑 ${fmtDur(t.elapsed_minutes)}`));
-  if (t.blocked_reason) tags.push(metaChip(t.blocked_reason, { title: t.blocked_reason }));
+  tags.push(...waitChips(t));
+  if (t.blocked_reason && !(Array.isArray(t.waiting_on) && t.waiting_on.length)) {
+    tags.push(metaChip(t.blocked_reason, { title: t.blocked_reason }));
+  }
 
   // 行左缘按模型等级着色（tier-旗舰/高/中/轻/未知），一眼分清 fable / opus / sonnet。
   return h('div', { class: `task-row tier-${t.model_tier || '未知'}` },
@@ -2030,6 +2047,7 @@ function taskCard(t) {
   if (t.remote_host) tags.push(metaChip(`@${t.remote_host}`, { mono: true }));
   if (t.steps_total > 1) tags.push(metaChip(`第 ${t.step + 1}/${t.steps_total} 步`));
   if (t.status === 'running' && t.elapsed_minutes > 0) tags.push(metaChip(`已跑 ${fmtDur(t.elapsed_minutes)}`));
+  tags.push(...waitChips(t));
 
   const body = h('div', { class: 'tcard-body' });
   let filled = false;
@@ -2079,7 +2097,9 @@ function taskCard(t) {
     if (t.turns_used) row('轮数', t.turns_used);
     body.append(kv);
 
-    if (t.blocked_reason) {
+    if (Array.isArray(t.waiting_on) && t.waiting_on.length) {
+      body.append(callout('serious', '⏸', waitCalloutText(t)));
+    } else if (t.blocked_reason) {
       body.append(callout(t.status === 'failed' ? 'critical' : 'serious', '⚠', t.blocked_reason));
     }
     if (t.last_error && t.last_error !== t.blocked_reason) {

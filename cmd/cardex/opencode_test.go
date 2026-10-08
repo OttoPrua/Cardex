@@ -35,6 +35,10 @@ func TestParseOpenCodeJSONL(t *testing.T) {
 	if res.Usage == nil || res.Usage.InputTokens != 7 || res.Usage.OutputTokens != 5 {
 		t.Fatalf("unexpected usage: %+v", res.Usage)
 	}
+	if res.UsageFields.InputTokens == nil || *res.UsageFields.InputTokens != 7 ||
+		res.UsageFields.CacheReadInputTokens != nil || !res.CostPresent || !res.TurnsPresent || !res.DurationPresent {
+		t.Fatalf("opencode presence: fields=%+v cost=%v turns=%v dur=%v", res.UsageFields, res.CostPresent, res.TurnsPresent, res.DurationPresent)
+	}
 }
 
 func openCodeNightTestConfig(bin string) *Config {

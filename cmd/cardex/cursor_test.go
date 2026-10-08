@@ -81,6 +81,10 @@ func TestParseCursorJSONLRequiresSemanticCompletion(t *testing.T) {
 		res.Usage.CacheReadInputTokens != 3 || res.Usage.CacheCreationInputTokens != 2 {
 		t.Fatalf("unexpected cursor usage: %+v", res.Usage)
 	}
+	if res.UsageFields.InputTokens == nil || *res.UsageFields.InputTokens != 10 ||
+		res.UsageFields.ReasoningTokens != nil || res.UsageFields.TotalTokens != nil || !res.DurationPresent {
+		t.Fatalf("cursor presence: fields=%+v dur=%v", res.UsageFields, res.DurationPresent)
+	}
 }
 
 func TestParseCursorJSONLCountsToolResultInUserEnvelope(t *testing.T) {

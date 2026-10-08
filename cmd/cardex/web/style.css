@@ -408,6 +408,11 @@ button { font: inherit; color: inherit; }
   border-color: color-mix(in oklab, var(--s3) 36%, transparent);
   background: color-mix(in oklab, var(--s3) 8%, var(--surface));
 }
+.meta-chip.is-wait {
+  color: color-mix(in oklab, var(--st-serious) 82%, var(--ink));
+  border-color: color-mix(in oklab, var(--st-serious) 40%, transparent);
+  background: color-mix(in oklab, var(--st-serious) 12%, var(--surface));
+}
 
 /* ---------- 6. 卡片 ---------- */
 .card {

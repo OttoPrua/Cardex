@@ -456,7 +456,7 @@ func (s *boardServer) handleProject(w http.ResponseWriter, r *http.Request) {
 	applyArchiveState([]*Project{&pc}, snap.projTasks, arc)
 	resp := ProjectResp{
 		Project:        &pc,
-		Columns:        s.buildColumns(snap.Cfg, snap.kindOf, pace, tasks, tasks, now, false),
+		Columns:        s.buildColumns(snap.Cfg, snap.kindOf, pace, tasks, tasks, now, false, snap.byID),
 		PhaseLanes:     s.buildLanes(snap, proj, pace, tasks, now),
 		RecentActivity: buildActivity(s.root, tasks),
 	}
@@ -473,7 +473,7 @@ func (s *boardServer) handleProject(w http.ResponseWriter, r *http.Request) {
 // lite=true 时省掉 prompt 摘录与工具清单——泳道与总列展示的是同一批卡，
 // 重字段发两遍是纯粹的浪费（实测单次响应 2.5MB，泳道占七成）。
 func (s *boardServer) buildColumns(cfg *Config, kindOf map[string]kindMark, pace *paceModel,
-	tasks, siblings []*Task, now time.Time, lite bool) []BoardColumn {
+	tasks, siblings []*Task, now time.Time, lite bool, byID map[string]*Task) []BoardColumn {
 
 	byStatus := map[string][]*Task{}
 	for _, t := range tasks {
@@ -488,7 +488,7 @@ func (s *boardServer) buildColumns(cfg *Config, kindOf map[string]kindMark, pace
 			ts, col.Truncated = ts[:doneColumnCap], true
 		}
 		for _, t := range ts {
-			col.Tasks = append(col.Tasks, toDetail(cfg, kindOf[t.ID], t, pace, siblings, now, lite))
+			col.Tasks = append(col.Tasks, toDetail(cfg, kindOf[t.ID], t, pace, siblings, now, lite, byID))
 		}
 		cols = append(cols, col)
 	}
@@ -508,7 +508,7 @@ func (s *boardServer) buildLanes(snap *boardSnapshot, proj *Project, pace *paceM
 	for _, ph := range proj.Phases {
 		lanes = append(lanes, PhaseLane{
 			Phase:   ph,
-			Columns: s.buildColumns(snap.Cfg, snap.kindOf, pace, byPhase[ph.Name], tasks, now, true),
+			Columns: s.buildColumns(snap.Cfg, snap.kindOf, pace, byPhase[ph.Name], tasks, now, true, snap.byID),
 		})
 	}
 	return lanes
@@ -518,11 +518,12 @@ func (s *boardServer) buildLanes(snap *boardSnapshot, proj *Project, pace *paceM
 const promptExcerptLen = 600
 
 func toDetail(cfg *Config, km kindMark, t *Task, pace *paceModel, siblings []*Task,
-	now time.Time, lite bool) TaskDetail {
+	now time.Time, lite bool, byID map[string]*Task) TaskDetail {
 
 	br := toBrief(cfg, t, now)
 	br.ETA = pace.estimateTask(t, siblings, now)
 	br.applyKind(km)
+	attachDependencyWaits(&br, t, byID)
 	d := TaskDetail{
 		TaskBrief:    br,
 		Dir:          t.Dir,

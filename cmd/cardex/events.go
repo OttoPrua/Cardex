@@ -600,8 +600,9 @@ const costUnavailNoUsage = "no_usage_recorded"
 // 才有东西可如实分列（templates/retro.md）。静默缺字段是本功能定义的最坏失败模式——它让不完整的
 // 统计看起来完整，与事件账本"缺口显式披露、绝不靠反推伪造完整历史"的第一性纪律直接冲突。
 //
-// 【口径】取 Task.CostUSD/TurnsUsed，即**该卡累计至今**的用量（跨限额中断续跑仍累加在卡面上），
-// 不是本次派发单步的用量。终态事件问的是"这张卡一共花了多少"，累计值才是那个答案。
+// 【口径】优先取 RawUsage 里已证明在场的累计值（显式 0 仍为已知）；否则回落 Task.CostUSD/TurnsUsed。
+// 遗留卡无 RawUsage 且账面仍为 0 时走 cost_unavailable（unknown），与已知零区分。
+// 累计是该卡至今的用量（跨限额中断续跑仍累加在卡面上），不是本次派发单步的用量。
 //
 // 【覆盖面：全称声称已挂靶】本包**每一个** emitTaskEvent 的终态事件（evDone/evFailed/evCanceled/
 // evHeld）调用点，其 detail 实参都必须是 withCostTelemetry(...) 的返回值。这条声称由
@@ -618,9 +619,22 @@ func withCostTelemetry(detail map[string]any, t *Task) map[string]any {
 		detail[evDetailCostUnavailReason] = costUnavailNoUsage
 		return detail
 	}
-	if t.TurnsUsed > 0 || t.CostUSD > 0 {
+	projectRawUsageIntoDetail(detail, t)
+	costKnown, cost := knownTaskCost(t)
+	turnsKnown, turns := knownTaskTurns(t)
+	if costKnown {
+		detail[evDetailCostTotal] = cost
+	} else if t.CostUSD > 0 {
 		detail[evDetailCostTotal] = t.CostUSD
+		costKnown = true
+	}
+	if turnsKnown {
+		detail[evDetailTurnsTotal] = turns
+	} else if t.TurnsUsed > 0 {
 		detail[evDetailTurnsTotal] = t.TurnsUsed
+		turnsKnown = true
+	}
+	if costKnown || turnsKnown {
 		return detail
 	}
 	detail[evDetailCostUnavailable] = true

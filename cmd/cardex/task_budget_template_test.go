@@ -19,6 +19,8 @@ func TestManagementTemplatesBudgetReviewByRisk(t *testing.T) {
 				"低风险",
 				"复审预算",
 				`"review_after":false`,
+				`"route_class":"general"`,
+				`"risk_class":"ordinary"`,
 			},
 		},
 		{
@@ -28,6 +30,8 @@ func TestManagementTemplatesBudgetReviewByRisk(t *testing.T) {
 				"未启用功能的理论加固不得抢占当前 MVP",
 				"步数默认 1~3 步",
 				`"review_after":false`,
+				`"route_class":"general"`,
+				`"risk_class":"ordinary"`,
 			},
 		},
 	}

@@ -166,6 +166,10 @@ type TaskBrief struct {
 	KindSource  string       `json:"kind_source"`
 	WriteDomain *WriteDomain `json:"write_domain,omitempty"`
 	DependsOn   []string     `json:"depends_on,omitempty"`
+	// WaitingOn projects current DAG blockers onto the existing board consumer:
+	// who (predecessor id) and why ∈ {running, held, failed, unknown, missing}.
+	// Empty after predecessors recover. Display only; it never skips or cancels.
+	WaitingOn []DependencyWait `json:"waiting_on,omitempty"`
 }
 
 // TaskDetail 是 TaskBrief 加上单项目页才需要的重字段（prompt 摘录等）。
@@ -1467,6 +1471,24 @@ func (b *TaskBrief) applyKind(m kindMark) {
 
 func round1(f float64) float64 { return float64(int64(f*10+0.5)) / 10 }
 
+// attachDependencyWaits projects current DAG blockers onto existing board
+// fields (waiting_on + blocked_reason for queued dependents). Held/failed
+// blocked_reason stays the existing human reason; this never writes queue
+// events or changes task status.
+func attachDependencyWaits(br *TaskBrief, t *Task, byID map[string]*Task) {
+	if br == nil || t == nil {
+		return
+	}
+	waits := TaskDependencyWaits(t, byID)
+	if len(waits) == 0 {
+		return
+	}
+	br.WaitingOn = waits
+	if br.BlockedReason == "" && (t.Status == statusQueued || t.Status == statusLimitPaused) {
+		br.BlockedReason = formatDependencyWaitReason(waits)
+	}
+}
+
 // ---- 看板覆盖文件（board.json）----
 
 // boardOverride 是可选的人工文案覆盖：<root>/board.json。
@@ -1824,7 +1846,7 @@ func buildProject(cfg *Config, ov *boardOverride, id, name string, dirs []string
 	// 阶段。siblings 一律传项目全集 ts：调度器没有阶段概念，
 	// 阶段内排位没有调度意义，传阶段切片会让同一张卡在同一个响应里出现两个 finish_at。
 	for phName, pts := range phaseTasks {
-		ph := buildPhase(cfg, id, phName, pts, ts, now, pace, kindOf)
+		ph := buildPhase(cfg, id, phName, pts, ts, now, pace, kindOf, byID)
 		if o, ok := ov.Projects[id]; ok {
 			if d, ok2 := o.Phases[phName]; ok2 && d != "" {
 				ph.Desc, ph.DescSource = d, "override"
@@ -1913,7 +1935,7 @@ func phaseSettled(status string) bool { return status == "done" || status == "ca
 // projTasks 是**整个项目**的卡，专门用于单卡排位——阶段只是展示分组，
 // 调度器不认阶段，用阶段切片算排位会得出一个与调度现实无关的名次。
 func buildPhase(cfg *Config, projID, name string, ts, projTasks []*Task, now time.Time,
-	pace *paceModel, kindOf map[string]kindMark) Phase {
+	pace *paceModel, kindOf map[string]kindMark, byID map[string]*Task) Phase {
 
 	ph := Phase{
 		ID:         projID + "/" + name,
@@ -1953,6 +1975,7 @@ func buildPhase(cfg *Config, projID, name string, ts, projTasks []*Task, now tim
 		br := toBrief(cfg, t, now)
 		br.ETA = pace.estimateTask(t, projTasks, now)
 		br.applyKind(kindOf[t.ID])
+		attachDependencyWaits(&br, t, byID)
 		ph.Tasks = append(ph.Tasks, br)
 	}
 	ph.Desc = derivedPhaseDesc(&ph)

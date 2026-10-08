@@ -484,6 +484,10 @@ func TestParseGrokBuildStreamingJSON(t *testing.T) {
 		res.Usage.CacheCreationInputTokens != 2 || res.Usage.OutputTokens != 4 {
 		t.Fatalf("unexpected Grok usage: %+v", res.Usage)
 	}
+	if res.UsageFields.InputTokens == nil || *res.UsageFields.InputTokens != 10 ||
+		res.UsageFields.ReasoningTokens != nil || !res.CostPresent || !res.DurationPresent || !res.TurnsPresent {
+		t.Fatalf("grok presence: fields=%+v cost=%v dur=%v turns=%v", res.UsageFields, res.CostPresent, res.DurationPresent, res.TurnsPresent)
+	}
 }
 
 func grokBuildArgIndex(argv []string, flag string) int {

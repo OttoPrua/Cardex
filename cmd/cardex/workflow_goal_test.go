@@ -641,6 +641,236 @@ func TestGoalSyncIdempotentAndRejectsStaleIdentities(t *testing.T) {
 	}
 }
 
+func TestNativeGoalUsageSyncIdempotentDeltaAndFollowup(t *testing.T) {
+	t.Parallel()
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	goalID := "goal-usage-high-water"
+	launchExitedManualGoal(t, root, cfg, wf, tk, goalID)
+	sessionID := tk.SessionID
+	grokHome := t.TempDir()
+	writeGrokGoalFixture(t, grokHome, dir, sessionID, goalID, "complete", grokNativeGoalStateFile{
+		Phase:                 "Idle",
+		LastClassifierVerdict: "achieved",
+		TotalVerifyRounds:     0,
+		History:               []grokGoalEvent{{Event: "goal_completed"}},
+		TokensUsedHighWater:   json.RawMessage("1000"),
+		ElapsedMS:             json.RawMessage("8000"),
+	})
+	req := GoalSyncRequest{
+		ExpectedRevision: tk.Revision, ExpectedSession: sessionID, ExpectedGoalID: goalID,
+		ExpectedAttempt: tk.Goal.BoundAttemptID, GrokHome: grokHome, GrokCWD: dir,
+	}
+	got, err := syncWorkflowGoal(root, cfg, wf, req)
+	if err != nil {
+		t.Fatalf("complete sync: %v", err)
+	}
+	if got.Status != statusDone {
+		t.Fatalf("usage must not be a completion gate; status=%s note=%s", got.Status, got.Goal.ObservationNote)
+	}
+	if got.RawUsage == nil || got.RawUsage.Accumulated.TotalTokens == nil || *got.RawUsage.Accumulated.TotalTokens != 1000 {
+		t.Fatalf("high-water not stored: %+v", got.RawUsage)
+	}
+	if got.RawUsage.BoundWindow != usageWindowNativeGoalComplete {
+		t.Fatalf("window=%s", got.RawUsage.BoundWindow)
+	}
+	if got.RawUsage.Duration == nil || got.RawUsage.Duration.ElapsedMS == nil || *got.RawUsage.Duration.ElapsedMS != 8000 {
+		t.Fatalf("elapsed_ms: %+v", got.RawUsage.Duration)
+	}
+	if got.RawUsage.Accumulated.InputTokens != nil {
+		t.Fatalf("must not invent input split from high-water: %+v", got.RawUsage.Accumulated)
+	}
+
+	req.ExpectedRevision = got.Revision
+	again, err := syncWorkflowGoal(root, cfg, wf, req)
+	if err != nil {
+		t.Fatalf("duplicate sync: %v", err)
+	}
+	if again.RawUsage == nil || again.RawUsage.Accumulated.TotalTokens == nil || *again.RawUsage.Accumulated.TotalTokens != 1000 {
+		t.Fatalf("duplicate sync double-counted: %+v", again.RawUsage)
+	}
+
+	writeGrokGoalFixture(t, grokHome, dir, sessionID, goalID, "complete", grokNativeGoalStateFile{
+		Phase:                 "Idle",
+		LastClassifierVerdict: "achieved",
+		TotalVerifyRounds:     0,
+		History:               []grokGoalEvent{{Event: "goal_completed"}},
+		TokensUsedHighWater:   json.RawMessage("1100"),
+		ElapsedMS:             json.RawMessage("8000"),
+	})
+	req.ExpectedRevision = again.Revision
+	follow, err := syncWorkflowGoal(root, cfg, wf, req)
+	if err != nil {
+		t.Fatalf("followup sync: %v", err)
+	}
+	if follow.Status != statusDone {
+		t.Fatalf("followup must not reopen completion: %s", follow.Status)
+	}
+	if follow.RawUsage.BoundWindow != usageWindowNativePostCompleteFollowup {
+		t.Fatalf("followup window=%s", follow.RawUsage.BoundWindow)
+	}
+	if follow.RawUsage.Accumulated.TotalTokens == nil || *follow.RawUsage.Accumulated.TotalTokens != 1100 {
+		t.Fatalf("followup should add true delta only: %+v", follow.RawUsage.Accumulated)
+	}
+	if follow.RawUsage.Duration == nil || follow.RawUsage.Duration.ElapsedMS == nil || *follow.RawUsage.Duration.ElapsedMS != 8000 {
+		t.Fatalf("frozen elapsed_ms not preserved: %+v", follow.RawUsage.Duration)
+	}
+
+	foreign := req
+	foreign.ExpectedGoalID = "goal-other"
+	if _, err := syncWorkflowGoal(root, cfg, wf, foreign); !errors.Is(err, errGoalSyncRejected) {
+		t.Fatalf("foreign goal must reject: %v", err)
+	}
+
+	var showBuf strings.Builder
+	if err := encodeWorkflowShow(&showBuf, root, wf); err != nil {
+		t.Fatalf("workflow show: %v", err)
+	}
+	if !strings.Contains(showBuf.String(), `"raw_usage"`) || !strings.Contains(showBuf.String(), "native_post_complete_followup") {
+		t.Fatalf("workflow show missing raw_usage projection:\n%s", showBuf.String())
+	}
+}
+
+func TestNativeGoalUsageElapsedOnlyAndKnownZeroPersistOnDisk(t *testing.T) {
+	t.Parallel()
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	goalID := "goal-usage-elapsed-persist"
+	launchExitedManualGoal(t, root, cfg, wf, tk, goalID)
+	sessionID := tk.SessionID
+	grokHome := t.TempDir()
+	writeGrokGoalFixture(t, grokHome, dir, sessionID, goalID, "complete", grokNativeGoalStateFile{
+		Phase:                 "Idle",
+		LastClassifierVerdict: "achieved",
+		TotalVerifyRounds:     0,
+		History:               []grokGoalEvent{{Event: "goal_completed"}},
+		TokensUsedHighWater:   json.RawMessage("400"),
+		ElapsedMS:             json.RawMessage("1000"),
+	})
+	req := GoalSyncRequest{
+		ExpectedRevision: tk.Revision, ExpectedSession: sessionID, ExpectedGoalID: goalID,
+		ExpectedAttempt: tk.Goal.BoundAttemptID, GrokHome: grokHome, GrokCWD: dir,
+	}
+	got, err := syncWorkflowGoal(root, cfg, wf, req)
+	if err != nil {
+		t.Fatalf("complete sync: %v", err)
+	}
+	if got.Status != statusDone {
+		t.Fatalf("status=%s note=%s", got.Status, got.Goal.ObservationNote)
+	}
+	writeGrokGoalFixture(t, grokHome, dir, sessionID, goalID, "complete", grokNativeGoalStateFile{
+		Phase:                 "Idle",
+		LastClassifierVerdict: "achieved",
+		TotalVerifyRounds:     0,
+		History:               []grokGoalEvent{{Event: "goal_completed"}},
+		TokensUsedHighWater:   json.RawMessage("400"),
+		ElapsedMS:             json.RawMessage("2500"),
+	})
+	req.ExpectedRevision = got.Revision
+	if _, err := syncWorkflowGoal(root, cfg, wf, req); err != nil {
+		t.Fatalf("elapsed-only sync: %v", err)
+	}
+	loaded, err := findTaskAnywhere(root, got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.RawUsage == nil || loaded.RawUsage.BoundWindow != usageWindowNativeGoalComplete {
+		t.Fatalf("window on disk=%v", loaded.RawUsage)
+	}
+	if loaded.RawUsage.LastAppliedElapsed == nil || *loaded.RawUsage.LastAppliedElapsed != 2500 {
+		t.Fatalf("elapsed-only did not persist: %+v", loaded.RawUsage)
+	}
+	if loaded.RawUsage.Accumulated.TotalTokens == nil || *loaded.RawUsage.Accumulated.TotalTokens != 400 {
+		t.Fatalf("high-water changed on elapsed-only: %+v", loaded.RawUsage.Accumulated)
+	}
+
+	zeroRoot, zeroDir := workflowTestRoot(t)
+	zeroCfg := workflowTestCfg(t, zeroRoot)
+	zeroWf := initTestWorkflow(t, zeroRoot, zeroDir)
+	zeroTk := admitManualWriter(t, zeroRoot, zeroCfg, zeroWf)
+	zeroGoal := "goal-usage-known-zero"
+	launchExitedManualGoal(t, zeroRoot, zeroCfg, zeroWf, zeroTk, zeroGoal)
+	zeroHome := t.TempDir()
+	writeGrokGoalFixture(t, zeroHome, zeroDir, zeroTk.SessionID, zeroGoal, "complete", grokNativeGoalStateFile{
+		Phase:                 "Idle",
+		LastClassifierVerdict: "achieved",
+		TotalVerifyRounds:     0,
+		History:               []grokGoalEvent{{Event: "goal_completed"}},
+		ElapsedMS:             json.RawMessage("800"),
+	})
+	zeroReq := GoalSyncRequest{
+		ExpectedRevision: zeroTk.Revision, ExpectedSession: zeroTk.SessionID, ExpectedGoalID: zeroGoal,
+		ExpectedAttempt: zeroTk.Goal.BoundAttemptID, GrokHome: zeroHome, GrokCWD: zeroDir,
+	}
+	firstZero, err := syncWorkflowGoal(zeroRoot, zeroCfg, zeroWf, zeroReq)
+	if err != nil {
+		t.Fatalf("complete without high-water: %v", err)
+	}
+	writeGrokGoalFixture(t, zeroHome, zeroDir, zeroTk.SessionID, zeroGoal, "complete", grokNativeGoalStateFile{
+		Phase:                 "Idle",
+		LastClassifierVerdict: "achieved",
+		TotalVerifyRounds:     0,
+		History:               []grokGoalEvent{{Event: "goal_completed"}},
+		TokensUsedHighWater:   json.RawMessage("0"),
+		ElapsedMS:             json.RawMessage("800"),
+	})
+	zeroReq.ExpectedRevision = firstZero.Revision
+	if _, err := syncWorkflowGoal(zeroRoot, zeroCfg, zeroWf, zeroReq); err != nil {
+		t.Fatalf("known-zero high-water sync: %v", err)
+	}
+	zeroLoaded, err := findTaskAnywhere(zeroRoot, firstZero.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zeroLoaded.RawUsage == nil || zeroLoaded.RawUsage.LastApplied.TotalTokens == nil || *zeroLoaded.RawUsage.LastApplied.TotalTokens != 0 {
+		t.Fatalf("known-zero high-water did not persist: %+v", zeroLoaded.RawUsage)
+	}
+}
+
+func TestNativeGoalInvalidTelemetryDoesNotBlockComplete(t *testing.T) {
+	t.Parallel()
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	goalID := "goal-invalid-metrics"
+	launchExitedManualGoal(t, root, cfg, wf, tk, goalID)
+	sessionID := tk.SessionID
+	grokHome := t.TempDir()
+	writeGrokGoalFixture(t, grokHome, dir, sessionID, goalID, "complete", grokNativeGoalStateFile{
+		Phase:                 "Idle",
+		LastClassifierVerdict: "achieved",
+		TotalVerifyRounds:     0,
+		History:               []grokGoalEvent{{Event: "goal_completed"}},
+		TokensUsedHighWater:   json.RawMessage("-1"),
+		ElapsedMS:             json.RawMessage("-5"),
+	})
+	got, err := syncWorkflowGoal(root, cfg, wf, GoalSyncRequest{
+		ExpectedRevision: tk.Revision, ExpectedSession: sessionID, ExpectedGoalID: goalID,
+		ExpectedAttempt: tk.Goal.BoundAttemptID, GrokHome: grokHome, GrokCWD: dir,
+	})
+	if err != nil {
+		t.Fatalf("invalid telemetry sync: %v", err)
+	}
+	if got.Status != statusDone {
+		t.Fatalf("invalid high-water/elapsed must not block complete: status=%s note=%s", got.Status, got.Goal.ObservationNote)
+	}
+	loaded, err := findTaskAnywhere(root, got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.RawUsage != nil && loaded.RawUsage.Accumulated.TotalTokens != nil {
+		t.Fatalf("negative high-water must stay unavailable: %+v", loaded.RawUsage.Accumulated)
+	}
+	if loaded.RawUsage != nil && loaded.RawUsage.LastAppliedElapsed != nil {
+		t.Fatalf("negative elapsed must stay unavailable: %+v", loaded.RawUsage)
+	}
+}
+
 func TestD3GenuineAchievedZeroRoundsAcceptedWithAttempt(t *testing.T) {
 	t.Parallel()
 	root, dir := workflowTestRoot(t)
@@ -2060,6 +2290,188 @@ func TestD3EmptySummaryCwdRejected(t *testing.T) {
 	})
 	if err == nil && got != nil && got.Status == statusDone {
 		t.Fatal("empty summary cwd must not be accepted complete")
+	}
+}
+
+func overwriteGoalSummaryCWD(t *testing.T, grokHome, lookupCwd, sessionID, observedCWD string) {
+	t.Helper()
+	sum, err := json.Marshal(grokSessionSummaryFile{Info: grokSessionSummaryInfo{ID: sessionID, CWD: observedCWD}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(grokGoalSessionDir(grokHome, lookupCwd, sessionID), "summary.json"), append(sum, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGoalSyncSameFilesystemAliasCwdAccepted(t *testing.T) {
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	goalID := "goal-samefile"
+	launchExitedManualGoal(t, root, cfg, wf, tk, goalID)
+	storedDir := tk.Dir
+	alias := filepath.Join(filepath.Dir(dir), "alias-"+filepath.Base(dir))
+	if err := os.Symlink(dir, alias); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	writeGrokGoalFixture(t, home, dir, tk.SessionID, goalID, "complete", grokNativeGoalStateFile{
+		Phase: "Idle", LastClassifierVerdict: "achieved", TotalVerifyRounds: 0,
+	})
+	overwriteGoalSummaryCWD(t, home, dir, tk.SessionID, alias)
+	tk.Goal.GrokHome = home
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	tk, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := GoalSyncRequest{
+		ExpectedRevision: tk.Revision, ExpectedSession: tk.SessionID, ExpectedGoalID: goalID,
+		ExpectedAttempt: tk.Goal.BoundAttemptID, GrokHome: home, GrokCWD: dir,
+	}
+	got, err := syncWorkflowGoal(root, cfg, wf, req)
+	if err != nil {
+		t.Fatalf("symlink alias cwd: %v", err)
+	}
+	if got.Status != statusDone || got.Goal.Observation != goalObsDone {
+		t.Fatalf("same-file alias must accept complete: status=%s obs=%s note=%s",
+			got.Status, got.Goal.Observation, got.Goal.ObservationNote)
+	}
+	if got.Dir != storedDir {
+		t.Fatalf("stored dir rewritten: got %q want %q", got.Dir, storedDir)
+	}
+
+	if variant, ok := caseVariantExisting(dir); ok && variant != dir {
+		home2 := t.TempDir()
+		writeGrokGoalFixture(t, home2, dir, tk.SessionID, goalID, "complete", grokNativeGoalStateFile{
+			Phase: "Idle", LastClassifierVerdict: "achieved", TotalVerifyRounds: 0,
+		})
+		overwriteGoalSummaryCWD(t, home2, dir, tk.SessionID, variant)
+		fresh, err := loadTask(root, tk.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.GrokHome = home2
+		req.ExpectedRevision = fresh.Revision
+		got, err = syncWorkflowGoal(root, cfg, wf, req)
+		if err != nil {
+			t.Fatalf("case-variant cwd: %v", err)
+		}
+		if got.Status != statusDone {
+			t.Fatalf("case-variant samefile must accept: status=%s note=%s", got.Status, got.Goal.ObservationNote)
+		}
+		if got.Dir != storedDir {
+			t.Fatalf("case-variant rewrote stored dir: %q", got.Dir)
+		}
+	}
+}
+
+func TestGoalSyncMissingOtherAndForeignIdentitiesRejected(t *testing.T) {
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	goalID := "goal-foreign-cwd"
+	launchExitedManualGoal(t, root, cfg, wf, tk, goalID)
+	stored := tk.Dir
+	home := t.TempDir()
+	writeGrokGoalFixture(t, home, dir, tk.SessionID, goalID, "complete", grokNativeGoalStateFile{
+		Phase: "Idle", LastClassifierVerdict: "achieved",
+	})
+	req := GoalSyncRequest{
+		ExpectedRevision: tk.Revision, ExpectedSession: tk.SessionID, ExpectedGoalID: goalID,
+		ExpectedAttempt: tk.Goal.BoundAttemptID, GrokHome: home, GrokCWD: dir,
+	}
+
+	overwriteGoalSummaryCWD(t, home, dir, tk.SessionID, filepath.Join(t.TempDir(), "missing-cwd"))
+	if _, err := syncWorkflowGoal(root, cfg, wf, req); err == nil || !errors.Is(err, errGoalSyncRejected) {
+		t.Fatalf("missing cwd must reject: %v", err)
+	}
+	fresh, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Dir != stored {
+		t.Fatalf("missing cwd mutated stored dir")
+	}
+
+	other := t.TempDir()
+	overwriteGoalSummaryCWD(t, home, dir, tk.SessionID, other)
+	if _, err := syncWorkflowGoal(root, cfg, wf, req); err == nil || !errors.Is(err, errGoalSyncRejected) {
+		t.Fatalf("other directory must reject: %v", err)
+	}
+
+	overwriteGoalSummaryCWD(t, home, dir, tk.SessionID, dir)
+	otherSess := req
+	otherSess.ExpectedSession = "cccccccc-bbbb-4ccc-8ddd-ffffffffffff"
+	if _, err := syncWorkflowGoal(root, cfg, wf, otherSess); !errors.Is(err, errGoalSyncRejected) {
+		t.Fatalf("other session must reject: %v", err)
+	}
+	otherGoal := req
+	otherGoal.ExpectedGoalID = "goal-other"
+	if _, err := syncWorkflowGoal(root, cfg, wf, otherGoal); !errors.Is(err, errGoalSyncRejected) {
+		t.Fatalf("other goal must reject: %v", err)
+	}
+	oldAtt := req
+	oldAtt.ExpectedAttempt = "att-old"
+	if _, err := syncWorkflowGoal(root, cfg, wf, oldAtt); !errors.Is(err, errGoalSyncRejected) {
+		t.Fatalf("old attempt must reject: %v", err)
+	}
+	fresh, err = loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Dir != stored {
+		t.Fatalf("foreign identity mutated stored dir: %q", fresh.Dir)
+	}
+}
+
+func TestGoalSyncCLISameObjectCwdTwice(t *testing.T) {
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	goalID := "goal-cli-samefile"
+	launchExitedManualGoal(t, root, cfg, wf, tk, goalID)
+	alias := filepath.Join(filepath.Dir(dir), "cli-alias-"+filepath.Base(dir))
+	if err := os.Symlink(dir, alias); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	writeGrokGoalFixture(t, home, dir, tk.SessionID, goalID, "complete", grokNativeGoalStateFile{
+		Phase: "Idle", LastClassifierVerdict: "achieved", TotalVerifyRounds: 0,
+	})
+	overwriteGoalSummaryCWD(t, home, dir, tk.SessionID, alias)
+	tk.Goal.GrokHome = home
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	run := func() string {
+		t.Helper()
+		out, err := captureGoalSyncCLI(t, root, wf.ID)
+		if err != nil {
+			t.Fatalf("goal-sync CLI: %v\n%s", err, out)
+		}
+		if !strings.Contains(out, "status=done") {
+			t.Fatalf("CLI same-object cwd must print done, got %q", out)
+		}
+		return out
+	}
+	first := run()
+	second := run()
+	if !strings.Contains(first, "status=done") || !strings.Contains(second, "status=done") {
+		t.Fatalf("repeat CLI: first=%q second=%q", first, second)
+	}
+	got, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Dir != dir {
+		t.Fatalf("CLI rewrote stored dir: %q", got.Dir)
 	}
 }
 

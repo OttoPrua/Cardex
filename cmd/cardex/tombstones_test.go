@@ -1477,7 +1477,7 @@ func TestReconcileSkippedHeldEmitsBeforeSave(t *testing.T) {
 	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
-	a := newTask(root, cfg, typeCrossCheck, "R3 P1-1 held emit-first", "/tmp", []string{"p"}, 5)
+	a := newTask(root, cfg, typeCrossCheck, "R3 P1-1 held emit-first", t.TempDir(), []string{"p"}, 5)
 	a.XRole = "A"
 	a.XKey = "xkey-r3-held-1"
 	a.Status = statusDone
@@ -1557,7 +1557,7 @@ func TestReconcileHeldDedupesOnPersistentSaveFailure(t *testing.T) {
 	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
-	a := newTask(root, cfg, typeCrossCheck, "CG-R1 held dedupe", "/tmp", []string{"p"}, 5)
+	a := newTask(root, cfg, typeCrossCheck, "CG-R1 held dedupe", t.TempDir(), []string{"p"}, 5)
 	a.XRole = "A"
 	a.XKey = "xkey-cgr1-held-dedupe"
 	a.Status = statusDone
@@ -1635,7 +1635,7 @@ func TestReconcileFailedEmitsBeforeSave(t *testing.T) {
 	t.Parallel()
 	root := testRoot(t)
 	cfg := testCfg()
-	a := newTask(root, cfg, typeCrossCheck, "R3 P1-1 failed emit-first", "/tmp", []string{"p"}, 5)
+	a := newTask(root, cfg, typeCrossCheck, "R3 P1-1 failed emit-first", t.TempDir(), []string{"p"}, 5)
 	a.XRole = "A"
 	a.XKey = "xkey-r3-fail-1"
 	a.Status = statusDone

@@ -304,6 +304,9 @@ type Task struct {
 	LastError string  `json:"last_error,omitempty"`
 	TurnsUsed int     `json:"turns_used,omitempty"`
 	CostUSD   float64 `json:"cost_usd,omitempty"`
+	// RawUsage is provider-observed raw usage/duration with per-field known vs
+	// missing. Omitted on legacy cards (unknown). Explicit zero is stored as 0.
+	RawUsage *taskRawUsage `json:"raw_usage,omitempty"`
 	// LastSummary 是最近一步执行输出的一行摘要，供 list 看板展示“最新进度概述”。
 	LastSummary string `json:"last_summary,omitempty"`
 
@@ -342,9 +345,15 @@ type Task struct {
 	// policy does not turn an ordinary add into a native Goal.
 	DispatchDecision *DispatchDecision `json:"dispatch_decision,omitempty"`
 
-	// Verify is the card's explicit acceptance command (sh -c in Dir). Harvest runs it after the
-	// provider process has exited; empty means the outcome is judged from the worktree alone.
+	// Verify is the card's explicit acceptance command. Harvest runs it after the
+	// provider process has exited when the worktree has output; empty means the
+	// outcome is judged from the worktree alone. Opt-in VerifyOnSuccess also runs
+	// it on the provider-success tail (including unmodified worktrees) via the
+	// completion-verify executor, which selects the local shell by OS.
 	Verify string `json:"verify,omitempty"`
+	// VerifyOnSuccess is the explicit new-card opt-in for completion-verify.
+	// Old and in-flight cards omit it and keep harvest-only verification.
+	VerifyOnSuccess bool `json:"verify_on_success,omitempty"`
 	// Req links the card to a shared-requirements item (req_<16 hex>); Manager names the
 	// management profile that owns follow-up (e.g. "yvonne"). Both are routing-neutral metadata.
 	Req     string `json:"req,omitempty"`

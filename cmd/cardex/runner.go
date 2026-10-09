@@ -33,6 +33,12 @@ type claudeResult struct {
 	TotalCostUSD float64    `json:"total_cost_usd"`
 	DurationMS   int64      `json:"duration_ms"`
 	Usage        *usageInfo `json:"usage"`
+	// Per-field presence for attributable raw usage. json:"-" keeps them off the wire.
+	UsageFields     usageFieldSet `json:"-"`
+	CostPresent     bool          `json:"-"`
+	TurnsPresent    bool          `json:"-"`
+	DurationPresent bool          `json:"-"`
+	UsageSource     string        `json:"-"`
 	// Policy fallback observations are populated by streaming parsers. They are internal proof
 	// signals, not provider wire fields: a serial next leg is legal only when the parser completely
 	// observed the stream and saw zero semantic/model and zero tool events.
@@ -712,8 +718,10 @@ func codexEligible(t *Task) bool {
 }
 
 func parseClaudeJSON(out string) *claudeResult {
+	trimmed := strings.TrimSpace(out)
 	var res claudeResult
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &res); err == nil && res.Type != "" {
+	if err := json.Unmarshal([]byte(trimmed), &res); err == nil && res.Type != "" {
+		annotateResultPresenceFromJSON(&res, []byte(trimmed), usageSrcClaudeResult)
 		return &res
 	}
 	// 输出前可能混入了非 JSON 行，逐行找 result 对象
@@ -724,6 +732,7 @@ func parseClaudeJSON(out string) *claudeResult {
 		}
 		var r claudeResult
 		if err := json.Unmarshal([]byte(line), &r); err == nil && r.Type == "result" {
+			annotateResultPresenceFromJSON(&r, []byte(line), usageSrcClaudeResult)
 			return &r
 		}
 	}
@@ -1714,11 +1723,17 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 					return holdNativeContractEvidence(root, t, via, reason)
 				}
 			}
+			if err := applyCompletionVerify(ctx, root, cfg, t, lg); err != nil {
+				return err
+			}
+			if t.Status == statusHeld {
+				return nil
+			}
 			t.Status = statusDone
 			t.touch()
 			// 无 prompt 可跑的空转 done(如 retry 后 Step 已越界的兜底路径):也是"终态"必须留事件。
 			if err := persistTaskEvent(root, t, evDone, "runner", statusDone, t.Step,
-				withCostTelemetry(map[string]any{"reason": "no_more_prompts"}, t)); err != nil {
+				withCostTelemetry(mergeCompletionVerifyDetail(map[string]any{"reason": "no_more_prompts"}, t), t)); err != nil {
 				return finishIfStopped(err)
 			}
 			noteTaskDoneLogged(root, cfg, t, lg) // 复盘计数器:两条 done 出口都要记,漏一条 N 就永远偏小
@@ -1971,7 +1986,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		}
 		recordRouteAttemptObservation(t, res)
 		if frozenDispatchMode(t) != "" && useCodex && (res == nil || !res.ObservationComplete) {
-			if handled, herr := dispatchUnknownHarvest(root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
+			if handled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
 				if errors.Is(herr, errHarvestContinueLoop) {
 					continue
 				}
@@ -2001,7 +2016,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 				if res != nil && res.Subtype != "" {
 					kind = res.Subtype
 				}
-				if handled, herr := dispatchUnknownHarvest(root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
+				if handled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
 					if errors.Is(herr, errHarvestContinueLoop) {
 						continue
 					}
@@ -2018,7 +2033,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		// attempts stay unchanged, and the operator can act on the truthful process class.
 		if via == grokBuildRunnerName {
 			if processClass, hold := grokBuildZeroEventProcessFailure(res, runErr); hold {
-				if handled, herr := dispatchUnknownHarvest(root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
+				if handled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
 					if errors.Is(herr, errHarvestContinueLoop) {
 						continue
 					}
@@ -2060,7 +2075,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		if useGrokBuild && res != nil && res.ObservationComplete && res.Subtype == "grok_build_stream_incomplete" &&
 			res.SemanticEvents == 0 && res.ModelEvents == 0 && res.ToolEvents == 0 {
 			if kind, ok := classifyPolicyFallbackFailure(via, res, combined, runErr); !ok || kind != fallbackQuota {
-				if handled, herr := dispatchUnknownHarvest(root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
+				if handled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
 					if errors.Is(herr, errHarvestContinueLoop) {
 						continue
 					}
@@ -2077,7 +2092,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		// proved complete 0/0/0/0 metadata-only terminal remains eligible for the bounded path below.
 		if via == grokBuildRunnerName {
 			if kind, unknown := grokTerminalUnknownOutcome(res); unknown {
-				if handled, herr := dispatchUnknownHarvest(root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
+				if handled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
 					if errors.Is(herr, errHarvestContinueLoop) {
 						continue
 					}
@@ -2653,7 +2668,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 
 		// 3) 成功：推进步骤（codex/gemini/远端/引擎成功不代表 claude 限额解除，全局冷却只由
 		// claude 路径清除；引擎/gemini 成功清的是自己的 cooldown-<name>.json——账各归各）。
-		cont, err := finishProviderSuccess(root, cfg, t, via, prompt, res, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName)
+		cont, err := finishProviderSuccess(ctx, root, cfg, t, via, prompt, res, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName)
 		if err != nil {
 			return err
 		}
@@ -2665,10 +2680,12 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 }
 
 // finishProviderSuccess is the existing provider-success tail: clear the lane
-// cooldown, consult the native-done gate, advance the step, and persist
-// step_ok / done / review obligation. continueLoop is true when more prompts
-// remain. Harvest mode "on" reuses this path for a verdict of done.
-func finishProviderSuccess(root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, lg *os.File, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor bool, engineName string) (continueLoop bool, err error) {
+// cooldown, consult the native-done gate, run opted-in completion-verify,
+// advance the step, and persist step_ok / done / review obligation.
+// continueLoop is true when more prompts remain. Harvest mode "on" reuses
+// this path for a verdict of done; completion-verify is a separate opt-in
+// unit and is not whole harvest.
+func finishProviderSuccess(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, lg *os.File, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor bool, engineName string) (continueLoop bool, err error) {
 	// 3) 成功：推进步骤（codex/gemini/远端/引擎成功不代表 claude 限额解除，全局冷却只由
 	// claude 路径清除；引擎/gemini 成功清的是自己的 cooldown-<name>.json——账各归各）。
 	if !useCodex && !remote {
@@ -2700,6 +2717,7 @@ func finishProviderSuccess(root string, cfg *Config, t *Task, via, prompt string
 	t.Attempts = 0
 	t.NotBeforeEpoch = 0
 	t.MidStep = false
+	applyProviderResultUsage(root, t, res)
 	t.Step++
 	if t.FreshSteps {
 		t.SessionID = "" // 下一步全新会话
@@ -2727,6 +2745,12 @@ func finishProviderSuccess(root string, cfg *Config, t *Task, via, prompt string
 	logSection(lg, fmt.Sprintf("步骤完成  turns=%d cost=$%.4f duration=%.0fs", res.NumTurns, res.TotalCostUSD, float64(res.DurationMS)/1000))
 
 	if t.Step >= len(t.Prompts) {
+		if err := applyCompletionVerify(ctx, root, cfg, t, lg); err != nil {
+			return false, err
+		}
+		if t.Status == statusHeld {
+			return false, nil
+		}
 		plannedReviewStage := pendingRequiredReviewStage(t)
 		if t.ReviewAfter && reviewAfterEligibleType(t) && (t.SolMaxAdversarialReview || plannedReviewStage != "") {
 			// Persist the completed implementation as held/pending before the reviewer child. A crash
@@ -2798,13 +2822,13 @@ func finishProviderSuccess(root string, cfg *Config, t *Task, via, prompt string
 		}
 		t.touch()
 		// 最后一步的 step_ok 事件先记(与中间步一致语义),再据终局标 done 或交叉契约违规的 failed。
-		if err := persistTaskEvent(root, t, evStepOK, "runner", statusRunning, t.Step, withRouteAttempt(map[string]any{
+		if err := persistTaskEvent(root, t, evStepOK, "runner", statusRunning, t.Step, withRouteAttempt(mergeCompletionVerifyDetail(map[string]any{
 			"turns": res.NumTurns, "cost_usd": res.TotalCostUSD, "final_step": true,
-		}, t)); err != nil {
+		}, t), t)); err != nil {
 			return false, finishIfStopped(err)
 		}
 		if t.Status == statusDone {
-			if err := persistTaskEvent(root, t, evDone, "runner", statusDone, t.Step, withCostTelemetry(withRouteAttempt(nil, t), t)); err != nil {
+			if err := persistTaskEvent(root, t, evDone, "runner", statusDone, t.Step, withCostTelemetry(withRouteAttempt(mergeCompletionVerifyDetail(nil, t), t), t)); err != nil {
 				return false, finishIfStopped(err)
 			}
 			// 复盘计数器：只数真 done。上面交叉 C 契约违规改判 failed 的分支不该计入

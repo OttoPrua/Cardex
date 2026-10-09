@@ -198,14 +198,15 @@ type GoalSyncRequest struct {
 }
 
 type workflowGoalView struct {
-	TaskID      string `json:"task_id"`
-	Status      string `json:"status"`
-	SessionID   string `json:"session_id"`
-	GoalID      string `json:"goal_id"`
-	AttemptID   string `json:"attempt_id"`
-	Observation string `json:"observation"`
-	WriterMode  string `json:"writer_mode"`
-	Revision    int64  `json:"revision"`
+	TaskID      string        `json:"task_id"`
+	Status      string        `json:"status"`
+	SessionID   string        `json:"session_id"`
+	GoalID      string        `json:"goal_id"`
+	AttemptID   string        `json:"attempt_id"`
+	Observation string        `json:"observation"`
+	WriterMode  string        `json:"writer_mode"`
+	Revision    int64         `json:"revision"`
+	RawUsage    *taskRawUsage `json:"raw_usage,omitempty"`
 }
 
 type grokNativeGoalStateFile struct {
@@ -218,6 +219,8 @@ type grokNativeGoalStateFile struct {
 	TotalWorkerRounds     int             `json:"total_worker_rounds"`
 	PauseMessage          string          `json:"pause_message,omitempty"`
 	History               []grokGoalEvent `json:"history"`
+	TokensUsedHighWater   json.RawMessage `json:"tokens_used_high_water,omitempty"`
+	ElapsedMS             json.RawMessage `json:"elapsed_ms,omitempty"`
 }
 
 type grokGoalEvent struct {
@@ -1214,6 +1217,7 @@ func buildWorkflowShowView(root string, wf *WorkflowRecord) (writer *workflowGoa
 		SessionID: t.SessionID,
 		AttemptID: t.ActiveAttemptID,
 		Revision:  t.Revision,
+		RawUsage:  t.RawUsage,
 	}
 	if t.Goal != nil {
 		gv.GoalID = t.Goal.NativeGoalID
@@ -2562,15 +2566,34 @@ func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSync
 		applied.AcceptCanceled = false
 	}
 
+	residualActive := applied.Status == statusRunning && residualActiveHeldGoal(root, t)
+	// A stale active file without new measurements is still a strict no-op.
+	// Keep missing usage unknown; real measurements (including zero) may sync.
+	if residualActive && obs.HighWaterTokens == nil && obs.ElapsedMS == nil {
+		return t, nil
+	}
+	usageChanged := applyNativeGoalUsage(t, obs)
 	// Residual native-active after a custody-released timeout (held/unknown,
 	// no live writer) must not revive to running. Keep the existing timeout
 	// or previous-terminal note. Live producers still map to running.
-	if applied.Status == statusRunning && residualActiveHeldGoal(root, t) {
+	if residualActive {
+		if usageChanged {
+			t.touch()
+			if err := saveTask(root, t); err != nil {
+				return t, err
+			}
+		}
 		return t, nil
 	}
 
 	if t.Goal.SyncedRevision == expectedRev &&
 		t.Goal.Observation == applied.Observation && t.Status == applied.Status {
+		if usageChanged {
+			t.touch()
+			if err := saveTask(root, t); err != nil {
+				return t, err
+			}
+		}
 		return t, nil
 	}
 
@@ -2584,6 +2607,30 @@ func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSync
 	t.Goal.SyncedRevision = expectedRev
 	if t.Goal.NativeGoalID == "" && obs.GoalID != "" {
 		t.Goal.NativeGoalID = obs.GoalID
+	}
+	alreadyDone := t.Status == statusDone && applied.AcceptDone
+	alreadyFailed := t.Status == statusFailed && applied.AcceptFailed
+	if alreadyDone || alreadyFailed {
+		t.touch()
+		if usageChanged {
+			evType := evDone
+			if alreadyFailed {
+				evType = evFailed
+			}
+			if err := commitTaskTransition(root, t, transitionRequest{
+				EventType: evType, Actor: "workflow:goal-sync", Status: t.Status,
+				RequireSchedulerLock: false, UpdateTerminalAnnotations: true,
+				Detail: withCostTelemetry(map[string]any{
+					"workflow": wf.ID, "session_id": t.SessionID, "goal_id": t.Goal.NativeGoalID,
+					"reason": "native_post_complete_usage",
+				}, t),
+			}); err != nil {
+				return t, err
+			}
+		} else if err := saveTask(root, t); err != nil {
+			return t, err
+		}
+		return t, persistWorkflow(root, cfg, wf)
 	}
 	// BoundAttemptID is historical identity. ActiveAttemptID is the live writer.
 	// Copying the bound id back after custody reclaim resurrects an exited attempt.
@@ -2603,10 +2650,10 @@ func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSync
 			Actor:                "workflow:goal-sync",
 			Status:               statusDone,
 			RequireSchedulerLock: false,
-			Detail: map[string]any{
+			Detail: withCostTelemetry(map[string]any{
 				"workflow": wf.ID, "session_id": t.SessionID, "goal_id": t.Goal.NativeGoalID,
 				"attempt_id": t.Goal.BoundAttemptID, "last_classifier_verdict": obs.Classifier,
-			},
+			}, t),
 		}); err != nil {
 			return applyHeldUnknown(root, t, expectedRev, "durable done refused: "+err.Error())
 		}
@@ -2617,9 +2664,9 @@ func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSync
 			Actor:                "workflow:goal-sync",
 			Status:               statusFailed,
 			RequireSchedulerLock: false,
-			Detail: map[string]any{
+			Detail: withCostTelemetry(map[string]any{
 				"workflow": wf.ID, "session_id": t.SessionID, "goal_id": t.Goal.NativeGoalID,
-			},
+			}, t),
 		}); err != nil {
 			return applyHeldUnknown(root, t, expectedRev, "durable failed refused: "+err.Error())
 		}
@@ -2644,21 +2691,25 @@ func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSync
 }
 
 type nativeGoalObservation struct {
-	SessionID       string
-	GoalID          string
-	NativeStatus    string
-	Phase           string
-	Classifier      string
-	FinalStatus     string
-	FinalClassifier string
-	UpdatesOK       bool
-	SummaryOK       bool
-	ObservedCWD     string
-	Missing         bool
-	Contradictory   bool
-	BudgetLimited   bool
-	NotAchieved     bool
-	PauseMessage    string
+	SessionID        string
+	GoalID           string
+	NativeStatus     string
+	Phase            string
+	Classifier       string
+	FinalStatus      string
+	FinalClassifier  string
+	UpdatesOK        bool
+	SummaryOK        bool
+	ObservedCWD      string
+	Missing          bool
+	Contradictory    bool
+	BudgetLimited    bool
+	NotAchieved      bool
+	PauseMessage     string
+	HighWaterTokens  *int64
+	ElapsedMS        *int64
+	HighWaterInvalid bool
+	ElapsedInvalid   bool
 }
 
 type mappedGoal struct {
@@ -2696,6 +2747,16 @@ func observeNativeGrokGoal(grokHome, cwd, sessionID, expectedGoalID string) (nat
 	out.Phase = strings.ToLower(strings.TrimSpace(st.Phase))
 	out.Classifier = strings.TrimSpace(st.LastClassifierVerdict)
 	out.PauseMessage = strings.TrimSpace(st.PauseMessage)
+	if n, ok := parseOptionalJSONInt64(st.TokensUsedHighWater); ok {
+		out.HighWaterTokens = n
+	} else if len(st.TokensUsedHighWater) > 0 && strings.TrimSpace(string(st.TokensUsedHighWater)) != "null" {
+		out.HighWaterInvalid = true
+	}
+	if n, ok := parseOptionalJSONInt64(st.ElapsedMS); ok {
+		out.ElapsedMS = n
+	} else if len(st.ElapsedMS) > 0 && strings.TrimSpace(string(st.ElapsedMS)) != "null" {
+		out.ElapsedInvalid = true
+	}
 	if out.NativeStatus == "budget_limited" {
 		out.BudgetLimited = true
 	}
@@ -2921,12 +2982,22 @@ func markGoalCancelRequested(t *Task) {
 }
 
 func samePath(a, b string) bool {
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
-	if errA != nil || ra == "" {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	if a == "" || b == "" {
+		return false
+	}
+	sa, errA := os.Stat(a)
+	sb, errB := os.Stat(b)
+	if errA == nil && errB == nil {
+		return os.SameFile(sa, sb)
+	}
+	ra, errA2 := filepath.EvalSymlinks(a)
+	rb, errB2 := filepath.EvalSymlinks(b)
+	if errA2 != nil || ra == "" {
 		ra = filepath.Clean(a)
 	}
-	if errB != nil || rb == "" {
+	if errB2 != nil || rb == "" {
 		rb = filepath.Clean(b)
 	}
 	return ra == rb

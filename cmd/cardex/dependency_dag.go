@@ -248,6 +248,80 @@ func diagnoseCycles(order []string, edges map[string][]string) [][]string {
 	return cycles
 }
 
+// Closed wait reasons projected onto the existing board consumer. These are
+// display facts from the same DependsOn / task status the scheduler reads;
+// they are not a second wait-state, event, or notification system.
+const (
+	depWaitRunning = "running"
+	depWaitHeld    = "held"
+	depWaitFailed  = "failed"
+	depWaitUnknown = "unknown"
+	depWaitMissing = "missing"
+)
+
+// DependencyWait names one unsatisfied predecessor and why it still blocks.
+type DependencyWait struct {
+	ID  string `json:"id"`
+	Why string `json:"why"`
+}
+
+// ClassifyPredecessorWait maps a predecessor onto the closed wait vocabulary.
+// An empty why means the predecessor is done and is not a current blocker.
+func ClassifyPredecessorWait(pred *Task, found bool) string {
+	if !found || pred == nil {
+		return depWaitMissing
+	}
+	switch pred.Status {
+	case statusDone:
+		return ""
+	case statusRunning:
+		return depWaitRunning
+	case statusHeld:
+		return depWaitHeld
+	case statusFailed:
+		return depWaitFailed
+	default:
+		return depWaitUnknown
+	}
+}
+
+// TaskDependencyWaits lists current blockers for t in DependsOn order.
+// Done predecessors are omitted so recovery clears or updates the reason.
+func TaskDependencyWaits(t *Task, byID map[string]*Task) []DependencyWait {
+	if t == nil || len(t.DependsOn) == 0 {
+		return nil
+	}
+	var out []DependencyWait
+	for _, id := range t.DependsOn {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		var pred *Task
+		found := false
+		if byID != nil {
+			pred, found = byID[id]
+		}
+		why := ClassifyPredecessorWait(pred, found)
+		if why == "" {
+			continue
+		}
+		out = append(out, DependencyWait{ID: id, Why: why})
+	}
+	return out
+}
+
+func formatDependencyWaitReason(waits []DependencyWait) string {
+	if len(waits) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(waits))
+	for _, w := range waits {
+		parts = append(parts, w.ID+" ("+w.Why+")")
+	}
+	return "等待 " + strings.Join(parts, "; ")
+}
+
 func rotateCycle(members []string, edges map[string][]string) []string {
 	if len(members) == 0 {
 		return members

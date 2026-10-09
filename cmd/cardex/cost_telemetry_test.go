@@ -43,7 +43,7 @@ func assertCostTelemetry(t *testing.T, ev TaskEvent) (cost float64, unavailable 
 		}
 		return 0, true
 	}
-	if !hasCost || !hasTurns {
+	if !hasCost && !hasTurns {
 		t.Fatalf("终态事件 %s/%s 既无 cost_total/turns_total 也无 cost_unavailable 标记 —— "+
 			"静默缺字段让不完整的统计看起来完整: %+v", ev.Type, ev.Actor, ev.Detail)
 	}
@@ -68,16 +68,61 @@ func TestWithCostTelemetryBranches(t *testing.T) {
 		}
 	})
 
-	t.Run("零用量: 落显式标记而非静默省字段", func(t *testing.T) {
+	t.Run("遗留卡无 raw_usage: 零账面仍为 unknown", func(t *testing.T) {
 		d := withCostTelemetry(nil, &Task{})
 		if unavail, _ := d[evDetailCostUnavailable].(bool); !unavail {
-			t.Fatalf("零用量必须落 cost_unavailable 显式标记: %+v", d)
+			t.Fatalf("遗留未知必须落 cost_unavailable 显式标记: %+v", d)
 		}
 		if d[evDetailCostUnavailReason] != costUnavailNoUsage {
 			t.Errorf("缺 reason，复盘无从分列: %+v", d)
 		}
 		if _, ok := d[evDetailCostTotal]; ok {
-			t.Errorf("零用量不该伪造 cost_total=0（与'确实花了0'不可区分）: %+v", d)
+			t.Errorf("未知不该伪造 cost_total=0（与已知零不可区分）: %+v", d)
+		}
+	})
+
+	t.Run("部分已知: 不把未报告的另一侧写成 0", func(t *testing.T) {
+		d := withCostTelemetry(nil, &Task{
+			TurnsUsed: 4,
+			CostUSD:   0,
+			RawUsage: &taskRawUsage{
+				Schema:           rawUsageSchemaV1,
+				AccumulatedTurns: int64Ptr(4),
+			},
+		})
+		if d[evDetailTurnsTotal] != 4 {
+			t.Fatalf("known turns missing: %+v", d)
+		}
+		if _, ok := d[evDetailCostTotal]; ok {
+			t.Fatalf("unreported cost must stay omitted, not 0: %+v", d)
+		}
+		if unavail, _ := d[evDetailCostUnavailable].(bool); unavail {
+			t.Fatalf("partial known must not be unavailable: %+v", d)
+		}
+		legacy := withCostTelemetry(nil, &Task{TurnsUsed: 3, CostUSD: 0})
+		if legacy[evDetailTurnsTotal] != 3 {
+			t.Fatalf("legacy turns: %+v", legacy)
+		}
+		if _, ok := legacy[evDetailCostTotal]; ok {
+			t.Fatalf("legacy unreported cost must stay omitted: %+v", legacy)
+		}
+	})
+
+	t.Run("已知零: raw_usage 在场则 cost_total=0", func(t *testing.T) {
+		tk := &Task{RawUsage: &taskRawUsage{
+			Schema:             rawUsageSchemaV1,
+			AccumulatedCostUSD: float64Ptr(0),
+			AccumulatedTurns:   int64Ptr(0),
+		}}
+		d := withCostTelemetry(nil, tk)
+		if unavail, _ := d[evDetailCostUnavailable].(bool); unavail {
+			t.Fatalf("已知零不得标 cost_unavailable: %+v", d)
+		}
+		if d[evDetailCostTotal] != 0.0 || d[evDetailTurnsTotal] != 0 {
+			t.Fatalf("已知零应落 cost_total=0 turns_total=0: %+v", d)
+		}
+		if d["raw_usage"] == nil {
+			t.Fatalf("已知零应投影 raw_usage: %+v", d)
 		}
 	})
 

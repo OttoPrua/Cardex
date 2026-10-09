@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const version = "0.10.25"
+const version = "0.10.26"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -96,6 +96,8 @@ func main() {
 		err = cmdEngines(os.Args[2:])
 	case "workflow":
 		err = cmdWorkflow(os.Args[2:])
+	case "templates":
+		err = cmdTemplates(os.Args[2:])
 	case "doctor":
 		err = cmdDoctor(os.Args[2:])
 	case "harvest":
@@ -173,7 +175,7 @@ func printUsage() {
 
 任务管理
   hold/release <id>                # 挂起 / 恢复排队（hold 先撤销调度再监护进程）
-  retry <id>                       # 失败任务重新入队（保留会话与进度）
+  retry [-fresh] <id>              # 失败任务重新入队（默认保留会话；-fresh 开新会话且不 --resume）
   cancel <id>                      # 取消并归档（运行中的任务会先终止其执行进程）
   admission pause|resume|status [-root ROOT] [-actor ACTOR] [-reason REASON]
             全局准入闸门：pause 拒绝调度；resume 只恢复准入，不派发任务
@@ -215,6 +217,10 @@ func printUsage() {
                                    # 但会更新阶段事实。每一步都是显式命令，tick 不自动推进。
                                    # 集成卡默认 held，只有机器核验 verdict=pass（p0/p1 皆空）、
                                    # 候选与 custody 一致才可能释放；live/cutover 始终是另外的门
+  templates init|status|refresh [-root ROOT] [NAME...]
+                                   # 模板装机、来源/差异、显式选定刷新（先备份再替换）。
+                                   # 无可信 shipped 基准显示 UNKNOWN；字节等于当前内置可标
+                                   # current-equality，不等于历史未修改。顶层 status 仍是 list
 `)
 }
 
@@ -316,7 +322,8 @@ func cmdAdd(args []string) error {
 	writePaths := fs.String("write-paths", "", "逗号分隔的仓相对写路径")
 	writeResources := fs.String("write-resources", "", "逗号分隔的封闭资源 kind:id")
 	dependsOn := fs.String("depends-on", "", "逗号分隔的前置任务 ID；仅 durably done 才算满足")
-	verify := fs.String("verify", "", "验收命令（在 -dir 内 sh -c 执行，如 \"go test ./...\"）；收割时据此判定完成")
+	verify := fs.String("verify", "", "验收命令（在 -dir 内由本机 POSIX/Windows shell 执行，如 \"go test ./...\"）；收割在有产物时运行；配合 -verify-on-success 在 provider 成功收尾时也运行（含无改动）")
+	verifyOnSuccess := fs.Bool("verify-on-success", false, "显式启用成功路径验收：provider 实际成功收尾时运行 -verify（含无源码改动）；未设置时旧卡保持只在收割时验证")
 	req := fs.String("req", "", "关联的共享需求 ID（req_ + 16 位十六进制）")
 	manager := fs.String("manager", "", "负责跟进本卡的管理 profile（如 yvonne），用于唤醒摘要归属")
 	workMode := fs.String("work-mode", "", "工作方式：direct（默认，普通提交）| staged | goal。staged/goal 不写卡，改走 cardex workflow")
@@ -579,6 +586,10 @@ func cmdAdd(args []string) error {
 		return err
 	}
 	t.Verify = strings.TrimSpace(*verify)
+	t.VerifyOnSuccess = *verifyOnSuccess
+	if t.VerifyOnSuccess && t.Verify == "" {
+		return fmt.Errorf("-verify-on-success 需要同时指定 -verify")
+	}
 	t.Req = strings.TrimSpace(*req)
 	t.Manager = strings.TrimSpace(*manager)
 	decision, err := ordinaryDirectDecision(cfg, strings.TrimSpace(*workMode))
@@ -2035,11 +2046,106 @@ func requireIntegrationRelease(root string, t *Task) error {
 	return nil
 }
 
+func admitLegalRetry(root string, t *Task) error {
+	if t == nil {
+		return fmt.Errorf("empty task")
+	}
+	if t.Status == statusHeld {
+		if err := requireIntegrationRelease(root, t); err != nil {
+			return err
+		}
+		return checkAttemptEpoch(root, t, true)
+	}
+	if !t.terminal() && t.Status != statusLimitPaused {
+		return fmt.Errorf("%s 当前状态 %s 无需 retry", t.ID, t.Status)
+	}
+	return nil
+}
+
+// admitFreshRetry is the extra gate for retry -fresh. LastError is never read.
+// Bound native Goal identity is reported, not force-cleared. Ordinary cards
+// must also prove THIS task's retained producer/attempt is gone; unknown
+// retained custody refuses. Workspace occupancy by an unrelated task is
+// left to scheduler/lease admission.
+func admitFreshRetry(root string, t *Task) error {
+	if t == nil {
+		return fmt.Errorf("empty task")
+	}
+	if t.Goal != nil {
+		g := t.Goal
+		if g.Started && !g.CustodyReleased {
+			return fmt.Errorf("%s 原生 Goal custody 未回收，不能开新执行会话", t.ID)
+		}
+		switch g.Observation {
+		case goalObsDone, goalObsFailed, goalObsCanceled:
+			return fmt.Errorf("%s 原生 Goal 已 sealed/no-retry（%s），不能开新执行会话", t.ID, g.Observation)
+		}
+		if strings.TrimSpace(g.NativeGoalID) != "" || strings.TrimSpace(g.BoundAttemptID) != "" {
+			return fmt.Errorf("%s 原生 Goal 身份已绑定，不能强制清除", t.ID)
+		}
+		if g.Started && strings.TrimSpace(t.SessionID) != "" {
+			return fmt.Errorf("%s 原生 Goal 会话身份已绑定，不能强制清除", t.ID)
+		}
+	}
+	return admitFreshRetryTaskCustody(root, t)
+}
+
+func admitFreshRetryTaskCustody(root string, t *Task) error {
+	if t == nil {
+		return fmt.Errorf("empty task")
+	}
+	if anyTaskProcAlive(t.ID) || taskProcessResidue(t.ID) {
+		return fmt.Errorf("%s 本卡执行进程仍在或残留，不能开新执行会话", t.ID)
+	}
+	live, rec := liveAttempt(root, t)
+	if live || attemptProducerAlive(rec) {
+		return fmt.Errorf("%s 本卡 attempt 仍在运行，不能开新执行会话", t.ID)
+	}
+	attemptID := strings.TrimSpace(t.ActiveAttemptID)
+	if attemptID == "" {
+		return nil
+	}
+	if rec == nil {
+		loaded, err := loadAttempt(root, t.ID, attemptID)
+		if err != nil || loaded == nil {
+			return fmt.Errorf("%s 本卡 attempt 去向未知，不能开新执行会话", t.ID)
+		}
+		rec = loaded
+	}
+	if attemptProducerAlive(rec) {
+		return fmt.Errorf("%s 本卡 producer 仍在，不能开新执行会话", t.ID)
+	}
+	switch rec.State {
+	case attemptExited, attemptRevoked:
+		return nil
+	default:
+		return fmt.Errorf("%s 本卡 attempt 去向未知，不能开新执行会话", t.ID)
+	}
+}
+
+// clearRetryContinuation drops only the session identity the next provider
+// invocation uses for --resume. Work dir, source, history, budgets, and
+// provider/model pins stay.
+func clearRetryContinuation(t *Task) {
+	if t == nil {
+		return
+	}
+	t.SessionID = ""
+	t.MidStep = false
+}
+
 func cmdSetStatus(args []string, action string) error {
 	fs := flag.NewFlagSet(action, flag.ExitOnError)
 	rootFlag := fs.String("root", "", "数据目录")
+	fresh := false
+	if action == "retry" {
+		fs.BoolVar(&fresh, "fresh", false, "开新执行会话（不 --resume）；仅当 retry 已合法且 custody 已回收。不绕过 held/集成门/sealed/no-retry/原生 Goal 身份与 custody；LastError 不是许可；不改 provider/model")
+	}
 	_ = fs.Parse(args)
 	if fs.NArg() < 1 {
+		if action == "retry" {
+			return fmt.Errorf("用法: cardex retry [-fresh] <任务ID>")
+		}
 		return fmt.Errorf("用法: cardex %s <任务ID>", action)
 	}
 	root := resolveRoot(*rootFlag)
@@ -2076,15 +2182,13 @@ func cmdSetStatus(args []string, action string) error {
 		// 的路径是 release,因此这条被审核审过的 P1 类还有一处同构位点必须一并闭合。
 		_ = resetTombstoneKind(root, t.ID, reconcileCrossKind())
 	case "retry":
-		if t.Status == statusHeld {
-			if err := requireIntegrationRelease(root, t); err != nil {
+		if err := admitLegalRetry(root, t); err != nil {
+			return err
+		}
+		if fresh {
+			if err := admitFreshRetry(root, t); err != nil {
 				return err
 			}
-			if err := checkAttemptEpoch(root, t, true); err != nil {
-				return err
-			}
-		} else if !t.terminal() && t.Status != statusLimitPaused {
-			return fmt.Errorf("%s 当前状态 %s 无需 retry", t.ID, t.Status)
 		}
 		restoreScheduling(t)
 		t.Status = statusQueued
@@ -2095,6 +2199,9 @@ func cmdSetStatus(args []string, action string) error {
 		if t.Step >= len(t.Prompts) {
 			t.Step = 0
 			t.MidStep = false
+		}
+		if fresh {
+			clearRetryContinuation(t)
 		}
 		// CG-4 Round-1 修复:reconcile:cross 墓碑在人工 retry 时必须显式重置——
 		// 【为什么】resume:<step> 走 runTask 顶部 reset-at-entry(status!=running 即清)拿到重置路径,
@@ -2133,7 +2240,11 @@ func cmdSetStatus(args []string, action string) error {
 		emitTaskEvent(root, t.ID, evQueued, "cli:release", statusQueued, t.Step, map[string]any{"reason": "release"})
 	case "retry":
 		// retry 是 terminal|limit_paused→queued 的"重新入队":同上,用 evQueued。
-		emitTaskEvent(root, t.ID, evQueued, "cli:retry", statusQueued, t.Step, map[string]any{"reason": "retry"})
+		detail := map[string]any{"reason": "retry"}
+		if fresh {
+			detail["fresh"] = true
+		}
+		emitTaskEvent(root, t.ID, evQueued, "cli:retry", statusQueued, t.Step, detail)
 	}
 	fmt.Printf("%s -> %s\n", t.ID, zhStatus(t.Status))
 	return nil

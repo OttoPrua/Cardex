@@ -755,8 +755,8 @@ func harvestRequeue(root string, cfg *Config, t *Task, now time.Time, reason str
 	}, t)))
 }
 
-func finishHarvestedAttempt(root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, lg *os.File, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor bool, engineName string) error {
-	cont, err := finishProviderSuccess(root, cfg, t, via, prompt, res, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName)
+func finishHarvestedAttempt(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, lg *os.File, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor bool, engineName string) error {
+	cont, err := finishProviderSuccess(ctx, root, cfg, t, via, prompt, res, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName)
 	if err != nil {
 		return err
 	}
@@ -775,7 +775,7 @@ var errHarvestContinueLoop = errors.New("harvest continue loop")
 // live process, or dry-run after the verdict was stored on the task).
 // handled is true when mode on already persisted a hold/retry, or when err is
 // errHarvestContinueLoop / nil after the success path finished the step.
-func dispatchUnknownHarvest(root string, cfg *Config, t *Task, via string, res **claudeResult, runErr error, now time.Time, prompt string, lg *os.File, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor bool, engineName string) (handled bool, err error) {
+func dispatchUnknownHarvest(ctx context.Context, root string, cfg *Config, t *Task, via string, res **claudeResult, runErr error, now time.Time, prompt string, lg *os.File, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor bool, engineName string) (handled bool, err error) {
 	cont, herr := prepareUnknownHarvest(root, cfg, t, via, res, runErr, now)
 	if cont {
 		return false, nil
@@ -785,7 +785,7 @@ func dispatchUnknownHarvest(root string, cfg *Config, t *Task, via string, res *
 		if res != nil {
 			result = *res
 		}
-		return true, finishHarvestedAttempt(root, cfg, t, via, prompt, result, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName)
+		return true, finishHarvestedAttempt(ctx, root, cfg, t, via, prompt, result, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName)
 	}
 	return true, herr
 }

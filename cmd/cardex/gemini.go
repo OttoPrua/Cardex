@@ -182,6 +182,31 @@ func geminiStatsUsage(raw json.RawMessage) *usageInfo {
 	return u
 }
 
+func geminiRawFields(raw json.RawMessage) usageFieldSet {
+	var out usageFieldSet
+	if len(raw) == 0 {
+		return out
+	}
+	var st struct {
+		Models map[string]struct {
+			Tokens json.RawMessage `json:"tokens"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(raw, &st) != nil || len(st.Models) == 0 {
+		return out
+	}
+	aliases := map[string]string{
+		"prompt":     rawFieldInput,
+		"candidates": rawFieldOutput,
+		"cached":     rawFieldCacheRead,
+		"thoughts":   rawFieldReasoning,
+	}
+	for _, m := range st.Models {
+		out = sumUsageFieldSet(out, usageFieldsFromJSON(m.Tokens, aliases))
+	}
+	return out
+}
+
 // invokeGemini 用 gemini CLI 执行一步。prompt 走 stdin（headless 由非 TTY stdin 触发，
 // 官方 headless 文档核实；不当 argv 绕开 ARG_MAX），结果从 stdout 的 -o json 取回。
 // 返回值第三项是模型解析披露备注（同 invokeEngine 的 note 语义）。
@@ -259,6 +284,10 @@ func invokeGemini(ctx context.Context, root string, cfg *Config, t *Task, prompt
 	}
 	if jout != nil {
 		res.Usage = geminiStatsUsage(jout.Stats)
+		res.UsageFields = geminiRawFields(jout.Stats)
+		if !fieldSetEmpty(res.UsageFields) || len(jout.Stats) > 0 {
+			res.UsageSource = usageSrcGeminiStats
+		}
 	}
 	// 会话回写信号：产出正常、或属限额/认证挂起（车道恢复后续跑要用）时上报本次会话 ID；
 	// 其余硬错误不上报——半死会话被 --resume 会放大成连环错。

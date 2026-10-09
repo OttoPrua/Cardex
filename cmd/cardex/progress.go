@@ -106,66 +106,420 @@ func loadProgressEntries(root string) []*ProgressEntry {
 
 // ---- 协调任务的运行时上下文注入 ----
 
+// liveContextSnapshotBudget is the modest default byte budget for one
+// {{QUEUE}} or {{PROGRESS}} substitution. It was taken from the scoped
+// fixture payloads in progress_test.go (in-scope rows plus a required
+// cross-project predecessor and omission disclosure).
+const liveContextSnapshotBudget = 8192
+
+const (
+	liveContextProseRunes         = 800
+	liveContextOmissionPointerCap = 8
+)
+
 // injectLiveContext 在派发时把 {{QUEUE}} / {{PROGRESS}} 替换为实时快照。
 // 协调任务入队和真正运行之间可能隔很久，所以这两块必须运行时取。
+// Signature stays (root, selfID, prompt) so unowned dispatch/cmd call sites
+// remain compatible. Scope comes from the coordinating task's explicit
+// project, workflow, and dependency facts.
 func injectLiveContext(root string, selfID, prompt string) string {
+	var self *Task
+	if strings.TrimSpace(selfID) != "" {
+		if t, err := loadTask(root, selfID); err == nil {
+			self = t
+		}
+	}
 	if strings.Contains(prompt, "{{QUEUE}}") {
-		prompt = strings.ReplaceAll(prompt, "{{QUEUE}}", queueSnapshot(root, selfID))
+		prompt = strings.ReplaceAll(prompt, "{{QUEUE}}", queueSnapshot(root, self))
 	}
 	if strings.Contains(prompt, "{{PROGRESS}}") {
-		prompt = strings.ReplaceAll(prompt, "{{PROGRESS}}", progressSnapshot(root))
+		prompt = strings.ReplaceAll(prompt, "{{PROGRESS}}", progressSnapshot(root, self))
 	}
 	return prompt
 }
 
-// queueSnapshot 输出未结束任务的紧凑 JSON 快照（排除协调任务自身）。
-func queueSnapshot(root, selfID string) string {
+type liveContextScope struct {
+	self        *Task
+	project     string
+	workflowID  string
+	required    []string
+	requiredSet map[string]bool
+	unscoped    bool
+}
+
+type liveContextScopeView struct {
+	TaskID     string   `json:"task_id,omitempty"`
+	Project    string   `json:"project,omitempty"`
+	WorkflowID string   `json:"workflow_id,omitempty"`
+	Required   []string `json:"required,omitempty"`
+	Unscoped   bool     `json:"unscoped"`
+}
+
+type liveContextOmission struct {
+	Count    int      `json:"count"`
+	Reason   string   `json:"reason"`
+	Pointers []string `json:"pointers"`
+}
+
+type liveContextItem struct {
+	ID         string         `json:"id,omitempty"`
+	Key        string         `json:"key,omitempty"`
+	Title      string         `json:"title,omitempty"`
+	Type       string         `json:"type,omitempty"`
+	Status     string         `json:"status,omitempty"`
+	Priority   int            `json:"priority,omitempty"`
+	Project    string         `json:"project,omitempty"`
+	WorkflowID string         `json:"workflow_id,omitempty"`
+	DependsOn  []string       `json:"depends_on,omitempty"`
+	Dir        string         `json:"dir,omitempty"`
+	Log        string         `json:"log,omitempty"`
+	Source     string         `json:"source,omitempty"`
+	Report     map[string]any `json:"report,omitempty"`
+	Required   bool           `json:"required,omitempty"`
+	rank       int            `json:"-"`
+	pointer    string         `json:"-"`
+}
+
+func liveContextScopeFromTask(t *Task) liveContextScope {
+	s := liveContextScope{self: t, requiredSet: map[string]bool{}}
+	if t == nil {
+		s.unscoped = true
+		return s
+	}
+	s.project = strings.TrimSpace(t.Project)
+	s.workflowID = strings.TrimSpace(t.WorkflowID)
+	for _, id := range t.DependsOn {
+		id = strings.TrimSpace(id)
+		if id == "" || s.requiredSet[id] {
+			continue
+		}
+		s.requiredSet[id] = true
+		s.required = append(s.required, id)
+	}
+	s.unscoped = s.project == "" && s.workflowID == "" && len(s.required) == 0
+	return s
+}
+
+func (s liveContextScope) view() liveContextScopeView {
+	id := ""
+	if s.self != nil {
+		id = s.self.ID
+	}
+	return liveContextScopeView{
+		TaskID:     id,
+		Project:    s.project,
+		WorkflowID: s.workflowID,
+		Required:   append([]string(nil), s.required...),
+		Unscoped:   s.unscoped,
+	}
+}
+
+func (s liveContextScope) classifyTask(t *Task, includeTerminal bool) (include bool, required bool, rank int) {
+	if t == nil {
+		return false, false, 0
+	}
+	if s.self != nil && t.ID == s.self.ID {
+		return false, false, 0
+	}
+	if s.requiredSet[t.ID] {
+		return true, true, 0
+	}
+	// Queue snapshots hide completed work, but its progress reports remain
+	// useful evidence for the next coordinating task.
+	if !includeTerminal && t.terminal() {
+		return false, false, 0
+	}
+	if s.unscoped {
+		return true, false, 3
+	}
+	if s.workflowID != "" && t.WorkflowID == s.workflowID {
+		return true, false, 1
+	}
+	if s.project != "" && t.Project == s.project {
+		return true, false, 2
+	}
+	return false, false, 0
+}
+
+func queueSnapshot(root string, self *Task) string {
+	scope := liveContextScopeFromTask(self)
 	tasks, err := loadTasks(root)
 	if err != nil {
 		return "（读取队列失败）"
 	}
-	var rows []map[string]any
+	byID := map[string]*Task{}
 	for _, t := range tasks {
-		if t.terminal() || t.ID == selfID {
+		if t != nil {
+			byID[t.ID] = t
+		}
+	}
+	for _, id := range scope.required {
+		if byID[id] != nil {
 			continue
 		}
-		row := map[string]any{
-			"id": t.ID, "title": t.Title, "type": t.Type, "status": t.Status,
-			"priority": t.Priority, "step": fmt.Sprintf("%d/%d", t.Step, len(t.Prompts)), "dir": t.Dir,
+		found, findErr := findTaskAnywhere(root, id)
+		if findErr == nil && found != nil {
+			byID[id] = found
+			tasks = append(tasks, found)
 		}
-		if t.Model != "" {
-			row["model"] = t.Model
+	}
+
+	var included []liveContextItem
+	var outScope []string
+	seen := map[string]bool{}
+	for _, t := range tasks {
+		if t == nil || seen[t.ID] {
+			continue
 		}
-		if t.SessionID != "" {
-			row["session_id"] = t.SessionID
+		seen[t.ID] = true
+		inc, req, rank := scope.classifyTask(t, false)
+		if !inc {
+			if scope.self == nil || t.ID != scope.self.ID {
+				outScope = append(outScope, t.ID)
+			}
+			continue
 		}
-		rows = append(rows, row)
+		item := liveContextItem{
+			ID:         t.ID,
+			Title:      t.Title,
+			Type:       t.Type,
+			Status:     t.Status,
+			Priority:   t.Priority,
+			Project:    t.Project,
+			WorkflowID: t.WorkflowID,
+			DependsOn:  append([]string(nil), t.DependsOn...),
+			Dir:        t.Dir,
+			Log:        taskLogPath(root, t.ID),
+			Required:   req,
+			rank:       rank,
+			pointer:    t.ID,
+		}
+		included = append(included, item)
 	}
-	if len(rows) == 0 {
-		return "（队列为空）"
+	for _, id := range scope.required {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		included = append(included, liveContextItem{
+			ID:       id,
+			Status:   depWaitMissing,
+			Required: true,
+			Log:      taskLogPath(root, id),
+			rank:     0,
+			pointer:  id,
+		})
 	}
-	data, err := json.MarshalIndent(rows, "", "  ")
-	if err != nil {
-		return "（序列化队列失败）"
-	}
-	return string(data)
+	sortLiveContextItems(included)
+	omitted := omissionList("out_of_scope", outScope)
+	return renderLiveContextSnapshot(scope, included, omitted, liveContextSnapshotBudget)
 }
 
-func progressSnapshot(root string) string {
+func progressSnapshot(root string, self *Task) string {
+	scope := liveContextScopeFromTask(self)
 	entries := loadProgressEntries(root)
 	if len(entries) == 0 {
 		return "（暂无进度报告。可先用 cardex brief 回收各会话进度再运行协调。）"
 	}
-	var sb strings.Builder
-	for _, e := range entries {
-		data, err := json.MarshalIndent(e, "", "  ")
-		if err != nil {
+	tasks, _ := loadTasks(root)
+	byKey := map[string]*Task{}
+	for _, t := range tasks {
+		if t == nil {
 			continue
 		}
-		sb.Write(data)
-		sb.WriteString("\n")
+		byKey[t.ID] = t
+		if k := strings.TrimSpace(t.ProgressKey); k != "" {
+			byKey[k] = t
+		}
 	}
-	return sb.String()
+	var included []liveContextItem
+	var outScope []string
+	for _, e := range entries {
+		owner := byKey[e.Key]
+		inc, req, rank := false, false, 3
+		if owner != nil {
+			inc, req, rank = scope.classifyTask(owner, true)
+		} else if scope.unscoped {
+			inc, rank = true, 3
+		}
+		pointer := "progress:" + e.Key
+		if !inc {
+			outScope = append(outScope, pointer)
+			continue
+		}
+		src := progressPath(root, e.Key)
+		included = append(included, liveContextItem{
+			Key:        e.Key,
+			Title:      e.Title,
+			Dir:        e.Dir,
+			Source:     src,
+			Report:     boundProgressReport(e.Report),
+			Required:   req,
+			rank:       rank,
+			pointer:    pointer,
+			Project:    projectOf(owner),
+			WorkflowID: workflowOf(owner),
+			ID:         idOf(owner),
+		})
+	}
+	sortLiveContextItems(included)
+	omitted := omissionList("out_of_scope", outScope)
+	return renderLiveContextSnapshot(scope, included, omitted, liveContextSnapshotBudget)
+}
+
+func projectOf(t *Task) string {
+	if t == nil {
+		return ""
+	}
+	return t.Project
+}
+
+func workflowOf(t *Task) string {
+	if t == nil {
+		return ""
+	}
+	return t.WorkflowID
+}
+
+func idOf(t *Task) string {
+	if t == nil {
+		return ""
+	}
+	return t.ID
+}
+
+func sortLiveContextItems(items []liveContextItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].rank != items[j].rank {
+			return items[i].rank < items[j].rank
+		}
+		a, b := items[i].pointer, items[j].pointer
+		if a == "" {
+			a = items[i].ID + items[i].Key
+		}
+		if b == "" {
+			b = items[j].ID + items[j].Key
+		}
+		return a < b
+	})
+}
+
+func omissionList(reason string, pointers []string) []liveContextOmission {
+	if len(pointers) == 0 {
+		return nil
+	}
+	sort.Strings(pointers)
+	shown := pointers
+	if len(shown) > liveContextOmissionPointerCap {
+		shown = append([]string(nil), pointers[:liveContextOmissionPointerCap]...)
+	}
+	return []liveContextOmission{{Count: len(pointers), Reason: reason, Pointers: shown}}
+}
+
+// renderLiveContextSnapshot packs scope, items, and omission facts under budget.
+// Optional title prose is truncated to liveContextProseRunes on every item,
+// including required predecessors. Required identity, status, and source/log
+// pointers are always kept; only those necessary pointers may push a required
+// item past liveContextSnapshotBudget. Every non-required item, including the
+// first, is omitted once admitting it would pass the budget; those drops are
+// disclosed as count/reason/pointers.
+func renderLiveContextSnapshot(scope liveContextScope, items []liveContextItem, omitted []liveContextOmission, budget int) string {
+	type payload struct {
+		Scope   liveContextScopeView  `json:"scope"`
+		Items   []liveContextItem     `json:"items"`
+		Omitted []liveContextOmission `json:"omitted,omitempty"`
+	}
+	pack := func(keep []liveContextItem, extra []liveContextOmission) (string, error) {
+		all := append(append([]liveContextOmission(nil), omitted...), extra...)
+		data, err := json.MarshalIndent(payload{Scope: scope.view(), Items: keep, Omitted: all}, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	keep := make([]liveContextItem, 0, len(items))
+	var budgetPtrs []string
+	for _, it := range items {
+		it.Title = truncateRunes(it.Title, liveContextProseRunes)
+		trial := append(keep, it)
+		raw, err := pack(trial, omissionList("budget", budgetPtrs))
+		if err != nil {
+			return "（序列化队列失败）"
+		}
+		if budget > 0 && len(raw) > budget && !it.Required {
+			budgetPtrs = append(budgetPtrs, it.pointer)
+			continue
+		}
+		keep = trial
+	}
+	raw, err := pack(keep, omissionList("budget", budgetPtrs))
+	if err != nil {
+		return "（序列化队列失败）"
+	}
+	return raw
+}
+
+func boundProgressReport(report map[string]any) map[string]any {
+	if report == nil {
+		return nil
+	}
+	if fmtKind, _ := report["format"].(string); fmtKind == "raw" {
+		raw, _ := report["raw"].(string)
+		return map[string]any{"format": "raw", "raw": truncateRunes(raw, liveContextProseRunes)}
+	}
+	out := map[string]any{}
+	for _, k := range []string{"goal", "done", "in_progress", "remaining", "blockers", "key_files", "next_prompt"} {
+		if v, ok := report[k]; ok {
+			out[k] = boundAny(v, liveContextProseRunes)
+		}
+	}
+	if len(out) == 0 {
+		data, err := json.Marshal(report)
+		if err != nil {
+			return map[string]any{"format": "raw", "raw": ""}
+		}
+		return map[string]any{"format": "raw", "raw": truncateRunes(string(data), liveContextProseRunes)}
+	}
+	return out
+}
+
+func boundAny(v any, maxRunes int) any {
+	if maxRunes < 1 {
+		maxRunes = 1
+	}
+	child := maxRunes / 2
+	if child < 1 {
+		child = 1
+	}
+	switch x := v.(type) {
+	case string:
+		return truncateRunes(x, maxRunes)
+	case []any:
+		if len(x) > 8 {
+			x = x[:8]
+		}
+		out := make([]any, len(x))
+		for i, el := range x {
+			out[i] = boundAny(el, child)
+		}
+		return out
+	case map[string]any:
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		if len(keys) > 8 {
+			keys = keys[:8]
+		}
+		out := make(map[string]any, len(keys))
+		for _, k := range keys {
+			out[k] = boundAny(x[k], child)
+		}
+		return out
+	default:
+		return x
+	}
 }
 
 // ---- 键名生成 ----

@@ -320,6 +320,7 @@ func parseOpenCodeJSONL(raw string) *claudeResult {
 			res.ModelEvents++
 			if ev.Part.Time.End > ev.Part.Time.Start {
 				res.DurationMS += ev.Part.Time.End - ev.Part.Time.Start
+				res.DurationPresent = true
 			}
 		case "step_start":
 			// Lifecycle metadata is valid but never proves model completion.
@@ -356,7 +357,18 @@ func parseOpenCodeJSONL(raw string) *claudeResult {
 		case "step_finish":
 			sawFinish = true
 			res.NumTurns++
+			res.TurnsPresent = true
 			res.TotalCostUSD += ev.Part.Cost
+			res.UsageSource = usageSrcOpenCodeStepFinish
+			if env := decodeJSONObject([]byte(line)); env != nil {
+				part := decodeJSONObject(env["part"])
+				if part != nil {
+					res.UsageFields = sumUsageFieldSet(res.UsageFields, usageFieldsFromJSON(part["tokens"], openCodeUsageAliases))
+					if rawKeyPresent(part, "cost") {
+						res.CostPresent = true
+					}
+				}
+			}
 			if res.Usage == nil {
 				res.Usage = &usageInfo{}
 			}

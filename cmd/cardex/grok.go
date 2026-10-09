@@ -1847,6 +1847,12 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			// in the raw envelope only and are never copied into the parsed result.
 			valid := grokBuildUsageShape(fields)
 			observeGrokBuildUsage(res, ev.Usage, valid)
+			if raw, ok := fields["usage"]; ok {
+				res.UsageFields = mergeUsageFieldSet(res.UsageFields, usageFieldsFromJSON(raw, grokUsageAliases))
+				if res.UsageSource == "" {
+					res.UsageSource = usageSrcGrokBuildEnd
+				}
+			}
 			if !valid {
 				res.ObservationComplete = false
 				grokBuildCountUnclassified(res, ev.Type, fields)
@@ -1906,6 +1912,13 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			res.TotalCostUSD = ev.TotalCostUSD
 			res.DurationMS = ev.DurationMS
 			observeGrokBuildUsage(res, ev.Usage, true)
+			res.UsageSource = usageSrcGrokBuildEnd
+			if raw, ok := fields["usage"]; ok {
+				res.UsageFields = mergeUsageFieldSet(res.UsageFields, usageFieldsFromJSON(raw, grokUsageAliases))
+			}
+			res.TurnsPresent = rawKeyPresent(fields, "num_turns")
+			res.CostPresent = rawKeyPresent(fields, "total_cost_usd")
+			res.DurationPresent = rawKeyPresent(fields, "duration_ms")
 			captureGrokAssistantModel(res, fields)
 			if ev.TotalCostUSD != 0 {
 				res.ModelEvents++

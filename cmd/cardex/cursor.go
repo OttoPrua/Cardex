@@ -205,6 +205,13 @@ func parseCursorJSONL(raw string) *claudeResult {
 			sawResult = true
 			res.TerminalEvents++
 			res.DurationMS = ev.DurationMS
+			res.UsageSource = usageSrcCursorResult
+			if env := decodeJSONObject([]byte(line)); env != nil {
+				if raw, ok := env["usage"]; ok {
+					res.UsageFields = usageFieldsFromJSON(raw, cursorUsageAliases)
+				}
+				res.DurationPresent = rawKeyPresent(env, "duration_ms")
+			}
 			if ev.Usage != nil {
 				res.Usage = &usageInfo{
 					InputTokens: ev.Usage.InputTokens, OutputTokens: ev.Usage.OutputTokens,

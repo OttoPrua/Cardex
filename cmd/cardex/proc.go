@@ -35,7 +35,6 @@ var (
 	killHandlerOnce sync.Once
 	taskExecRoot    sync.Map // taskID -> cardex root, for durable attempt PID bind
 	afterCmdStart   func(*exec.Cmd)
-	afterCmdResume  func(*exec.Cmd)
 	// procWaitDelay is the setupProcGroup WaitDelay. Production is 10s; tests may shrink it.
 	procWaitDelay = 10 * time.Second
 )
@@ -259,7 +258,7 @@ func runCmdRegisteredForTask(cmd *exec.Cmd, taskID string) error {
 // runCmdRegisteredForTaskWorkspace binds the inherited writer lease to the authoritative product
 // workspace even when the executable itself runs in a disposable review copy.
 func runCmdRegisteredForTaskWorkspace(cmd *exec.Cmd, taskID, workspaceDir string) error {
-	return runCmdRegisteredHarvestForTaskWorkspace(cmd, nil, taskID, workspaceDir)
+	return runCmdRegisteredHarvestForTaskWorkspace(cmd, nil, taskID, workspaceDir, nil)
 }
 
 // remoteHarvestPoll 早收割看门狗的轮询间隔；两拍（发现结果+一拍宽限）后仍不退即击杀。
@@ -273,15 +272,15 @@ var remoteHarvestPoll = 15 * time.Second
 // 且进程仍在 → 整组击杀让 Wait 立刻返回，上层「结果在手即成功」救援把击杀退出码洗白。
 // 两拍宽限防结果行刚落缓冲、stdout 尾部仍在冲刷时误杀。
 func runCmdRegisteredHarvest(cmd *exec.Cmd, resultInBuf func() bool) error {
-	return runCmdRegisteredHarvestForTaskWorkspace(cmd, resultInBuf, "", cmd.Dir)
+	return runCmdRegisteredHarvestForTaskWorkspace(cmd, resultInBuf, "", cmd.Dir, nil)
 }
 
 // runCmdRegisteredHarvestForTask 同 runCmdRegisteredHarvest,额外把 pid 登记到 taskPG(taskID 非空时)。
 func runCmdRegisteredHarvestForTask(cmd *exec.Cmd, resultInBuf func() bool, taskID string) error {
-	return runCmdRegisteredHarvestForTaskWorkspace(cmd, resultInBuf, taskID, cmd.Dir)
+	return runCmdRegisteredHarvestForTaskWorkspace(cmd, resultInBuf, taskID, cmd.Dir, nil)
 }
 
-func runCmdRegisteredHarvestForTaskWorkspace(cmd *exec.Cmd, resultInBuf func() bool, taskID, workspaceDir string) error {
+func runCmdRegisteredHarvestForTaskWorkspace(cmd *exec.Cmd, resultInBuf func() bool, taskID, workspaceDir string, afterResume func(*exec.Cmd)) error {
 	var lease *taskProcessLease
 	leaseDir := workspaceDir
 	taskAware := taskID != ""
@@ -394,8 +393,9 @@ func runCmdRegisteredHarvestForTaskWorkspace(cmd *exec.Cmd, resultInBuf func() b
 		return fmt.Errorf("%w: process bind failed: %v", errProcessExecution, err)
 	}
 	releaseGate()
-	if hook := afterCmdResume; hook != nil {
-		hook(cmd)
+	// The resume callback belongs to this command, never another live task.
+	if afterResume != nil {
+		afterResume(cmd)
 	}
 	defer func() {
 		procMu.Lock()

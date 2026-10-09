@@ -11,6 +11,10 @@ import (
 const (
 	sessionRoleAuthor   = "author"
 	sessionRoleReviewer = "reviewer"
+	// acceptanceInputStandard versions the overall-acceptance prompt contract.
+	// Changing it (or the required keys) invalidates coverage of older cards
+	// without rewriting those cards' prompt or evidence bytes.
+	acceptanceInputStandard = "overall-v1-goal-criteria-design-artifacts"
 )
 
 // NativeGoalDirectionSpec carries one direction of an already-admitted goal.
@@ -395,8 +399,37 @@ func acceptanceSourceDirs(wf *WorkflowRecord, members []*Task) []string {
 	return dirs
 }
 
+func acceptanceDesignFacts(root string, wf *WorkflowRecord) (pointer, digest string) {
+	var design *Task
+	if wf != nil && strings.TrimSpace(wf.DesignTaskID) != "" {
+		design, _ = loadTask(root, wf.DesignTaskID)
+	}
+	pointer = completedDesignResultPointer(root, wf, design)
+	if wf != nil && wf.DesignLineage != nil && wf.DesignLineage.LatestValid != nil {
+		digest = strings.TrimSpace(wf.DesignLineage.LatestValid.Digest)
+	}
+	return pointer, digest
+}
+
+func acceptancePromptMeetsInputStandard(prompt string) bool {
+	return strings.Contains(prompt, "overall_goal:") &&
+		strings.Contains(prompt, "completion_criteria:") &&
+		strings.Contains(prompt, "design_result:") &&
+		strings.Contains(prompt, "design_digest:") &&
+		strings.Contains(prompt, "member id=") &&
+		strings.Contains(prompt, "artifact=")
+}
+
 func acceptanceFingerprint(root string, wf *WorkflowRecord) (string, error) {
 	var b strings.Builder
+	fmt.Fprintf(&b, "input_standard=%s\n", acceptanceInputStandard)
+	if wf != nil {
+		fmt.Fprintf(&b, "goal=%s\n", strings.TrimSpace(wf.Goal))
+		fmt.Fprintf(&b, "terminal=%s\n", strings.TrimSpace(wf.TerminalCriteria))
+		pointer, digest := acceptanceDesignFacts(root, wf)
+		fmt.Fprintf(&b, "design_result=%s\n", pointer)
+		fmt.Fprintf(&b, "design_digest=%s\n", digest)
+	}
 	if wf != nil && wf.Candidate != nil {
 		fmt.Fprintf(&b, "commit=%s\ntree=%s\nbranch=%s\n", wf.Candidate.Commit, wf.Candidate.Tree, wf.Candidate.Branch)
 		paths := append([]string(nil), wf.Candidate.ChangedPaths...)
@@ -436,7 +469,10 @@ func acceptanceTaskCovers(task *Task, wf *WorkflowRecord, fingerprint string) bo
 	if task.ReviewCandidate == nil || task.ReviewCandidate.Commit != wf.Candidate.Commit || task.ReviewCandidate.Tree != wf.Candidate.Tree || task.ReviewCandidate.Branch != wf.Candidate.Branch {
 		return false
 	}
-	return sameStringSet(task.DependsOn, acceptanceMemberIDs(wf))
+	if !sameStringSet(task.DependsOn, acceptanceMemberIDs(wf)) {
+		return false
+	}
+	return acceptancePromptMeetsInputStandard(strings.Join(task.Prompts, "\n"))
 }
 
 func memberReadyForAcceptance(root string, task *Task) error {
@@ -482,6 +518,11 @@ func nativeSessionsDistinct(members []*Task) error {
 func acceptancePrompt(root string, wf *WorkflowRecord, members []*Task, fingerprint string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "overall acceptance workflow=%s module=%s\n", wf.ID, wf.ModuleID)
+	fmt.Fprintf(&b, "overall_goal: %s\n", strings.TrimSpace(wf.Goal))
+	fmt.Fprintf(&b, "completion_criteria: %s\n", strings.TrimSpace(wf.TerminalCriteria))
+	pointer, digest := acceptanceDesignFacts(root, wf)
+	fmt.Fprintf(&b, "design_result: %s\n", pointer)
+	fmt.Fprintf(&b, "design_digest: %s\n", digest)
 	if wf.Candidate != nil {
 		fmt.Fprintf(&b, "candidate commit=%s tree=%s\n", wf.Candidate.Commit, wf.Candidate.Tree)
 		if len(wf.Candidate.ChangedPaths) > 0 {
@@ -489,6 +530,7 @@ func acceptancePrompt(root string, wf *WorkflowRecord, members []*Task, fingerpr
 		}
 	}
 	fmt.Fprintf(&b, "coverage=%s\n", fingerprint)
+	fmt.Fprintf(&b, "input_standard=%s\n", acceptanceInputStandard)
 	for _, task := range members {
 		goal := ""
 		if task.Goal != nil {

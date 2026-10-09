@@ -217,11 +217,7 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 	outputDone := make(chan outputResult, 1)
 	outputWatch := &ptyOutputWatch{}
 	var hostedPersistErr error
-	prevHook := afterCmdResume
-	afterCmdResume = func(started *exec.Cmd) {
-		if prevHook != nil {
-			prevHook(started)
-		}
+	afterResume := func(_ *exec.Cmd) {
 		// A TUI can fill the PTY before accepting /goal. Relay through the
 		// caller's output stream; do not create a private-payload log or hide prompts.
 		go func() {
@@ -264,7 +260,6 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 		}()
 	}
 	defer func() {
-		afterCmdResume = prevHook
 		stopControl()
 		if w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 			_, _ = w.Write([]byte("\n"))
@@ -275,7 +270,7 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 	taskExecRoot.Store(t.ID, root)
 	defer taskExecRoot.Delete(t.ID)
 
-	runErr := runCmdRegisteredForTaskWorkspace(cmd, t.ID, t.Dir)
+	runErr := runCmdRegisteredHarvestForTaskWorkspace(cmd, nil, t.ID, t.Dir, afterResume)
 	// The observer mutates t; join it before final evidence and custody writes.
 	stopControl()
 	matchedRefusal := ""

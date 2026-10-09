@@ -16,6 +16,7 @@ type digestEntry struct {
 	Verdict   string `json:"verdict"`
 	Title     string `json:"title"`
 	Evidence  string `json:"evidence"`
+	Req       string `json:"req,omitempty"`
 }
 
 func cmdDigest(args []string) error {
@@ -121,6 +122,7 @@ func digestEntryFrom(row managerWakeOutboxRow, task *Task) digestEntry {
 		return entry
 	}
 	entry.Title = clipRunes(task.Title, 50)
+	entry.Req = strings.TrimSpace(task.Req)
 	if strings.TrimSpace(task.Verdict) != "" {
 		entry.Verdict = task.Verdict
 	}

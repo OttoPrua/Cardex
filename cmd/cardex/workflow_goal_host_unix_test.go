@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -52,12 +53,15 @@ def write_state(status, classifier="", event="goal_updated"):
         "total_worker_rounds": 1,
         "history": [{"event": event}],
     }
-    with open(os.path.join(sess, "goal", "state.json"), "w") as f:
-        json.dump(st, f)
-        f.write("\n")
-    with open(os.path.join(sess, "summary.json"), "w") as f:
-        json.dump({"info": {"id": sid, "cwd": cwd}}, f)
-        f.write("\n")
+    # Readers must not observe partially rewritten JSON. Publish identity first.
+    for path, value in [
+        (os.path.join(sess, "summary.json"), {"info": {"id": sid, "cwd": cwd}}),
+        (os.path.join(sess, "goal", "state.json"), st),
+    ]:
+        with open(path + ".tmp", "w") as f:
+            json.dump(value, f)
+            f.write("\n")
+        os.replace(path + ".tmp", path)
     line = {
         "method": "_x.ai/session/update",
         "params": {
@@ -129,9 +133,28 @@ func TestHostedGoalInjectPauseStopAndSync(t *testing.T) {
 	tk := admitManualWriter(t, root, cfg, wf)
 
 	errCh := make(chan error, 1)
+	runDone := make(chan struct{})
 	go func() {
+		defer close(runDone)
 		errCh <- launchHostedWorkflowGoal(root, cfg, wf, 0, "")
 	}()
+	t.Cleanup(func() {
+		deadline := time.NewTimer(5 * time.Second)
+		defer deadline.Stop()
+		tick := time.NewTicker(20 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-runDone:
+				return
+			case <-deadline.C:
+				t.Error("hosted fixture did not exit before cleanup")
+				return
+			case <-tick.C:
+				signalRegisteredTaskProcs(tk.ID)
+			}
+		}
+	})
 
 	deadline := time.Now().Add(8 * time.Second)
 	var sess string
@@ -152,6 +175,14 @@ func TestHostedGoalInjectPauseStopAndSync(t *testing.T) {
 	obs, err := observeNativeGrokGoal(home, dir, sess, "")
 	if err != nil || obs.NativeStatus != "active" {
 		t.Fatalf("expected active after inject: obs=%+v err=%v", obs, err)
+	}
+
+	// Another registered process must not start a second PTY reader or control
+	// loop for this Goal. The old global resume hook ran for both commands.
+	unrelated := exec.CommandContext(context.Background(), "/bin/sh", "-c", "true")
+	setupProcGroup(unrelated)
+	if err := runCmdRegistered(unrelated); err != nil {
+		t.Fatalf("unrelated registered command: %v", err)
 	}
 
 	if err := requestGoalControl(root, cfg, wf, goalControlPause, home); err != nil {

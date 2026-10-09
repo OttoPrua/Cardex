@@ -49,7 +49,7 @@ func TestHostedPostAdmissionMetadataDoesNotInvalidateProducer(t *testing.T) {
 	root, cfg, wf, tk := admitHostedGoalThenRelease(t)
 
 	err := persistHostedGoalSupervisorStart(root, tk)
-	invalidated := producerInvalidated(tk)
+	invalidated := producerInvalidated(root, tk)
 	staleEvent := hasStaleWriteEvent(root, tk.ID, tk.ActiveAttemptID)
 	if err != nil || invalidated || staleEvent {
 		t.Fatalf("legitimate post-admission hosted metadata persist: err=%v producer_invalidated=%v stale_attempt_write_rejected=%v (want nil/false/false)",
@@ -71,7 +71,7 @@ func TestHostedPostAdmissionMetadataDoesNotInvalidateProducer(t *testing.T) {
 		defer cancel()
 		return finalizeManualGoalLaunch(root, cfg, wf, tk, ctx, nil)
 	})
-	if producerInvalidated(tk) || errors.Is(finalErr, errSchedulerLockLost) || errors.Is(finalErr, errStaleTaskWrite) {
+	if producerInvalidated(root, tk) || errors.Is(finalErr, errSchedulerLockLost) || errors.Is(finalErr, errStaleTaskWrite) {
 		t.Fatalf("finalization/goal-sync custody must not be blocked by stale CAS: %v", finalErr)
 	}
 	if finalErr != nil && !errors.Is(finalErr, errGoalLaunchUnstarted) {
@@ -85,7 +85,7 @@ func TestHostedPostAdmissionOwnedFailurePersistDoesNotInvalidate(t *testing.T) {
 	if err := persistHostedGoalOwned(root, cfg, tk); err != nil {
 		t.Fatalf("owned failure-class persist after release: %v", err)
 	}
-	if producerInvalidated(tk) || hasStaleWriteEvent(root, tk.ID, tk.ActiveAttemptID) {
+	if producerInvalidated(root, tk) || hasStaleWriteEvent(root, tk.ID, tk.ActiveAttemptID) {
 		t.Fatal("owned persist must not invalidate a valid producer or emit stale_attempt_write_rejected")
 	}
 	fresh, err := loadTask(root, tk.ID)
@@ -155,7 +155,7 @@ func TestHostedPostAdmissionRawSaveStillDeniedAfterRelease(t *testing.T) {
 	if !errors.Is(err, errSchedulerLockLost) {
 		t.Fatalf("genuine former-owner active save must stay denied: %v", err)
 	}
-	if !producerInvalidated(tk) {
+	if !producerInvalidated(root, tk) {
 		t.Fatal("genuine stale write must invalidate the producer")
 	}
 	if !hasStaleWriteEvent(root, tk.ID, tk.ActiveAttemptID) {
@@ -213,7 +213,7 @@ func TestHostedPauseNotConfirmedOwnedPersist(t *testing.T) {
 	if err := persistHostedControlUnconfirmed(root, cfg, tk, goalControlStop); err != nil {
 		t.Fatalf("owned pause_not_confirmed persist: %v", err)
 	}
-	if producerInvalidated(tk) || hasStaleWriteEvent(root, tk.ID, tk.ActiveAttemptID) {
+	if producerInvalidated(root, tk) || hasStaleWriteEvent(root, tk.ID, tk.ActiveAttemptID) {
 		t.Fatal("owned failed-control persist must not invalidate a valid producer")
 	}
 	fresh, err := loadTask(root, tk.ID)

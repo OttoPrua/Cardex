@@ -175,25 +175,25 @@ func newOpaqueID(prefix string) string {
 func newAttemptID() string    { return newOpaqueID("at") }
 func newTransitionID() string { return newOpaqueID("tr") }
 
-func producerKey(t *Task) string {
+func producerKey(root string, t *Task) string {
 	if t == nil {
 		return ""
 	}
-	return t.ID + "\x00" + t.ActiveAttemptID
+	return canonicalWorkspaceID(root) + "\x00" + t.ID + "\x00" + t.ActiveAttemptID
 }
 
-func invalidateProducer(t *Task) {
+func invalidateProducer(root string, t *Task) {
 	if t == nil || t.ID == "" {
 		return
 	}
-	invalidatedProducers.Store(producerKey(t), struct{}{})
+	invalidatedProducers.Store(producerKey(root, t), struct{}{})
 }
 
-func producerInvalidated(t *Task) bool {
+func producerInvalidated(root string, t *Task) bool {
 	if t == nil || t.ID == "" {
 		return false
 	}
-	_, ok := invalidatedProducers.Load(producerKey(t))
+	_, ok := invalidatedProducers.Load(producerKey(root, t))
 	return ok
 }
 
@@ -278,7 +278,7 @@ func persistTaskCAS(root string, t *Task) error {
 	if t == nil || t.ID == "" {
 		return fmt.Errorf("empty task")
 	}
-	if producerInvalidated(t) {
+	if producerInvalidated(root, t) {
 		return errStaleTaskWrite
 	}
 	return withTaskControlLock(root, t.ID, func() error {
@@ -302,12 +302,12 @@ func persistTaskCASLocked(root string, t *Task) error {
 		t.effectiveControlState() == controlEligible && isActiveStatus(t.Status) &&
 		!schedulerWriteAllowed(root) {
 		noteStaleTaskWrite(root, current, t, errSchedulerLockLost)
-		invalidateProducer(t)
+		invalidateProducer(root, t)
 		return errSchedulerLockLost
 	}
 	if err := assertTaskWriteAuthority(root, current, t); err != nil {
 		noteStaleTaskWrite(root, current, t, err)
-		invalidateProducer(t)
+		invalidateProducer(root, t)
 		return err
 	}
 	t.Revision = current.Revision + 1
@@ -624,7 +624,7 @@ func commitTaskTransition(root string, t *Task, req transitionRequest) error {
 	if t == nil || t.ID == "" {
 		return fmt.Errorf("empty task")
 	}
-	if producerInvalidated(t) && req.RequireSchedulerLock {
+	if producerInvalidated(root, t) && req.RequireSchedulerLock {
 		return errStaleTaskWrite
 	}
 	return withTaskControlLock(root, t.ID, func() error {
@@ -655,7 +655,7 @@ func commitTaskTransitionLocked(root string, t *Task, req transitionRequest) err
 	if req.RequireSchedulerLock {
 		if !schedulerWriteAllowed(root) {
 			noteStaleTaskWrite(root, current, t, errSchedulerLockLost)
-			invalidateProducer(t)
+			invalidateProducer(root, t)
 			return errSchedulerLockLost
 		}
 	}
@@ -676,7 +676,7 @@ func commitTaskTransitionLocked(root string, t *Task, req transitionRequest) err
 	if err := assertTaskWriteAuthority(root, current, t); err != nil {
 		noteStaleTaskWrite(root, current, t, err)
 		if req.RequireSchedulerLock {
-			invalidateProducer(t)
+			invalidateProducer(root, t)
 		}
 		return err
 	}
@@ -878,7 +878,7 @@ func persistTaskEvent(root string, t *Task, evType, actor, status string, step i
 	if t == nil || t.ID == "" {
 		return fmt.Errorf("empty task")
 	}
-	if producerInvalidated(t) {
+	if producerInvalidated(root, t) {
 		return errStaleTaskWrite
 	}
 	if status == "" {
@@ -917,13 +917,13 @@ func persistTaskEvent(root string, t *Task, evType, actor, status string, step i
 					RequireSchedulerLock: true,
 				})
 			}
-			invalidateProducer(t)
+			invalidateProducer(root, t)
 			return waitErr
 		}
 	}
 	err := commitTaskTransition(root, t, req)
 	if producerWriteStopped(err) {
-		invalidateProducer(t)
+		invalidateProducer(root, t)
 	}
 	return err
 }
@@ -1008,7 +1008,7 @@ func reserveDispatchAttempt(root string, t *Task) error {
 	if t == nil || t.ID == "" {
 		return fmt.Errorf("empty task")
 	}
-	if producerInvalidated(t) {
+	if producerInvalidated(root, t) {
 		return errStaleTaskWrite
 	}
 	return withTaskControlLock(root, t.ID, func() error {
@@ -1073,18 +1073,18 @@ func reserveDispatchAttempt(root string, t *Task) error {
 }
 
 func saveAuthorizedTask(root string, t *Task) error {
-	if producerInvalidated(t) {
+	if producerInvalidated(root, t) {
 		return errStaleTaskWrite
 	}
 	if !schedulerWriteAllowed(root) {
-		invalidateProducer(t)
+		invalidateProducer(root, t)
 		return errSchedulerLockLost
 	}
 	return saveTask(root, t)
 }
 
 func followOnWritesAllowed(root string, t *Task) bool {
-	return t != nil && !producerInvalidated(t) && !diskControlRevoked(root, t.ID) &&
+	return t != nil && !producerInvalidated(root, t) && !diskControlRevoked(root, t.ID) &&
 		schedulerWriteAllowed(root) && admissionAllowsFollowOn(root, t)
 }
 

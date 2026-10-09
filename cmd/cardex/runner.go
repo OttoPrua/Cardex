@@ -2763,7 +2763,7 @@ func finishProviderSuccess(ctx context.Context, root string, cfg *Config, t *Tas
 			if err := saveAuthorizedTask(root, t); err != nil {
 				return false, err
 			}
-			if !admissionAllowsFollowOn(root, t) || producerInvalidated(t) {
+			if !admissionAllowsFollowOn(root, t) || producerInvalidated(root, t) {
 				return false, nil
 			}
 			childCfg := configForGeneratedChildren(root, cfg, lg)
@@ -2850,7 +2850,7 @@ func finishProviderSuccess(ctx context.Context, root string, cfg *Config, t *Tas
 		if t.Status == statusHeld {
 			return false, nil
 		}
-		if producerInvalidated(t) || diskControlRevoked(root, t.ID) {
+		if producerInvalidated(root, t) || diskControlRevoked(root, t.ID) {
 			return false, nil
 		}
 		postComplete(root, cfg, t, res, lg)
@@ -3275,7 +3275,7 @@ func ensureReviewAfterTaskWithEvidence(root string, cfg *Config, t *Task, priorE
 	if t == nil || !t.ReviewAfter || !reviewAfterEligibleType(t) {
 		return nil, nil
 	}
-	if !admissionAllowsFollowOn(root, t) || producerInvalidated(t) || !schedulerWriteAllowed(root) {
+	if !admissionAllowsFollowOn(root, t) || producerInvalidated(root, t) || !schedulerWriteAllowed(root) {
 		return nil, nil
 	}
 	stage := pendingRequiredReviewStage(t)
@@ -3566,7 +3566,7 @@ func reconcileMandatoryReviewObligations(root string, cfg *Config, tasks []*Task
 			!t.ReviewAfter || !reviewAfterEligibleType(t) {
 			continue
 		}
-		if !admissionAllowsFollowOn(root, t) || producerInvalidated(t) || !schedulerWriteAllowed(root) {
+		if !admissionAllowsFollowOn(root, t) || producerInvalidated(root, t) || !schedulerWriteAllowed(root) {
 			continue
 		}
 		lg, _ := openTaskLog(root, t.ID)
@@ -3627,11 +3627,11 @@ func reconcileMandatoryReviewObligations(root string, cfg *Config, tasks []*Task
 // terminal event. A plain save would advance Revision past the done transition
 // and make an otherwise completed task permanently fail the dependency gate.
 func savePostCompleteTask(root string, t *Task) error {
-	if producerInvalidated(t) {
+	if producerInvalidated(root, t) {
 		return errStaleTaskWrite
 	}
 	if !schedulerWriteAllowed(root) {
-		invalidateProducer(t)
+		invalidateProducer(root, t)
 		return errSchedulerLockLost
 	}
 	current, err := loadTask(root, t.ID)

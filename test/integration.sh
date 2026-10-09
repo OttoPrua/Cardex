@@ -540,7 +540,7 @@ echo "== 场景31: 交叉验证链——引擎甲(claude)独立作答→引擎�
 printf 'ok\n' > "$MOCK_DIR/plan"; echo 0 > "$MOCK_DIR/n"
 : > "$MOCK_DIR/codex-calls.log"  # 清空以精确断言交叉引擎乙卡的 reasoning 档
 "$BIN" cross -dir "$PROJ" -title xc "XCHECK_TASK_MARKER 某配置键缺省语义待裁决" >/dev/null
-"$BIN" run -quiet
+"$BIN" run  # Keep runner errors visible when a cross-chain successor is missing.
 assert "交叉A(引擎甲=claude opus max)完成" "one(x_role='A')['status']=='done' and one(x_role='A')['model']=='claude-opus-4-8' and one(x_role='A')['effort']=='max'"
 assert "交叉B 自动派出并由 codex(引擎乙)完成" "one(x_role='B')['status']=='done' and one(x_role='B')['runner']=='codex'"
 assert "交叉B 独立性(不持甲结论字段)+与甲同题" "one(x_role='B').get('x_peer') is None and one(x_role='B')['prompts'][0]==one(x_role='A')['prompts'][0] and 'step ok' not in one(x_role='B')['prompts'][0]"

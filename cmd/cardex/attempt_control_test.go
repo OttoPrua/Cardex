@@ -2005,3 +2005,31 @@ func TestLiveTerminalCrashInjectionRecovers(t *testing.T) {
 		})
 	}
 }
+
+func TestProducerInvalidationIsScopedToTaskRoot(t *testing.T) {
+	t.Parallel()
+	rootA, rootB := testRoot(t), testRoot(t)
+	a := newTask(rootA, testCfg(), typeSequence, "same local task id", t.TempDir(), []string{"task"}, 0)
+	b := *a
+	if err := saveTask(rootA, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveTask(rootB, &b); err != nil {
+		t.Fatal(err)
+	}
+	stale := *a
+	a.Title = "newer A"
+	if err := saveTask(rootA, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveTask(rootA, &stale); !errors.Is(err, errStaleTaskWrite) {
+		t.Fatalf("stale A write was not rejected: %v", err)
+	}
+	b.Title = "independent B"
+	if err := saveTask(rootB, &b); err != nil {
+		t.Fatalf("invalidating A poisoned the same task id in another root: %v", err)
+	}
+	if err := saveTask(rootA, a); !errors.Is(err, errStaleTaskWrite) {
+		t.Fatalf("the original invalidated producer became writable: %v", err)
+	}
+}

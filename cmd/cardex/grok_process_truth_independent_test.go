@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -268,7 +269,13 @@ func cprocFakeGrok(t *testing.T, payload, stderr string, exitCode int, killSigna
 		script += "kill -9 $$\n"
 	}
 	script += "exit " + strconv.Itoa(exitCode) + "\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+	// A concurrent fork can briefly inherit this writable descriptor and make
+	// Linux reject exec with ETXTBSY, even after our WriteFile has closed it.
+	// Keep only fixture publication under ForkLock; execution stays parallel.
+	syscall.ForkLock.RLock()
+	err := os.WriteFile(bin, []byte(script), 0o755)
+	syscall.ForkLock.RUnlock()
+	if err != nil {
 		t.Fatal(err)
 	}
 	return bin, productCalls
@@ -411,6 +418,9 @@ func cprocRunHeld(t *testing.T, stderr string, exitCode int, killSignal bool) (r
 	cfg.MaxAttempts = 3
 	isolateGrokLifecycleHome(t, cfg)
 	task := ownerBackendGrokTask(t, root, cfg, t.TempDir())
+	// Parallel fixtures share the process registry across independent roots.
+	// Use the existing test ID allocator, not the root-local short random IDs.
+	task.ID = uniqueTaskID("cproc")
 	if err := saveTask(root, task); err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +465,7 @@ func cprocAssertTruthfulHold(t *testing.T, root string, got *Task, productCalls 
 	}
 	ra := got.LastRouteAttempt
 	if ra.FailureClass != string(wantClass) {
-		t.Fatalf("failure_class=%q want %q", ra.FailureClass, wantClass)
+		t.Fatalf("failure_class=%q want %q; failure_kind=%q last_error=%q", ra.FailureClass, wantClass, ra.FailureKind, got.LastError)
 	}
 	if ra.FailureKind != "grok_build_process_"+string(wantClass) {
 		t.Fatalf("failure_kind=%q want grok_build_process_%s", ra.FailureKind, wantClass)

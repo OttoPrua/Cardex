@@ -1526,14 +1526,18 @@ func executeAdmittedGoalLaunch(root string, cfg *Config, wf *WorkflowRecord, t *
 	return nil
 }
 
-// bootstrapRefusalCapture copies child stderr to the original sink and keeps
-// one incomplete line of at most grokBuildProcessStderrMaxBytes. A complete
-// line matches only when it equals an accepted refusal after trim. Prefixed,
-// quoted, or concatenated junk+marker without a line boundary is not a match.
-// After a match only that closed-set line is retained. It is not a full-session log.
+// bootstrapRefusalCapture copies child stderr to the original sink and keeps a
+// bounded adjacent-line window: the current incomplete line plus at most one
+// prior complete line, each at most grokBuildProcessStderrMaxBytes. The real
+// pre-provider refusal is an adjacent warning/error pair; a complete line
+// matches only as that pair or an accepted closed-set single line after trim.
+// Chunk splits and CRLF are joined into the same window. Prefixed, quoted, or
+// concatenated junk+marker without a line boundary is not a match. After a
+// match only that closed-set pair or line is retained. It is not a session log.
 type bootstrapRefusalCapture struct {
 	sink           io.Writer
 	window         []byte
+	prevComplete   string
 	pendingCut     bool
 	matched        string
 	ttyLeftInPlace bool
@@ -1591,14 +1595,33 @@ func (c *bootstrapRefusalCapture) finishPendingLine() {
 	if c.pendingCut {
 		c.pendingCut = false
 		c.window = c.window[:0]
+		c.prevComplete = ""
 		return
 	}
-	if line, ok := matchAcceptedBootstrapBeforeProviderRefusal(string(c.window)); ok {
-		c.matched = line
+	line := strings.TrimSuffix(string(c.window), "\r")
+	c.window = c.window[:0]
+	c.considerCompleteLine(line)
+}
+
+func (c *bootstrapRefusalCapture) considerCompleteLine(line string) {
+	if c == nil || c.matched != "" {
+		return
+	}
+	if c.prevComplete != "" {
+		if matched, ok := matchAcceptedBootstrapBeforeProviderRefusal(c.prevComplete + "\n" + line); ok {
+			c.matched = matched
+			c.prevComplete = ""
+			c.window = nil
+			return
+		}
+	}
+	if matched, ok := matchAcceptedBootstrapBeforeProviderRefusal(line); ok {
+		c.matched = matched
+		c.prevComplete = ""
 		c.window = nil
 		return
 	}
-	c.window = c.window[:0]
+	c.prevComplete = line
 }
 
 func (c *bootstrapRefusalCapture) capturedOutput() string {
@@ -1611,12 +1634,35 @@ func (c *bootstrapRefusalCapture) capturedOutput() string {
 	if c.pendingCut {
 		return ""
 	}
-	if line, ok := matchAcceptedBootstrapBeforeProviderRefusal(string(c.window)); ok {
-		c.matched = line
-		c.window = nil
+	line := strings.TrimSuffix(string(c.window), "\r")
+	if c.prevComplete != "" && line != "" {
+		if matched, ok := matchAcceptedBootstrapBeforeProviderRefusal(c.prevComplete + "\n" + line); ok {
+			c.matched = matched
+			c.prevComplete = ""
+			c.window = nil
+			return matched
+		}
+	}
+	if line != "" {
+		if matched, ok := matchAcceptedBootstrapBeforeProviderRefusal(line); ok {
+			c.matched = matched
+			c.prevComplete = ""
+			c.window = nil
+			return matched
+		}
+	}
+	if c.prevComplete != "" && line == "" {
+		if matched, ok := matchAcceptedBootstrapBeforeProviderRefusal(c.prevComplete); ok {
+			c.matched = matched
+			c.prevComplete = ""
+			c.window = nil
+			return matched
+		}
+	}
+	if line != "" {
 		return line
 	}
-	return string(c.window)
+	return c.prevComplete
 }
 
 func (c *bootstrapRefusalCapture) preservedTTYStderr() bool {

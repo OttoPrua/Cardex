@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const version = "0.10.27"
+const version = "0.10.28"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -1957,8 +1957,12 @@ func cmdList(args []string) error {
 		return nil
 	}
 
+	byID := listDependencyIndex(root, tasks)
 	byStatus := map[string][]*Task{}
 	for _, t := range tasks {
+		if t == nil {
+			continue
+		}
 		byStatus[t.Status] = append(byStatus[t.Status], t)
 	}
 	progByKey, progBySession := progressIndex(root)
@@ -1976,11 +1980,7 @@ func cmdList(args []string) error {
 			case statusLimitPaused:
 				note = fmt.Sprintf("%s 续跑（%s）", fmtClock(t.ResumeAtEpoch), fmtIn(t.ResumeAtEpoch, now))
 			case statusQueued:
-				if t.NotBeforeEpoch > now.Unix() {
-					note = fmt.Sprintf("%s 重试", fmtClock(t.NotBeforeEpoch))
-				} else {
-					note = "就绪"
-				}
+				note = queuedTextNote(t, byID, now)
 			case statusFailed:
 				note = truncate(t.LastError, 40)
 			case statusDone:
@@ -2002,12 +2002,74 @@ func cmdList(args []string) error {
 		}
 	}
 	w.Flush()
-	if next := pickNext(mustConfig(root), tasks, now); next != nil {
+	if next := pickNextDisplay(mustConfig(root), tasks, byID, now); next != nil {
 		fmt.Printf("\n下一个将派发: %s（%s）\n", next.ID, next.Title)
 	} else if wake := nextWake(tasks, now); !wake.IsZero() {
 		fmt.Printf("\n暂无就绪任务，最早 %s 有任务就绪。\n", wake.Format("15:04"))
 	}
 	return nil
+}
+
+// listDependencyIndex is the live list plus each card's actual DependsOn
+// predecessors. loadTasks only covers tasks/; the scheduler DAG universe
+// already fills missing IDs with findTaskAnywhere (archive included). This
+// lookup does the same so an archived done predecessor is not "missing".
+// Archive cards are not added to list rows.
+func listDependencyIndex(root string, live []*Task) map[string]*Task {
+	byID := make(map[string]*Task, len(live))
+	for _, t := range live {
+		if t != nil && t.ID != "" {
+			byID[t.ID] = t
+		}
+	}
+	for _, t := range live {
+		if t == nil {
+			continue
+		}
+		for _, id := range t.DependsOn {
+			id = strings.TrimSpace(id)
+			if id == "" || byID[id] != nil {
+				continue
+			}
+			found, err := findTaskAnywhere(root, id)
+			if err != nil || found == nil {
+				continue
+			}
+			byID[id] = found
+		}
+	}
+	return byID
+}
+
+// queuedTextNote is the human list "就绪/备注" for a queued card. Delayed
+// retry keeps today's clock note; unsatisfied DependsOn reuses the board's
+// TaskDependencyWaits projection. Display only — does not change dispatch.
+func queuedTextNote(t *Task, byID map[string]*Task, now time.Time) string {
+	if t == nil {
+		return "-"
+	}
+	if t.NotBeforeEpoch > now.Unix() {
+		return fmt.Sprintf("%s 重试", fmtClock(t.NotBeforeEpoch))
+	}
+	if waits := TaskDependencyWaits(t, byID); len(waits) > 0 {
+		return formatDependencyWaitReason(waits)
+	}
+	return "就绪"
+}
+
+// pickNextDisplay chooses the card named in the list footer. Blocked
+// dependents are skipped so the footer does not claim them as next; pickNext
+// itself is left unchanged for the scheduler. byID must already include
+// archived DependsOn filled by listDependencyIndex.
+func pickNextDisplay(cfg *Config, tasks []*Task, byID map[string]*Task, now time.Time) *Task {
+	ready := make([]*Task, 0, len(tasks))
+	for _, t := range tasks {
+		if t == nil || len(TaskDependencyWaits(t, byID)) > 0 {
+			continue
+		}
+		ready = append(ready, t)
+	}
+	return pickNext(cfg, ready, now)
 }
 
 func mustConfig(root string) *Config {

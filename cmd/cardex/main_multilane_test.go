@@ -420,3 +420,144 @@ func TestPrintUsageDocumentsSingleIDRun(t *testing.T) {
 		t.Fatalf("help must show the single-id run path:\n%s", out)
 	}
 }
+
+func listTextRow(t *testing.T, out, id string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		trim := strings.TrimSpace(line)
+		if trim == "" || strings.Contains(trim, "下一个将派发") || strings.Contains(trim, "暂无就绪") {
+			continue
+		}
+		if strings.HasPrefix(trim, id) {
+			return line
+		}
+	}
+	t.Fatalf("no text list row for %s in:\n%s", id, out)
+	return ""
+}
+
+func TestCmdListTextDependencyReadinessAndFooter(t *testing.T) {
+	root := testRoot(t)
+	if err := saveConfig(root, defaultConfig("claude")); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaultConfig("claude")
+	dir := t.TempDir()
+	now := time.Now()
+
+	heldPred := newTask(root, cfg, typeSequence, "held predecessor", dir, []string{"pred"}, 5)
+	heldPred.ID = "t-held-pred"
+	heldPred.Status = statusHeld
+	if err := saveTask(root, heldPred); err != nil {
+		t.Fatal(err)
+	}
+	donePred := newTask(root, cfg, typeSequence, "done predecessor", dir, []string{"pred"}, 5)
+	donePred.ID = "t-done-pred"
+	donePred.Status = statusDone
+	if err := saveTask(root, donePred); err != nil {
+		t.Fatal(err)
+	}
+
+	blockedHeld := newTask(root, cfg, typeCoordinate, "blocked held-dep", dir, []string{"coord"}, 9)
+	blockedHeld.ID = "t-blocked-held"
+	blockedHeld.DependsOn = []string{heldPred.ID}
+	if err := saveTask(root, blockedHeld); err != nil {
+		t.Fatal(err)
+	}
+	blockedMissing := newTask(root, cfg, typeCoordinate, "blocked missing-dep", dir, []string{"coord"}, 2)
+	blockedMissing.ID = "t-blocked-missing"
+	blockedMissing.DependsOn = []string{"t-absent-pred"}
+	if err := saveTask(root, blockedMissing); err != nil {
+		t.Fatal(err)
+	}
+	recovered := newTask(root, cfg, typeCoordinate, "recovered dep", dir, []string{"coord"}, 3)
+	recovered.ID = "t-recovered"
+	recovered.DependsOn = []string{donePred.ID}
+	if err := saveTask(root, recovered); err != nil {
+		t.Fatal(err)
+	}
+	ready := newTask(root, cfg, typeSequence, "independent ready", dir, []string{"ready"}, 1)
+	ready.ID = "t-ready-indep"
+	if err := saveTask(root, ready); err != nil {
+		t.Fatal(err)
+	}
+	delayed := newTask(root, cfg, typeSequence, "delayed retry", dir, []string{"later"}, 0)
+	delayed.ID = "t-delayed-retry"
+	delayed.NotBeforeEpoch = now.Unix() + 3600
+	if err := saveTask(root, delayed); err != nil {
+		t.Fatal(err)
+	}
+	archivedDone := newTask(root, cfg, typeSequence, "archived done predecessor", dir, []string{"pred"}, 5)
+	archivedDone.ID = "t-archived-done"
+	archivedDone.Status = statusDone
+	if err := saveTask(root, archivedDone); err != nil {
+		t.Fatal(err)
+	}
+	if err := archiveTask(root, archivedDone); err != nil {
+		t.Fatal(err)
+	}
+	archivedChild := newTask(root, cfg, typeCoordinate, "archived-done dependent", dir, []string{"coord"}, 8)
+	archivedChild.ID = "t-archived-dep"
+	archivedChild.DependsOn = []string{archivedDone.ID}
+	if err := saveTask(root, archivedChild); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := captureStdout(t, func() error {
+		return cmdList([]string{"-root", root})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	heldRow := listTextRow(t, out, blockedHeld.ID)
+	if strings.Contains(heldRow, "就绪") {
+		t.Fatalf("held-blocked card printed 就绪:\n%s\nfull:\n%s", heldRow, out)
+	}
+	if !strings.Contains(heldRow, heldPred.ID) || !strings.Contains(heldRow, "held") {
+		t.Fatalf("held-blocked note missing wait reason:\n%s", heldRow)
+	}
+
+	missingRow := listTextRow(t, out, blockedMissing.ID)
+	if strings.Contains(missingRow, "就绪") {
+		t.Fatalf("missing-blocked card printed 就绪:\n%s\nfull:\n%s", missingRow, out)
+	}
+	if !strings.Contains(missingRow, "missing") {
+		t.Fatalf("missing-blocked note missing wait reason:\n%s", missingRow)
+	}
+
+	recoveredRow := listTextRow(t, out, recovered.ID)
+	if !strings.Contains(recoveredRow, "就绪") {
+		t.Fatalf("recovered card lost 就绪:\n%s", recoveredRow)
+	}
+
+	readyRow := listTextRow(t, out, ready.ID)
+	if !strings.Contains(readyRow, "就绪") {
+		t.Fatalf("no-dependency queued card lost 就绪:\n%s", readyRow)
+	}
+
+	delayedRow := listTextRow(t, out, delayed.ID)
+	if !strings.Contains(delayedRow, "重试") {
+		t.Fatalf("delayed-retry note lost 重试:\n%s", delayedRow)
+	}
+
+	archivedRow := listTextRow(t, out, archivedChild.ID)
+	if strings.Contains(archivedRow, "missing") || strings.Contains(archivedRow, "等待") {
+		t.Fatalf("archived-done predecessor reported as a wait:\n%s", archivedRow)
+	}
+	if !strings.Contains(archivedRow, "就绪") {
+		t.Fatalf("archived-done dependent lost 就绪:\n%s", archivedRow)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), archivedDone.ID) {
+			t.Fatalf("archive card leaked into list rows:\n%s", out)
+		}
+	}
+
+	if strings.Contains(out, "下一个将派发: "+blockedHeld.ID) || strings.Contains(out, "下一个将派发: "+blockedMissing.ID) {
+		t.Fatalf("footer named a blocked card:\n%s", out)
+	}
+	if !strings.Contains(out, "下一个将派发: "+archivedChild.ID) {
+		t.Fatalf("footer did not name the actually-ready archived-done dependent:\n%s", out)
+	}
+}

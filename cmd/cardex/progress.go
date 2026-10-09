@@ -422,7 +422,10 @@ func omissionList(reason string, pointers []string) []liveContextOmission {
 // pointers are always kept; only those necessary pointers may push a required
 // item past liveContextSnapshotBudget. Every non-required item, including the
 // first, is omitted once admitting it would pass the budget; those drops are
-// disclosed as count/reason/pointers.
+// disclosed as count/reason/pointers. After the greedy keep loop, optional
+// items are trimmed from the end until the final serialized snapshot (items
+// plus omission metadata) fits, or only required items remain. Required-only
+// payloads that still exceed budget are the documented exception.
 func renderLiveContextSnapshot(scope liveContextScope, items []liveContextItem, omitted []liveContextOmission, budget int) string {
 	type payload struct {
 		Scope   liveContextScopeView  `json:"scope"`
@@ -455,6 +458,24 @@ func renderLiveContextSnapshot(scope liveContextScope, items []liveContextItem, 
 	raw, err := pack(keep, omissionList("budget", budgetPtrs))
 	if err != nil {
 		return "（序列化队列失败）"
+	}
+	for budget > 0 && len(raw) > budget {
+		drop := -1
+		for i := len(keep) - 1; i >= 0; i-- {
+			if !keep[i].Required {
+				drop = i
+				break
+			}
+		}
+		if drop < 0 {
+			break
+		}
+		budgetPtrs = append(budgetPtrs, keep[drop].pointer)
+		keep = append(keep[:drop], keep[drop+1:]...)
+		raw, err = pack(keep, omissionList("budget", budgetPtrs))
+		if err != nil {
+			return "（序列化队列失败）"
+		}
 	}
 	return raw
 }

@@ -497,3 +497,180 @@ func TestInjectLiveContextCompletedProgressRemainsInScope(t *testing.T) {
 		})
 	}
 }
+
+func assertOmissionFacts(t *testing.T, omitted []struct {
+	Count    int      `json:"count"`
+	Reason   string   `json:"reason"`
+	Pointers []string `json:"pointers"`
+}) {
+	t.Helper()
+	if len(omitted) == 0 {
+		t.Fatal("expected omission disclosure")
+	}
+	for _, om := range omitted {
+		if om.Count <= 0 || om.Reason == "" || len(om.Pointers) == 0 {
+			t.Fatalf("omission missing count/reason/pointers: %+v", om)
+		}
+		if om.Count < len(om.Pointers) {
+			t.Fatalf("omission count smaller than pointers: %+v", om)
+		}
+	}
+}
+
+func TestInjectLiveContextFinalRenderedJSONAccountsForOmissionMetadata(t *testing.T) {
+	root := testRoot(t)
+	if err := saveConfig(root, defaultConfig("claude")); err != nil {
+		t.Fatal(err)
+	}
+	cfg := workflowTestCfg(t, root)
+	coordDir := filepath.Join(root, "work", "alpha")
+	crossDir := filepath.Join(root, "work", "beta")
+	otherDir := filepath.Join(root, "work", "other")
+
+	cross := newTask(root, cfg, typeSequence, "cross-project predecessor", crossDir, []string{"pred work"}, 9)
+	cross.ID = "t-cross-pred"
+	cross.Project = "beta"
+	cross.Status = statusHeld
+	saveCoordTask(t, root, cross)
+
+	coord := newTask(root, cfg, typeCoordinate, "coordinate alpha", coordDir, []string{"{{QUEUE}}\n{{PROGRESS}}"}, 8)
+	coord.ID = "t-coord-alpha"
+	coord.Project = "alpha"
+	coord.WorkflowID = "wf-alpha"
+	coord.DependsOn = []string{cross.ID}
+	saveCoordTask(t, root, coord)
+
+	for i := 0; i < 30; i++ {
+		tk := newTask(root, cfg, typeSequence, "in-scope filler "+strings.Repeat("x ", 25), coordDir, []string{"f"}, 3)
+		tk.Project = "alpha"
+		tk.WorkflowID = "wf-alpha"
+		saveCoordTask(t, root, tk)
+		if err := saveProgress(root, &ProgressEntry{
+			Key: tk.ID, Title: tk.Title, Dir: tk.Dir,
+			Report: map[string]any{"goal": "kept progress", "next_prompt": strings.Repeat("NEXT_PROMPT_DO_NOT_INLINE ", 80), "key_files": []string{"kept.txt"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := newTask(root, cfg, typeSequence, "out-of-scope other", otherDir, []string{"o"}, 3)
+	out.ID = "t-out-scope"
+	out.Project = "other"
+	out.WorkflowID = "wf-other"
+	saveCoordTask(t, root, out)
+	if err := saveProgress(root, &ProgressEntry{
+		Key: out.ID, Title: out.Title, Dir: out.Dir,
+		Report: map[string]any{"goal": strings.Repeat("UNRELATED_BODY_DO_NOT_INLINE ", 40)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveProgress(root, &ProgressEntry{
+		Key: cross.ID, Title: cross.Title, Dir: cross.Dir,
+		Report: map[string]any{"format": "raw", "raw": "cross predecessor still held; see " + taskLogPath(root, cross.ID)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	queueRaw := injectLiveContext(root, coord.ID, "{{QUEUE}}")
+	progRaw := injectLiveContext(root, coord.ID, "{{PROGRESS}}")
+	if queueRaw == "{{QUEUE}}" || progRaw == "{{PROGRESS}}" {
+		t.Fatal("placeholders were not substituted")
+	}
+	if len(queueRaw) > liveContextSnapshotBudget {
+		t.Fatalf("final QUEUE exceeded modest budget while optionals remain trimmable: %d\n%s", len(queueRaw), queueRaw)
+	}
+	if len(progRaw) > liveContextSnapshotBudget {
+		t.Fatalf("final PROGRESS exceeded modest budget while optionals remain trimmable: %d\n%s", len(progRaw), progRaw)
+	}
+
+	q := parseLiveContext(t, queueRaw)
+	p := parseLiveContext(t, progRaw)
+	assertOmissionFacts(t, q.Omitted)
+	assertOmissionFacts(t, p.Omitted)
+
+	crossSeen := false
+	for _, it := range q.Items {
+		if it.ID == cross.ID {
+			crossSeen = true
+			if !it.Required || it.Log == "" || it.Status != statusHeld {
+				t.Fatalf("required predecessor lost identity/status/log: %+v", it)
+			}
+		}
+		if it.ID == out.ID {
+			t.Fatal("out-of-scope row leaked into QUEUE items")
+		}
+	}
+	if !crossSeen {
+		t.Fatal("required predecessor missing from final QUEUE")
+	}
+	foundBudget, foundOut := false, false
+	for _, om := range q.Omitted {
+		switch om.Reason {
+		case "budget":
+			foundBudget = true
+		case "out_of_scope":
+			foundOut = true
+		}
+	}
+	if !foundBudget || !foundOut {
+		t.Fatalf("QUEUE omissions want budget+out_of_scope, got %+v", q.Omitted)
+	}
+
+	progPred := false
+	for _, it := range p.Items {
+		if it.Key == cross.ID || it.ID == cross.ID {
+			progPred = true
+			if it.Source == "" {
+				t.Fatalf("required progress lost source pointer: %+v", it)
+			}
+		}
+	}
+	if !progPred {
+		t.Fatal("required predecessor missing from final PROGRESS")
+	}
+	dumpScratch(t, "coord-budget-queue-progress.txt", queueRaw+"\n---\n"+progRaw)
+
+	t.Run("required_only_overflow_documented", func(t *testing.T) {
+		hugeRoot := testRoot(t)
+		if err := saveConfig(hugeRoot, defaultConfig("claude")); err != nil {
+			t.Fatal(err)
+		}
+		hugeCfg := workflowTestCfg(t, hugeRoot)
+		hugeDir := filepath.Join(hugeRoot, "work", strings.Repeat("d", 9000))
+		pred := newTask(hugeRoot, hugeCfg, typeSequence, "huge required pred", hugeDir, []string{"pred"}, 9)
+		pred.ID = "t-huge-req"
+		pred.Project = "beta"
+		pred.Status = statusHeld
+		saveCoordTask(t, hugeRoot, pred)
+		sib := newTask(hugeRoot, hugeCfg, typeSequence, "optional sibling", filepath.Join(hugeRoot, "work", "alpha"), []string{"sib"}, 3)
+		sib.ID = "t-optional-sib"
+		sib.Project = "alpha"
+		saveCoordTask(t, hugeRoot, sib)
+		coordHuge := newTask(hugeRoot, hugeCfg, typeCoordinate, "coord required overflow", filepath.Join(hugeRoot, "work", "alpha"), []string{"{{QUEUE}}"}, 8)
+		coordHuge.ID = "t-coord-overflow"
+		coordHuge.Project = "alpha"
+		coordHuge.DependsOn = []string{pred.ID}
+		saveCoordTask(t, hugeRoot, coordHuge)
+
+		raw := injectLiveContext(hugeRoot, coordHuge.ID, "{{QUEUE}}")
+		payload := parseLiveContext(t, raw)
+		reqSeen := false
+		for _, it := range payload.Items {
+			if it.ID == pred.ID {
+				reqSeen = true
+				if !it.Required || it.Log == "" || it.Status != statusHeld {
+					t.Fatalf("required-only overflow dropped identity/status/log: %+v", it)
+				}
+			}
+			if it.ID == sib.ID {
+				t.Fatal("optional sibling was kept while required-only payload already exceeds budget")
+			}
+		}
+		if !reqSeen {
+			t.Fatal("required predecessor was dropped to force the 8192-byte cap")
+		}
+		if len(raw) <= liveContextSnapshotBudget {
+			t.Fatalf("expected required-only payload to remain an over-budget exception, got %d bytes", len(raw))
+		}
+		dumpScratch(t, "coord-required-only-overflow.txt", raw)
+	})
+}

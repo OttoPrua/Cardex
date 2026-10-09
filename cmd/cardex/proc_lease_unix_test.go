@@ -160,3 +160,67 @@ func TestWorkspaceLeaseSurvivesMapLossAndBlocksDifferentFallbackTask(t *testing.
 		t.Fatal("workspace lease must release after every inheriting descendant exits")
 	}
 }
+
+func TestWorkspaceResidueProbeAllowsOtherObservers(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path, err := workspaceExecutionLeasePath(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Close()
+	if err := syscall.Flock(int(observer.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	if workspaceProcessResidue(dir) {
+		t.Fatal("a concurrent read-only residue probe was mistaken for a live writer")
+	}
+	if !producerGone(&Task{Dir: dir}, nil) {
+		t.Fatal("read-only observation blocked terminal completion")
+	}
+}
+
+func TestCrossCompletionAllowsConcurrentLeaseObserver(t *testing.T) {
+	t.Parallel()
+	root, cfg := testRoot(t), testCrossCfg()
+	withSchedulerLock(t, root)
+	a := newTask(root, cfg, typeCrossCheck, "交叉A[opus-codex]: observed completion", t.TempDir(), []string{"independent answer"}, 1)
+	a.XRole, a.XKey, a.XTask = "A", newCrossKey(), "independent answer"
+	var err error
+	a.XEngineB, err = freezeCrossEngine(cfg.CrossProfiles["opus-codex"].B, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := saveTask(root, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := reserveDispatchAttempt(root, a); err != nil {
+		t.Fatal(err)
+	}
+	observer, err := acquireWorkspaceLease(a.Dir, syscall.LOCK_SH)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer observer.Close()
+	log, err := os.Create(filepath.Join(t.TempDir(), "completion.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	more, err := finishProviderSuccess(context.Background(), root, cfg, a, "", a.Prompts[0], &claudeResult{Result: "independent candidate"}, log, false, false, false, false, false, false, false, "")
+	if err != nil || more {
+		t.Fatalf("completion failed with only an observer present: more=%v err=%v", more, err)
+	}
+	child, err := existingCrossChainChild(root, a.XKey, "B")
+	if err != nil || child == nil {
+		t.Fatalf("successful A did not dispatch B: child=%+v err=%v", child, err)
+	}
+	stored, err := loadTask(root, a.ID)
+	if err != nil || stored.Status != statusDone || !transitionDurablyCommitted(root, a.ID, stored.LastCommittedTransitionID) {
+		t.Fatalf("A completion is not durable: task=%+v err=%v", stored, err)
+	}
+}

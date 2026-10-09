@@ -266,12 +266,11 @@ def write_state(status, classifier="", event="goal_updated", phase="Idle"):
         "total_worker_rounds": 1,
         "history": [{"event": event}],
     }
-    with open(os.path.join(sess, "goal", "state.json"), "w") as f:
-        json.dump(st, f)
-        f.write("\n")
-    with open(os.path.join(sess, "summary.json"), "w") as f:
+    summary = os.path.join(sess, "summary.json")
+    with open(summary + ".tmp", "w") as f:
         json.dump({"info": {"id": sid, "cwd": cwd}}, f)
         f.write("\n")
+    os.replace(summary + ".tmp", summary)
     line = {
         "method": "_x.ai/session/update",
         "params": {
@@ -288,6 +287,12 @@ def write_state(status, classifier="", event="goal_updated", phase="Idle"):
     }
     with open(os.path.join(sess, "updates.jsonl"), "a") as f:
         f.write(json.dumps(line) + "\n")
+    # Publish readiness only after its required summary and update evidence.
+    state = os.path.join(sess, "goal", "state.json")
+    with open(state + ".tmp", "w") as f:
+        json.dump(st, f)
+        f.write("\n")
+    os.replace(state + ".tmp", state)
 
 write_state("budget_limited", classifier="not_achieved", event="goal_budget_limited", phase="Idle")
 buf = ""

@@ -45,6 +45,10 @@ func workspaceExecutionLeasePath(dir string) (string, error) {
 }
 
 func acquireWorkspaceExecutionLease(dir string) (*os.File, error) {
+	return acquireWorkspaceLease(dir, syscall.LOCK_EX)
+}
+
+func acquireWorkspaceLease(dir string, mode int) (*os.File, error) {
 	path, err := workspaceExecutionLeasePath(dir)
 	if err != nil || path == "" {
 		return nil, err
@@ -53,7 +57,7 @@ func acquireWorkspaceExecutionLease(dir string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := syscall.Flock(int(f.Fd()), mode|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN) {
 			return nil, fmt.Errorf("%w for %s", errWorkspaceExecutionLeaseBusy, dir)
@@ -67,7 +71,9 @@ func acquireWorkspaceExecutionLease(dir string) (*os.File, error) {
 // inherited descriptor in a detached descendant even if the Cardex process and its in-memory maps die.
 // It is also workspace-keyed, so a fallback child with a different task ID cannot overlap its parent.
 func workspaceProcessResidue(dir string) bool {
-	f, err := acquireWorkspaceExecutionLease(dir)
+	// Read-only probes may overlap; only the inherited exclusive writer lease
+	// is residue. Exclusive probes can falsely block each other's completion.
+	f, err := acquireWorkspaceLease(dir, syscall.LOCK_SH)
 	if err != nil {
 		return true
 	}

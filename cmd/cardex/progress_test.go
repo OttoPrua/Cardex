@@ -446,3 +446,54 @@ func TestInjectLiveContextCounterexampleHeuristicOnlyScoping(t *testing.T) {
 		}
 	}
 }
+
+func TestInjectLiveContextCompletedProgressRemainsInScope(t *testing.T) {
+	for _, mode := range []string{"unscoped", "project", "workflow", "dependency"} {
+		t.Run(mode, func(t *testing.T) {
+			root := testRoot(t)
+			cfg := testCfg()
+			owner := newTask(root, cfg, typeProgressPull, "completed progress", t.TempDir(), []string{"brief"}, 1)
+			owner.Project, owner.WorkflowID, owner.ProgressKey = "alpha", "wf-alpha", "s-completed"
+			owner.Status = statusDone
+			saveCoordTask(t, root, owner)
+			foreign := newTask(root, cfg, typeProgressPull, "unrelated progress", t.TempDir(), []string{"brief"}, 1)
+			foreign.Project, foreign.WorkflowID, foreign.ProgressKey = "beta", "wf-beta", "s-foreign"
+			foreign.Status = statusDone
+			saveCoordTask(t, root, foreign)
+			for _, task := range []*Task{owner, foreign} {
+				if err := saveProgress(root, &ProgressEntry{Key: task.ProgressKey, Report: map[string]any{"goal": task.Title}}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			coord := newTask(root, cfg, typeCoordinate, "next plan", owner.Dir, []string{"{{PROGRESS}}"}, 1)
+			switch mode {
+			case "project":
+				coord.Project = owner.Project
+			case "workflow":
+				coord.WorkflowID = owner.WorkflowID
+			case "dependency":
+				coord.DependsOn = []string{owner.ID}
+			}
+			saveCoordTask(t, root, coord)
+			progress := parseLiveContext(t, injectLiveContext(root, coord.ID, "{{PROGRESS}}"))
+			found := false
+			for _, item := range progress.Items {
+				if item.Key == owner.ProgressKey && item.Report["goal"] == owner.Title {
+					found = true
+				}
+				if mode != "unscoped" && item.Key == foreign.ProgressKey {
+					t.Fatal("unrelated completed report leaked across scope")
+				}
+			}
+			if !found {
+				t.Fatalf("completed in-scope report missing: %+v", progress)
+			}
+			queue := parseLiveContext(t, injectLiveContext(root, coord.ID, "{{QUEUE}}"))
+			for _, item := range queue.Items {
+				if item.ID == owner.ID && mode != "dependency" {
+					t.Fatal("completed nondependency reappeared in the live queue")
+				}
+			}
+		})
+	}
+}

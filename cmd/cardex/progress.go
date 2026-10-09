@@ -214,7 +214,7 @@ func (s liveContextScope) view() liveContextScopeView {
 	}
 }
 
-func (s liveContextScope) classifyTask(t *Task) (include bool, required bool, rank int) {
+func (s liveContextScope) classifyTask(t *Task, includeTerminal bool) (include bool, required bool, rank int) {
 	if t == nil {
 		return false, false, 0
 	}
@@ -224,22 +224,18 @@ func (s liveContextScope) classifyTask(t *Task) (include bool, required bool, ra
 	if s.requiredSet[t.ID] {
 		return true, true, 0
 	}
+	// Queue snapshots hide completed work, but its progress reports remain
+	// useful evidence for the next coordinating task.
+	if !includeTerminal && t.terminal() {
+		return false, false, 0
+	}
 	if s.unscoped {
-		if t.terminal() {
-			return false, false, 0
-		}
 		return true, false, 3
 	}
 	if s.workflowID != "" && t.WorkflowID == s.workflowID {
-		if t.terminal() {
-			return false, false, 0
-		}
 		return true, false, 1
 	}
 	if s.project != "" && t.Project == s.project {
-		if t.terminal() {
-			return false, false, 0
-		}
 		return true, false, 2
 	}
 	return false, false, 0
@@ -276,7 +272,7 @@ func queueSnapshot(root string, self *Task) string {
 			continue
 		}
 		seen[t.ID] = true
-		inc, req, rank := scope.classifyTask(t)
+		inc, req, rank := scope.classifyTask(t, false)
 		if !inc {
 			if scope.self == nil || t.ID != scope.self.ID {
 				outScope = append(outScope, t.ID)
@@ -342,7 +338,7 @@ func progressSnapshot(root string, self *Task) string {
 		owner := byKey[e.Key]
 		inc, req, rank := false, false, 3
 		if owner != nil {
-			inc, req, rank = scope.classifyTask(owner)
+			inc, req, rank = scope.classifyTask(owner, true)
 		} else if scope.unscoped {
 			inc, rank = true, 3
 		}

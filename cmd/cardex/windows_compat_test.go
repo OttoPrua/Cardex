@@ -879,3 +879,35 @@ func TestWindowsWaitDelayPreservesExecutionFailure(t *testing.T) {
 		t.Fatalf("Windows process failure was erased: %v", got)
 	}
 }
+
+// An observer may retain a process handle after cmd.Wait. Windows job accounting
+// can still count that exited process; the signaled handle proves it cannot write.
+func TestWindowsExitedJobProcessWithRetainedHandle(t *testing.T) {
+	var retained syscall.Handle
+	var observeErr error
+	previous := afterCmdStart
+	afterCmdStart = func(cmd *exec.Cmd) {
+		retained, observeErr = syscall.OpenProcess(0x100000, false, uint32(cmd.Process.Pid))
+	}
+	defer func() {
+		afterCmdStart = previous
+		if retained != 0 {
+			syscall.CloseHandle(retained)
+		}
+	}()
+	cmd := exec.CommandContext(context.Background(), os.Args[0], "--cardex-windows-fixture", "args")
+	cmd.Dir = t.TempDir()
+	setupProcGroup(cmd)
+	if err := runCmdRegistered(cmd); err != nil {
+		t.Fatalf("exited process was treated as a live descendant: %v", err)
+	}
+	if observeErr != nil || retained == 0 {
+		t.Fatalf("failed to retain the process handle: %v", observeErr)
+	}
+	if status, err := syscall.WaitForSingleObject(retained, 0); err != nil || status != syscall.WAIT_OBJECT_0 {
+		t.Fatalf("retained process is not signaled: status=%d err=%v", status, err)
+	}
+	if workspaceProcessResidue(cmd.Dir) {
+		t.Fatal("completed command left its workspace job open")
+	}
+}

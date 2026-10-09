@@ -49,10 +49,6 @@ type jobExtendedLimits struct {
 	IO                                                                           [6]uint64
 	ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed uintptr
 }
-type jobAccounting struct {
-	TotalUserTime, TotalKernelTime, ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime int64
-	TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses     uint32
-}
 type windowsThreadEntry struct {
 	Size, Usage, ThreadID, OwnerProcessID uint32
 	BasePriority, DeltaPriority           int32
@@ -293,33 +289,14 @@ func terminateWindowsJob(job syscall.Handle) error {
 			syscall.CloseHandle(h)
 		}
 	}()
-	listErr := fmt.Errorf("execution job process list exceeds observation bound")
-	for capacity := 64; capacity <= 65536; capacity *= 2 {
-		buf := make([]uintptr, 2+capacity)
-		ok, _, err := queryJobInformation.Call(uintptr(job), 3, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf))*unsafe.Sizeof(buf[0]), 0)
-		if ok == 0 {
-			if err == syscall.Errno(234) {
-				continue
-			} // ERROR_MORE_DATA
+	ids, listErr := windowsJobProcessIDs(job)
+	for _, id := range ids {
+		h, err := syscall.OpenProcess(0x100000, false, uint32(id))
+		if err == nil {
+			handles = append(handles, h)
+		} else if err != syscall.Errno(87) {
 			listErr = err
-			break
 		}
-		count := *(*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&buf[0])) + 4))
-		if uintptr(count) > (uintptr(len(buf))*unsafe.Sizeof(buf[0])-8)/unsafe.Sizeof(buf[0]) {
-			listErr = fmt.Errorf("execution job process list is truncated")
-			break
-		}
-		listErr = nil
-		ids := unsafe.Slice((*uintptr)(unsafe.Pointer(uintptr(unsafe.Pointer(&buf[0]))+8)), int(count))
-		for _, id := range ids {
-			h, err := syscall.OpenProcess(0x100000, false, uint32(id))
-			if err == nil {
-				handles = append(handles, h)
-			} else if err != syscall.Errno(87) {
-				listErr = err
-			}
-		}
-		break
 	}
 	ok, _, err := terminateJobObject.Call(uintptr(job), 1)
 	if ok == 0 {
@@ -342,6 +319,32 @@ func terminateWindowsJob(job syscall.Handle) error {
 	return listErr
 }
 
+// windowsJobProcessIDs returns the complete job tree or an error. A partial or
+// failed observation cannot prove that the owned writer tree has stopped.
+func windowsJobProcessIDs(job syscall.Handle) ([]uintptr, error) {
+	for capacity := 64; capacity <= 65536; capacity *= 2 {
+		buf := make([]uintptr, 2+capacity)
+		ok, _, err := queryJobInformation.Call(uintptr(job), 3, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf))*unsafe.Sizeof(buf[0]), 0)
+		if ok == 0 {
+			if err == syscall.Errno(234) { // ERROR_MORE_DATA
+				continue
+			}
+			return nil, err
+		}
+		assigned := *(*uint32)(unsafe.Pointer(&buf[0]))
+		count := *(*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&buf[0])) + 4))
+		if count < assigned {
+			continue
+		}
+		if uintptr(count) > (uintptr(len(buf))*unsafe.Sizeof(buf[0])-8)/unsafe.Sizeof(buf[0]) {
+			return nil, fmt.Errorf("execution job process list is truncated")
+		}
+		ids := unsafe.Slice((*uintptr)(unsafe.Pointer(uintptr(unsafe.Pointer(&buf[0]))+8)), int(count))
+		return append([]uintptr(nil), ids...), nil
+	}
+	return nil, fmt.Errorf("execution job process list exceeds observation bound")
+}
+
 func processGroupAlive(pid int) bool {
 	windowsJobsMu.Lock()
 	defer windowsJobsMu.Unlock()
@@ -350,13 +353,43 @@ func processGroupAlive(pid int) bool {
 	if !ok {
 		return processAlive(pid)
 	}
-	var accounting jobAccounting
-	success, _, _ := queryJobInformation.Call(uintptr(job), 1, uintptr(unsafe.Pointer(&accounting)), unsafe.Sizeof(accounting), 0)
-	if success == 0 {
+	ids, err := windowsJobProcessIDs(job)
+	if err != nil {
 		return true
 	}
-	if accounting.ActiveProcesses != 0 {
+	// ActiveProcesses includes exited processes while references remain open.
+	// Hold exact handles until a second tree snapshot excludes children created
+	// while their parents were exiting. Open handles also prevent PID reuse.
+	exited := map[uintptr]bool{}
+	var handles []syscall.Handle
+	defer func() {
+		for _, handle := range handles {
+			syscall.CloseHandle(handle)
+		}
+	}()
+	for _, id := range ids {
+		handle, err := syscall.OpenProcess(0x100000, false, uint32(id))
+		if err != nil {
+			if err == syscall.Errno(87) { // PID no longer exists.
+				continue
+			}
+			return true
+		}
+		handles = append(handles, handle)
+		status, err := syscall.WaitForSingleObject(handle, 0)
+		if err != nil || status != syscall.WAIT_OBJECT_0 {
+			return true
+		}
+		exited[id] = true
+	}
+	fresh, err := windowsJobProcessIDs(job)
+	if err != nil {
 		return true
+	}
+	for _, id := range fresh {
+		if !exited[id] {
+			return true
+		}
 	}
 	return false
 }

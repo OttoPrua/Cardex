@@ -57,6 +57,15 @@ type bootstrapRecoveryAuthorization struct {
 	ExecutorItemID     string `json:"executor_item_id,omitempty"`
 	ExecutorReturnID   string `json:"executor_return_id,omitempty"`
 	ExecutorProvenance string `json:"executor_provenance,omitempty"`
+	// Original-async/terminal association over two unmodified raws. Empty on
+	// the synchronous three-record path. Bound into consume identity.
+	ExecutorAssociationKind string `json:"executor_association_kind,omitempty"`
+	ExecutorHandle          string `json:"executor_handle,omitempty"`
+	TerminalRawPath         string `json:"terminal_raw_path,omitempty"`
+	TerminalRawDigest       string `json:"terminal_raw_digest,omitempty"`
+	TerminalCallID          string `json:"terminal_call_id,omitempty"`
+	TerminalReturnID        string `json:"terminal_return_id,omitempty"`
+	TerminalProvenance      string `json:"terminal_provenance,omitempty"`
 }
 
 // bootstrapLauncherEvidence is trusted retained launcher/process proof bound to
@@ -101,6 +110,15 @@ func (a bootstrapRecoveryAuthorization) consumeDigest() string {
 	if digest != "" || call != "" || item != "" || ret != "" || prov != "" {
 		parts = append(parts, digest, call, item, ret, prov)
 	}
+	assoc := strings.TrimSpace(a.ExecutorAssociationKind)
+	handle := strings.TrimSpace(a.ExecutorHandle)
+	tdigest := strings.ToLower(strings.TrimSpace(a.TerminalRawDigest))
+	tcall := strings.TrimSpace(a.TerminalCallID)
+	tret := strings.TrimSpace(a.TerminalReturnID)
+	tprov := strings.TrimSpace(a.TerminalProvenance)
+	if assoc != "" || handle != "" || tdigest != "" || tcall != "" || tret != "" || tprov != "" {
+		parts = append(parts, assoc, handle, tdigest, tcall, tret, tprov)
+	}
 	return sha256Hex(strings.Join(parts, "\n"))
 }
 
@@ -132,6 +150,13 @@ func loadBootstrapRecoveryAuthorization(path string) (*bootstrapRecoveryAuthoriz
 	auth.ExecutorItemID = strings.TrimSpace(auth.ExecutorItemID)
 	auth.ExecutorReturnID = strings.TrimSpace(auth.ExecutorReturnID)
 	auth.ExecutorProvenance = strings.TrimSpace(auth.ExecutorProvenance)
+	auth.ExecutorAssociationKind = strings.TrimSpace(auth.ExecutorAssociationKind)
+	auth.ExecutorHandle = strings.TrimSpace(auth.ExecutorHandle)
+	auth.TerminalRawPath = strings.TrimSpace(auth.TerminalRawPath)
+	auth.TerminalRawDigest = strings.ToLower(strings.TrimSpace(auth.TerminalRawDigest))
+	auth.TerminalCallID = strings.TrimSpace(auth.TerminalCallID)
+	auth.TerminalReturnID = strings.TrimSpace(auth.TerminalReturnID)
+	auth.TerminalProvenance = strings.TrimSpace(auth.TerminalProvenance)
 	if auth.Kind != bootstrapRecoveryKind || auth.WorkflowID == "" || auth.WriterTaskID == "" ||
 		auth.OriginalAttemptID == "" || auth.SessionID == "" || auth.Nonce == "" || auth.ExpiresAt == "" {
 		return nil, fmt.Errorf("%w: authorization missing required binding fields", errGoalBootstrapAuthRequired)
@@ -556,6 +581,20 @@ func realBootstrapRefusalPair(captured string) (registry, profile string, ok boo
 	return registry, profile, found
 }
 
+func bindRealBootstrapPairToGoal(captured string, writer *Task) error {
+	if !strings.Contains(captured, realBootstrapWarningPrefix) {
+		return nil
+	}
+	registry, profile, ok := realBootstrapRefusalPair(captured)
+	if !ok || writer == nil || writer.Goal == nil || strings.TrimSpace(writer.Goal.GrokHome) == "" ||
+		strings.TrimSpace(writer.Goal.SandboxProfile) == "" ||
+		registry != filepath.Join(writer.Goal.GrokHome, "managed_config.toml") ||
+		profile != writer.Goal.SandboxProfile {
+		return bootstrapRecoveryRefused("wrong real bootstrap registry/profile binding")
+	}
+	return nil
+}
+
 func validateRealBootstrapRefusalBinding(captured, command string, writer *Task) error {
 	if !strings.Contains(captured, realBootstrapWarningPrefix) {
 		return nil
@@ -580,8 +619,10 @@ func validateRealBootstrapRefusalBinding(captured, command string, writer *Task)
 }
 
 func matchAcceptedBootstrapBeforeProviderRefusal(captured string) (string, bool) {
-	if _, _, ok := realBootstrapRefusalPair(captured); ok {
-		return acceptedBootstrapBeforeProviderRefusal, true
+	normalized := executorNormalizeOutput(captured)
+	if registry, profile, ok := realBootstrapRefusalPair(normalized); ok {
+		return realBootstrapWarningPrefix + registry + realBootstrapWarningSuffix + "\n" +
+			realBootstrapErrorPrefix + profile + realBootstrapErrorSuffix, true
 	}
 	if strings.Contains(captured, realBootstrapWarningPrefix) {
 		return "", false
@@ -623,6 +664,9 @@ func validateBootstrapLauncherEvidence(ev *bootstrapLauncherEvidence, t *Task, r
 			return bootstrapRecoveryRefused("missing launcher/process evidence: exact bootstrap-before-provider refusal is required; recovery unavailable")
 		}
 		return bootstrapRecoveryRefused("generic failure is not bootstrap-before-provider refusal")
+	}
+	if err := bindRealBootstrapPairToGoal(ev.RefusalOutput, t); err != nil {
+		return err
 	}
 	code, err := strconv.Atoi(ev.ExitStatus)
 	if err != nil {
@@ -712,6 +756,9 @@ func recordRetainedBootstrapBeforeProviderEvidence(root string, t *Task, rec *At
 	}
 	matched, ok := matchAcceptedBootstrapBeforeProviderRefusal(capturedOutput)
 	if !ok {
+		return
+	}
+	if err := bindRealBootstrapPairToGoal(matched, t); err != nil {
 		return
 	}
 	hasSession, hasGoal, err := inspectNativeGrokSessionOrGoal(t.Goal.GrokHome, t.Dir, t.SessionID)
@@ -1015,7 +1062,17 @@ type bootstrapExecutorCaptureAdmitted struct {
 	ProfileDigest  string
 	TaskID         string
 	AttemptID      string
+	// Original-async/terminal association over a later unmodified write_stdin raw.
+	AssociationKind    string
+	Handle             string
+	TerminalPath       string
+	TerminalDigest     string
+	TerminalCallID     string
+	TerminalReturnID   string
+	TerminalProvenance string
 }
+
+const bootstrapExecutorAsyncAssociation = "original-async-terminal"
 
 type bootstrapExecutorCaptureProof struct {
 	CallID         string
@@ -1044,6 +1101,13 @@ func (a *bootstrapExecutorCaptureAdmitted) normalize() {
 	a.ProfileDigest = strings.TrimSpace(a.ProfileDigest)
 	a.TaskID = strings.TrimSpace(a.TaskID)
 	a.AttemptID = strings.TrimSpace(a.AttemptID)
+	a.AssociationKind = strings.TrimSpace(a.AssociationKind)
+	a.Handle = strings.TrimSpace(a.Handle)
+	a.TerminalPath = strings.TrimSpace(a.TerminalPath)
+	a.TerminalDigest = strings.ToLower(strings.TrimSpace(a.TerminalDigest))
+	a.TerminalCallID = strings.TrimSpace(a.TerminalCallID)
+	a.TerminalReturnID = strings.TrimSpace(a.TerminalReturnID)
+	a.TerminalProvenance = strings.TrimSpace(a.TerminalProvenance)
 }
 
 func (a bootstrapExecutorCaptureAdmitted) specified() bool {
@@ -1102,6 +1166,28 @@ func bindExecutorCaptureAuthorization(executor *bootstrapExecutorCaptureAdmitted
 	executor.ItemID = item
 	executor.ReturnID = ret
 	executor.Provenance = prov
+	assoc := strings.TrimSpace(auth.ExecutorAssociationKind)
+	handle := strings.TrimSpace(auth.ExecutorHandle)
+	tpath := strings.TrimSpace(auth.TerminalRawPath)
+	tdigest := strings.ToLower(strings.TrimSpace(auth.TerminalRawDigest))
+	tcall := strings.TrimSpace(auth.TerminalCallID)
+	tret := strings.TrimSpace(auth.TerminalReturnID)
+	tprov := strings.TrimSpace(auth.TerminalProvenance)
+	if assoc != "" || handle != "" || tpath != "" || tdigest != "" || tcall != "" || tret != "" || tprov != "" {
+		if assoc != bootstrapExecutorAsyncAssociation || handle == "" || tpath == "" || tdigest == "" || tcall == "" || tret == "" || tprov == "" {
+			return bootstrapRecoveryRefused("unbound original-async/terminal association")
+		}
+		if tcall == call || executorSamePath(tpath, executor.Path) {
+			return bootstrapRecoveryRefused("unbound original-async/terminal association")
+		}
+		executor.AssociationKind = assoc
+		executor.Handle = handle
+		executor.TerminalPath = tpath
+		executor.TerminalDigest = tdigest
+		executor.TerminalCallID = tcall
+		executor.TerminalReturnID = tret
+		executor.TerminalProvenance = tprov
+	}
 	return nil
 }
 
@@ -1171,7 +1257,8 @@ func validateBootstrapExecutorCapture(raw []byte, admitted bootstrapExecutorCapt
 	if wfID == "" || !executorCommandTargetsWorkflow(selected, wfID) {
 		return nil, bootstrapRecoveryRefused("wrong command identity")
 	}
-	if executorProcessID(item) == "" {
+	processID := executorProcessID(item)
+	if processID == "" {
 		return nil, bootstrapRecoveryRefused("truncated original executor capture")
 	}
 
@@ -1200,21 +1287,36 @@ func validateBootstrapExecutorCapture(raw []byte, admitted bootstrapExecutorCapt
 	if outCall != callID || outID != admitted.ReturnID {
 		return nil, bootstrapRecoveryRefused("wrong return identity")
 	}
-	retOut, chunkCode, chunkOK := executorLastFailedChunkOutput(outPayload)
-	if !chunkOK {
-		return nil, bootstrapRecoveryRefused("missing terminal nonzero exit")
-	}
-	if chunkCode == 0 {
-		return nil, bootstrapRecoveryRefused("later approved retry is not original executor capture")
-	}
-	if chunkCode != code {
-		return nil, bootstrapRecoveryRefused("wrong return identity")
-	}
 
 	stdout := executorNormalizeOutput(executorString(item["stdout"]))
 	agg := executorNormalizeOutput(executorString(item["aggregated_output"]))
 	formatted := executorNormalizeOutput(executorString(item["formatted_output"]))
-	retNorm := executorNormalizeOutput(retOut)
+	var retNorm string
+	if admitted.AssociationKind != "" {
+		if admitted.AssociationKind != bootstrapExecutorAsyncAssociation {
+			return nil, bootstrapRecoveryRefused("unbound original-async/terminal association")
+		}
+		retOut, err := executorOriginalAsyncHandleOutput(outPayload, admitted.Handle, processID)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateExecutorWriteStdinTerminal(admitted, records, rec, processID, code); err != nil {
+			return nil, err
+		}
+		retNorm = executorNormalizeOutput(retOut)
+	} else {
+		retOut, chunkCode, chunkOK := executorLastFailedChunkOutput(outPayload)
+		if !chunkOK {
+			return nil, bootstrapRecoveryRefused("missing terminal nonzero exit")
+		}
+		if chunkCode == 0 {
+			return nil, bootstrapRecoveryRefused("later approved retry is not original executor capture")
+		}
+		if chunkCode != code {
+			return nil, bootstrapRecoveryRefused("wrong return identity")
+		}
+		retNorm = executorNormalizeOutput(retOut)
+	}
 	if err := executorRequireRefusalChannel("stdout", stdout, true); err != nil {
 		return nil, err
 	}
@@ -1620,49 +1722,180 @@ func executorSelectedCommand(item map[string]any) string {
 	if item == nil {
 		return ""
 	}
-	if parsed, ok := item["parsed_cmd"].([]any); ok {
-		for _, el := range parsed {
-			m, ok := el.(map[string]any)
-			if !ok {
-				continue
-			}
-			if cmd := strings.TrimSpace(executorString(m["cmd"])); strings.Contains(cmd, "workflow goal-run") {
-				return cmd
-			}
+	parsed := executorParsedGoalRunCmd(item)
+	fromCommand := executorCommandGoalRunCmd(item)
+	if parsed != "" && fromCommand != "" && parsed != fromCommand {
+		return ""
+	}
+	if parsed != "" {
+		return parsed
+	}
+	return fromCommand
+}
+
+func executorParsedGoalRunCmd(item map[string]any) string {
+	if item == nil {
+		return ""
+	}
+	parsed, ok := item["parsed_cmd"].([]any)
+	if !ok {
+		return ""
+	}
+	var selected string
+	for _, el := range parsed {
+		m, ok := el.(map[string]any)
+		if !ok {
+			continue
 		}
+		cmd := strings.TrimSpace(executorString(m["cmd"]))
+		if !strings.Contains(cmd, "workflow goal-run") {
+			continue
+		}
+		if selected != "" && selected != cmd {
+			return ""
+		}
+		selected = cmd
+	}
+	return selected
+}
+
+func executorCommandGoalRunCmd(item map[string]any) string {
+	if item == nil {
+		return ""
 	}
 	switch x := item["command"].(type) {
 	case []any:
-		if len(x) >= 3 && executorString(x[0]) == "/bin/zsh" && executorString(x[1]) == "-lc" {
-			return executorString(x[2])
+		parts := make([]string, 0, len(x))
+		for _, el := range x {
+			parts = append(parts, executorString(el))
 		}
-		if len(x) > 0 {
-			return executorString(x[len(x)-1])
-		}
+		return executorShellOrLast(parts)
 	case []string:
-		if len(x) >= 3 && x[0] == "/bin/zsh" && x[1] == "-lc" {
-			return x[2]
-		}
-		if len(x) > 0 {
-			return x[len(x)-1]
-		}
+		return executorShellOrLast(x)
 	case string:
 		return x
 	}
 	return strings.TrimSpace(executorCommandLine(item))
 }
 
+func executorShellOrLast(argv []string) string {
+	if len(argv) >= 3 {
+		shell := filepath.Base(argv[0])
+		flag := argv[1]
+		if (shell == "zsh" || shell == "bash" || shell == "sh") && (flag == "-c" || flag == "-lc") {
+			return argv[2]
+		}
+	}
+	if len(argv) > 0 {
+		return argv[len(argv)-1]
+	}
+	return ""
+}
+
 func executorCommandTargetsWorkflow(command, workflowID string) bool {
+	id, ok := executorGoalRunPositionalID(command)
+	return ok && id == strings.TrimSpace(workflowID)
+}
+
+func executorGoalRunPositionalID(command string) (string, bool) {
 	command = strings.TrimSpace(command)
-	workflowID = strings.TrimSpace(workflowID)
-	if command == "" || workflowID == "" {
-		return false
+	workflowNeedle := "workflow goal-run"
+	if command == "" || !strings.Contains(command, workflowNeedle) {
+		return "", false
+	}
+	if strings.ContainsAny(command, ";|`$") || strings.Contains(command, "&&") ||
+		strings.Contains(command, "||") || strings.Contains(command, "$(") ||
+		strings.Contains(command, "\n") {
+		return "", false
 	}
 	fields := strings.Fields(command)
-	if len(fields) == 0 {
+	i := 0
+	for i < len(fields) && executorEnvAssign(fields[i]) {
+		i++
+	}
+	if i >= len(fields) {
+		return "", false
+	}
+	if filepath.Base(fields[i]) != "cardex" {
+		return "", false
+	}
+	i++
+	if i+1 >= len(fields) || fields[i] != "workflow" || fields[i+1] != "goal-run" {
+		return "", false
+	}
+	i += 2
+	boolFlags := map[string]bool{
+		"-hosted": true, "--hosted": true,
+		"-manual": true, "--manual": true,
+	}
+	valueFlags := map[string]bool{
+		"-root": true, "--root": true,
+		"-budget": true, "--budget": true,
+		"-sandbox": true, "--sandbox": true,
+	}
+	var positional []string
+	for i < len(fields) {
+		f := fields[i]
+		if strings.HasPrefix(f, "-") && f != "-" {
+			name := f
+			val := ""
+			hasEq := false
+			if eq := strings.IndexByte(f, '='); eq >= 0 {
+				name = f[:eq]
+				val = f[eq+1:]
+				hasEq = true
+			}
+			if boolFlags[name] {
+				if hasEq {
+					return "", false
+				}
+				i++
+				continue
+			}
+			if valueFlags[name] {
+				if hasEq {
+					if strings.TrimSpace(val) == "" {
+						return "", false
+					}
+					i++
+					continue
+				}
+				if i+1 >= len(fields) {
+					return "", false
+				}
+				i += 2
+				continue
+			}
+			return "", false
+		}
+		if strings.ContainsAny(f, `"'`) {
+			return "", false
+		}
+		positional = append(positional, f)
+		i++
+	}
+	if len(positional) != 1 || strings.TrimSpace(positional[0]) == "" {
+		return "", false
+	}
+	return positional[0], true
+}
+
+func executorEnvAssign(tok string) bool {
+	eq := strings.IndexByte(tok, '=')
+	if eq <= 0 {
 		return false
 	}
-	return fields[len(fields)-1] == workflowID
+	key := tok[:eq]
+	if key[0] != '_' && (key[0] < 'A' || key[0] > 'Z') && (key[0] < 'a' || key[0] > 'z') {
+		return false
+	}
+	for _, c := range key[1:] {
+		if c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func executorLastFailedChunkOutput(payload map[string]any) (output string, code int, ok bool) {
@@ -1822,6 +2055,376 @@ func splitJSONLRawRecords(raw []byte) [][]byte {
 		recs = append(recs, raw[start:])
 	}
 	return recs
+}
+
+func executorOriginalAsyncHandleOutput(outPayload map[string]any, admittedHandle, processID string) (string, error) {
+	handle := strings.TrimSpace(admittedHandle)
+	if handle == "" || handle != strings.TrimSpace(processID) {
+		return "", bootstrapRecoveryRefused("wrong handle identity")
+	}
+	var found string
+	n := 0
+	for _, ch := range executorOutputChunks(outPayload) {
+		text := strings.TrimSpace(executorString(ch["text"]))
+		if !strings.HasPrefix(text, "{") {
+			continue
+		}
+		var obj map[string]any
+		if json.Unmarshal([]byte(text), &obj) != nil {
+			continue
+		}
+		session := strings.TrimSpace(executorString(obj["session_id"]))
+		_, hasExit := executorJSONInt(obj["exit_code"])
+		if session != handle {
+			continue
+		}
+		if hasExit {
+			return "", bootstrapRecoveryRefused("missing terminal nonzero exit")
+		}
+		n++
+		if s, ok := obj["output"].(string); ok {
+			found = s
+		} else {
+			found = ""
+		}
+	}
+	if n != 1 {
+		return "", bootstrapRecoveryRefused("wrong handle identity")
+	}
+	if strings.TrimSpace(found) == "" {
+		return "", bootstrapRecoveryRefused("wrong return identity")
+	}
+	return found, nil
+}
+
+func validateExecutorWriteStdinTerminal(admitted bootstrapExecutorCaptureAdmitted, originalRecords []map[string]any, rec *AttemptRecord, processID string, originalCode int) error {
+	if strings.TrimSpace(admitted.Handle) == "" || admitted.Handle != strings.TrimSpace(processID) {
+		return bootstrapRecoveryRefused("wrong handle identity")
+	}
+	path := strings.TrimSpace(admitted.TerminalPath)
+	if path == "" {
+		return bootstrapRecoveryRefused("unbound original-async/terminal association")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return bootstrapRecoveryRefused("missing original executor capture")
+		}
+		return bootstrapRecoveryRefused("unreadable original executor capture")
+	}
+	if sha256Hex(string(raw)) != admitted.TerminalDigest {
+		return bootstrapRecoveryRefused("executor capture digest mismatch")
+	}
+	records, err := splitExecutorJSONL(raw)
+	if err != nil {
+		return err
+	}
+	if len(records) != 2 {
+		if len(records) > 2 {
+			return bootstrapRecoveryRefused("modified original executor capture")
+		}
+		return bootstrapRecoveryRefused("truncated original executor capture")
+	}
+	if executorRecordType(records[0]) != "response_item" || executorPayloadType(records[0]) != "custom_tool_call" {
+		return bootstrapRecoveryRefused("unknown executor capture format")
+	}
+	if executorRecordType(records[1]) != "response_item" || executorPayloadType(records[1]) != "custom_tool_call_output" {
+		return bootstrapRecoveryRefused("unknown executor capture format")
+	}
+	callPayload := executorPayload(records[0])
+	outPayload := executorPayload(records[1])
+	if callPayload == nil || outPayload == nil {
+		return bootstrapRecoveryRefused("truncated original executor capture")
+	}
+	callID := strings.TrimSpace(executorString(callPayload["call_id"]))
+	if callID != admitted.TerminalCallID || callID == admitted.CallID {
+		return bootstrapRecoveryRefused("wrong call identity")
+	}
+	if executorString(callPayload["name"]) != "exec" {
+		return bootstrapRecoveryRefused("wrong command identity")
+	}
+	if err := executorRequireUniqueWriteStdin(executorString(callPayload["input"]), admitted.Handle); err != nil {
+		return err
+	}
+	outCall := strings.TrimSpace(executorString(outPayload["call_id"]))
+	outID := strings.TrimSpace(executorString(outPayload["id"]))
+	if outCall != callID || outID != admitted.TerminalReturnID {
+		return bootstrapRecoveryRefused("wrong return identity")
+	}
+	if err := executorRequireWriteStdinFirstTerminal(outPayload, originalCode); err != nil {
+		return err
+	}
+	if err := validateExecutorWriteStdinTimestamps(originalRecords, records, rec); err != nil {
+		return err
+	}
+	termAdmitted := bootstrapExecutorCaptureAdmitted{
+		Path:       admitted.TerminalPath,
+		CallID:     admitted.TerminalCallID,
+		ReturnID:   admitted.TerminalReturnID,
+		Provenance: admitted.TerminalProvenance,
+	}
+	return validateExecutorCallReturnProvenance(raw, termAdmitted)
+}
+
+func executorRequireWriteStdinFirstTerminal(outPayload map[string]any, originalCode int) error {
+	var jsonChunks []map[string]any
+	for _, ch := range executorOutputChunks(outPayload) {
+		text := strings.TrimSpace(executorString(ch["text"]))
+		if !strings.HasPrefix(text, "{") {
+			continue
+		}
+		var obj map[string]any
+		if json.Unmarshal([]byte(text), &obj) != nil {
+			continue
+		}
+		jsonChunks = append(jsonChunks, obj)
+	}
+	if len(jsonChunks) == 0 {
+		return bootstrapRecoveryRefused("missing terminal nonzero exit")
+	}
+	first := jsonChunks[0]
+	code, ok := executorJSONInt(first["exit_code"])
+	if !ok {
+		return bootstrapRecoveryRefused("missing terminal nonzero exit")
+	}
+	if sid := strings.TrimSpace(executorString(first["session_id"])); sid != "" {
+		return bootstrapRecoveryRefused("wrong handle identity")
+	}
+	if code == 0 {
+		if len(jsonChunks) > 1 {
+			if later, lok := executorJSONInt(jsonChunks[len(jsonChunks)-1]["exit_code"]); lok && later != 0 {
+				return bootstrapRecoveryRefused("unrelated second-command failure")
+			}
+		}
+		return bootstrapRecoveryRefused("missing terminal nonzero exit")
+	}
+	if code < 0 {
+		return bootstrapRecoveryRefused("generic failure is not bootstrap-before-provider refusal")
+	}
+	if code != originalCode {
+		return bootstrapRecoveryRefused("wrong return identity")
+	}
+	return nil
+}
+
+func executorRequireUniqueWriteStdin(input, handle string) error {
+	handle = strings.TrimSpace(handle)
+	if handle == "" {
+		return bootstrapRecoveryRefused("wrong handle identity")
+	}
+	if n := strings.Count(input, "write_stdin("); n != 1 {
+		if n > 1 {
+			return bootstrapRecoveryRefused("wrong handle identity")
+		}
+		return bootstrapRecoveryRefused("wrong handle identity")
+	}
+	trimmed := strings.TrimSpace(input)
+	const lead = "text(await tools.write_stdin("
+	if !strings.HasPrefix(trimmed, lead) {
+		return bootstrapRecoveryRefused("wrong handle identity")
+	}
+	rest := strings.TrimSpace(trimmed[len(lead):])
+	obj, after, ok := parseExecutorBareObject(rest)
+	if !ok {
+		return bootstrapRecoveryRefused("wrong handle identity")
+	}
+	after = strings.TrimSpace(after)
+	if !strings.HasPrefix(after, "))") {
+		return bootstrapRecoveryRefused("wrong handle identity")
+	}
+	if strings.Contains(after[2:], "write_stdin(") {
+		return bootstrapRecoveryRefused("wrong handle identity")
+	}
+	sid, hasSID := obj["session_id"]
+	chars, hasChars := obj["chars"]
+	if !hasSID || sid != handle || !hasChars || chars != "" {
+		return bootstrapRecoveryRefused("wrong handle identity")
+	}
+	for k, v := range obj {
+		switch k {
+		case "session_id", "chars":
+		case "yield_time_ms", "max_output_tokens":
+			if v == "" || !executorAllDigits(v) {
+				return bootstrapRecoveryRefused("wrong handle identity")
+			}
+		default:
+			return bootstrapRecoveryRefused("wrong handle identity")
+		}
+	}
+	return nil
+}
+
+func parseExecutorBareObject(s string) (map[string]string, string, bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "{") {
+		return nil, s, false
+	}
+	s = s[1:]
+	out := map[string]string{}
+	for {
+		s = strings.TrimSpace(s)
+		if strings.HasPrefix(s, "}") {
+			return out, s[1:], true
+		}
+		if len(out) > 0 {
+			if !strings.HasPrefix(s, ",") {
+				return nil, s, false
+			}
+			s = strings.TrimSpace(s[1:])
+		}
+		key, next, ok := parseExecutorBareIdent(s)
+		if !ok {
+			return nil, s, false
+		}
+		s = strings.TrimSpace(next)
+		if !strings.HasPrefix(s, ":") {
+			return nil, s, false
+		}
+		s = strings.TrimSpace(s[1:])
+		val, next, ok := parseExecutorBareValue(s)
+		if !ok {
+			return nil, s, false
+		}
+		out[key] = val
+		s = next
+	}
+}
+
+func parseExecutorBareIdent(s string) (string, string, bool) {
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (i > 0 && c >= '0' && c <= '9') {
+			i++
+			continue
+		}
+		break
+	}
+	if i == 0 {
+		return "", s, false
+	}
+	return s[:i], s[i:], true
+}
+
+func parseExecutorBareValue(s string) (string, string, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", s, false
+	}
+	if s[0] == '"' || s[0] == '\'' {
+		q := s[0]
+		i := 1
+		for i < len(s) {
+			if s[i] == '\\' && i+1 < len(s) {
+				i += 2
+				continue
+			}
+			if s[i] == q {
+				return s[1:i], s[i+1:], true
+			}
+			i++
+		}
+		return "", s, false
+	}
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c == '_' || c == '-' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			i++
+			continue
+		}
+		break
+	}
+	if i == 0 {
+		return "", s, false
+	}
+	return s[:i], s[i:], true
+}
+
+func executorAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func validateExecutorWriteStdinTimestamps(original, later []map[string]any, rec *AttemptRecord) error {
+	if rec == nil || len(original) < 3 || len(later) < 2 {
+		return bootstrapRecoveryRefused("wrong attempt time")
+	}
+	origRet, err := executorRecordTimestamp(original[2])
+	if err != nil {
+		return bootstrapRecoveryRefused("missing executor timestamp")
+	}
+	callTs, err := executorRecordTimestamp(later[0])
+	if err != nil {
+		return bootstrapRecoveryRefused("missing executor timestamp")
+	}
+	retTs, err := executorRecordTimestamp(later[1])
+	if err != nil {
+		return bootstrapRecoveryRefused("missing executor timestamp")
+	}
+	// Stdout collection follows original event order: original return,
+	// then write_stdin call, then write_stdin return.
+	if !origRet.Before(callTs) || !callTs.Before(retTs) {
+		return bootstrapRecoveryRefused("wrong attempt time")
+	}
+	return nil
+}
+
+func validateExecutorCallReturnProvenance(raw []byte, admitted bootstrapExecutorCaptureAdmitted) error {
+	if strings.TrimSpace(admitted.Provenance) == "" {
+		return bootstrapRecoveryRefused("unbound executor digest/event in authorization")
+	}
+	if admitted.Path != "" && executorSamePath(admitted.Path, admitted.Provenance) {
+		return bootstrapRecoveryRefused("self-hashed capture is not original executor provenance")
+	}
+	provRaw, err := os.ReadFile(admitted.Provenance)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return bootstrapRecoveryRefused("missing original executor provenance")
+		}
+		return bootstrapRecoveryRefused("unreadable original executor provenance")
+	}
+	var callLine, retLine []byte
+	extra := 0
+	for _, line := range splitJSONLRawRecords(provRaw) {
+		trim := bytes.TrimSpace(line)
+		if len(trim) == 0 {
+			continue
+		}
+		var rec map[string]any
+		if json.Unmarshal(trim, &rec) != nil {
+			extra++
+			continue
+		}
+		p := executorPayload(rec)
+		switch {
+		case executorPayloadType(rec) == "custom_tool_call" && p != nil && strings.TrimSpace(executorString(p["call_id"])) == admitted.CallID:
+			callLine = line
+		case executorPayloadType(rec) == "custom_tool_call_output" && p != nil && strings.TrimSpace(executorString(p["id"])) == admitted.ReturnID:
+			retLine = line
+		default:
+			extra++
+		}
+	}
+	if len(callLine) == 0 || len(retLine) == 0 {
+		return bootstrapRecoveryRefused("missing original executor provenance")
+	}
+	if extra == 0 {
+		return bootstrapRecoveryRefused("self-hashed capture is not original executor provenance")
+	}
+	selected := append([]byte{}, callLine...)
+	selected = append(selected, retLine...)
+	if !bytes.Equal(selected, raw) {
+		return bootstrapRecoveryRefused("rewritten executor snapshot is not original capture")
+	}
+	return nil
 }
 
 func validateExecutorCaptureProvenance(raw []byte, admitted bootstrapExecutorCaptureAdmitted) error {

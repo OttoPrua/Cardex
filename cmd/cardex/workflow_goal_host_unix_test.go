@@ -2408,3 +2408,67 @@ func TestHostedNaturalStillProducingOutputDoesNotQuitEarly(t *testing.T) {
 		t.Fatalf("outbox rows: %+v", rows)
 	}
 }
+
+func TestHostedPTYFakeChildWaitRetainsAdjacentRefusalPair(t *testing.T) {
+	if !requireHostedPTYOrUnverified(t) {
+		t.Log("UNVERIFIED: hosted PTY unavailable; capture unit and in-process producer remain the gate")
+		return
+	}
+	root, cfg, wf, tk := hostedBootstrapWriterFixture(t, fakeHostedGrokBinBootstrapCapture(t, "", hostedEmitRealPair))
+	out, err := os.CreateTemp(t.TempDir(), "hosted-pair-out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	var launchErr error
+	withHostedCallerStdout(t, out, func() {
+		launchErr = launchHostedWorkflowGoal(root, cfg, wf, 12000, "")
+	})
+	if hostedPTYLimitation(launchErr) {
+		t.Logf("UNVERIFIED: %v", launchErr)
+		return
+	}
+	if launchErr == nil {
+		t.Fatal("hosted real pair must Wait-exit nonzero")
+	}
+	after, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := loadRequiredGoalAttempt(root, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCapturedBootstrapBeforeProviderProof(t, root, after, rec)
+	proof, err := loadBootstrapLauncherEvidence(root, after.ID, rec.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := syntheticRealBootstrapPair(after.Goal.GrokHome, firstNonBlank(after.Goal.SandboxProfile, "workspace"))
+	if proof.RefusalOutput != want {
+		t.Fatalf("hosted sidecar pair=%q want %q", proof.RefusalOutput, want)
+	}
+	if err := validateBootstrapLauncherEvidence(proof, after, rec, false, false); err != nil {
+		t.Fatal(err)
+	}
+	originalBytes, err := os.ReadFile(attemptPath(root, after.ID, rec.AttemptID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.GrokBuildBin = fakeGrokGoalBin(t, filepath.Join(t.TempDir(), "argv-hosted-pair-recovery"))
+	saveGoalCfg(t, root, cfg)
+	auth := mintBootstrapBeforeNativeAuthorization(t, after, wf, time.Time{})
+	headlessGoalStdin(t)
+	stdout, recErr := captureWorkflowCmd(t, "goal-bootstrap-before-native-recovery",
+		"-root", root, wf.ID, "-manual", "-authorization", auth)
+	if recErr != nil {
+		t.Fatalf("hosted pair consumer: %v stdout=%s", recErr, stdout)
+	}
+	if !strings.Contains(stdout, "original_attempt="+rec.AttemptID) || !strings.Contains(stdout, "new_attempt=") {
+		t.Fatalf("hosted pair consumer stdout: %s", stdout)
+	}
+	assertOriginalAttemptUnchanged(t, root, after.ID, rec.AttemptID, originalBytes)
+	if countBootstrapConsumeEvents(t, root, after.ID) != 1 {
+		t.Fatalf("hosted pair consume=%d", countBootstrapConsumeEvents(t, root, after.ID))
+	}
+}

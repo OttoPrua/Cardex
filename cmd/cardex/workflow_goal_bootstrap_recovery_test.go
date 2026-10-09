@@ -307,34 +307,42 @@ const (
 )
 
 type syntheticCodexExecutorOpts struct {
-	CallID            string
-	Status            string
-	ExitCode          *int
-	OmitExitCode      bool
-	LastChunkExit     *int
-	OmitLastChunk     bool
-	SessionID         string
-	ContractDigest    string
-	ProfileDigest     string
-	RefusalLine       string
-	Command           string
-	ItemCommand       string
-	Input             string
-	RecordCount       int
-	ExtraApproved     bool
-	UserJSON          any
-	PlainText         string
-	Attempt           *AttemptRecord
-	CallTimestamp     string
-	ItemTimestamp     string
-	ReturnTimestamp   string
-	Stdout            string
-	Aggregated        string
-	ReturnOutput      string
-	SkipProvenance    bool
-	LaterEvent        bool
-	WrongAttemptTime  bool
-	ProvenanceOnlyRaw []byte
+	CallID             string
+	ItemID             string
+	ReturnID           string
+	Status             string
+	ExitCode           *int
+	OmitExitCode       bool
+	LastChunkExit      *int
+	OmitLastChunk      bool
+	GoalRunOmitExit    bool
+	GoalRunSessionID   string
+	ProcessID          string
+	SessionID          string
+	ContractDigest     string
+	ProfileDigest      string
+	RefusalLine        string
+	Command            string
+	ItemCommand        string
+	CommandArgv        []string
+	ParsedCmd          string
+	Input              string
+	RecordCount        int
+	ExtraApproved      bool
+	UserJSON           any
+	PlainText          string
+	Attempt            *AttemptRecord
+	CallTimestamp      string
+	ItemTimestamp      string
+	ReturnTimestamp    string
+	Stdout             string
+	Aggregated         string
+	ReturnOutput       string
+	SkipProvenance     bool
+	LaterEvent         bool
+	WrongAttemptTime   bool
+	ProvenanceOnlyRaw  []byte
+	OmitUnrelatedChunk bool
 }
 
 type syntheticCodexExecutorResult struct {
@@ -344,6 +352,8 @@ type syntheticCodexExecutorResult struct {
 	ItemID     string
 	ReturnID   string
 	Provenance string
+	Handle     string
+	Raw        []byte
 }
 
 func executorFixtureJSONTime(ts time.Time) string {
@@ -402,15 +412,25 @@ func writeSyntheticCodexExecutorCaptureResult(t *testing.T, tk *Task, wf *Workfl
 	if callID == "" {
 		callID = syntheticCodexExecutorCallID
 	}
-	itemID := syntheticCodexExecutorCommandID
-	returnID := syntheticCodexExecutorReturnID
+	itemID := strings.TrimSpace(opts.ItemID)
+	if itemID == "" {
+		itemID = syntheticCodexExecutorCommandID
+	}
+	returnID := strings.TrimSpace(opts.ReturnID)
+	if returnID == "" {
+		returnID = syntheticCodexExecutorReturnID
+	}
+	processID := strings.TrimSpace(opts.ProcessID)
+	if processID == "" {
+		processID = syntheticCodexExecutorProcessID
+	}
 	if opts.PlainText != "" {
 		path := filepath.Join(t.TempDir(), "executor-capture.txt")
 		raw := []byte(opts.PlainText)
 		if err := os.WriteFile(path, raw, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		res := syntheticCodexExecutorResult{Path: path, Digest: sha256Hex(string(raw)), CallID: callID, ItemID: itemID, ReturnID: returnID}
+		res := syntheticCodexExecutorResult{Path: path, Digest: sha256Hex(string(raw)), CallID: callID, ItemID: itemID, ReturnID: returnID, Raw: append([]byte(nil), raw...)}
 		res.Provenance = writeSyntheticExecutorProvenance(t, raw, res)
 		return res
 	}
@@ -424,7 +444,7 @@ func writeSyntheticCodexExecutorCaptureResult(t *testing.T, tk *Task, wf *Workfl
 		if err := os.WriteFile(path, raw, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		res := syntheticCodexExecutorResult{Path: path, Digest: sha256Hex(string(raw)), CallID: callID, ItemID: itemID, ReturnID: returnID}
+		res := syntheticCodexExecutorResult{Path: path, Digest: sha256Hex(string(raw)), CallID: callID, ItemID: itemID, ReturnID: returnID, Raw: append([]byte(nil), raw...)}
 		res.Provenance = writeSyntheticExecutorProvenance(t, raw, res)
 		return res
 	}
@@ -496,16 +516,23 @@ func writeSyntheticCodexExecutorCaptureResult(t *testing.T, tk *Task, wf *Workfl
 	}
 	callTs, itemTs, retTs := syntheticExecutorTimestamps(opts)
 
+	commandArgv := opts.CommandArgv
+	if len(commandArgv) == 0 {
+		commandArgv = []string{"/bin/zsh", "-lc", itemCommand}
+	}
 	item := map[string]any{
 		"type":              "CommandExecution",
 		"id":                itemID,
-		"process_id":        syntheticCodexExecutorProcessID,
-		"command":           []string{"/bin/zsh", "-lc", itemCommand},
+		"process_id":        processID,
+		"command":           commandArgv,
 		"status":            status,
 		"stdout":            stdout,
 		"stderr":            "",
 		"aggregated_output": aggregated,
 		"formatted_output":  stdout,
+	}
+	if parsed := strings.TrimSpace(opts.ParsedCmd); parsed != "" {
+		item["parsed_cmd"] = []any{map[string]any{"cmd": parsed}}
 	}
 	if !opts.OmitExitCode {
 		item["exit_code"] = exitCode
@@ -521,14 +548,22 @@ func writeSyntheticCodexExecutorCaptureResult(t *testing.T, tk *Task, wf *Workfl
 	}
 	outputs := []any{
 		map[string]any{"type": "input_text", "text": "Script completed\nWall time 0.5 seconds\nOutput:\n"},
-		map[string]any{"type": "input_text", "text": string(chunk0)},
+	}
+	if !opts.OmitUnrelatedChunk {
+		outputs = append(outputs, map[string]any{"type": "input_text", "text": string(chunk0)})
 	}
 	if !opts.OmitLastChunk {
-		chunk1, merr := json.Marshal(map[string]any{
-			"chunk_id":  "bbbbbb",
-			"exit_code": lastChunk,
-			"output":    returnOut,
-		})
+		goalChunk := map[string]any{
+			"chunk_id": "bbbbbb",
+			"output":   returnOut,
+		}
+		if sid := strings.TrimSpace(opts.GoalRunSessionID); sid != "" {
+			goalChunk["session_id"] = sid
+		}
+		if !opts.GoalRunOmitExit {
+			goalChunk["exit_code"] = lastChunk
+		}
+		chunk1, merr := json.Marshal(goalChunk)
 		if merr != nil {
 			t.Fatal(merr)
 		}
@@ -621,6 +656,8 @@ func writeSyntheticCodexExecutorCaptureResult(t *testing.T, tk *Task, wf *Workfl
 		CallID:   callID,
 		ItemID:   itemID,
 		ReturnID: returnID,
+		Handle:   processID,
+		Raw:      append([]byte(nil), raw...),
 	}
 	if opts.SkipProvenance {
 		res.Provenance = path
@@ -679,6 +716,226 @@ func writeSyntheticExecutorProvenance(t *testing.T, snapshot []byte, ids synthet
 	return path
 }
 
+const (
+	syntheticWriteStdinCallID   = "call_SYNTHETIC_WRITE_STDIN_B"
+	syntheticWriteStdinReturnID = "ctco_synthetic_write_stdin_b"
+	syntheticAsyncHandle        = "proc_SYNTHETIC_HANDLE_0001"
+)
+
+type syntheticWriteStdinOpts struct {
+	CallID          string
+	ReturnID        string
+	Handle          string
+	Input           string
+	FirstExit       *int
+	FirstOutput     string
+	FirstSessionID  string
+	SecondExit      *int
+	OmitSecondChunk bool
+	CallTimestamp   string
+	ReturnTimestamp string
+	SkipProvenance  bool
+}
+
+func writeSyntheticWriteStdinTerminal(t *testing.T, original syntheticCodexExecutorResult, rec *AttemptRecord, opts syntheticWriteStdinOpts) syntheticCodexExecutorResult {
+	t.Helper()
+	callID := firstNonBlank(opts.CallID, syntheticWriteStdinCallID)
+	returnID := firstNonBlank(opts.ReturnID, syntheticWriteStdinReturnID)
+	handle := firstNonBlank(opts.Handle, original.Handle, syntheticAsyncHandle)
+	input := opts.Input
+	if input == "" {
+		input = syntheticWriteStdinInput(handle, 1000, 900, false)
+	}
+	firstExit := 1
+	if opts.FirstExit != nil {
+		firstExit = *opts.FirstExit
+	}
+	firstOut := opts.FirstOutput
+	if firstOut == "" {
+		firstOut = "错误: exit status 1"
+	}
+	secondExit := 0
+	if opts.SecondExit != nil {
+		secondExit = *opts.SecondExit
+	}
+	callTs := opts.CallTimestamp
+	retTs := opts.ReturnTimestamp
+	if callTs == "" || retTs == "" {
+		base := time.Now().UTC()
+		if rec != nil {
+			if ts, err := parseExecutorTime(rec.UpdatedAt); err == nil {
+				base = ts
+			}
+		}
+		if callTs == "" {
+			callTs = executorFixtureJSONTime(base.Add(20 * time.Millisecond))
+		}
+		if retTs == "" {
+			retTs = executorFixtureJSONTime(base.Add(35 * time.Millisecond))
+		}
+	}
+	chunk1, err := json.Marshal(map[string]any{
+		"chunk_id":  "cccccc",
+		"exit_code": firstExit,
+		"output":    firstOut,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.FirstSessionID != "" {
+		patched := map[string]any{
+			"chunk_id":   "cccccc",
+			"exit_code":  firstExit,
+			"output":     firstOut,
+			"session_id": opts.FirstSessionID,
+		}
+		chunk1, err = json.Marshal(patched)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	outputs := []any{
+		map[string]any{"type": "input_text", "text": "Script completed\nWall time 0.2 seconds\nOutput:\n"},
+		map[string]any{"type": "input_text", "text": string(chunk1)},
+	}
+	if !opts.OmitSecondChunk {
+		chunk2, merr := json.Marshal(map[string]any{
+			"chunk_id":  "dddddd",
+			"exit_code": secondExit,
+			"output":    "unrelated exec_command ok\n",
+		})
+		if merr != nil {
+			t.Fatal(merr)
+		}
+		outputs = append(outputs, map[string]any{"type": "input_text", "text": string(chunk2)})
+	}
+	records := []any{
+		map[string]any{
+			"timestamp": callTs,
+			"ordinal":   10,
+			"type":      "response_item",
+			"payload": map[string]any{
+				"type":    "custom_tool_call",
+				"id":      "ctc_synthetic_write_stdin",
+				"status":  "completed",
+				"call_id": callID,
+				"name":    "exec",
+				"input":   input,
+			},
+		},
+		map[string]any{
+			"timestamp": retTs,
+			"ordinal":   11,
+			"type":      "response_item",
+			"payload": map[string]any{
+				"type":    "custom_tool_call_output",
+				"id":      returnID,
+				"call_id": callID,
+				"output":  outputs,
+			},
+		},
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	for _, rec := range records {
+		if err := enc.Encode(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw := buf.Bytes()
+	path := filepath.Join(t.TempDir(), "later-write-stdin.jsonl")
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res := syntheticCodexExecutorResult{
+		Path:     path,
+		Digest:   sha256Hex(string(raw)),
+		CallID:   callID,
+		ReturnID: returnID,
+		Handle:   handle,
+		Raw:      append([]byte(nil), raw...),
+	}
+	if opts.SkipProvenance {
+		res.Provenance = path
+		return res
+	}
+	res.Provenance = writeSyntheticExecutorProvenance(t, raw, res)
+	return res
+}
+
+func bindAsyncAssociation(t *testing.T, authPath string, original, terminal syntheticCodexExecutorResult, handle string) {
+	t.Helper()
+	bindExecutorAuthorization(t, authPath, original)
+	rewriteBootstrapAuthField(t, authPath, "executor_association_kind", bootstrapExecutorAsyncAssociation)
+	rewriteBootstrapAuthField(t, authPath, "executor_handle", handle)
+	rewriteBootstrapAuthField(t, authPath, "terminal_raw_path", terminal.Path)
+	rewriteBootstrapAuthField(t, authPath, "terminal_raw_digest", terminal.Digest)
+	rewriteBootstrapAuthField(t, authPath, "terminal_call_id", terminal.CallID)
+	rewriteBootstrapAuthField(t, authPath, "terminal_return_id", terminal.ReturnID)
+	rewriteBootstrapAuthField(t, authPath, "terminal_provenance", terminal.Provenance)
+}
+
+func syntheticWriteStdinRetrieveAfter(rec *AttemptRecord, after time.Duration) (call, ret string) {
+	base := time.Now().UTC()
+	if rec != nil {
+		if ts, err := parseExecutorTime(rec.UpdatedAt); err == nil {
+			base = ts
+		}
+	}
+	callT := base.Add(after)
+	return executorFixtureJSONTime(callT), executorFixtureJSONTime(callT.Add(15 * time.Millisecond))
+}
+
+func syntheticWriteStdinInput(handle string, yieldMS, maxTokens int, extraExec bool) string {
+	obj := fmt.Sprintf("{session_id:%s,chars:\"\"", handle)
+	if yieldMS >= 0 {
+		obj += fmt.Sprintf(",yield_time_ms:%d", yieldMS)
+	}
+	if maxTokens >= 0 {
+		obj += fmt.Sprintf(",max_output_tokens:%d", maxTokens)
+	}
+	obj += "}"
+	s := "text(await tools.write_stdin(" + obj + "))"
+	if extraExec {
+		s += ";\ntext(await tools.exec_command({cmd:\"echo unrelated-second-command\",yield_time_ms:1000}));\n"
+	}
+	return s
+}
+
+func syntheticPublicGoalRunCommand(wfID, root string, flagsAfter bool) string {
+	script := "ENV_FLAG=1 /opt/homebrew/bin/cardex workflow goal-run"
+	if flagsAfter {
+		return script + " " + wfID + " -root " + root + " -hosted -budget 120000"
+	}
+	return script + " -root " + root + " -hosted -budget 120000 " + wfID
+}
+
+func syntheticRealBootstrapPair(grokHome, profile string) string {
+	if profile == "" {
+		profile = "workspace"
+	}
+	return realBootstrapWarningPrefix + filepath.Join(grokHome, "managed_config.toml") + realBootstrapWarningSuffix + "\n" +
+		realBootstrapErrorPrefix + profile + realBootstrapErrorSuffix
+}
+
+func writeSyntheticAsyncOriginal(t *testing.T, tk *Task, wf *WorkflowRecord, attempt *AttemptRecord, command string) syntheticCodexExecutorResult {
+	t.Helper()
+	if command == "" {
+		command = "cardex workflow goal-run -manual -budget 12000 " + wf.ID
+	}
+	pair := syntheticRealBootstrapPair(tk.Goal.GrokHome, firstNonBlank(tk.Goal.SandboxProfile, "workspace"))
+	return writeSyntheticCodexExecutorCaptureResult(t, tk, wf, syntheticCodexExecutorOpts{
+		Attempt:          attempt,
+		Command:          command,
+		ItemCommand:      command,
+		ProcessID:        syntheticAsyncHandle,
+		GoalRunOmitExit:  true,
+		GoalRunSessionID: syntheticAsyncHandle,
+		RefusalLine:      pair,
+	})
+}
+
 func hostedPTYLimitation(err error) bool {
 	if err == nil {
 		return false
@@ -718,6 +975,9 @@ const (
 	hostedEmitPrefixed
 	hostedEmitConcatenated
 	hostedEmitFloodThenExit
+	hostedEmitRealPair
+	hostedEmitRealPairCRLF
+	hostedEmitRealPairExit0
 )
 
 func fakeHostedGrokBinBootstrapCapture(t *testing.T, reportPath string, emit hostedBootstrapEmit) string {
@@ -750,6 +1010,25 @@ func fakeHostedGrokBinBootstrapCapture(t *testing.T, reportPath string, emit hos
 		script += "dd if=/dev/zero bs=8192 count=16 2>/dev/null | tr '\\0' 'A'\n"
 		script += "printf '\\n'\n"
 		script += "exit 0\n"
+	case hostedEmitRealPair, hostedEmitRealPairCRLF, hostedEmitRealPairExit0:
+		script += "home=$GROK_HOME\n"
+		script += "profile=workspace\n"
+		script += "prev=\"\"\n"
+		script += "for a in \"$@\"; do\n"
+		script += "  if [ \"$prev\" = \"--sandbox\" ]; then profile=$a; fi\n"
+		script += "  prev=$a\n"
+		script += "done\n"
+		nl := "\\n"
+		if emit == hostedEmitRealPairCRLF {
+			nl = "\\r\\n"
+		}
+		script += "printf '%s%s%s" + nl + "' " + shSingleQuote(realBootstrapWarningPrefix) + " \"$home/managed_config.toml\" " + shSingleQuote(realBootstrapWarningSuffix) + " >&2\n"
+		script += "printf '%s%s%s" + nl + "' " + shSingleQuote(realBootstrapErrorPrefix) + " \"$profile\" " + shSingleQuote(realBootstrapErrorSuffix) + " >&2\n"
+		if emit == hostedEmitRealPairExit0 {
+			script += "exit 0\n"
+		} else {
+			script += "exit 1\n"
+		}
 	default:
 		t.Fatalf("unknown hosted emit mode %d", emit)
 	}
@@ -2891,13 +3170,49 @@ func TestManagerNoScopeStopMustNotRequireUnrelatedScheduler(t *testing.T) {
 	}
 }
 
+func copyBootstrapProofFile(t *testing.T, name, src string) {
+	t.Helper()
+	dir := strings.TrimSpace(os.Getenv("CARDEX_BOOTSTRAP_CLI_LOG_DIR"))
+	if dir == "" || strings.TrimSpace(src) == "" {
+		return
+	}
+	raw, err := os.ReadFile(src)
+	if err != nil {
+		t.Logf("proof copy %s: %v", name, err)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), raw, 0o644); err != nil {
+		t.Logf("proof write %s: %v", name, err)
+	}
+}
+
+const (
+	bootstrapCLIEvidenceInProcess  = "in-process official command handler + fake launch; handler result is not a cardex binary Wait returncode"
+	bootstrapCLIEvidenceSubprocess = "cardex candidate subprocess Wait returncode"
+)
+
 func writeBootstrapCLIEvidence(name, stdout, stderr string, code int) {
+	writeBootstrapCLIEvidenceSource(name, stdout, stderr, code, bootstrapCLIEvidenceInProcess)
+}
+
+func writeBootstrapCLIEvidenceSource(name, stdout, stderr string, code int, source string) {
 	dir := strings.TrimSpace(os.Getenv("CARDEX_BOOTSTRAP_CLI_LOG_DIR"))
 	if dir == "" {
 		return
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "exit=%d\n", code)
+	fmt.Fprintf(&b, "source=%s\n", source)
+	if source == bootstrapCLIEvidenceInProcess {
+		if code == 0 {
+			b.WriteString("handler_err=nil\n")
+		} else if strings.TrimSpace(stderr) != "" {
+			fmt.Fprintf(&b, "handler_err=%s\n", strings.TrimSpace(stderr))
+		} else {
+			fmt.Fprintf(&b, "handler_err=status %d\n", code)
+		}
+	} else {
+		fmt.Fprintf(&b, "exit=%d\n", code)
+	}
 	b.WriteString("--- stdout ---\n")
 	b.WriteString(stdout)
 	if stdout != "" && !strings.HasSuffix(stdout, "\n") {
@@ -3389,6 +3704,43 @@ func TestBootstrapExecutorCaptureNegativesRefuseWithoutConsume(t *testing.T) {
 				return next, authPath
 			},
 		},
+		{
+			name: "wrapper-shell",
+			want: "wrong command identity",
+			prep: func(t *testing.T, root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, proof syntheticCodexExecutorResult, authPath string) (syntheticCodexExecutorResult, string) {
+				next := writeSyntheticCodexExecutorCaptureResult(t, tk, wf, syntheticCodexExecutorOpts{
+					Attempt: original,
+					Command: `sh -c "cardex workflow goal-run -manual -budget 12000 ` + wf.ID + `"`,
+				})
+				rebindExecutorProof(t, authPath, next)
+				return next, authPath
+			},
+		},
+		{
+			name: "quoted-injection",
+			want: "wrong command identity",
+			prep: func(t *testing.T, root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, proof syntheticCodexExecutorResult, authPath string) (syntheticCodexExecutorResult, string) {
+				next := writeSyntheticCodexExecutorCaptureResult(t, tk, wf, syntheticCodexExecutorOpts{
+					Attempt: original,
+					Command: "cardex workflow goal-run -manual -budget 12000 " + wf.ID + "; cat /etc/passwd",
+				})
+				rebindExecutorProof(t, authPath, next)
+				return next, authPath
+			},
+		},
+		{
+			name: "ambiguous-multiple-commands",
+			want: "wrong command identity",
+			prep: func(t *testing.T, root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, proof syntheticCodexExecutorResult, authPath string) (syntheticCodexExecutorResult, string) {
+				next := writeSyntheticCodexExecutorCaptureResult(t, tk, wf, syntheticCodexExecutorOpts{
+					Attempt: original,
+					Input: "text(await tools.exec_command({cmd:\"cardex workflow goal-run -manual -budget 12000 " + wf.ID + "\"}));\n" +
+						"text(await tools.exec_command({cmd:\"cardex workflow goal-run -manual -budget 12000 wf-other-same-bindings\"}));\n",
+				})
+				rebindExecutorProof(t, authPath, next)
+				return next, authPath
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3528,7 +3880,7 @@ func TestBootstrapExecutorCaptureCandidateSubprocessTwice(t *testing.T) {
 		auth := mintBootstrapExecutorAuthorization(t, tk, wf, time.Time{}, proof)
 		stdout, stderr, code := runCardexBootstrapRecoveryProcess(t, bin, root, wf.ID, auth,
 			"-executor-capture", proof.Path, "-executor-digest", proof.Digest, "-executor-call-id", proof.CallID)
-		writeBootstrapCLIEvidence(fmt.Sprintf("cli-positive-%d", pass), stdout, stderr, code)
+		writeBootstrapCLIEvidenceSource(fmt.Sprintf("cli-positive-%d", pass), stdout, stderr, code, bootstrapCLIEvidenceSubprocess)
 		if !strings.Contains(stdout, "original_attempt="+original.AttemptID) {
 			t.Fatalf("pass %d positive stdout missing original_attempt: stdout=%q stderr=%q code=%d", pass, stdout, stderr, code)
 		}
@@ -3560,7 +3912,7 @@ func TestBootstrapExecutorCaptureCandidateSubprocessTwice(t *testing.T) {
 		rewriteBootstrapAuthField(t, authN, "executor_call_id", proofN.CallID)
 		stdoutN, stderrN, codeN := runCardexBootstrapRecoveryProcess(t, bin, rootN, wfN.ID, authN,
 			"-executor-capture", wrong.Path, "-executor-digest", wrong.Digest, "-executor-call-id", proofN.CallID)
-		writeBootstrapCLIEvidence(fmt.Sprintf("cli-negative-%d", pass), stdoutN, stderrN, codeN)
+		writeBootstrapCLIEvidenceSource(fmt.Sprintf("cli-negative-%d", pass), stdoutN, stderrN, codeN, bootstrapCLIEvidenceSubprocess)
 		if codeN == 0 {
 			t.Fatalf("pass %d negative must be nonzero; stdout=%q stderr=%q", pass, stdoutN, stderrN)
 		}
@@ -3733,6 +4085,570 @@ func TestBootstrapExecutorCaptureRealRefusalPair(t *testing.T) {
 			} else if err == nil {
 				t.Fatal("invalid actual refusal accepted")
 			}
+		})
+	}
+}
+
+func fakeGrokGoalBinRealPair(t *testing.T, exitCode int) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "grok")
+	script := "#!/bin/sh\n"
+	script += "home=$GROK_HOME\n"
+	script += "profile=workspace\n"
+	script += "prev=\"\"\n"
+	script += "for a in \"$@\"; do\n"
+	script += "  if [ \"$prev\" = \"--sandbox\" ]; then profile=$a; fi\n"
+	script += "  prev=$a\n"
+	script += "done\n"
+	script += "printf '%s%s%s\\n' " + shSingleQuote(realBootstrapWarningPrefix) + " \"$home/managed_config.toml\" " + shSingleQuote(realBootstrapWarningSuffix) + " >&2\n"
+	script += "printf '%s%s%s\\n' " + shSingleQuote(realBootstrapErrorPrefix) + " \"$profile\" " + shSingleQuote(realBootstrapErrorSuffix) + " >&2\n"
+	script += fmt.Sprintf("exit %d\n", exitCode)
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestBootstrapRefusalCaptureAdjacentPair(t *testing.T) {
+	home := t.TempDir()
+	pair := syntheticRealBootstrapPair(home, "workspace")
+	warning, errorLine, ok := strings.Cut(pair, "\n")
+	if !ok {
+		t.Fatal("pair")
+	}
+	writeAll := func(c *bootstrapRefusalCapture, p []byte) {
+		t.Helper()
+		if _, err := c.Write(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("adjacent", func(t *testing.T) {
+		c := &bootstrapRefusalCapture{sink: io.Discard}
+		writeAll(c, []byte(pair+"\n"))
+		if c.capturedOutput() != pair {
+			t.Fatalf("adjacent pair: %q", c.capturedOutput())
+		}
+	})
+	t.Run("chunk-split", func(t *testing.T) {
+		c := &bootstrapRefusalCapture{sink: io.Discard}
+		raw := []byte(pair + "\n")
+		for i := 0; i < len(raw); i += 3 {
+			end := i + 3
+			if end > len(raw) {
+				end = len(raw)
+			}
+			writeAll(c, raw[i:end])
+		}
+		if c.capturedOutput() != pair {
+			t.Fatalf("chunk-split pair: %q", c.capturedOutput())
+		}
+	})
+	t.Run("crlf", func(t *testing.T) {
+		c := &bootstrapRefusalCapture{sink: io.Discard}
+		writeAll(c, []byte(warning+"\r\n"+errorLine+"\r\n"))
+		if c.capturedOutput() != pair {
+			t.Fatalf("crlf pair: %q", c.capturedOutput())
+		}
+	})
+	t.Run("truncated", func(t *testing.T) {
+		c := &bootstrapRefusalCapture{sink: io.Discard}
+		writeAll(c, []byte(warning+"\n"))
+		writeAll(c, bytes.Repeat([]byte("x"), grokBuildProcessStderrMaxBytes+8))
+		if c.capturedOutput() == pair {
+			t.Fatal("truncated error matched pair")
+		}
+	})
+	t.Run("nonadjacent", func(t *testing.T) {
+		c := &bootstrapRefusalCapture{sink: io.Discard}
+		writeAll(c, []byte(warning+"\nprovider started\n"+errorLine+"\n"))
+		if c.capturedOutput() == pair {
+			t.Fatal("nonadjacent pair matched")
+		}
+	})
+	t.Run("reversed", func(t *testing.T) {
+		c := &bootstrapRefusalCapture{sink: io.Discard}
+		writeAll(c, []byte(errorLine+"\n"+warning+"\n"))
+		if c.capturedOutput() == pair {
+			t.Fatal("reversed pair matched")
+		}
+	})
+	t.Run("interleaved", func(t *testing.T) {
+		c := &bootstrapRefusalCapture{sink: io.Discard}
+		writeAll(c, []byte(warning+"\ninterleaved\n"+errorLine+"\n"))
+		if c.capturedOutput() == pair {
+			t.Fatal("interleaved pair matched")
+		}
+	})
+	t.Run("quoted", func(t *testing.T) {
+		c := &bootstrapRefusalCapture{sink: io.Discard}
+		writeAll(c, []byte("diagnostic quoted: "+pair+"\n"))
+		if c.capturedOutput() == pair {
+			t.Fatal("quoted pair matched")
+		}
+	})
+	t.Run("prefixed", func(t *testing.T) {
+		c := &bootstrapRefusalCapture{sink: io.Discard}
+		writeAll(c, []byte("prefix: "+warning+"\n"+errorLine+"\n"))
+		if c.capturedOutput() == pair {
+			t.Fatal("prefixed warning matched")
+		}
+	})
+	t.Run("concatenated", func(t *testing.T) {
+		c := &bootstrapRefusalCapture{sink: io.Discard}
+		writeAll(c, append(bytes.Repeat([]byte("x"), 64), []byte(pair+"\n")...))
+		if c.capturedOutput() == pair {
+			t.Fatal("concatenated junk+pair without line boundary matched")
+		}
+	})
+	t.Run("generic-keyword", func(t *testing.T) {
+		c := &bootstrapRefusalCapture{sink: io.Discard}
+		writeAll(c, []byte("Operation not permitted\nsandbox profile refused\n"))
+		if c.capturedOutput() == pair {
+			t.Fatal("generic keyword matched")
+		}
+		if _, ok := matchAcceptedBootstrapBeforeProviderRefusal("Operation not permitted"); ok {
+			t.Fatal("generic keyword matcher accepted")
+		}
+	})
+}
+
+func TestManualGoalLaunchHeadlessRealPairRetainsSidecarAndConsumer(t *testing.T) {
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	cfg.GrokBuildBin = fakeGrokGoalBinRealPair(t, 1)
+	cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+	saveGoalCfg(t, root, cfg)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	home := t.TempDir()
+	tk.Goal.GrokHome = home
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	if err := runManualGoalLaunch(t, root, cfg, wf, 12000); err == nil {
+		t.Fatal("real pair producer must exit nonzero")
+	}
+	after, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := loadRequiredGoalAttempt(root, after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertCapturedBootstrapBeforeProviderProof(t, root, after, rec)
+	proof, err := loadBootstrapLauncherEvidence(root, after.ID, rec.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := syntheticRealBootstrapPair(after.Goal.GrokHome, firstNonBlank(after.Goal.SandboxProfile, "workspace"))
+	if proof.RefusalOutput != want {
+		t.Fatalf("sidecar pair=%q want %q", proof.RefusalOutput, want)
+	}
+	originalBytes, err := os.ReadFile(attemptPath(root, after.ID, rec.AttemptID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.GrokBuildBin = fakeGrokGoalBin(t, filepath.Join(t.TempDir(), "argv-recovery"))
+	saveGoalCfg(t, root, cfg)
+	auth := mintBootstrapBeforeNativeAuthorization(t, after, wf, time.Time{})
+	stdout, recErr := captureWorkflowCmd(t, "goal-bootstrap-before-native-recovery",
+		"-root", root, wf.ID, "-manual", "-authorization", auth)
+	if recErr != nil {
+		t.Fatalf("consumer admit: %v stdout=%s", recErr, stdout)
+	}
+	if !strings.Contains(stdout, "original_attempt="+rec.AttemptID) || !strings.Contains(stdout, "new_attempt=") {
+		t.Fatalf("consumer stdout: %s", stdout)
+	}
+	if countBootstrapConsumeEvents(t, root, after.ID) != 1 {
+		t.Fatalf("consume=%d", countBootstrapConsumeEvents(t, root, after.ID))
+	}
+	assertOriginalAttemptUnchanged(t, root, after.ID, rec.AttemptID, originalBytes)
+	copyBootstrapProofFile(t, "producer-sidecar.json", bootstrapLauncherEvidencePath(root, after.ID, rec.AttemptID))
+	copyBootstrapProofFile(t, "producer-authorization.json", auth)
+	writeBootstrapCLIEvidence("cli-producer-consumer", stdout, "", 0)
+	t.Logf("cli-producer-consumer stdout=%s", stdout)
+
+	root0, dir0 := workflowTestRoot(t)
+	cfg0 := workflowTestCfg(t, root0)
+	cfg0.GrokBuildBin = fakeGrokGoalBinRealPair(t, 0)
+	cfg0.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+	saveGoalCfg(t, root0, cfg0)
+	wf0 := initTestWorkflow(t, root0, dir0)
+	tk0 := admitManualWriter(t, root0, cfg0, wf0)
+	tk0.Goal.GrokHome = t.TempDir()
+	if err := saveTask(root0, tk0); err != nil {
+		t.Fatal(err)
+	}
+	if err := runManualGoalLaunch(t, root0, cfg0, wf0, 12000); err != nil {
+		t.Fatalf("exit-0 producer: %v", err)
+	}
+	after0, err := loadTask(root0, tk0.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec0, err := loadRequiredGoalAttempt(root0, after0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, serr := os.Stat(bootstrapLauncherEvidencePath(root0, after0.ID, rec0.AttemptID)); !os.IsNotExist(serr) {
+		t.Fatalf("exit-0 wrote sidecar: %v", serr)
+	}
+}
+
+func bootstrapAsyncExecutorFixture(t *testing.T, command string, termOpts syntheticWriteStdinOpts) (
+	root string, cfg *Config, wf *WorkflowRecord, tk *Task, original *AttemptRecord, originalBytes []byte,
+	execProof, termProof syntheticCodexExecutorResult, authPath string,
+) {
+	t.Helper()
+	root, cfg, wf, tk, original, originalBytes = bootstrapBeforeNativeFixture(t)
+	if _, err := os.Stat(bootstrapLauncherEvidencePath(root, tk.ID, original.AttemptID)); !os.IsNotExist(err) {
+		t.Fatalf("async fixture must omit sidecar: %v", err)
+	}
+	execProof = writeSyntheticAsyncOriginal(t, tk, wf, original, command)
+	if strings.TrimSpace(termOpts.Handle) == "" {
+		termOpts.Handle = execProof.Handle
+	}
+	termProof = writeSyntheticWriteStdinTerminal(t, execProof, original, termOpts)
+	cfg.GrokBuildBin = fakeGrokGoalBin(t, filepath.Join(t.TempDir(), "argv-async-recovery"))
+	saveGoalCfg(t, root, cfg)
+	authPath = mintBootstrapBeforeNativeAuthorization(t, tk, wf, time.Time{})
+	bindAsyncAssociation(t, authPath, execProof, termProof, execProof.Handle)
+	return
+}
+
+func assertAsyncAdmit(t *testing.T, root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, originalBytes []byte, execProof, termProof syntheticCodexExecutorResult, authPath string) string {
+	t.Helper()
+	beforeExec, err := os.ReadFile(execProof.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeTerm, err := os.ReadFile(termProof.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha256Hex(string(beforeExec)) != execProof.Digest || sha256Hex(string(beforeTerm)) != termProof.Digest {
+		t.Fatal("fixture digest was not computed from written bytes")
+	}
+	stdout, recErr := captureWorkflowCmd(t, "goal-bootstrap-before-native-recovery",
+		"-root", root, wf.ID, "-manual", "-authorization", authPath,
+		"-executor-capture", execProof.Path, "-executor-digest", execProof.Digest, "-executor-call-id", execProof.CallID)
+	if recErr != nil {
+		t.Fatalf("async admit: %v stdout=%s", recErr, stdout)
+	}
+	if !strings.Contains(stdout, "original_attempt="+original.AttemptID) || !strings.Contains(stdout, "new_attempt=") {
+		t.Fatalf("async stdout: %s", stdout)
+	}
+	afterExec, err := os.ReadFile(execProof.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterTerm, err := os.ReadFile(termProof.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(beforeExec, afterExec) || !bytes.Equal(beforeTerm, afterTerm) {
+		t.Fatal("original async raws were rewritten")
+	}
+	if countBootstrapConsumeEvents(t, root, tk.ID) != 1 {
+		t.Fatalf("consume=%d", countBootstrapConsumeEvents(t, root, tk.ID))
+	}
+	assertOriginalAttemptUnchanged(t, root, tk.ID, original.AttemptID, originalBytes)
+	if _, serr := os.Stat(bootstrapLauncherEvidencePath(root, tk.ID, original.AttemptID)); !os.IsNotExist(serr) {
+		t.Fatalf("async wrote original sidecar: %v", serr)
+	}
+	copyBootstrapProofFile(t, "async-original-exec.jsonl", execProof.Path)
+	copyBootstrapProofFile(t, "async-write-stdin.jsonl", termProof.Path)
+	copyBootstrapProofFile(t, "async-authorization.json", authPath)
+	writeBootstrapCLIEvidence("cli-async-positive", stdout, "", 0)
+	t.Logf("cli-async-positive stdout=%s", stdout)
+	return stdout
+}
+
+func TestBootstrapExecutorCaptureAsyncAssociationAdmits(t *testing.T) {
+	t.Run("standalone-zh-wait", func(t *testing.T) {
+		root, _, wf, tk, original, originalBytes, execProof, termProof, auth := bootstrapAsyncExecutorFixture(t, "", syntheticWriteStdinOpts{OmitSecondChunk: true})
+		assertAsyncAdmit(t, root, wf, tk, original, originalBytes, execProof, termProof, auth)
+	})
+	t.Run("following-exec-command-allowed", func(t *testing.T) {
+		root, _, wf, tk, original, originalBytes, execProof, _, auth := bootstrapAsyncExecutorFixture(t, "", syntheticWriteStdinOpts{})
+		term := writeSyntheticWriteStdinTerminal(t, execProof, original, syntheticWriteStdinOpts{
+			Handle: execProof.Handle,
+			Input:  syntheticWriteStdinInput(execProof.Handle, 1000, 900, true),
+		})
+		bindAsyncAssociation(t, auth, execProof, term, execProof.Handle)
+		assertAsyncAdmit(t, root, wf, tk, original, originalBytes, execProof, term, auth)
+	})
+	t.Run("non-whitelist-yield-max", func(t *testing.T) {
+		root, _, wf, tk, original, originalBytes, execProof, _, auth := bootstrapAsyncExecutorFixture(t, "", syntheticWriteStdinOpts{})
+		term := writeSyntheticWriteStdinTerminal(t, execProof, original, syntheticWriteStdinOpts{
+			Handle:          execProof.Handle,
+			Input:           syntheticWriteStdinInput(execProof.Handle, 2500, 400, false),
+			OmitSecondChunk: true,
+		})
+		bindAsyncAssociation(t, auth, execProof, term, execProof.Handle)
+		assertAsyncAdmit(t, root, wf, tk, original, originalBytes, execProof, term, auth)
+	})
+	t.Run("legacy-synchronous-triple", func(t *testing.T) {
+		root, _, wf, tk, original, originalBytes, proof := bootstrapSidecarlessExecutorFixture(t)
+		auth := mintBootstrapExecutorAuthorization(t, tk, wf, time.Time{}, proof)
+		stdout, err := captureWorkflowCmd(t, "goal-bootstrap-before-native-recovery",
+			"-root", root, wf.ID, "-manual", "-authorization", auth,
+			"-executor-capture", proof.Path, "-executor-digest", proof.Digest, "-executor-call-id", proof.CallID)
+		if err != nil {
+			t.Fatalf("legacy triple: %v stdout=%s", err, stdout)
+		}
+		if !strings.Contains(stdout, "original_attempt="+original.AttemptID) {
+			t.Fatalf("legacy stdout: %s", stdout)
+		}
+		assertOriginalAttemptUnchanged(t, root, tk.ID, original.AttemptID, originalBytes)
+		if countBootstrapConsumeEvents(t, root, tk.ID) != 1 {
+			t.Fatalf("legacy consume=%d", countBootstrapConsumeEvents(t, root, tk.ID))
+		}
+	})
+}
+
+func TestBootstrapExecutorCaptureAsyncRetrieveTiming(t *testing.T) {
+	t.Run("retrieve-after-14s", func(t *testing.T) {
+		root, _, wf, tk, original, originalBytes, execProof, _, auth := bootstrapAsyncExecutorFixture(t, "", syntheticWriteStdinOpts{OmitSecondChunk: true})
+		callTs, retTs := syntheticWriteStdinRetrieveAfter(original, 14*time.Second)
+		term := writeSyntheticWriteStdinTerminal(t, execProof, original, syntheticWriteStdinOpts{
+			Handle:          execProof.Handle,
+			OmitSecondChunk: true,
+			CallTimestamp:   callTs,
+			ReturnTimestamp: retTs,
+		})
+		bindAsyncAssociation(t, auth, execProof, term, execProof.Handle)
+		assertAsyncAdmit(t, root, wf, tk, original, originalBytes, execProof, term, auth)
+	})
+	t.Run("new-identity", func(t *testing.T) {
+		root, _, wf, tk, original, _, execProof, _, auth := bootstrapAsyncExecutorFixture(t, "", syntheticWriteStdinOpts{OmitSecondChunk: true})
+		callTs, retTs := syntheticWriteStdinRetrieveAfter(original, 14*time.Second)
+		term := writeSyntheticWriteStdinTerminal(t, execProof, original, syntheticWriteStdinOpts{
+			Handle:          execProof.Handle,
+			OmitSecondChunk: true,
+			CallTimestamp:   callTs,
+			ReturnTimestamp: retTs,
+		})
+		bindAsyncAssociation(t, auth, execProof, term, execProof.Handle)
+		rewriteBootstrapAuthField(t, auth, "executor_handle", "proc_NEW_RUN_HANDLE")
+		afterPrepBytes, rerr := os.ReadFile(attemptPath(root, tk.ID, original.AttemptID))
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		err := runBootstrapRecoveryCLIWithExecutor(root, wf.ID, auth, execProof.Path, execProof.Digest, execProof.CallID)
+		if err == nil {
+			t.Fatal("new identity recovered")
+		}
+		if !strings.Contains(err.Error(), "wrong handle identity") {
+			t.Fatalf("new identity reason: %v", err)
+		}
+		if countBootstrapConsumeEvents(t, root, tk.ID) != 0 {
+			t.Fatal("new identity consumed")
+		}
+		assertOriginalAttemptUnchanged(t, root, tk.ID, original.AttemptID, afterPrepBytes)
+	})
+	t.Run("past-original-deadline", func(t *testing.T) {
+		root, _, wf, tk, original, _, _, _, auth := bootstrapAsyncExecutorFixture(t, "", syntheticWriteStdinOpts{OmitSecondChunk: true})
+		rec, err := loadAttempt(root, tk.ID, original.AttemptID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Now().Add(-2 * time.Hour)
+		rec.CreatedAt = start.Format(time.RFC3339Nano)
+		rec.UpdatedAt = start.Add(200 * time.Millisecond).Format(time.RFC3339Nano)
+		if err := writeAttempt(root, rec); err != nil {
+			t.Fatal(err)
+		}
+		execProof := writeSyntheticAsyncOriginal(t, tk, wf, rec, "")
+		callTs, retTs := syntheticWriteStdinRetrieveAfter(rec, 14*time.Second)
+		term := writeSyntheticWriteStdinTerminal(t, execProof, rec, syntheticWriteStdinOpts{
+			Handle:          execProof.Handle,
+			OmitSecondChunk: true,
+			CallTimestamp:   callTs,
+			ReturnTimestamp: retTs,
+		})
+		bindAsyncAssociation(t, auth, execProof, term, execProof.Handle)
+		afterPrepBytes, rerr := os.ReadFile(attemptPath(root, tk.ID, rec.AttemptID))
+		if rerr != nil {
+			t.Fatal(rerr)
+		}
+		err = runBootstrapRecoveryCLIWithExecutor(root, wf.ID, auth, execProof.Path, execProof.Digest, execProof.CallID)
+		if err == nil {
+			t.Fatal("past original deadline recovered")
+		}
+		if !strings.Contains(err.Error(), "exhausted remaining allowance") {
+			t.Fatalf("past original deadline reason: %v", err)
+		}
+		if countBootstrapConsumeEvents(t, root, tk.ID) != 0 {
+			t.Fatal("past original deadline consumed")
+		}
+		assertOriginalAttemptUnchanged(t, root, tk.ID, rec.AttemptID, afterPrepBytes)
+	})
+}
+
+func TestBootstrapExecutorCaptureSupportedFlagOrderIdentifiesWorkflow(t *testing.T) {
+	rootPath := "/tmp/synthetic-cardex-root"
+	for _, flagsAfter := range []bool{false, true} {
+		name := "flags-before-WF"
+		if flagsAfter {
+			name = "flags-after-WF-budget-last"
+		}
+		t.Run(name, func(t *testing.T) {
+			root, _, wf, tk, original, originalBytes, _ := bootstrapSidecarlessExecutorFixture(t)
+			script := syntheticPublicGoalRunCommand(wf.ID, rootPath, flagsAfter)
+			proof := writeSyntheticCodexExecutorCaptureResult(t, tk, wf, syntheticCodexExecutorOpts{
+				Attempt:     original,
+				Command:     script,
+				ItemCommand: script,
+				CommandArgv: []string{"/bin/zsh", "-c", script},
+				ParsedCmd:   script,
+			})
+			auth := mintBootstrapExecutorAuthorization(t, tk, wf, time.Time{}, proof)
+			stdout, err := captureWorkflowCmd(t, "goal-bootstrap-before-native-recovery",
+				"-root", root, wf.ID, "-manual", "-authorization", auth,
+				"-executor-capture", proof.Path, "-executor-digest", proof.Digest, "-executor-call-id", proof.CallID)
+			if err != nil {
+				t.Fatalf("%s: %v stdout=%s", name, err, stdout)
+			}
+			if !strings.Contains(stdout, "original_attempt="+original.AttemptID) {
+				t.Fatalf("%s stdout: %s", name, stdout)
+			}
+			assertOriginalAttemptUnchanged(t, root, tk.ID, original.AttemptID, originalBytes)
+			if countBootstrapConsumeEvents(t, root, tk.ID) != 1 {
+				t.Fatalf("%s consume=%d", name, countBootstrapConsumeEvents(t, root, tk.ID))
+			}
+		})
+	}
+}
+
+func TestBootstrapExecutorCaptureAsyncNegativesRefuseWithoutConsume(t *testing.T) {
+	zero := 0
+	one := 1
+	type tc struct {
+		name string
+		want string
+		prep func(t *testing.T, root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, execProof, termProof syntheticCodexExecutorResult, authPath string) (syntheticCodexExecutorResult, syntheticCodexExecutorResult, string)
+	}
+	cases := []tc{
+		{
+			name: "wrong-handle",
+			want: "wrong handle identity",
+			prep: func(t *testing.T, root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, execProof, termProof syntheticCodexExecutorResult, authPath string) (syntheticCodexExecutorResult, syntheticCodexExecutorResult, string) {
+				rewriteBootstrapAuthField(t, authPath, "executor_handle", "proc_WRONG_HANDLE")
+				return execProof, termProof, authPath
+			},
+		},
+		{
+			name: "swapped-raws",
+			want: "truncated original executor capture",
+			prep: func(t *testing.T, root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, execProof, termProof syntheticCodexExecutorResult, authPath string) (syntheticCodexExecutorResult, syntheticCodexExecutorResult, string) {
+				swapped := termProof
+				swapped.ItemID = execProof.ItemID
+				bindAsyncAssociation(t, authPath, swapped, execProof, execProof.Handle)
+				return swapped, execProof, authPath
+			},
+		},
+		{
+			name: "concatenated-raws",
+			want: "modified original executor capture",
+			prep: func(t *testing.T, root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, execProof, termProof syntheticCodexExecutorResult, authPath string) (syntheticCodexExecutorResult, syntheticCodexExecutorResult, string) {
+				joined := append(append([]byte{}, execProof.Raw...), termProof.Raw...)
+				path := filepath.Join(t.TempDir(), "concatenated.jsonl")
+				if err := os.WriteFile(path, joined, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				next := execProof
+				next.Path = path
+				next.Digest = sha256Hex(string(joined))
+				next.Raw = joined
+				bindAsyncAssociation(t, authPath, next, termProof, execProof.Handle)
+				return next, termProof, authPath
+			},
+		},
+		{
+			name: "last-success-chunk",
+			want: "missing terminal nonzero exit",
+			prep: func(t *testing.T, root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, execProof, termProof syntheticCodexExecutorResult, authPath string) (syntheticCodexExecutorResult, syntheticCodexExecutorResult, string) {
+				term := writeSyntheticWriteStdinTerminal(t, execProof, original, syntheticWriteStdinOpts{
+					Handle:          execProof.Handle,
+					FirstExit:       &zero,
+					SecondExit:      &zero,
+					OmitSecondChunk: false,
+				})
+				bindAsyncAssociation(t, authPath, execProof, term, execProof.Handle)
+				return execProof, term, authPath
+			},
+		},
+		{
+			name: "convenient-nonzero-second-command",
+			want: "unrelated second-command failure",
+			prep: func(t *testing.T, root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, execProof, termProof syntheticCodexExecutorResult, authPath string) (syntheticCodexExecutorResult, syntheticCodexExecutorResult, string) {
+				term := writeSyntheticWriteStdinTerminal(t, execProof, original, syntheticWriteStdinOpts{
+					Handle:     execProof.Handle,
+					FirstExit:  &zero,
+					SecondExit: &one,
+				})
+				bindAsyncAssociation(t, authPath, execProof, term, execProof.Handle)
+				return execProof, term, authPath
+			},
+		},
+		{
+			name: "mixed-two-write-stdin",
+			want: "wrong handle identity",
+			prep: func(t *testing.T, root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, execProof, termProof syntheticCodexExecutorResult, authPath string) (syntheticCodexExecutorResult, syntheticCodexExecutorResult, string) {
+				input := syntheticWriteStdinInput(execProof.Handle, 1000, 900, false) + ";\n" +
+					syntheticWriteStdinInput("proc_OTHER_HANDLE", 1000, 900, false)
+				term := writeSyntheticWriteStdinTerminal(t, execProof, original, syntheticWriteStdinOpts{
+					Handle:          execProof.Handle,
+					Input:           input,
+					OmitSecondChunk: true,
+				})
+				bindAsyncAssociation(t, authPath, execProof, term, execProof.Handle)
+				return execProof, term, authPath
+			},
+		},
+		{
+			name: "different-call",
+			want: "wrong call identity",
+			prep: func(t *testing.T, root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, execProof, termProof syntheticCodexExecutorResult, authPath string) (syntheticCodexExecutorResult, syntheticCodexExecutorResult, string) {
+				rewriteBootstrapAuthField(t, authPath, "executor_call_id", "call_WRONGIDENTITY0001")
+				execProof.CallID = "call_WRONGIDENTITY0001"
+				return execProof, termProof, authPath
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _, wf, tk, original, _, execProof, termProof, authPath := bootstrapAsyncExecutorFixture(t, "", syntheticWriteStdinOpts{OmitSecondChunk: true})
+			execProof, termProof, authPath = tc.prep(t, root, wf, tk, original, execProof, termProof, authPath)
+			afterPrepBytes, rerr := os.ReadFile(attemptPath(root, tk.ID, original.AttemptID))
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			err := runBootstrapRecoveryCLIWithExecutor(root, wf.ID, authPath, execProof.Path, execProof.Digest, execProof.CallID)
+			if err == nil {
+				t.Fatalf("%s recovered", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("%s reason: %v want %q", tc.name, err, tc.want)
+			}
+			if countBootstrapConsumeEvents(t, root, tk.ID) != 0 {
+				t.Fatalf("%s consumed", tc.name)
+			}
+			if tc.name == "wrong-handle" {
+				writeBootstrapCLIEvidence("cli-async-negative-wrong-handle", "", err.Error(), 1)
+				t.Logf("cli-async-negative consume=%d err=%v", countBootstrapConsumeEvents(t, root, tk.ID), err)
+			}
+			atts, lerr := listGoalAttemptRecords(root, tk.ID)
+			if lerr != nil {
+				t.Fatal(lerr)
+			}
+			if len(atts) != 1 {
+				t.Fatalf("%s extra attempt: %d", tc.name, len(atts))
+			}
+			assertOriginalAttemptUnchanged(t, root, tk.ID, original.AttemptID, afterPrepBytes)
 		})
 	}
 }

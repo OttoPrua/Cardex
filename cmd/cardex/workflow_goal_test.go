@@ -3502,6 +3502,44 @@ func TestGoalAutoSync(t *testing.T) {
 	})
 }
 
+func TestGoalSyncResidualActivePersistsKnownUsageOnce(t *testing.T) {
+	root, dir, home, cfg, wf, tk, _ := seedResidualActiveTimeoutGoal(t)
+	writeGrokGoalFixture(t, home, dir, tk.SessionID, tk.Goal.NativeGoalID, "active", grokNativeGoalStateFile{
+		Phase: "Executing", TokensUsedHighWater: json.RawMessage("0"), ElapsedMS: json.RawMessage("100"),
+	})
+	req := GoalSyncRequest{
+		ExpectedRevision: tk.Revision, ExpectedSession: tk.SessionID,
+		ExpectedGoalID: tk.Goal.NativeGoalID, ExpectedAttempt: tk.Goal.BoundAttemptID,
+		GrokHome: home, GrokCWD: dir,
+	}
+	got, err := syncWorkflowGoal(root, cfg, wf, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != tk.Revision+1 {
+		t.Fatalf("new measurements must persist once: got revision %d, before %d", got.Revision, tk.Revision)
+	}
+	loaded, err := loadTask(root, got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.RawUsage == nil || loaded.RawUsage.Accumulated.TotalTokens == nil || *loaded.RawUsage.Accumulated.TotalTokens != 0 ||
+		loaded.RawUsage.LastAppliedElapsed == nil || *loaded.RawUsage.LastAppliedElapsed != 100 {
+		t.Fatalf("known zero and elapsed usage must persist: %+v", loaded.RawUsage)
+	}
+	before, err := os.ReadFile(taskPath(root, got.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertResidualTimeoutUnchanged(t, root, loaded, before, got.Revision)
+	req.ExpectedRevision = got.Revision
+	again, err := syncWorkflowGoal(root, cfg, wf, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertResidualTimeoutUnchanged(t, root, again, before, got.Revision)
+}
+
 func TestGoalSyncResidualActiveAfterTimeoutStaysHeldUnknown(t *testing.T) {
 	root, dir, grokHome, cfg, wf, tk, before := seedResidualActiveTimeoutGoal(t)
 	if tk.Status != statusHeld || tk.effectiveControlState() != controlRevoking || tk.ActiveAttemptID != "" {

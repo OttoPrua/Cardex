@@ -232,9 +232,7 @@ func classifyCompletionVerify(ctx context.Context, err error, exit int) string {
 }
 
 func runLocalCompletionVerify(ctx context.Context, t *Task) ([]byte, int, error) {
-	name, prefix := localCompletionShell()
-	args := append(append([]string{}, prefix...), t.Verify)
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := localCompletionCommand(ctx, t.Verify)
 	if t != nil && t.Dir != "" {
 		cmd.Dir = t.Dir
 	}

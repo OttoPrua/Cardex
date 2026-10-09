@@ -2566,11 +2566,17 @@ func syncWorkflowGoal(root string, cfg *Config, wf *WorkflowRecord, req GoalSync
 		applied.AcceptCanceled = false
 	}
 
+	residualActive := applied.Status == statusRunning && residualActiveHeldGoal(root, t)
+	// A stale active file without new measurements is still a strict no-op.
+	// Keep missing usage unknown; real measurements (including zero) may sync.
+	if residualActive && obs.HighWaterTokens == nil && obs.ElapsedMS == nil {
+		return t, nil
+	}
 	usageChanged := applyNativeGoalUsage(t, obs)
 	// Residual native-active after a custody-released timeout (held/unknown,
 	// no live writer) must not revive to running. Keep the existing timeout
 	// or previous-terminal note. Live producers still map to running.
-	if applied.Status == statusRunning && residualActiveHeldGoal(root, t) {
+	if residualActive {
 		if usageChanged {
 			t.touch()
 			if err := saveTask(root, t); err != nil {

@@ -18,7 +18,7 @@ pass=0; fail=0
 assert() { # assert <描述> <python 表达式，tasks 为任务列表>
   local desc="$1" expr="$2"
   if "$BIN" list -json | python3 -c "
-import json,sys,time
+import json,sys,time,os
 tasks=json.load(sys.stdin) or []
 byid={t['id']:t for t in tasks}
 def one(**kw):
@@ -26,7 +26,19 @@ def one(**kw):
     assert len(m)==1, f'expect 1 match for {kw}, got {len(m)}'
     return m[0]
 now=time.time()
-assert $expr
+try:
+    assert $expr
+except (AssertionError, KeyError):
+    fields=('id','title','type','status','runner','attempts','last_error','last_summary')
+    print('TASK_STATE '+json.dumps([{k:t.get(k) for k in fields} for t in tasks],ensure_ascii=False),file=sys.stderr)
+    for name in ('calls.log','codex-calls.log'):
+        path=os.path.join(os.environ['MOCK_DIR'],name)
+        if os.path.exists(path):
+            with open(path,'rb') as log:
+                log.seek(max(0,os.path.getsize(path)-16384))
+                print(name+' tail:',file=sys.stderr)
+                print(log.read().decode('utf-8',errors='replace'),file=sys.stderr)
+    raise
 "; then
     echo "  ✔ $desc"; pass=$((pass+1))
   else
@@ -402,6 +414,7 @@ echo "== 场景23: emit 自造未知类型回退 sequence 并烘焙权限 =="
 printf 'coord_badtype\n' > "$MOCK_DIR/plan"; echo 0 > "$MOCK_DIR/n"
 "$BIN" plan -dir "$PROJ" -priority 9 -title bt-coord "自造类型分工" >/dev/null
 "$BIN" run -quiet
+assert "自造类型协调卡由 Claude 完成" "one(title='bt-coord')['status']=='done' and one(title='bt-coord').get('runner') is None"
 assert "自造 batch 类型被回退为 sequence" "one(title='badtype-task')['type']=='sequence'"
 assert "回退后烘焙了 sequence 权限（非空工具）" "len(one(title='badtype-task').get('allowed_tools') or [])>0 and one(title='badtype-task').get('permission_mode')=='acceptEdits'"
 

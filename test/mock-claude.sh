@@ -15,6 +15,7 @@ echo "$n" > "$MOCK_DIR/n"
 
 beh=$(sed -n "${n}p" "$MOCK_DIR/plan" 2>/dev/null)
 [ -z "$beh" ] && beh=ok
+printf '===== response call %s behavior=%s\n' "$n" "$beh" >> "$MOCK_DIR/calls.log"
 
 case "$beh" in
   hang)

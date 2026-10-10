@@ -382,7 +382,10 @@ func resolveGrokBuildModel(cfg *Config, t *Task) string {
 
 func resolveGrokBuildEffort(cfg *Config, t *Task) string {
 	if mixedNewGrokModel(cfg, t) != "" {
-		if t.WorkClass == "development" {
+		if spec, ok := lookupWorkClassRoute(cfg, t.WorkClass); ok && spec.Runner == grokBuildRunnerName && spec.Effort != "" {
+			return strings.ToLower(strings.TrimSpace(spec.Effort))
+		}
+		if t.WorkClass == "development" || t.WorkClass == "gpt-short" {
 			return "xhigh"
 		}
 		return "high"

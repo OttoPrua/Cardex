@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -237,8 +238,9 @@ func createHeldIntegrationTask(root string, cfg *Config, wf *WorkflowRecord) (*T
 	t.ReviewAfter = false
 	t.WriteDomain = copyWriteDomain(wf.WriteDomain)
 	t.IntegrationGate = &IntegrationGate{WorkflowID: wf.ID}
-	t.PreferRunner = wf.WriterEngine
-	t.RunnerExplicit = true
+	if err := configureWorkflowWriter(cfg, wf, t); err != nil {
+		return nil, err
+	}
 	if err := saveTask(root, t); err != nil {
 		return nil, err
 	}
@@ -348,9 +350,19 @@ func publishWorkflowWriterLocked(root string, cfg *Config, wf *WorkflowRecord, p
 	t.FixRound = wf.CurrentRound
 	t.MaxFixRounds = wf.MaxRounds
 	t.WriteDomain = copyWriteDomain(wf.WriteDomain)
-	t.PreferRunner = wf.WriterEngine
-	t.RunnerExplicit = true
+	if err := configureWorkflowWriter(cfg, wf, t); err != nil {
+		return nil, err
+	}
 	t.Goal = goal
+	if goal != nil {
+		goal.Provider = t.PreferRunner
+	}
+	if t.PreferRunner == grokBuildRunnerName {
+		_ = freezeGrokAttemptModel(context.Background(), cfg, t)
+		freezeGoalRouteSnapshot(t)
+	} else if err := admitTaskRoute(cfg, t); err != nil {
+		return nil, err
+	}
 	if hook := goalWriterPublishHook; hook != nil {
 		hook(t)
 	}
@@ -572,8 +584,9 @@ func admitWorkflowRepairLocked(root string, cfg *Config, wf *WorkflowRecord, fin
 	t.MaxFixRounds = wf.MaxRounds
 	t.SkipPermissions = writer.SkipPermissions
 	t.WriteDomain = copyWriteDomain(wf.WriteDomain)
-	t.PreferRunner = wf.WriterEngine
-	t.RunnerExplicit = true
+	if err := configureWorkflowWriter(cfg, wf, t); err != nil {
+		return nil, err
+	}
 	if hook := goalWriterPublishHook; hook != nil {
 		hook(t)
 	}

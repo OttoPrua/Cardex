@@ -17,7 +17,7 @@ import (
 	"time"
 )
 
-const version = "0.10.34"
+const version = "0.10.35"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -307,7 +307,7 @@ func cmdAdd(args []string) error {
 	grokEffort := fs.String("grok-effort", "", "钉定 Grok Build 推理档（当前最高 xhigh）")
 	cursorModel := fs.String("cursor-model", "", "钉定 Cursor 账号模型 ID。当前 cursor-agent 目录的 Grok 是 grok-4.7-xhigh（另有 low/medium/high；Fast 变体分开，不是默认）。显式旧钉 cursor-grok-4.6-xhigh 仍按原样执行")
 	workClass := fs.String("work-class", "", "混合路由：development（默认普通开发）|simple-development|gpt-complex|gpt-short|management")
-	routeClass := fs.String("route-class", "", "工作负载路由分类：backend=服务/持久化/协议/数据库/网络执行/身份凭据/manifest-launchd/Control权限/live cutover，general=明确非后端；Owner 强制模式下新 sequence 卡必填，空值仅供存量卡兼容判定")
+	routeClass := fs.String("route-class", "", "工作负载路由分类：backend=服务/持久化/协议/数据库/网络执行/身份凭据/manifest-launchd/Control权限/live cutover，general=明确非后端，frontend=前端/UI；Owner 强制模式下新 sequence 卡必填，空值仅供存量卡兼容判定")
 	riskClass := fs.String("risk-class", "", "Owner 风险分类：ordinary|high-risk|critical|production；backend 缺失或不明确时按 high-risk fail closed")
 	qualitySensitive := fs.Bool("quality-sensitive", false, "兼容元数据：Haiku 基线为目录稳定 Grok/high（Grok CLI 1.0.40 为 grok-4.7），本标志不再抬升 effort")
 	specializedFrontend := fs.Bool("specialized-frontend", false, "复杂 React/frontend refactor、accessibility 或 fixing：要求 fresh Sol 最终质量门")
@@ -503,10 +503,18 @@ func cmdAdd(args []string) error {
 	t.CursorModel = strings.TrimSpace(*cursorModel)
 	if *workClass != "" {
 		t.WorkClass = strings.ToLower(strings.TrimSpace(*workClass))
+	} else if len(cfg.RouteMatrix) > 0 {
+		// Explicit tier/category selects the matrix rather than the inherited
+		// mixed work-class default. Explicit work-class always has precedence.
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "model" || f.Name == "route-class" {
+				t.WorkClass = ""
+			}
+		})
 	}
 	t.RouteClass = strings.ToLower(strings.TrimSpace(*routeClass))
-	if t.RouteClass != "" && t.RouteClass != routeClassGeneral && t.RouteClass != routeClassBackend {
-		return fmt.Errorf("未知 route-class %q（可选: general/backend）", *routeClass)
+	if t.RouteClass != "" && t.RouteClass != routeClassGeneral && t.RouteClass != routeClassBackend && t.RouteClass != routeClassFrontend {
+		return fmt.Errorf("未知 route-class %q（可选: general/backend/frontend）", *routeClass)
 	}
 	if err := validateNewTaskRouteClass(cfg, t); err != nil {
 		return err
@@ -597,6 +605,9 @@ func cmdAdd(args []string) error {
 		return err
 	}
 	t.DispatchDecision = decision
+	if err := admitTaskRoute(cfg, t); err != nil {
+		return err
+	}
 	if *dryRun {
 		out, err := json.MarshalIndent(t, "", "  ")
 		if err != nil {

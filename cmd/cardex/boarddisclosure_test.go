@@ -21,6 +21,7 @@ import (
 // disclosureExempt 是**不需要**到达界面的 `*_error` json 字段，每条必须写明理由。
 // 加进这张表等于声明"这个字段不是给看板用户看的"，理由会被复审逐条查。
 var disclosureExempt = map[string]string{
+	"input_error": "host-status 私有显式输入回执; goal-input 按请求 ID 消费并向 CLI 报错, 不进看板 API (TestHostedOperatorInputRealCLIAndControls)",
 	// runner.go transcriptEvent.IsError：Claude/Codex 会话流水的逐条事件标记，
 	// 落在 transcript 文件里供排障，不进 /api/* 响应，也没有对应的看板控件。
 	"is_error": "transcript 事件字段，不上看板 API",

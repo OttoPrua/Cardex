@@ -1179,7 +1179,15 @@ func admitWorkflowWriterMode(root string, cfg *Config, wf *WorkflowRecord, promp
 		return admitWorkflowWriter(root, cfg, wf, prompt)
 	}
 	if mode == goalWriterNative {
-		cap := nativeGoalCapability(wf.WriterEngine)
+		engine := wf.WriterEngine
+		if engine == "auto" {
+			route, err := resolveWorkflowDefaultRoute(cfg, wf)
+			if err != nil {
+				return nil, err
+			}
+			engine = route.Legs[0].Runner
+		}
+		cap := nativeGoalCapability(engine)
 		if cap.Rejected {
 			return nil, fmt.Errorf("%w: %s rejected: %s", errGoalCapability, cap.Runner, cap.Reason)
 		}

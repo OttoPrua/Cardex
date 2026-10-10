@@ -163,6 +163,14 @@ func resolveOwnerRoute(cfg *Config, t *Task) (ownerRoute, bool) {
 	if t.WorkClass != "" && (cfg.OwnerMixedRouting || mixedOwnerTask(t)) {
 		return resolveMixedOwnerRoute(cfg, t)
 	}
+	route, ok := resolveClosedOwnerRoute(cfg, t)
+	if !ok {
+		return ownerRoute{}, false
+	}
+	return overlayRouteMatrix(cfg, t, route), true
+}
+
+func resolveClosedOwnerRoute(cfg *Config, t *Task) (ownerRoute, bool) {
 	risk := effectiveOwnerRiskClass(t)
 	kimiLeg := func(stage string, readOnly bool) policyLeg {
 		return policyLeg{Runner: kimiCLIRunnerName, Model: strings.TrimSpace(cfg.KimiCLIOpus.Model),
@@ -225,7 +233,7 @@ func resolveOwnerRoute(cfg *Config, t *Task) (ownerRoute, bool) {
 				ConditionalSol: ptrLeg(solLeg("xhigh", routeStageConditionalRelease))}
 			if deterministicSolSample(t.ID, 20) || t.SolEscalationReason == solEscalationDisagreement ||
 				t.SolEscalationReason == solEscalationAcceptanceFailed || t.SolEscalationReason == solEscalationExplicitHighRisk ||
-				t.SpecializedFrontend {
+				specializedFrontendTask(t) {
 				resolved.ReleaseGate = ptrLeg(solLeg("xhigh", routeStageConditionalRelease))
 			}
 			return resolved, true
@@ -243,7 +251,7 @@ func resolveOwnerRoute(cfg *Config, t *Task) (ownerRoute, bool) {
 			t.SolEscalationReason == solEscalationExplicitHighRisk {
 			resolved.ReleaseGate = ptrLeg(solLeg("xhigh", routeStageConditionalRelease))
 		}
-		if t.SpecializedFrontend {
+		if specializedFrontendTask(t) {
 			effort := "xhigh"
 			if risk != riskClassOrdinary {
 				effort = "max"
@@ -254,7 +262,7 @@ func resolveOwnerRoute(cfg *Config, t *Task) (ownerRoute, bool) {
 	case "sonnet":
 		resolved := ownerRoute{Name: "sonnet", RiskClass: risk,
 			Legs: []policyLeg{grokLeg("high", routeStagePrimary, false), kimiLeg(routeStageFallbackReview, false)}}
-		if t.SpecializedFrontend {
+		if specializedFrontendTask(t) {
 			effort := "xhigh"
 			if risk != riskClassOrdinary {
 				effort = "max"
@@ -265,7 +273,7 @@ func resolveOwnerRoute(cfg *Config, t *Task) (ownerRoute, bool) {
 	case "haiku":
 		resolved := ownerRoute{Name: "haiku", RiskClass: risk,
 			Legs: []policyLeg{grokLeg("high", routeStagePrimary, false), kimiLeg(routeStageFallbackReview, false)}}
-		if t.SpecializedFrontend {
+		if specializedFrontendTask(t) {
 			solEffort := "xhigh"
 			if risk != riskClassOrdinary {
 				solEffort = "max"
@@ -377,6 +385,9 @@ func ownerPolicyRouteReason(reason string) bool {
 // cards carry frozen provider fields that intentionally make them ineligible for a new automatic route;
 // a copy is normalized only for readback/next-leg lookup after a Cardex-owned route_reason proves origin.
 func resolveOwnerRouteReadback(cfg *Config, t *Task) (ownerRoute, bool) {
+	if completeFrozenRoute(t) {
+		return frozenRouteReadback(t)
+	}
 	if route, ok := resolveOwnerRoute(cfg, t); ok {
 		return route, true
 	}
@@ -420,7 +431,7 @@ func ownerRouteSnapshotLegMatches(t *Task, leg policyLeg) bool {
 			t.GrokModel == "" && t.GrokEffort == "" && t.CursorModel == "" &&
 			(t.Effort == "" || (t.Effort == leg.Effort && t.EffortExplicit))
 	case cursorRunnerName:
-		return (t.PreferRunner == "codex" || (mixedOwnerTask(t) && t.PreferRunner == cursorRunnerName)) && t.CodexModel == "" && t.XCodexModel == "" &&
+		return (t.PreferRunner == "codex" || ((mixedOwnerTask(t) || completeFrozenRoute(t)) && t.PreferRunner == cursorRunnerName)) && t.CodexModel == "" && t.XCodexModel == "" &&
 			t.GeminiModel == "" && t.AgyModel == "" && t.OpenCodeModel == "" && t.KimiModel == "" &&
 			t.GrokModel == "" && t.GrokEffort == "" && (t.CursorModel == "" || t.CursorModel == leg.Model)
 	case grokBuildRunnerName:
@@ -545,7 +556,11 @@ func pinOwnerPrimaryRoute(t *Task, route ownerRoute) bool {
 		return false
 	}
 	if strings.HasPrefix(route.Name, "mixed_") {
-		return pinMixedOwnerPrimary(t, route)
+		if !pinMixedOwnerPrimary(t, route) {
+			return false
+		}
+		freezeIfEmpty(t, route)
+		return true
 	}
 	leg := route.Legs[0]
 	t.OwnerRouteName = route.Name
@@ -555,10 +570,12 @@ func pinOwnerPrimaryRoute(t *Task, route ownerRoute) bool {
 		// final-matrix stages or requirements into existing generic task history.
 		switch leg.Runner {
 		case cursorRunnerName:
+			freezeIfEmpty(t, route)
 			return true
 		case kimiCLIRunnerName:
 			t.PreferRunner, t.KimiModel = kimiCLIRunnerName, leg.Model
 			t.Effort, t.EffortExplicit = leg.Effort, true
+			freezeIfEmpty(t, route)
 			return true
 		case "codex":
 			if route.Name != "review_standalone" {
@@ -567,6 +584,7 @@ func pinOwnerPrimaryRoute(t *Task, route ownerRoute) bool {
 			t.PreferRunner, t.CodexModel = "codex", leg.Model
 			t.Effort, t.EffortExplicit = leg.Effort, true
 			t.RouteReason = routeReasonOwnerReviewSol
+			freezeIfEmpty(t, route)
 			return true
 		case grokBuildRunnerName:
 			t.PreferRunner, t.GrokEffort = grokBuildRunnerName, leg.Effort
@@ -584,6 +602,7 @@ func pinOwnerPrimaryRoute(t *Task, route ownerRoute) bool {
 				return false
 			}
 			freezeOwnerSolMaxReview(t, route)
+			freezeIfEmpty(t, route)
 			return true
 		default:
 			return false
@@ -595,6 +614,9 @@ func pinOwnerPrimaryRoute(t *Task, route ownerRoute) bool {
 	}
 	switch leg.Runner {
 	case cursorRunnerName:
+		t.PreferRunner, t.CursorModel = cursorRunnerName, leg.Model
+		t.Effort, t.EffortExplicit = leg.Effort, true
+		freezeIfEmpty(t, route)
 		return true
 	case kimiCLIRunnerName:
 		t.PreferRunner = kimiCLIRunnerName
@@ -602,12 +624,18 @@ func pinOwnerPrimaryRoute(t *Task, route ownerRoute) bool {
 		t.Effort = leg.Effort
 		t.EffortExplicit = true
 		t.RouteReason = routeReasonKimiCLIOpus
+		freezeIfEmpty(t, route)
 		return true
 	case "codex":
 		t.PreferRunner = "codex"
 		t.CodexModel = leg.Model
 		t.Effort = leg.Effort
 		t.EffortExplicit = true
+		if leg.Stage == routeStagePrimary {
+			t.AutomaticCodex = true
+			freezeIfEmpty(t, route)
+			return true
+		}
 		if route.Name != "review_standalone_critical" {
 			return false
 		}
@@ -616,6 +644,7 @@ func pinOwnerPrimaryRoute(t *Task, route ownerRoute) bool {
 		}
 		t.AutomaticCodex = true
 		t.RouteReason = routeReasonOwnerReviewSol
+		freezeIfEmpty(t, route)
 		return true
 	case grokBuildRunnerName:
 		t.PreferRunner = grokBuildRunnerName
@@ -633,6 +662,12 @@ func pinOwnerPrimaryRoute(t *Task, route ownerRoute) bool {
 		default:
 			return false
 		}
+		freezeIfEmpty(t, route)
+		return true
+	case antigravityRunnerName:
+		t.PreferRunner, t.AgyModel = antigravityRunnerName, leg.Model
+		t.Effort, t.EffortExplicit = leg.Effort, true
+		freezeIfEmpty(t, route)
 		return true
 	default:
 		return false
@@ -660,17 +695,28 @@ func ownerPrimaryDispatch(root string, cfg *Config, t *Task, now time.Time) (run
 		return t.PreferRunner, true
 	}
 	refreshed := refreshUnstartedDispatchMode(cfg, t, now)
-	route, ok := resolveOwnerRoute(cfg, t)
-	if refreshed {
+	var route ownerRoute
+	var ok bool
+	if completeFrozenRoute(t) && !refreshed {
 		route, ok = resolveOwnerRouteReadback(cfg, t)
+	} else {
+		route, ok = resolveOwnerRoute(cfg, t)
+		if !ok {
+			route, ok = resolveOwnerRouteReadback(cfg, t)
+		}
 	}
 	if !ok {
 		return "", false
 	}
-	if !pinOwnerPrimaryRoute(t, route) {
-		return "", true
+	if !completeFrozenRoute(t) || refreshed || t.OwnerRouteLeg < 1 {
+		if !pinOwnerPrimaryRoute(t, route) {
+			return "", true
+		}
 	}
 	leg := route.Legs[0]
+	if t.OwnerRouteLeg > 0 && t.OwnerRouteLeg <= len(route.Legs) {
+		leg = route.Legs[t.OwnerRouteLeg-1]
+	}
 	switch leg.Runner {
 	case cursorRunnerName:
 		if cursorReady(root, cfg, now) {
@@ -1262,6 +1308,10 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 			if kind != fallbackQuota || t.Status == statusHeld || t.terminal() || (limit > 0 && t.Attempts+1 >= limit) {
 				return fmt.Errorf("named mode fallback requires quota and remaining attempt authority")
 			}
+		} else if completeFrozenRoute(t) {
+			if kind != fallbackQuota {
+				return fmt.Errorf("mixed fallback requires quota and a frozen next route leg")
+			}
 		} else if kind != fallbackQuota || current.Runner != grokBuildRunnerName || next.Runner != cursorRunnerName ||
 			current.Effort != next.Effort || mixedCursorEquivalent(current.Model, current.Effort) != next.Model {
 			return fmt.Errorf("mixed fallback requires quota and exact equivalent Grok model/effort")
@@ -1273,6 +1323,7 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 		probe := *t
 		clearMixedProviderPins(&probe)
 		probe.OwnerRouteName, probe.OwnerRouteLeg, probe.OwnerRouteStage = "", 0, ""
+		probe.FrozenRoute = nil
 		var resolved bool
 		route, resolved = resolveMixedOwnerRouteAt(cfg, &probe, dispatchNow())
 		if !resolved {
@@ -1335,6 +1386,11 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 		}
 	default:
 		return fmt.Errorf("resolver next leg uses unsupported provider %q", next.Runner)
+	}
+	// A proved zero-work quota transition across a mode boundary admits a new
+	// successor route; retain prior attempt evidence and freeze that new route.
+	if completeFrozenRoute(t) && t.FrozenRoute.Name != route.Name {
+		t.FrozenRoute = freezeFromOwnerRoute(route)
 	}
 	t.OwnerRouteName = route.Name
 	t.OwnerRouteLeg = nextIndex + 1

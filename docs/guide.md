@@ -913,3 +913,11 @@ cardex add -dir ~/proj "常规改动"                                  # 缺省 
 
 升级卡自身是刚出生的壳卡（`cost_unavailable` 是真实的零用量，不是账本缺陷），两组键分开，谁也不冒充谁：
 按卡求和只取 `cost_total`，链账另算，否则同一笔开销会被链上每张卡各记一次。
+
+## 新任务的可配置路由
+
+已有 Owner 路由配置可在同一个 `config.json` 中编辑 `work_class_routes` 与 `route_matrix`；普通安装继续沿用预设，无需额外开启 Owner 矩阵。配置片段、支持的 runner 和优先级见 [派发 skill](../skills/cardex-dispatch/SKILL.md#configurable-routing-for-new-work)。`route_matrix` 使用 high/medium/low（兼容 opus/sonnet/haiku）× frontend/backend/general，重复别名拒绝。用 `cardex route -root ROOT -complexity medium -category general` 预览；`add -model sonnet -route-class general` 和相同字段的 emitted task 使用同一解析器。显式 work-class 优先选择类别路由，显式执行器/模型/会话仍优先保留。
+
+`fallback` 缺省/null 继承原默认，`[]` 禁止自动回退，非空数组严格保留声明的顺序、不追加默认 provider。配置仅作用于新准入任务，旧完整快照保留全部执行腿与审核要求；既有已证明零活动的跨模式额度续作仍保留原 attempt 证据、冻结新准入路线。daily 的 gpt-complex 默认是 gpt-6.1-sol/high（可显式 medium），gpt-short 是 Grok 4.6/xhigh；原有风险、只读、额度和不确定状态限制继续生效。
+
+需要 Goal 写者继承配置时，`workflow init ... -writer-engine auto -reviewer-engine grok-build -model sonnet -route-class general`，随后 `workflow writer -root ROOT -mode manual WF_ID`。也可声明 `-work-class development`。显式引擎的旧 workflow 不改路由；原生方向仅在实际 Grok 能力允许时启动，各方向使用独立会话。方向结束后仍由管理 Agent 同步所有必要方向，并用已有 `workflow accept` 统一验收；程序不自动决定下一轮目标或 Release。验收按完成标准与实际产物进行，深度与风险相称；失败保留产物、修具体问题、只复验受影响部分。

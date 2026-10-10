@@ -49,6 +49,33 @@ Replace ACTUAL_ID and paths with verified values. For a fresh non-Claude-only in
 
 Preset `effort` is intentionally empty for Cursor (encoded in model ID) and agy (uses `antigravity.effort`). Grok has no max effort; OpenCode uses provider variants. After configuration, run `doctor` and a no-model dry-run. Only run an actual provider task within the user's authorized subscription/data scope, and report that result separately from configuration success.
 
+## Configurable routing for new work
+
+Reuse the saved owner configuration; ordinary installations do not need to enable the owner matrix. In that matrix, `work_class_routes` overrides mixed work classes and `route_matrix` overrides `high|medium|low` × `frontend|backend|general`. Tier aliases `opus|sonnet|haiku` are accepted; duplicate aliases are rejected. Edit only the selected keys in the existing root's `config.json`, preserving other settings, then inspect `cardex route -root ROOT -work-class development` or `cardex route -root ROOT -complexity medium -category general`. Choose one selector family for preview.
+
+Example fragment (merge into existing config):
+
+```json
+{
+  "work_class_routes": {
+    "development": {"runner":"grok-build","model":"grok-4.6","effort":"xhigh","fallback":[]}
+  },
+  "route_matrix": {
+    "medium": {
+      "general": {"runner":"grok-build","model":"grok-4.7","effort":"high","fallback":[]}
+    }
+  }
+}
+```
+
+Explicit runner/model/session pins win. An explicit work class selects its class route; otherwise an explicit tier/category on `add` or emitted task selects the matrix when configured. Omitted selectors retain existing class/default behavior. Matrix entries not supplied retain existing routes, including risk/review/read-only requirements. The frontend category alone does not opt into the separate specialized-frontend review gate; Fable remains its existing special route. The existing time-bounded priority mode still takes precedence for mixed work. Daily defaults are development Grok 4.6/xhigh, simple-development Grok 4.6/high, gpt-complex Codex gpt-6.1-sol/high (explicit medium allowed), gpt-short Grok 4.6/xhigh, and the existing agy management lane.
+
+`fallback` omitted/null inherits defaults; `[]` disables automatic fallback; a nonempty list is the exact ordered list, without appended default providers. Supported configured runners are grok-build, cursor, kimi-cli, codex and agy, with valid adapter effort/model identities and enabled executables. OpenCode remains available through its existing explicit runner/preset path, but is rejected in these configured automatic routes. Configuration is not proof of installed model availability. Fallback still requires its existing quota/zero-activity/custody/identity evidence; auth, refusal, uncertain results or remaining budget limits do not authorize replay.
+
+New tasks freeze the complete resolved route, including later legs and review metadata. Config edits do not rewrite old held/running/Goal/terminal tasks or legacy pins. Existing proven zero-work quota transitions across an authorized mode boundary retain the original attempt evidence and freeze their newly admitted successor route; this is not a config-driven migration.
+
+For a workflow whose writer should inherit configuration, explicitly use `workflow init ... -writer-engine auto -reviewer-engine ACTUAL_RUNNER -model sonnet -route-class general` (or `-work-class development`). `workflow writer ... -mode manual` and native direction admission use the same resolver and freeze at admission. Existing explicit engines stay pinned. Auto routing does not add native Goal support to an adapter: the current managed native direction path requires Grok; unsupported native mode remains refused. Each launched direction owns its own session. A Goal completion still requires the existing goal-sync and goal-level acceptance path.
+
 ## Automatic and manager-organized
 
 Automatic, for one bounded result: ordinary `cardex add` is one direct card covering diagnosis, code, checks, repairs, and the author's self-check. Explicit owner shape wins. There is no scoring form, repeated consent, or independent designer gate on that card. A saved Goal policy or onboarding opt-in does not block this direct submission, and the card stays direct rather than native Goal. Explicit `-work-mode staged` or `-work-mode goal` does not write the card; it names `cardex workflow`. Queue admission stores the card. Launch readiness is separate: unmet dependencies, custody, and capacity can still hold the start. `cardex workflow fanout` turns one finished design card into independent direction cards and does not create acceptance. `cardex workflow accept` creates one acceptance card only after every required direction is done; members being done does not accept the goal. `cardex workflow accept -complete` accepts only when that card's verdict is an admissible pass bound to the current candidate. Paused, failed, unknown, or duplicate events do not accept and do not open a second acceptance card. `cardex workflow goal-round` keeps finished cards and opens the next round; it stops once the goal is accepted. Reaching max rounds is a limit, not success. `cardex workflow goal-direction` and `goal-launch` admit or launch one native direction. `cardex workflow goal-sync -task ID` records that direction from its own session, attempt, and native goal id. Omitting `-task` stays on the serial default and syncs only the current writer. Finishing one direction does not sync its sibling or create acceptance. One native Goal session reaching done does not accept the whole goal. Launch does not pass `-p`, `--single`, or `--prompt-file`. An existing unstarted `design` workflow binds Initial/LatestValid with `cardex workflow design-bind <id> -design-receipt PATH` (or `-design-task ID`, exactly one). Writer, directions, acceptance, or an existing execution contract already present are refused.

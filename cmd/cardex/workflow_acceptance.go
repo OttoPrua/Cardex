@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os/exec"
@@ -297,8 +298,9 @@ func scheduleStagedDirectionSpecs(root string, cfg *Config, wf *WorkflowRecord, 
 			task.WorkflowID = wf.ID
 			task.DependsOn = deps
 			task.WriteDomain = domain
-			task.PreferRunner = wf.WriterEngine
-			task.RunnerExplicit = true
+			if err := configureWorkflowWriter(cfg, wf, task); err != nil {
+				return err
+			}
 			task.ReviewAfter = false
 			task.SessionStage = name
 			task.SessionRole = sessionRoleAuthor
@@ -747,11 +749,19 @@ func admitNativeGoalDirection(root string, cfg *Config, wf *WorkflowRecord, spec
 		if err := refreshWorkflow(root, cfg, wf); err != nil {
 			return err
 		}
-		cap := nativeGoalCapability(firstNonBlank(wf.WriterEngine, grokBuildRunnerName))
+		engine := firstNonBlank(wf.WriterEngine, grokBuildRunnerName)
+		if engine == "auto" {
+			route, err := resolveWorkflowDefaultRoute(cfg, wf)
+			if err != nil {
+				return err
+			}
+			engine = route.Legs[0].Runner
+		}
+		cap := nativeGoalCapability(engine)
 		if cap.Rejected || cap.Level == goalCapUnsupported {
 			return fmt.Errorf("%w: %s is %s (%s)", errGoalCapability, cap.Runner, cap.Level, cap.Reason)
 		}
-		if wf.WriterEngine != grokBuildRunnerName {
+		if engine != grokBuildRunnerName {
 			return fmt.Errorf("%w: %s is %s (%s); native Goal directions use managed Grok /goal",
 				errGoalCapability, cap.Runner, cap.Level, cap.Reason)
 		}
@@ -783,8 +793,9 @@ func admitNativeGoalDirection(root string, cfg *Config, wf *WorkflowRecord, spec
 		task := newTask(root, cfg, typeSequence, "native goal "+direction, dir, []string{"native goal direction " + direction}, 5)
 		task.Project = wf.ModuleID
 		task.WorkflowID = wf.ID
-		task.PreferRunner = grokBuildRunnerName
-		task.RunnerExplicit = true
+		if err := configureWorkflowWriter(cfg, wf, task); err != nil {
+			return err
+		}
 		task.ReviewAfter = false
 		task.WriteDomain = domain
 		task.DependsOn = append([]string(nil), spec.DependsOn...)
@@ -798,6 +809,12 @@ func admitNativeGoalDirection(root string, cfg *Config, wf *WorkflowRecord, spec
 			GrokHome:       "",
 			Stop:           goalStopSoftBudget,
 			ReturnToDesign: true,
+		}
+		if wf.WriterEngine == "auto" && task.PreferRunner == grokBuildRunnerName {
+			if err := freezeGrokAttemptModel(context.Background(), cfg, task); err != nil {
+				return err
+			}
+			freezeGoalRouteSnapshot(task)
 		}
 		if err := saveTask(root, task); err != nil {
 			return err

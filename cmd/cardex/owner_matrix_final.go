@@ -116,9 +116,15 @@ func closedOwnerTaskStateError(t *Task) error {
 		return fmt.Errorf("automatic_codex requires exactly one reserved Sol call")
 	}
 	if mixedCodexPrimary(t) {
-		route, ok := resolveMixedOwnerRoute(nil, t)
+		var route ownerRoute
+		var ok bool
+		if completeFrozenRoute(t) {
+			route, ok = ownerRouteFromFrozen(t.FrozenRoute), true
+		} else {
+			route, ok = resolveMixedOwnerRoute(nil, t)
+		}
 		if !ok || route.Name != t.OwnerRouteName || !t.AutomaticCodex || t.OwnerRouteLeg != 1 || t.OwnerRouteStage != routeStagePrimary ||
-			t.AutomaticSolCalls != 0 || t.AutomaticSolInvocations != 0 || !ownerRouteSnapshotLegMatches(t, route.Legs[0]) {
+			t.AutomaticSolCalls != 0 || t.AutomaticSolInvocations != 0 || len(route.Legs) == 0 || !ownerRouteSnapshotLegMatches(t, route.Legs[0]) {
 			return fmt.Errorf("mixed automatic Codex primary identity invalid")
 		}
 	}

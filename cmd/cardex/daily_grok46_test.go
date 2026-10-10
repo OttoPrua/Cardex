@@ -28,6 +28,7 @@ func TestDailyGrok46NewRouteAndFrozenHistory(t *testing.T) {
 		t.Fatalf("manual consumer: %+v %s", leg, cmd)
 	}
 	old := *task
+	old.FrozenRoute = nil // Legacy task predates complete route snapshots.
 	old.OwnerRouteName = "mixed_daily_development"
 	old.GrokModel, old.GrokEffort = "grok-4.7", "high"
 	if got, ok := resolveOwnerRouteReadback(cfg, &old); !ok || got.Legs[0].Model != "grok-4.7" || got.Legs[0].Effort != "high" {

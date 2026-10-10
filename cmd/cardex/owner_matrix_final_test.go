@@ -482,10 +482,10 @@ func TestFinalOwnerEmittedCardEntersDefaultRouteWithoutExplicitPin(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if child.PreferRunner != "codex" || child.RunnerExplicit {
-		t.Fatalf("default Owner route was accidentally materialized as an explicit pin: %+v", child)
+	if child.PreferRunner != grokBuildRunnerName || child.RunnerExplicit || !completeFrozenRoute(child) {
+		t.Fatalf("default Owner route must freeze admission without an explicit override: %+v", child)
 	}
-	route, ok := resolveOwnerRoute(cfg, child)
+	route, ok := resolveOwnerRouteReadback(cfg, child)
 	if !ok || route.Name != "opus_backend_ordinary" {
 		t.Fatalf("emitted card did not enter the final deterministic resolver: route=%+v ok=%v", route, ok)
 	}

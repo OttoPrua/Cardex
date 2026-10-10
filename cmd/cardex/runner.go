@@ -4856,10 +4856,12 @@ func enqueueEmitted(root string, cfg *Config, parent *Task, result string) ([]st
 		}
 		if s.WorkClass != "" {
 			nt.WorkClass = strings.ToLower(strings.TrimSpace(s.WorkClass))
+		} else if len(cfg.RouteMatrix) > 0 && (s.Model != "" || s.RouteClass != "") {
+			nt.WorkClass = ""
 		}
 		nt.RouteClass = strings.ToLower(strings.TrimSpace(s.RouteClass))
-		if nt.RouteClass != "" && nt.RouteClass != routeClassGeneral && nt.RouteClass != routeClassBackend {
-			return ids, fmt.Errorf("产出任务 %q: 未知 route_class %q（可选 general/backend）", title, s.RouteClass)
+		if nt.RouteClass != "" && nt.RouteClass != routeClassGeneral && nt.RouteClass != routeClassBackend && nt.RouteClass != routeClassFrontend {
+			return ids, fmt.Errorf("产出任务 %q: 未知 route_class %q（可选 general/backend/frontend）", title, s.RouteClass)
 		}
 		if err := validateNewTaskRouteClass(cfg, nt); err != nil {
 			return ids, fmt.Errorf("产出任务 %q: %w", title, err)
@@ -4911,6 +4913,9 @@ func enqueueEmitted(root string, cfg *Config, parent *Task, result string) ([]st
 		}
 		if parent.EmitHold {
 			nt.Status = statusHeld
+		}
+		if err := admitTaskRoute(cfg, nt); err != nil {
+			return ids, fmt.Errorf("产出任务 %q: %w", title, err)
 		}
 		if err := saveAuthorizedTask(root, nt); err != nil {
 			return ids, err

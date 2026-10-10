@@ -74,7 +74,7 @@ jobs:
           go-version: '1.26.1'
           cache: false
       - name: Native Windows lifecycle and onboarding
-        run: go test ./cmd/cardex -run '^(TestWindows|TestExecutionLease|TestSetup|TestPreset|TestAcquireLockStealsAtomicallyNoDoubleOccupancy|TestDeniedPresemanticStartDoesNotConsumeResumeTombstone|TestReleaseLockRefusesForeignPID|TestExternalReviewDefaultFreezeRefusesHeldWriter|TestExternalReviewTempCLI|TestManualLocalIntegrationTempCLI)' -count=1 -timeout=180s -v
+        run: go test ./cmd/cardex -run '^(TestWindows|TestExecutionLease|TestSetup|TestPreset|TestAcquireLockStealsAtomicallyNoDoubleOccupancy|TestDeniedPresemanticStartDoesNotConsumeResumeTombstone|TestReleaseLockRefusesForeignPID|TestExternalReviewDefaultFreezeRefusesHeldWriter|TestExternalReviewTempCLI|TestManualLocalIntegrationTempCLI|TestConfigurableDispatch)' -count=1 -timeout=180s -v
       - run: go vet ./...
       - run: go build -trimpath -o bin/cardex.exe ./cmd/cardex
       - name: CLI and board smoke

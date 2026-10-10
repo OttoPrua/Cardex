@@ -151,6 +151,12 @@ func resolveMixedOwnerRouteAt(cfg *Config, t *Task, now time.Time) (ownerRoute, 
 		}
 		return ownerRoute{Name: name, RiskClass: risk, Legs: []policyLeg{leg, kimi}}, true
 	}
+	live := t.OwnerRouteName == ""
+	if live {
+		if spec, ok := lookupWorkClassRoute(cfg, t.WorkClass); ok {
+			return ownerRoute{Name: name, RiskClass: risk, Legs: configuredWorkClassLegs(leg, spec, t.WorkClass, t, mode, kimi)}, true
+		}
+	}
 	switch t.WorkClass {
 	case "development", "simple-development":
 		leg.Runner, leg.Model, leg.Effort = grokBuildRunnerName, "grok-4.7", "high"
@@ -172,13 +178,15 @@ func resolveMixedOwnerRouteAt(cfg *Config, t *Task, now time.Time) (ownerRoute, 
 		}
 		return ownerRoute{Name: name, RiskClass: risk, Legs: legs}, true
 	case "gpt-complex":
-		leg.Runner, leg.Model, leg.Effort = "codex", "gpt-6-astra", "high"
+		runner, model, effort, _ := mixedBuiltinPrimary(t.WorkClass, t.OwnerRouteName)
+		leg.Runner, leg.Model, leg.Effort = runner, model, effort
 		if t.EffortExplicit && t.Effort == "medium" {
 			leg.Effort = "medium"
 		}
 	case "gpt-short":
-		leg.Runner, leg.Model, leg.Effort = "codex", "gpt-5.6-sol", "xhigh"
-		if risk != riskClassOrdinary || (t.EffortExplicit && t.Effort == "max") {
+		runner, model, effort, historical := mixedBuiltinPrimary(t.WorkClass, t.OwnerRouteName)
+		leg.Runner, leg.Model, leg.Effort = runner, model, effort
+		if historical && (risk != riskClassOrdinary || (t.EffortExplicit && t.Effort == "max")) {
 			leg.Effort = "max"
 		}
 	case "management":
@@ -186,14 +194,18 @@ func resolveMixedOwnerRouteAt(cfg *Config, t *Task, now time.Time) (ownerRoute, 
 		leg.Runner, leg.Model, leg.Effort = antigravityRunnerName, "gemini-3.8-flash-high", "high"
 	}
 	legs := []policyLeg{leg}
-	if mode != "" && leg.Runner == "codex" {
+	if mode != "" && (leg.Runner == "codex" || t.WorkClass == "development" || t.WorkClass == "simple-development" || t.WorkClass == "gpt-short") {
 		legs = append(legs, kimi)
 	}
 	return ownerRoute{Name: name, RiskClass: risk, Legs: legs}, true
 }
 
 func pinMixedOwnerPrimary(t *Task, route ownerRoute) bool {
-	return pinMixedOwnerLeg(t, route, 0)
+	if !pinMixedOwnerLeg(t, route, 0) {
+		return false
+	}
+	freezeIfEmpty(t, route)
+	return true
 }
 
 func pinMixedOwnerLeg(t *Task, route ownerRoute, index int) bool {
@@ -246,6 +258,7 @@ func refreshQueuedQuotaSuccessor(root string, cfg *Config, t *Task, now time.Tim
 	probe := *t
 	clearMixedProviderPins(&probe)
 	probe.OwnerRouteName, probe.OwnerRouteLeg, probe.OwnerRouteStage = "", 0, ""
+	probe.FrozenRoute = nil
 	route, ok := resolveMixedOwnerRouteAt(cfg, &probe, now)
 	if !ok {
 		return false
@@ -261,6 +274,7 @@ func refreshQueuedQuotaSuccessor(root string, cfg *Config, t *Task, now time.Tim
 		return false
 	}
 	probe.RouteReason = mixedQuotaReason
+	probe.FrozenRoute = freezeFromOwnerRoute(route)
 	*t = probe
 	return true
 }
@@ -298,23 +312,74 @@ func cmdRoute(args []string) error {
 	fs := flag.NewFlagSet("route", flag.ContinueOnError)
 	effort := fs.String("effort", "", "explicit medium for gpt-complex or max for gpt-short")
 	root := fs.String("root", "", "Cardex root (read only)")
-	class := fs.String("work-class", "development", "development|simple-development|gpt-complex|gpt-short|management")
+	class := fs.String("work-class", "", "development|simple-development|gpt-complex|gpt-short|management")
+	complexity := fs.String("complexity", "", "high|medium|low (aliases opus|sonnet|haiku)")
+	category := fs.String("category", "", "frontend|backend|general")
 	typ := fs.String("type", typeSequence, "task type")
 	risk := fs.String("risk-class", riskClassOrdinary, "ordinary|high-risk|critical|production")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if !validTypes[*typ] || *class == "" || !validMixedWorkClass(*class) {
-		return fmt.Errorf("invalid type or work-class")
+	if !validTypes[*typ] {
+		return fmt.Errorf("invalid type")
 	}
 	cfg, err := loadConfig(resolveRoot(*root))
 	if err != nil {
 		return err
 	}
-	if !cfg.OwnerMixedRouting {
-		return fmt.Errorf("owner_mixed_routing is not enabled")
+	t := &Task{Type: *typ, PreferRunner: "codex", RiskClass: *risk, RouteClass: routeClassGeneral, Prompts: []string{"route readback"}}
+	workClass := strings.ToLower(strings.TrimSpace(*class))
+	if workClass == "" && *complexity == "" && *category == "" {
+		workClass = "development"
 	}
-	t := &Task{Type: *typ, PreferRunner: "codex", WorkClass: *class, RiskClass: *risk, RouteClass: routeClassGeneral, Prompts: []string{"route readback"}}
+	if workClass != "" {
+		if !validMixedWorkClass(workClass) {
+			return fmt.Errorf("invalid type or work-class")
+		}
+		if !cfg.OwnerMixedRouting {
+			return fmt.Errorf("owner_mixed_routing is not enabled")
+		}
+		t.WorkClass = workClass
+	}
+	if workClass != "" && (*complexity != "" || *category != "") {
+		return fmt.Errorf("choose work-class or complexity/category selectors, not both")
+	}
+	if *complexity != "" || *category != "" {
+		comp := canonicalComplexity(*complexity)
+		cat := canonicalCategory(*category)
+		if *complexity != "" && comp == "" {
+			return fmt.Errorf("invalid complexity %q (high/medium/low or opus/sonnet/haiku)", *complexity)
+		}
+		if *category != "" && cat == "" {
+			return fmt.Errorf("invalid category %q (frontend/backend/general)", *category)
+		}
+		if !cfg.OwnerRoutingEnforced {
+			return fmt.Errorf("owner_routing_enforced is not enabled")
+		}
+		if workClass == "" {
+			switch comp {
+			case complexityHigh:
+				t.Model = "opus"
+			case complexityMedium:
+				t.Model = "sonnet"
+			case complexityLow:
+				t.Model = "haiku"
+			default:
+				t.Model = "sonnet"
+			}
+			if cat == "" {
+				cat = routeCategoryGen
+			}
+			switch cat {
+			case routeCategoryBE:
+				t.RouteClass = routeClassBackend
+			case routeCategoryFE:
+				t.RouteClass = routeClassFrontend
+			default:
+				t.RouteClass = routeClassGeneral
+			}
+		}
+	}
 	if err := closedOwnerTaskStateError(t); err != nil {
 		return err
 	}
@@ -324,16 +389,20 @@ func cmdRoute(args []string) error {
 		return fmt.Errorf("no eligible owner route")
 	}
 	out := struct {
-		ConfiguredMode    string     `json:"configured_mode,omitempty"`
-		EffectiveMode     string     `json:"effective_mode"`
-		Policy            string     `json:"policy"`
-		WorkClass         string     `json:"work_class"`
-		Primary           policyLeg  `json:"primary"`
-		QuotaFallback     *policyLeg `json:"quota_fallback,omitempty"`
-		FallbackCondition string     `json:"fallback_condition,omitempty"`
-	}{ConfiguredMode: cfg.DispatchMode, EffectiveMode: effectiveDispatchMode(cfg, dispatchNow()), Policy: route.Name, WorkClass: *class, Primary: route.Legs[0]}
+		ConfiguredMode    string      `json:"configured_mode,omitempty"`
+		EffectiveMode     string      `json:"effective_mode"`
+		Policy            string      `json:"policy"`
+		WorkClass         string      `json:"work_class,omitempty"`
+		Complexity        string      `json:"complexity,omitempty"`
+		Category          string      `json:"category,omitempty"`
+		Primary           policyLeg   `json:"primary"`
+		QuotaFallback     *policyLeg  `json:"quota_fallback,omitempty"`
+		Fallback          []policyLeg `json:"fallback,omitempty"`
+		FallbackCondition string      `json:"fallback_condition,omitempty"`
+	}{ConfiguredMode: cfg.DispatchMode, EffectiveMode: effectiveDispatchMode(cfg, dispatchNow()), Policy: route.Name, WorkClass: t.WorkClass, Complexity: canonicalComplexity(*complexity), Category: canonicalCategory(firstNonBlank(*category, t.RouteClass)), Primary: route.Legs[0]}
 	if len(route.Legs) > 1 {
 		out.QuotaFallback = &route.Legs[1]
+		out.Fallback = append([]policyLeg(nil), route.Legs[1:]...)
 		out.FallbackCondition = "proven quota exhaustion; complete zero-activity terminal; unchanged workspace; no process residue; no auth/refusal/transport/unknown outcome"
 	}
 	return json.NewEncoder(os.Stdout).Encode(out)
@@ -471,6 +540,9 @@ func mixedCodexPrimary(t *Task) bool {
 	if t == nil {
 		return false
 	}
+	if completeFrozenRoute(t) && t.OwnerRouteLeg == 1 {
+		return t.FrozenRoute.Legs[0].Runner == "codex" && t.FrozenRoute.Legs[0].Stage == routeStagePrimary
+	}
 	if t.OwnerRouteName == "mixed_gpt_complex" || t.OwnerRouteName == "mixed_gpt_short" {
 		return true
 	}
@@ -593,6 +665,7 @@ func refreshUnstartedDispatchMode(cfg *Config, t *Task, now time.Time) bool {
 		}
 		clearMixedProviderPins(t)
 		t.OwnerRouteName, t.OwnerRouteLeg, t.OwnerRouteStage = "", 0, ""
+		t.FrozenRoute = nil
 		t.RouteReason, t.AutomaticCodex = "", false
 		t.Effort, t.EffortExplicit = "", false
 	}
@@ -602,11 +675,15 @@ func refreshUnstartedDispatchMode(cfg *Config, t *Task, now time.Time) bool {
 			return false
 		}
 		old, ok := resolveMixedOwnerRoute(nil, t)
+		if completeFrozenRoute(t) {
+			old, ok = ownerRouteFromFrozen(t.FrozenRoute), true
+		}
 		if !ok || old.Name != t.OwnerRouteName || !ownerRouteSnapshotLegMatches(t, old.Legs[0]) {
 			return false
 		}
 		clearMixedProviderPins(&probe)
 		probe.OwnerRouteName, probe.OwnerRouteLeg, probe.OwnerRouteStage = "", 0, ""
+		probe.FrozenRoute = nil
 		probe.AutomaticCodex = false
 	}
 	if !ownerAutoRouteEligible(&probe) {
@@ -727,8 +804,11 @@ func mixedNewGrokModel(cfg *Config, t *Task) string {
 		t.GrokModel != "" || t.GrokEffort != "" || t.Attempts != 0 || t.Step != 0 || t.terminal() || grokHasExecutionEvidence(t) {
 		return ""
 	}
+	if spec, ok := lookupWorkClassRoute(cfg, t.WorkClass); ok && spec.Runner == grokBuildRunnerName {
+		return strings.TrimSpace(spec.Model)
+	}
 	switch t.WorkClass {
-	case "development", "simple-development":
+	case "development", "simple-development", "gpt-short":
 		return "grok-4.6"
 	default:
 		return ""

@@ -723,6 +723,9 @@ func TestExternalReviewCandidatePathDriftFailsIngest(t *testing.T) {
 func TestExternalReviewTempCLI(t *testing.T) {
 	t.Parallel()
 	bin := filepath.Join(t.TempDir(), "cardex-tempcli")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	build := exec.Command("go", "build", "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
@@ -840,6 +843,9 @@ func TestManualLocalIntegrationTempCLI(t *testing.T) {
 	root, wf, target, rec := setupManualLocalIntegration(t)
 	beforeWriter, _ := os.ReadFile(taskPath(root, wf.WriterTaskID))
 	bin := filepath.Join(t.TempDir(), "cardex")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	build := exec.Command("go", "build", "-o", bin, ".")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build: %v %s", err, out)

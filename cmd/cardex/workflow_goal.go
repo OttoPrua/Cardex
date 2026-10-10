@@ -2943,71 +2943,6 @@ func verifyGrokGoalUpdates(path, sessionID, goalID string) (grokFinalGoalUpdate,
 	return final, true, nil
 }
 
-func executionObservationFromNativeGoal(obs nativeGoalObservation, custodyReleased, cancelRequested, stopEvidence bool) executionObservation {
-	out := executionObservation{}
-	if cancelRequested && stopEvidence {
-		out.Canceled = true
-		out.Reason = "canceled"
-		return out
-	}
-	if obs.Missing || obs.Contradictory || !obs.UpdatesOK {
-		out.Incomplete = true
-		out.Reason = "unknown_terminal"
-		return out
-	}
-	if obs.BudgetLimited {
-		out.Complete = true
-		out.HasTerminal = true
-		out.Incomplete = true
-		out.Reason = "budget_limited"
-		return out
-	}
-	st := normalizeNativeStatus(obs.NativeStatus)
-	switch st {
-	case "active":
-		out.WaitingApproval = true
-		out.Reason = "native_active"
-	case "paused", "user_paused", "needs-input":
-		out.NeedsInteraction = true
-		out.Complete = true
-		out.HasTerminal = true
-		out.Reason = "needs_input"
-	case "failed":
-		out.Complete = true
-		out.HasTerminal = true
-		if !custodyReleased {
-			out.Incomplete = true
-			out.RemoteUnknown = true
-			out.Reason = "failed_without_custody"
-		} else {
-			out.FailureClass = failureUnknown
-			out.Reason = "native_failed"
-		}
-	case "complete":
-		out.Complete = true
-		out.HasTerminal = true
-		achieved := strings.EqualFold(obs.Classifier, "achieved") && !obs.NotAchieved &&
-			strings.EqualFold(obs.FinalStatus, "complete") && strings.EqualFold(obs.FinalClassifier, "achieved")
-		if achieved {
-			out.SuccessStructure = true
-			out.SemanticEvents = 1
-			out.ModelEvents = 1
-			if !custodyReleased || (cancelRequested && !stopEvidence) {
-				out.VerifyFailed = true
-				out.Reason = "complete_unverified"
-			}
-		} else {
-			out.VerifyFailed = true
-			out.Reason = "complete_not_achieved"
-		}
-	default:
-		out.Incomplete = true
-		out.HasTerminal = false
-		out.Reason = "unknown_terminal"
-	}
-	return out
-}
-
 func mapNativeGoalToTask(obs nativeGoalObservation, custodyReleased, cancelRequested, stopEvidence bool) mappedGoal {
 	if obs.Missing || obs.Contradictory || !obs.UpdatesOK {
 		return mappedGoal{
@@ -3067,10 +3002,6 @@ func mapNativeGoalToTask(obs nativeGoalObservation, custodyReleased, cancelReque
 				Observation: goalObsUnknown,
 				Note:        "native completed observed but TUI/descendants/lease still live; observation only, not accepted done",
 			}
-		}
-		dec := decideExecutionOutcome(executionObservationFromNativeGoal(obs, custodyReleased, cancelRequested, stopEvidence), executionAttemptFacts{})
-		if dec.Kind != executionDecisionSuccess {
-			return mappedGoal{Status: statusHeld, Observation: goalObsUnknown, Note: "shared execution disposition refused done"}
 		}
 		return mappedGoal{Status: statusDone, Observation: goalObsDone, AcceptDone: true, Note: "verified completed with last_classifier_verdict=achieved, matching current goal update, and custody released"}
 	case "term", "lost", "interrupted", "unknown", "":

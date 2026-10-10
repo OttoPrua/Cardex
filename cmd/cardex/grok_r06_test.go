@@ -291,6 +291,39 @@ func TestR06ProcessTruthParity(t *testing.T) {
 			t.Fatalf("product calls=%d", countProductCalls(t, productCalls))
 		}
 	})
+	t.Run("empty-complete-end-turn", func(t *testing.T) {
+		root := testRoot(t)
+		payload := strings.Replace(grok105PublicEnd, `"num_turns":3`, `"num_turns":0`, 1)
+		bin, productCalls := fakeGrokBuildCounted(t, payload, "", 0)
+		cfg := grokBuildTestConfig(t, bin)
+		cfg.GrokBuild.OpusAdversarialReview = false
+		cfg.HarvestMode = harvestModeOff
+		cfg.OwnerRoutingEnforced = false
+		isolateGrokLifecycleHome(t, cfg)
+		task := newTask(root, cfg, typeSequence, "r06 empty complete end_turn", t.TempDir(), []string{"review only the current synthetic candidate"}, 1)
+		task.PreferRunner = grokBuildRunnerName
+		task.RunnerExplicit = true
+		task.GrokModel = "grok-4.6"
+		task.GrokEffort = "xhigh"
+		task.ReviewAfter = false
+		if err := saveTask(root, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := runTaskVia(context.Background(), root, cfg, task, grokBuildRunnerName); err != nil {
+			t.Fatal(err)
+		}
+		got := loadMust(t, root, task.ID)
+		if got.Status == statusDone {
+			t.Fatalf("complete 0/0/0 empty end_turn must not persist done: %+v", got)
+		}
+		r06AssertNoFakeSuccess(t, got)
+		if got.Attempts != 0 {
+			t.Fatalf("empty complete end_turn consumed attempts: %+v", got)
+		}
+		if countProductCalls(t, productCalls) != 1 {
+			t.Fatalf("product calls=%d", countProductCalls(t, productCalls))
+		}
+	})
 	t.Run("residue-blocks-fallback", func(t *testing.T) {
 		proof := policyFallbackProof{
 			Before: &policyWorkspaceFingerprint{Root: "/r", Digest: "a"},
@@ -407,9 +440,11 @@ func TestR06NoDuplicateBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(goalSrc), "executionObservationFromNativeGoal") ||
-		!strings.Contains(string(goalSrc), "decideExecutionOutcome") {
-		t.Fatal("hosted Goal tail must share decideExecutionOutcome")
+	if strings.Contains(string(goalSrc), "func executionObservationFromNativeGoal") {
+		t.Fatal("hosted Goal must keep the original native mapping; unused executionObservationFromNativeGoal must stay deleted")
+	}
+	if !strings.Contains(string(goalSrc), "func mapNativeGoalToTask") {
+		t.Fatal("hosted Goal native state machine mapping must remain")
 	}
 
 	root := testRoot(t)
@@ -438,5 +473,73 @@ func TestR06NoDuplicateBranch(t *testing.T) {
 	}
 	if n := countProductCalls(t, productCalls); n != 1 {
 		t.Fatalf("new card started %d provider entries, want 1", n)
+	}
+}
+
+func r06PinnedGrokRun(t *testing.T, payload, stderr string, exitCode int) (got *Task, calls int) {
+	t.Helper()
+	root := testRoot(t)
+	bin, productCalls := fakeGrokBuildCounted(t, payload, stderr, exitCode)
+	cfg := grokBuildTestConfig(t, bin)
+	cfg.GrokBuild.OpusAdversarialReview = false
+	cfg.HarvestMode = harvestModeOff
+	cfg.OwnerRoutingEnforced = false
+	cfg.MaxAttempts = 3
+	isolateGrokLifecycleHome(t, cfg)
+	task := newTask(root, cfg, typeSequence, "r06 pinned grok", t.TempDir(), []string{"synthetic read-only review"}, 1)
+	task.PreferRunner = grokBuildRunnerName
+	task.RunnerExplicit = true
+	task.GrokModel = "grok-4.6"
+	task.GrokEffort = "xhigh"
+	task.ReviewAfter = false
+	if err := saveTask(root, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := runTaskVia(context.Background(), root, cfg, task, grokBuildRunnerName); err != nil {
+		t.Fatal(err)
+	}
+	return loadMust(t, root, task.ID), countProductCalls(t, productCalls)
+}
+
+func TestR06UnknownDecisionPersistsHold(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fake Grok process fixtures")
+	}
+	got, calls := r06PinnedGrokRun(t, `{"type":"error","message":"context deadline exceeded"}`, "", 1)
+	r06AssertNoFakeSuccess(t, got)
+	if got.Status != statusHeld || got.Attempts != 0 {
+		t.Fatalf("unknown no-terminal result must remain held without automatic retry: status=%s attempts=%d calls=%d error=%s",
+			got.Status, got.Attempts, calls, got.LastError)
+	}
+	if calls != 1 {
+		t.Fatalf("product calls=%d", calls)
+	}
+}
+
+func TestR06TerminalFailureClassification(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fake Grok process fixtures")
+	}
+	for _, tc := range []struct {
+		name, message, want string
+	}{
+		{"input_limit", "prompt is too long", statusFailed},
+		{"permission", "permission denied", statusHeld},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := `{"type":"error","message":"` + tc.message + `"}` + "\n" + grok105PublicEnd
+			got, calls := r06PinnedGrokRun(t, payload, "", 1)
+			r06AssertNoFakeSuccess(t, got)
+			if got.Status != tc.want {
+				t.Fatalf("terminal failure classification: status=%s want=%s attempts=%d calls=%d error=%s",
+					got.Status, tc.want, got.Attempts, calls, got.LastError)
+			}
+			if got.Attempts != 0 {
+				t.Fatalf("terminal class must not consume attempts: %+v", got)
+			}
+			if calls != 1 {
+				t.Fatalf("product calls=%d", calls)
+			}
+		})
 	}
 }

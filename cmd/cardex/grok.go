@@ -2600,10 +2600,20 @@ func observationFromGrok(t *Task, res *claudeResult, combined string, runErr err
 		obs.Incomplete = obs.Incomplete || !obs.HasTerminal
 		obs.Reason = firstNonBlank(obs.Reason, "stream_incomplete")
 	}
-	if runErr != nil && !obs.QuotaHit && !obs.AuthFailed && !obs.SuccessStructure {
+	if !obs.QuotaHit && !obs.AuthFailed && !obs.SuccessStructure && (runErr != nil || res.IsError) {
 		cls := classifyFailure(errorSummary(res, combined, runErr), combined, res, runErr)
 		obs.FailureClass = cls
-		if cls == failureTimeout || cls == failureExecutorCrash {
+		switch cls {
+		case failureInputTooLong:
+			obs.InputTooLong = true
+			obs.Reason = firstNonBlank(obs.Reason, "input_too_long")
+		case failurePermission:
+			obs.NecessaryDenied = true
+			obs.Reason = firstNonBlank(obs.Reason, "needs_interaction")
+		case failureAuth:
+			obs.AuthFailed = true
+			obs.Reason = firstNonBlank(obs.Reason, "auth")
+		case failureTimeout, failureExecutorCrash:
 			obs.Reason = firstNonBlank(obs.Reason, string(cls))
 		}
 	}
@@ -2623,6 +2633,14 @@ func grokImmediateUnknownHold(res *claudeResult, combined string, runErr error) 
 }
 
 func applyGrokExecutionDecision(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time) (cont, handled bool, err error) {
+	return applyGrokOutcome(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now, true)
+}
+
+func applyGrokDeferredDisposition(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time) (cont, handled bool, err error) {
+	return applyGrokOutcome(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now, false)
+}
+
+func applyGrokOutcome(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time, deferQuota bool) (cont, handled bool, err error) {
 	if t != nil && root != "" && diskCanceled(root, t.ID) {
 		return false, true, finalizeCanceled(root, t, lg)
 	}
@@ -2631,7 +2649,7 @@ func applyGrokExecutionDecision(ctx context.Context, root string, cfg *Config, t
 	}
 	obs := observationFromGrok(t, res, combined, runErr)
 	dec := decideExecutionOutcome(obs, grokAttemptFacts(cfg, t))
-	if grokImmediateUnknownHold(res, combined, runErr) {
+	if grokImmediateUnknownHold(res, combined, runErr) || dec.Kind == executionDecisionUnknown {
 		return applyGrokUnknownHold(ctx, root, cfg, t, via, prompt, res, runErr, lg, now, dec)
 	}
 	switch dec.Kind {
@@ -2645,56 +2663,15 @@ func applyGrokExecutionDecision(ctx context.Context, root string, cfg *Config, t
 		}
 		cont, err = finishProviderSuccess(ctx, root, cfg, t, via, prompt, res, lg, false, false, false, false, false, true, false, grokBuildRunnerName)
 		return cont, true, err
-	case executionDecisionHeld:
-		if obs.AuthFailed {
-			if res != nil {
-				applyProviderResultUsage(root, t, res)
-				if res.SessionID != "" {
-					t.SessionID = res.SessionID
-				}
-			}
-			if grokBuildExactAuthResult(res) && !classificationFromTranscript(res, runErr) {
-				setGrokBuildAuthCooldown(root, canonicalGrokBuildAuthReason(errorSummary(res, combined, runErr)), now)
-			}
-			msg := errorSummary(res, combined, runErr)
-			cls := dec.FailureClass
-			if cls == "" {
-				cls = failureAuth
-			}
-			return false, true, applyFailureDisposition(root, cfg, t, lg, msg, cls, now, false)
-		}
-	}
-	return false, false, nil
-}
-
-func applyGrokDeferredDisposition(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time) (cont, handled bool, err error) {
-	if t != nil && root != "" && diskCanceled(root, t.ID) {
-		return false, true, finalizeCanceled(root, t, lg)
-	}
-	obs := observationFromGrok(t, res, combined, runErr)
-	dec := decideExecutionOutcome(obs, grokAttemptFacts(cfg, t))
-	switch dec.Kind {
-	case executionDecisionCancel:
-		return false, true, finalizeCanceled(root, t, lg)
-	case executionDecisionSuccess:
-		if res != nil && res.SessionID != "" {
-			t.SessionID = res.SessionID
-		}
-		cont, err = finishProviderSuccess(ctx, root, cfg, t, via, prompt, res, lg, false, false, false, false, false, true, false, grokBuildRunnerName)
-		return cont, true, err
 	case executionDecisionLimitPause:
+		if deferQuota {
+			return false, false, nil
+		}
 		return false, true, pauseGrokBuildLimit(root, cfg, t, res, combined, lg, now)
 	case executionDecisionRetry, executionDecisionFailed, executionDecisionHeld:
 		return false, true, persistGrokFailureDisposition(root, cfg, t, res, combined, runErr, lg, now, dec)
 	default:
-		if runErr != nil || res == nil || res.IsError {
-			return false, true, persistGrokFailureDisposition(root, cfg, t, res, combined, runErr, lg, now, dec)
-		}
-		if res != nil && res.SessionID != "" {
-			t.SessionID = res.SessionID
-		}
-		cont, err = finishProviderSuccess(ctx, root, cfg, t, via, prompt, res, lg, false, false, false, false, false, true, false, grokBuildRunnerName)
-		return cont, true, err
+		return applyGrokUnknownHold(ctx, root, cfg, t, via, prompt, res, runErr, lg, now, dec)
 	}
 }
 

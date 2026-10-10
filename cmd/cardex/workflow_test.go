@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -1440,5 +1441,128 @@ func TestWorkflowRecordDoesNotStoreThePromptBody(t *testing.T) {
 		if strings.Contains(string(data), "TOKEN=abc123") {
 			t.Fatalf("%s leaked the prompt body", path)
 		}
+	}
+}
+
+func TestWorkflowWriterExplicitPromptWins(t *testing.T) {
+	t.Parallel()
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	const marker = "EXPLICIT_PROMPT_WINS_MARKER"
+	writer, err := admitWorkflowWriter(root, cfg, wf, marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.Prompts) != 1 || writer.Prompts[0] != marker {
+		t.Fatalf("explicit nonempty prompt must win: %q", writer.Prompts)
+	}
+	if strings.Contains(writer.Prompts[0], "你是 workflow 模块") {
+		t.Fatalf("template replaced an explicit prompt")
+	}
+}
+
+func TestWorkflowWriterEmptyPromptKeepsTemplate(t *testing.T) {
+	t.Parallel()
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	writer, err := admitWorkflowWriter(root, cfg, wf, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(writer.Prompts) != 1 || !strings.Contains(writer.Prompts[0], "你是 workflow 模块") {
+		t.Fatalf("empty prompt must keep workflow-writer template: %q", writer.Prompts)
+	}
+	if !strings.Contains(writer.Prompts[0], wf.Goal) {
+		t.Fatalf("template must still bind GOAL: %q", writer.Prompts[0])
+	}
+}
+
+func TestWorkflowWriterExplicitPromptWinsCLI(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX Cardex CLI consumer")
+	}
+	bin := buildCardexCLI(t)
+	root, dir := workflowTestRoot(t)
+	initOut, err := exec.Command(bin, "workflow", "init",
+		"-root", root, "-mode", workflowModeSerial, "-module", "authcli",
+		"-goal-id", "auth-cli-v1", "-goal", "ship an independently reviewed auth token vertical",
+		"-dir", dir, "-terminal-criteria", "independent review pass",
+		"-write-domain-id", "auth-cli", "-write-domain-lineage", "auth-cli-lineage",
+		"-write-domain-component", "auth", "-write-paths", "internal/auth",
+		"-engine", grokBuildRunnerName, "-max-rounds", "2",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("workflow init: %v\n%s", err, initOut)
+	}
+	cfg := workflowTestCfg(t, root)
+	wfs, err := loadWorkflows(root, cfg)
+	if err != nil || len(wfs) == 0 {
+		t.Fatalf("load workflows: n=%d err=%v", len(wfs), err)
+	}
+	var wf *WorkflowRecord
+	for _, item := range wfs {
+		if item.ModuleID == "authcli" {
+			wf = item
+			break
+		}
+	}
+	if wf == nil {
+		t.Fatalf("authcli workflow missing from %s", initOut)
+	}
+	const marker = "EXPLICIT_PROMPT_WINS_CLI_MARKER"
+	writerOut, err := exec.Command(bin, "workflow", "writer", "-root", root, "-prompt", marker, wf.ID).CombinedOutput()
+	if err != nil {
+		t.Fatalf("workflow writer: %v\n%s", err, writerOut)
+	}
+	fresh, err := loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadTask(root, fresh.WriterTaskID)
+	if err != nil {
+		t.Fatalf("load writer: %v\n%s", err, writerOut)
+	}
+	if len(got.Prompts) != 1 || got.Prompts[0] != marker {
+		t.Fatalf("CLI explicit prompt must win: %q\n%s", got.Prompts, writerOut)
+	}
+
+	root2, dir2 := workflowTestRoot(t)
+	if out, err := exec.Command(bin, "workflow", "init",
+		"-root", root2, "-mode", workflowModeSerial, "-module", "authcli2",
+		"-goal", "template path goal", "-dir", dir2, "-terminal-criteria", "criteria-ok",
+		"-write-paths", "internal/auth", "-engine", grokBuildRunnerName,
+	).CombinedOutput(); err != nil {
+		t.Fatalf("second init: %v\n%s", err, out)
+	}
+	cfg2 := workflowTestCfg(t, root2)
+	wfs2, err := loadWorkflows(root2, cfg2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wf2 *WorkflowRecord
+	for _, item := range wfs2 {
+		if item.ModuleID == "authcli2" {
+			wf2 = item
+			break
+		}
+	}
+	if wf2 == nil {
+		t.Fatal("second workflow missing")
+	}
+	if out, err := exec.Command(bin, "workflow", "writer", "-root", root2, wf2.ID).CombinedOutput(); err != nil {
+		t.Fatalf("empty-prompt writer: %v\n%s", err, out)
+	}
+	fresh2, err := loadWorkflow(root2, cfg2, wf2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got2, err := loadTask(root2, fresh2.WriterTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got2.Prompts) != 1 || !strings.Contains(got2.Prompts[0], "你是 workflow 模块") {
+		t.Fatalf("empty CLI prompt must keep template: %q", got2.Prompts)
 	}
 }

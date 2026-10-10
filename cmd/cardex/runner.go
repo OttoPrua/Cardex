@@ -64,6 +64,8 @@ type claudeResult struct {
 
 	// Grok-only diagnostic projection; absent for other providers and old records.
 	GrokDiagnostics *grokBuildDiagnostics `json:"-"`
+	// AGY-only safe diagnostic projection; never carries raw stderr or response bodies.
+	AntigravityDiagnostics *antigravityDiagnostics `json:"-"`
 	// ObservedAssistantModel is the provider-reported assistant model_id.
 	// It is actual identity, not the requested --model value.
 	ObservedAssistantModel  string `json:"-"`
@@ -1196,6 +1198,7 @@ func recordRouteAttemptObservation(t *Task, res *claudeResult) {
 	r.FinalReason = res.FinalReason
 	r.NativeVersion = res.NativeVersion
 	r.GrokDiagnostics = res.GrokDiagnostics
+	r.AntigravityDiagnostics = res.AntigravityDiagnostics
 	if id := strings.TrimSpace(res.ObservedAssistantModel); grokReportableAssistantModel(id) {
 		r.ActualModel = id
 	}
@@ -1216,6 +1219,91 @@ func runnerNativeTerminalValid(via string, res *claudeResult, runErr error) bool
 		return res.FinalReason == "stop"
 	default:
 		return false
+	}
+}
+
+// applyFailureDisposition is the existing classifier persist path: auth/permission
+// held, input_too_long failed, otherwise retry_backoff. AGY consumes this instead
+// of a second retry/held writer.
+func applyFailureDisposition(root string, cfg *Config, t *Task, lg *os.File, msg string, cls failureClass, now time.Time, softenedFromTranscript bool) error {
+	policy := policyFor(cls)
+	if softenedFromTranscript {
+		policy = failurePolicy{Class: cls, Terminal: "", ConsumesAttempt: true, Reason: "softened_transcript_derived"}
+	}
+	switch policy.Terminal {
+	case statusHeld:
+		t.Status = statusHeld
+		t.LastError = annotatedError(cls, msg)
+		if lg != nil {
+			logBlock(lg, "CLASS_HELD", fmt.Sprintf("[%s] 不烧 attempts 直接挂 held(升级人工): %s", cls, msg))
+		}
+		t.touch()
+		return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:classifier", statusHeld, t.Step,
+			withCostTelemetry(withRouteAttempt(map[string]any{
+				"err": msg, "failure_class": string(cls), "reason": policy.Reason,
+			}, t), t)))
+	case statusFailed:
+		t.Status = statusFailed
+		t.LastError = annotatedError(cls, msg)
+		if lg != nil {
+			logBlock(lg, "CLASS_FAILED", fmt.Sprintf("[%s] 不可重试类直接 failed: %s", cls, msg))
+		}
+		t.touch()
+		return finishIfStopped(persistTaskEvent(root, t, evFailed, "runner:classifier", statusFailed, t.Step,
+			withCostTelemetry(withRouteAttempt(map[string]any{
+				"err": msg, "failure_class": string(cls), "reason": policy.Reason,
+			}, t), t)))
+	default:
+		t.Attempts++
+		lastErrCls := cls
+		if softenedFromTranscript {
+			lastErrCls = failureUnknown
+		}
+		t.LastError = annotatedError(lastErrCls, msg)
+		if lg != nil {
+			logBlock(lg, "ERROR", fmt.Sprintf("第 %d 次失败[%s]: %s", t.Attempts, cls, msg))
+		}
+		maxAttempts := cfg.MaxAttempts
+		if t.MaxAttempts > 0 {
+			maxAttempts = t.MaxAttempts
+		}
+		if t.Attempts >= maxAttempts {
+			detail := map[string]any{
+				"err": msg, "attempts": t.Attempts, "failure_class": string(cls),
+			}
+			if softenedFromTranscript {
+				detail["softened_from_terminal"] = true
+				detail["reason"] = "softened_transcript_derived"
+			}
+			if t.MaxAttempts > 0 {
+				t.Status = statusHeld
+				detail["reason"] = "task_max_attempts_reached"
+				detail["max_attempts"] = maxAttempts
+				t.touch()
+				return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner", statusHeld, t.Step, withCostTelemetry(withRouteAttempt(detail, t), t)))
+			}
+			t.Status = statusFailed
+			t.touch()
+			return finishIfStopped(persistTaskEvent(root, t, evFailed, "runner", statusFailed, t.Step, withCostTelemetry(withRouteAttempt(detail, t), t)))
+		}
+		t.Status = statusQueued
+		backoff := time.Duration(cfg.RetryBackoffMin) * time.Minute
+		if transientRe.MatchString(msg) {
+			backoff = time.Duration(cfg.RetryBackoffMin) * time.Minute
+		} else {
+			backoff *= time.Duration(t.Attempts)
+		}
+		t.NotBeforeEpoch = now.Add(backoff).Unix()
+		detail := map[string]any{
+			"err": msg, "attempts": t.Attempts, "not_before": t.NotBeforeEpoch,
+			"failure_class": string(cls),
+		}
+		if softenedFromTranscript {
+			detail["softened_from_terminal"] = true
+			detail["reason"] = "softened_transcript_derived"
+		}
+		t.touch()
+		return finishIfStopped(persistTaskEvent(root, t, evRetry, "runner", statusQueued, t.Step, withRouteAttempt(detail, t)))
 	}
 }
 
@@ -1313,7 +1401,17 @@ func withRouteAttempt(detail map[string]any, t *Task) map[string]any {
 		detail["workspace_fingerprint_after"] = r.WorkspaceAfter
 	}
 	detail["process_residue"] = r.ProcessResidue
-	return withGrokBuildDiagnostics(detail, t)
+	return withAntigravityDiagnostics(withGrokBuildDiagnostics(detail, t), t)
+}
+
+func withAntigravityDiagnostics(detail map[string]any, t *Task) map[string]any {
+	if t != nil && t.LastRouteAttempt != nil && t.LastRouteAttempt.AntigravityDiagnostics != nil {
+		if detail == nil {
+			detail = map[string]any{}
+		}
+		detail["antigravity_diagnostics"] = t.LastRouteAttempt.AntigravityDiagnostics
+	}
+	return detail
 }
 
 func withGrokBuildDiagnostics(detail map[string]any, t *Task) map[string]any {
@@ -1846,6 +1944,12 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 				}
 			case useAntigravity:
 				res, combined, runErr = invokeAntigravity(ctx, cfg, t, prompt)
+				if res != nil && res.SessionID != "" {
+					t.SessionID = res.SessionID
+				}
+				if res != nil {
+					appendUsage(root, cfg, t, res.Usage)
+				}
 			case useCursor:
 				res, combined, runErr = invokeCursor(ctx, cfg, t, prompt)
 				if t.PreferRunner == cursorRunnerName && res != nil && res.SessionID != "" {
@@ -1985,6 +2089,15 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			return finalizeCanceled(root, t, lg)
 		}
 		recordRouteAttemptObservation(t, res)
+		if useAntigravity {
+			cont, handled, aerr := applyAntigravityExecutionDecision(ctx, root, cfg, t, via, prompt, res, runErr, lg, now)
+			if handled {
+				if cont {
+					continue
+				}
+				return aerr
+			}
+		}
 		if frozenDispatchMode(t) != "" && useCodex && (res == nil || !res.ObservationComplete) {
 			if handled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
 				if errors.Is(herr, errHarvestContinueLoop) {
@@ -2582,88 +2695,8 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 					"[%s→retry_backoff] transcript 来源判据不落终态(would-be %s),降级现行 retry_backoff: %s",
 					cls, policy.Terminal, msg))
 				softenedFromTranscript = true
-				// 把 policy 强制拉回 retry_backoff:cls 保留供事件审计,避免丢原分类信号。
-				policy = failurePolicy{Class: cls, Terminal: "", ConsumesAttempt: true,
-					Reason: "softened_transcript_derived"}
 			}
-			switch policy.Terminal {
-			case statusHeld:
-				// 认证/权限：不烧 attempts，直接挂 held 等人工 relogin/授权后 release。
-				t.Status = statusHeld
-				t.LastError = annotatedError(cls, msg)
-				logBlock(lg, "CLASS_HELD", fmt.Sprintf("[%s] 不烧 attempts 直接挂 held(升级人工): %s", cls, msg))
-				t.touch()
-				return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:classifier", statusHeld, t.Step,
-					withCostTelemetry(withRouteAttempt(map[string]any{
-						"err": msg, "failure_class": string(cls), "reason": policy.Reason,
-					}, t), t)))
-			case statusFailed:
-				// 输入超长：同样 prompt 再送必然再超长，直接 failed 不烧 attempts；人工按 retry 时
-				// 可裁剪 prompt 或换更大窗口的模型。
-				t.Status = statusFailed
-				t.LastError = annotatedError(cls, msg)
-				logBlock(lg, "CLASS_FAILED", fmt.Sprintf("[%s] 不可重试类直接 failed: %s", cls, msg))
-				t.touch()
-				return finishIfStopped(persistTaskEvent(root, t, evFailed, "runner:classifier", statusFailed, t.Step,
-					withCostTelemetry(withRouteAttempt(map[string]any{
-						"err": msg, "failure_class": string(cls), "reason": policy.Reason,
-					}, t), t)))
-			default:
-				// 现行 retry_backoff：超时/执行器崩溃/未知类。回归基线纪律——未知类的 LastError 与
-				// 事件字段结构与旧版逐字节一致（annotatedError 对 unknown 返回原 msg，不加前缀）；
-				// 只多一个 detail.failure_class 供审计聚合。
-				t.Attempts++
-				// softened 场景 cls 虽命中 auth/permission/input_too_long,但已被 transcript 来源降级;
-				// LastError 前缀按"实际执行的策略"挂 unknown(等价于"不加前缀"),与旧版逐字节一致;真
-				// 未知/超时/executor_crash 走同分支,由 annotatedError 内部按 policyFor 决定不加前缀。
-				lastErrCls := cls
-				if softenedFromTranscript {
-					lastErrCls = failureUnknown
-				}
-				t.LastError = annotatedError(lastErrCls, msg)
-				logBlock(lg, "ERROR", fmt.Sprintf("第 %d 次失败[%s]: %s", t.Attempts, cls, msg))
-				maxAttempts := cfg.MaxAttempts
-				if t.MaxAttempts > 0 {
-					maxAttempts = t.MaxAttempts
-				}
-				if t.Attempts >= maxAttempts {
-					detail := map[string]any{
-						"err": msg, "attempts": t.Attempts, "failure_class": string(cls),
-					}
-					if softenedFromTranscript {
-						detail["softened_from_terminal"] = true
-						detail["reason"] = "softened_transcript_derived"
-					}
-					if t.MaxAttempts > 0 {
-						t.Status = statusHeld
-						detail["reason"] = "task_max_attempts_reached"
-						detail["max_attempts"] = maxAttempts
-						t.touch()
-						return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner", statusHeld, t.Step, withCostTelemetry(withRouteAttempt(detail, t), t)))
-					}
-					t.Status = statusFailed
-					t.touch()
-					return finishIfStopped(persistTaskEvent(root, t, evFailed, "runner", statusFailed, t.Step, withCostTelemetry(withRouteAttempt(detail, t), t)))
-				}
-				t.Status = statusQueued
-				backoff := time.Duration(cfg.RetryBackoffMin) * time.Minute
-				if transientRe.MatchString(msg) {
-					backoff = time.Duration(cfg.RetryBackoffMin) * time.Minute
-				} else {
-					backoff *= time.Duration(t.Attempts)
-				}
-				t.NotBeforeEpoch = now.Add(backoff).Unix()
-				detail := map[string]any{
-					"err": msg, "attempts": t.Attempts, "not_before": t.NotBeforeEpoch,
-					"failure_class": string(cls),
-				}
-				if softenedFromTranscript {
-					detail["softened_from_terminal"] = true
-					detail["reason"] = "softened_transcript_derived"
-				}
-				t.touch()
-				return finishIfStopped(persistTaskEvent(root, t, evRetry, "runner", statusQueued, t.Step, withRouteAttempt(detail, t)))
-			}
+			return applyFailureDisposition(root, cfg, t, lg, msg, cls, now, softenedFromTranscript)
 		}
 
 		// 3) 成功：推进步骤（codex/gemini/远端/引擎成功不代表 claude 限额解除，全局冷却只由
@@ -2700,6 +2733,8 @@ func finishProviderSuccess(ctx context.Context, root string, cfg *Config, t *Tas
 			clearEngineCooldown(root, grokBuildCooldownName)
 		case useCursor:
 			clearEngineCooldown(root, cursorCooldownName)
+		case via == antigravityRunnerName:
+			clearEngineCooldown(root, antigravityCooldownName)
 		case engineName != "":
 			clearEngineCooldown(root, engineName)
 		default:

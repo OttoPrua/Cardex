@@ -328,10 +328,10 @@ func publishWorkflowWriterLocked(root string, cfg *Config, wf *WorkflowRecord, p
 	if active, found := workflowActiveRole(root, wf, "writer"); found {
 		return active, duplicateRoleErr("writer", active)
 	}
-	if strings.TrimSpace(prompt) == "" {
-		prompt = wf.Goal + "\n\n完成标准:\n" + wf.TerminalCriteria
-	}
-	if tpl, err := loadTemplate(root, "workflow-writer"); err == nil && strings.TrimSpace(tpl) != "" {
+	explicitPrompt := strings.TrimSpace(prompt)
+	if explicitPrompt != "" {
+		prompt = explicitPrompt
+	} else if tpl, err := loadTemplate(root, "workflow-writer"); err == nil && strings.TrimSpace(tpl) != "" {
 		prompt = renderTemplate(tpl, map[string]string{
 			"MODULE":   wf.ModuleID,
 			"DIR":      wf.Worktree,
@@ -340,6 +340,8 @@ func publishWorkflowWriterLocked(root string, cfg *Config, wf *WorkflowRecord, p
 			"ROUND":    fmt.Sprintf("%d", wf.CurrentRound),
 			"MODE":     wf.Mode,
 		})
+	} else {
+		prompt = wf.Goal + "\n\n完成标准:\n" + wf.TerminalCriteria
 	}
 	t := newTask(root, cfg, typeSequence, "workflow writer: "+wf.ModuleID, wf.Worktree, []string{prompt}, 8)
 	t.Project = wf.ModuleID

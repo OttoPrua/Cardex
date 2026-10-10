@@ -1291,6 +1291,11 @@ func validateBootstrapExecutorCapture(raw []byte, admitted bootstrapExecutorCapt
 	stdout := executorNormalizeOutput(executorString(item["stdout"]))
 	agg := executorNormalizeOutput(executorString(item["aggregated_output"]))
 	formatted := executorNormalizeOutput(executorString(item["formatted_output"]))
+	// Some retained executor events expose only the complete aggregate. The
+	// selected content still passes every refusal, channel and identity guard.
+	if strings.TrimSpace(stdout) == "" {
+		stdout = agg
+	}
 	var retNorm string
 	if admitted.AssociationKind != "" {
 		if admitted.AssociationKind != bootstrapExecutorAsyncAssociation {
@@ -1300,10 +1305,13 @@ func validateBootstrapExecutorCapture(raw []byte, admitted bootstrapExecutorCapt
 		if err != nil {
 			return nil, err
 		}
-		if err := validateExecutorWriteStdinTerminal(admitted, records, rec, processID, code); err != nil {
+		terminalOut, err := validateExecutorWriteStdinTerminal(admitted, records, rec, processID, code)
+		if err != nil {
 			return nil, err
 		}
-		retNorm = executorNormalizeOutput(retOut)
+		// Compare the exact complete consumer view after the independent wait
+		// proof is validated. No nonempty terminal output may be ignored.
+		retNorm = executorNormalizeOutput(retOut + terminalOut)
 	} else {
 		retOut, chunkCode, chunkOK := executorLastFailedChunkOutput(outPayload)
 		if !chunkOK {
@@ -1329,6 +1337,9 @@ func validateBootstrapExecutorCapture(raw []byte, admitted bootstrapExecutorCapt
 		}
 	}
 	if strings.TrimSpace(formatted) != "" && formatted != stdout {
+		return nil, bootstrapRecoveryRefused("contradictory executor output")
+	}
+	if stderr := executorNormalizeOutput(executorString(item["stderr"])); strings.TrimSpace(stderr) != "" && stderr != stdout {
 		return nil, bootstrapRecoveryRefused("contradictory executor output")
 	}
 	if strings.TrimSpace(retNorm) == "" {
@@ -2097,65 +2108,66 @@ func executorOriginalAsyncHandleOutput(outPayload map[string]any, admittedHandle
 	return found, nil
 }
 
-func validateExecutorWriteStdinTerminal(admitted bootstrapExecutorCaptureAdmitted, originalRecords []map[string]any, rec *AttemptRecord, processID string, originalCode int) error {
+func validateExecutorWriteStdinTerminal(admitted bootstrapExecutorCaptureAdmitted, originalRecords []map[string]any, rec *AttemptRecord, processID string, originalCode int) (string, error) {
 	if strings.TrimSpace(admitted.Handle) == "" || admitted.Handle != strings.TrimSpace(processID) {
-		return bootstrapRecoveryRefused("wrong handle identity")
+		return "", bootstrapRecoveryRefused("wrong handle identity")
 	}
 	path := strings.TrimSpace(admitted.TerminalPath)
 	if path == "" {
-		return bootstrapRecoveryRefused("unbound original-async/terminal association")
+		return "", bootstrapRecoveryRefused("unbound original-async/terminal association")
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return bootstrapRecoveryRefused("missing original executor capture")
+			return "", bootstrapRecoveryRefused("missing original executor capture")
 		}
-		return bootstrapRecoveryRefused("unreadable original executor capture")
+		return "", bootstrapRecoveryRefused("unreadable original executor capture")
 	}
 	if sha256Hex(string(raw)) != admitted.TerminalDigest {
-		return bootstrapRecoveryRefused("executor capture digest mismatch")
+		return "", bootstrapRecoveryRefused("executor capture digest mismatch")
 	}
 	records, err := splitExecutorJSONL(raw)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if len(records) != 2 {
 		if len(records) > 2 {
-			return bootstrapRecoveryRefused("modified original executor capture")
+			return "", bootstrapRecoveryRefused("modified original executor capture")
 		}
-		return bootstrapRecoveryRefused("truncated original executor capture")
+		return "", bootstrapRecoveryRefused("truncated original executor capture")
 	}
 	if executorRecordType(records[0]) != "response_item" || executorPayloadType(records[0]) != "custom_tool_call" {
-		return bootstrapRecoveryRefused("unknown executor capture format")
+		return "", bootstrapRecoveryRefused("unknown executor capture format")
 	}
 	if executorRecordType(records[1]) != "response_item" || executorPayloadType(records[1]) != "custom_tool_call_output" {
-		return bootstrapRecoveryRefused("unknown executor capture format")
+		return "", bootstrapRecoveryRefused("unknown executor capture format")
 	}
 	callPayload := executorPayload(records[0])
 	outPayload := executorPayload(records[1])
 	if callPayload == nil || outPayload == nil {
-		return bootstrapRecoveryRefused("truncated original executor capture")
+		return "", bootstrapRecoveryRefused("truncated original executor capture")
 	}
 	callID := strings.TrimSpace(executorString(callPayload["call_id"]))
 	if callID != admitted.TerminalCallID || callID == admitted.CallID {
-		return bootstrapRecoveryRefused("wrong call identity")
+		return "", bootstrapRecoveryRefused("wrong call identity")
 	}
 	if executorString(callPayload["name"]) != "exec" {
-		return bootstrapRecoveryRefused("wrong command identity")
+		return "", bootstrapRecoveryRefused("wrong command identity")
 	}
 	if err := executorRequireUniqueWriteStdin(executorString(callPayload["input"]), admitted.Handle); err != nil {
-		return err
+		return "", err
 	}
 	outCall := strings.TrimSpace(executorString(outPayload["call_id"]))
 	outID := strings.TrimSpace(executorString(outPayload["id"]))
 	if outCall != callID || outID != admitted.TerminalReturnID {
-		return bootstrapRecoveryRefused("wrong return identity")
+		return "", bootstrapRecoveryRefused("wrong return identity")
 	}
-	if err := executorRequireWriteStdinFirstTerminal(outPayload, originalCode); err != nil {
-		return err
+	terminalOutput, err := executorRequireWriteStdinFirstTerminal(outPayload, originalCode)
+	if err != nil {
+		return "", err
 	}
 	if err := validateExecutorWriteStdinTimestamps(originalRecords, records, rec); err != nil {
-		return err
+		return "", err
 	}
 	termAdmitted := bootstrapExecutorCaptureAdmitted{
 		Path:       admitted.TerminalPath,
@@ -2163,10 +2175,13 @@ func validateExecutorWriteStdinTerminal(admitted bootstrapExecutorCaptureAdmitte
 		ReturnID:   admitted.TerminalReturnID,
 		Provenance: admitted.TerminalProvenance,
 	}
-	return validateExecutorCallReturnProvenance(raw, termAdmitted)
+	if err := validateExecutorCallReturnProvenance(raw, termAdmitted); err != nil {
+		return "", err
+	}
+	return terminalOutput, nil
 }
 
-func executorRequireWriteStdinFirstTerminal(outPayload map[string]any, originalCode int) error {
+func executorRequireWriteStdinFirstTerminal(outPayload map[string]any, originalCode int) (string, error) {
 	var jsonChunks []map[string]any
 	for _, ch := range executorOutputChunks(outPayload) {
 		text := strings.TrimSpace(executorString(ch["text"]))
@@ -2180,31 +2195,35 @@ func executorRequireWriteStdinFirstTerminal(outPayload map[string]any, originalC
 		jsonChunks = append(jsonChunks, obj)
 	}
 	if len(jsonChunks) == 0 {
-		return bootstrapRecoveryRefused("missing terminal nonzero exit")
+		return "", bootstrapRecoveryRefused("missing terminal nonzero exit")
 	}
 	first := jsonChunks[0]
 	code, ok := executorJSONInt(first["exit_code"])
 	if !ok {
-		return bootstrapRecoveryRefused("missing terminal nonzero exit")
+		return "", bootstrapRecoveryRefused("missing terminal nonzero exit")
 	}
 	if sid := strings.TrimSpace(executorString(first["session_id"])); sid != "" {
-		return bootstrapRecoveryRefused("wrong handle identity")
+		return "", bootstrapRecoveryRefused("wrong handle identity")
 	}
 	if code == 0 {
 		if len(jsonChunks) > 1 {
 			if later, lok := executorJSONInt(jsonChunks[len(jsonChunks)-1]["exit_code"]); lok && later != 0 {
-				return bootstrapRecoveryRefused("unrelated second-command failure")
+				return "", bootstrapRecoveryRefused("unrelated second-command failure")
 			}
 		}
-		return bootstrapRecoveryRefused("missing terminal nonzero exit")
+		return "", bootstrapRecoveryRefused("missing terminal nonzero exit")
 	}
 	if code < 0 {
-		return bootstrapRecoveryRefused("generic failure is not bootstrap-before-provider refusal")
+		return "", bootstrapRecoveryRefused("generic failure is not bootstrap-before-provider refusal")
 	}
 	if code != originalCode {
-		return bootstrapRecoveryRefused("wrong return identity")
+		return "", bootstrapRecoveryRefused("wrong return identity")
 	}
-	return nil
+	output, ok := first["output"].(string)
+	if !ok {
+		return "", bootstrapRecoveryRefused("wrong return identity")
+	}
+	return output, nil
 }
 
 func executorRequireUniqueWriteStdin(input, handle string) error {

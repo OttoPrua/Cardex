@@ -751,9 +751,6 @@ func writeSyntheticWriteStdinTerminal(t *testing.T, original syntheticCodexExecu
 		firstExit = *opts.FirstExit
 	}
 	firstOut := opts.FirstOutput
-	if firstOut == "" {
-		firstOut = "错误: exit status 1"
-	}
 	secondExit := 0
 	if opts.SecondExit != nil {
 		secondExit = *opts.SecondExit
@@ -4086,6 +4083,162 @@ func TestBootstrapExecutorCaptureRealRefusalPair(t *testing.T) {
 				t.Fatal("invalid actual refusal accepted")
 			}
 		})
+	}
+}
+
+// This constructs a separate synthetic capture; retained executor bytes are
+// never edited. Its provenance and digest describe the newly written bytes.
+func syntheticExecutorOutputChannels(t *testing.T, res syntheticCodexExecutorResult, fields map[string]any, initialOutput string) syntheticCodexExecutorResult {
+	t.Helper()
+	records, err := splitExecutorJSONL(res.Raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := executorPayload(records[1])["item"].(map[string]any)
+	for k, v := range fields {
+		item[k] = v
+	}
+	if initialOutput != "" {
+		for _, ch := range executorOutputChunks(executorPayload(records[2])) {
+			var chunk map[string]any
+			if json.Unmarshal([]byte(executorString(ch["text"])), &chunk) != nil || executorString(chunk["session_id"]) != res.Handle {
+				continue
+			}
+			chunk["output"] = initialOutput
+			encoded, err := json.Marshal(chunk)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ch["text"] = string(encoded)
+		}
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	for _, rec := range records {
+		if err := enc.Encode(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res.Raw = buf.Bytes()
+	res.Path = filepath.Join(t.TempDir(), "synthetic-output-channels.jsonl")
+	if err := os.WriteFile(res.Path, res.Raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res.Digest = sha256Hex(string(res.Raw))
+	res.Provenance = writeSyntheticExecutorProvenance(t, res.Raw, res)
+	return res
+}
+
+func TestBootstrapExecutorCaptureAggregatedOnlyChannels(t *testing.T) {
+	for _, name := range []string{"null-stdout", "empty-stdout", "matching-channels", "missing-content", "incomplete-refusal", "contradictory-stdout", "contradictory-stderr", "contradictory-formatted"} {
+		t.Run(name, func(t *testing.T) {
+			_, _, wf, tk, attempt, _ := bootstrapBeforeNativeFixture(t)
+			pair := syntheticRealBootstrapPair(tk.Goal.GrokHome, tk.Goal.SandboxProfile)
+			res := writeSyntheticCodexExecutorCaptureResult(t, tk, wf, syntheticCodexExecutorOpts{Attempt: attempt, RefusalLine: pair})
+			records, err := splitExecutorJSONL(res.Raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := executorString(executorPayload(records[1])["item"].(map[string]any)["aggregated_output"])
+			fields := map[string]any{"stdout": nil, "stderr": nil, "formatted_output": nil}
+			wantPass := false
+			switch name {
+			case "null-stdout":
+				wantPass = true
+			case "empty-stdout":
+				fields["stdout"] = ""
+				wantPass = true
+			case "matching-channels":
+				fields["stdout"], fields["stderr"], fields["formatted_output"] = body, body, body
+				wantPass = true
+			case "missing-content":
+				fields["aggregated_output"] = nil
+			case "incomplete-refusal":
+				fields["aggregated_output"] = strings.SplitN(pair, "\n", 2)[0]
+			case "contradictory-stdout", "contradictory-stderr", "contradictory-formatted":
+				key := strings.TrimPrefix(name, "contradictory-")
+				if key == "formatted" {
+					key = "formatted_output"
+				}
+				fields[key] = body + "\ncontradictory provider output\n"
+			}
+			res = syntheticExecutorOutputChannels(t, res, fields, "")
+			admitted := bootstrapExecutorCaptureAdmitted{Path: res.Path, Digest: res.Digest, CallID: res.CallID, ItemID: res.ItemID, ReturnID: res.ReturnID, Provenance: res.Provenance, SessionID: tk.SessionID, ContractDigest: tk.Goal.InputDigest, ProfileDigest: tk.Goal.SandboxProfileDigest, TaskID: tk.ID, AttemptID: attempt.AttemptID}
+			proof, err := validateBootstrapExecutorCapture(res.Raw, admitted, attempt, tk)
+			if wantPass {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if proof.Output != executorNormalizeOutput(body) || proof.SessionID != tk.SessionID {
+					t.Fatal("selected output lost original content or session binding")
+				}
+			} else if err == nil {
+				t.Fatal("missing or contradictory channels accepted")
+			}
+		})
+	}
+}
+
+func TestBootstrapExecutorCaptureAsyncAggregatedOnly(t *testing.T) {
+	for _, name := range []string{"complete-initial", "complete-initial-tampered-terminal", "incremental-terminal", "tampered-terminal", "wrong-handle", "wrong-return", "wrong-time"} {
+		t.Run(name, func(t *testing.T) {
+			const terminal = "错误: exit status 1\n"
+			opts := syntheticWriteStdinOpts{FirstOutput: terminal}
+			if name == "complete-initial" {
+				opts.FirstOutput = ""
+			}
+			if name == "tampered-terminal" || name == "complete-initial-tampered-terminal" {
+				opts.FirstOutput = "different terminal output\n"
+			}
+			if name == "wrong-time" {
+				opts.CallTimestamp = time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)
+			}
+			root, _, wf, tk, original, originalBytes, execProof, termProof, _ := bootstrapAsyncExecutorFixture(t, "", opts)
+			initial := ""
+			if name != "complete-initial" && name != "complete-initial-tampered-terminal" {
+				records, err := splitExecutorJSONL(execProof.Raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				full := executorString(executorPayload(records[1])["item"].(map[string]any)["aggregated_output"])
+				if !strings.HasSuffix(full, terminal) {
+					t.Fatal("synthetic complete aggregate lacks terminal suffix")
+				}
+				initial = strings.TrimSuffix(full, terminal)
+			}
+			execProof = syntheticExecutorOutputChannels(t, execProof, map[string]any{"stdout": nil, "stderr": nil, "formatted_output": nil}, initial)
+			auth := mintBootstrapBeforeNativeAuthorization(t, tk, wf, time.Time{})
+			bindAsyncAssociation(t, auth, execProof, termProof, execProof.Handle)
+			if name == "wrong-handle" {
+				rewriteBootstrapAuthField(t, auth, "executor_handle", "different-handle")
+			}
+			if name == "wrong-return" {
+				rewriteBootstrapAuthField(t, auth, "terminal_return_id", "different-return")
+			}
+			if name == "complete-initial" || name == "incremental-terminal" {
+				assertAsyncAdmit(t, root, wf, tk, original, originalBytes, execProof, termProof, auth)
+			} else {
+				if err := runBootstrapRecoveryCLIWithExecutor(root, wf.ID, auth, execProof.Path, execProof.Digest, execProof.CallID); err == nil {
+					t.Fatal("invalid aggregate/terminal association accepted")
+				}
+				if countBootstrapConsumeEvents(t, root, tk.ID) != 0 {
+					t.Fatal("invalid association consumed authorization")
+				}
+				assertOriginalAttemptUnchanged(t, root, tk.ID, original.AttemptID, originalBytes)
+			}
+		})
+	}
+}
+
+func TestBootstrapExecutorTerminalMissingOutputRefuses(t *testing.T) {
+	chunk, err := json.Marshal(map[string]any{"exit_code": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]any{"output": []any{map[string]any{"type": "input_text", "text": string(chunk)}}}
+	if _, err := executorRequireWriteStdinFirstTerminal(payload, 1); err == nil {
+		t.Fatal("missing output was treated as explicit empty terminal output")
 	}
 }
 

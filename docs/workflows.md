@@ -467,3 +467,11 @@ cardex workflow record-local-integration <id> -root <root> -receipt /absolute/ad
 采用收据 schema 为 `cardex.workflow.manual_local_integration.v1`，method 为 `manual_local_integration`；包含 workflow_id、integration_task_id、integration_revision（采用前当前值）、真实 manager actor/session_id、target_repo、owner_authorization_scope=`local-integration`、owner_authorization_target_repo（须精确等于命令给定的 canonical 目标仓）、external_review_sha256（原审核收据的 SHA）、candidate_commit/tree。`file_sha256` 是每个实际采用普通文件的内容 SHA256，`file_git_modes` 对应 Git 的 `100644`/`100755`；精确覆盖已冻结 changed_paths 中的文件。提供非空真实采用产物 artifact_path/artifact_sha256、本地检查 checks_path/checks_sha256 和 checks_passed=true。所有证据路径为绝对路径，输入和目标只允许普通文件，目标文件及祖先不允许符号链接。
 
 这仍是本地经理对授权与身份的声明，不是对 Human 身份的密码学认证；经理须先核具体目标授权。错误目标、过期 revision、漂移、未实际采用、非普通文件和已派发/活跃占位卡会拒绝且不改状态。同一收据并发重放只生成一次 terminal；重放仍核实际字节及原审核。若 terminal 已提交但 workflow 投影失败，重放仅恢复精确匹配的原人工 terminal，不伪造 producer。`locally_integrated` 只释放当前 SOURCE claim，不等于运行时或用户路径验收。
+
+## 新任务的可配置路由
+
+已有 Owner 路由配置可在同一个 `config.json` 中编辑 `work_class_routes` 与 `route_matrix`；普通安装继续沿用预设，无需额外开启 Owner 矩阵。配置片段、支持的 runner 和优先级见 [派发 skill](../skills/cardex-dispatch/SKILL.md#configurable-routing-for-new-work)。`route_matrix` 使用 high/medium/low（兼容 opus/sonnet/haiku）× frontend/backend/general，重复别名拒绝。用 `cardex route -root ROOT -complexity medium -category general` 预览；`add -model sonnet -route-class general` 和相同字段的 emitted task 使用同一解析器。显式 work-class 优先选择类别路由，显式执行器/模型/会话仍优先保留。
+
+`fallback` 缺省/null 继承原默认，`[]` 禁止自动回退，非空数组严格保留声明的顺序、不追加默认 provider。配置仅作用于新准入任务，旧完整快照保留全部执行腿与审核要求；既有已证明零活动的跨模式额度续作仍保留原 attempt 证据、冻结新准入路线。daily 的 gpt-complex 默认是 gpt-6.1-sol/high（可显式 medium），gpt-short 是 Grok 4.6/xhigh；原有风险、只读、额度和不确定状态限制继续生效。
+
+需要 Goal 写者继承配置时，`workflow init ... -writer-engine auto -reviewer-engine grok-build -model sonnet -route-class general`，随后 `workflow writer -root ROOT -mode manual WF_ID`。也可声明 `-work-class development`。显式引擎的旧 workflow 不改路由；原生方向仅在实际 Grok 能力允许时启动，各方向使用独立会话。方向结束后仍由管理 Agent 同步所有必要方向，并用已有 `workflow accept` 统一验收；程序不自动决定下一轮目标或 Release。验收按完成标准与实际产物进行，深度与风险相称；失败保留产物、修具体问题、只复验受影响部分。

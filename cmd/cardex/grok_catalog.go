@@ -466,6 +466,7 @@ func freezeManualGoalModel(ctx context.Context, root string, cfg *Config, t *Tas
 	if err := freezeGrokAttemptModel(ctx, cfg, t); err != nil {
 		return err
 	}
+	freezeGoalRouteSnapshot(t)
 	if root != "" && t != nil && strings.TrimSpace(t.ID) != "" {
 		return saveTask(root, t)
 	}

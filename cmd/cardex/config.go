@@ -145,6 +145,14 @@ type Config struct {
 	// reviewer-merger 任一缺失或漂移都拒绝加载，避免生产静默退回旧路线。
 	OwnerRoutingEnforced bool `json:"owner_routing_enforced,omitempty"`
 	OwnerMixedRouting    bool `json:"owner_mixed_routing,omitempty"`
+	// WorkClassRoutes overrides mixed-routing primaries/fallbacks per work_class.
+	// Omitted classes keep the documented built-in defaults. Edits apply to new
+	// unfrozen cards only; admitted FrozenRoute snapshots stay immutable.
+	WorkClassRoutes map[string]ConfiguredRoute `json:"work_class_routes,omitempty"`
+	// RouteMatrix is the editable complexity × category table consumed by the
+	// same resolver as preview/add/emit/Goal. Keys: high/medium/low (opus/sonnet/haiku
+	// aliases) × frontend/backend/general.
+	RouteMatrix RouteMatrix `json:"route_matrix,omitempty"`
 	// Named modes apply only to eligible new work. The priority authority is a fixed,
 	// non-renewing interval; selecting it after expiry still resolves to daily.
 	DispatchMode            string `json:"dispatch_mode,omitempty"`
@@ -840,6 +848,9 @@ func loadConfig(root string) (*Config, error) {
 	}
 	if err := validateMixedOwnerConfig(cfg); err != nil {
 		return nil, err
+	}
+	if err := validateConfigurableDispatch(cfg); err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath(root), err)
 	}
 	if err := validateOwnerRoutingPolicy(cfg); err != nil {
 		return nil, fmt.Errorf("%s: %w", configPath(root), err)

@@ -116,6 +116,9 @@ type WorkflowRecord struct {
 	MaxRounds          int                       `json:"max_rounds"`
 	CurrentRound       int                       `json:"current_round"`
 	WriterEngine       string                    `json:"writer_engine"`
+	WriterWorkClass    string                    `json:"writer_work_class,omitempty"`
+	WriterModel        string                    `json:"writer_model,omitempty"`
+	WriterRouteClass   string                    `json:"writer_route_class,omitempty"`
 	ReviewerEngine     string                    `json:"reviewer_engine"`
 	WriterTaskID       string                    `json:"writer_task_id,omitempty"`
 	ReviewerTaskID     string                    `json:"reviewer_task_id,omitempty"`
@@ -318,7 +321,17 @@ func normalizeWorkflowRecordOpts(cfg *Config, wf *WorkflowRecord, historical boo
 	if wf.CurrentRound < 0 || wf.CurrentRound > wf.MaxRounds {
 		return fmt.Errorf("%w: current_round %d out of 0..%d", errWorkflowMalformed, wf.CurrentRound, wf.MaxRounds)
 	}
-	if err := validateWorkflowEngine(cfg, wf.WriterEngine); err != nil {
+	if wf.WriterEngine == "auto" {
+		if !validMixedWorkClass(wf.WriterWorkClass) || canonicalCategory(wf.WriterRouteClass) == "" || strings.TrimSpace(wf.WriterModel) == "" {
+			return fmt.Errorf("%w: invalid auto writer selectors", errWorkflowMalformed)
+		}
+		// Historical readback/control must not depend on today's default route.
+		if !historical {
+			if _, err := resolveWorkflowDefaultRoute(cfg, wf); err != nil {
+				return err
+			}
+		}
+	} else if err := validateWorkflowEngine(cfg, wf.WriterEngine); err != nil {
 		return err
 	}
 	if err := validateWorkflowEngine(cfg, wf.ReviewerEngine); err != nil {
@@ -543,7 +556,7 @@ func knownWorkflowSidecar(path, name string) bool {
 	if json.Unmarshal(raw, &fields) != nil || fields == nil {
 		return false
 	}
-	for _, key := range []string{"schema", "id", "mode", "module_id", "goal_id", "goal", "parent_id", "repo", "worktree", "write_domain", "writer_engine", "reviewer_engine", "effect_gates", "current_round", "max_rounds", "writer_task_id", "reviewer_task_id", "integration_task_id", "terminal_criteria", "candidate", "review", "progress", "material_notify", "design_lineage", "design_session", "manager_session", "owner_design_entry", "design_task_id", "direction_task_ids", "native_goal_task_ids", "acceptance_task_id", "acceptance_coverage", "goal_completed", "created_at", "updated_at"} {
+	for _, key := range []string{"schema", "id", "mode", "module_id", "goal_id", "goal", "parent_id", "repo", "worktree", "write_domain", "writer_engine", "writer_work_class", "writer_model", "writer_route_class", "reviewer_engine", "effect_gates", "current_round", "max_rounds", "writer_task_id", "reviewer_task_id", "integration_task_id", "terminal_criteria", "candidate", "review", "progress", "material_notify", "design_lineage", "design_session", "manager_session", "owner_design_entry", "design_task_id", "direction_task_ids", "native_goal_task_ids", "acceptance_task_id", "acceptance_coverage", "goal_completed", "created_at", "updated_at"} {
 		for field := range fields {
 			// encoding/json matches struct field tags case-insensitively.
 			// Presence, including null, is enough to retain a possible claim.

@@ -21,8 +21,9 @@ const (
 	statusFailed      = "failed"
 	statusCanceled    = "canceled"
 
-	routeClassGeneral = "general"
-	routeClassBackend = "backend"
+	routeClassGeneral  = "general"
+	routeClassBackend  = "backend"
+	routeClassFrontend = "frontend"
 
 	riskClassOrdinary   = "ordinary"
 	riskClassHigh       = "high-risk"
@@ -135,6 +136,10 @@ type Task struct {
 	// edit must win instead of being erased in a display/fallback-only copy. Leg is one-based.
 	OwnerRouteName string `json:"owner_route_name,omitempty"`
 	OwnerRouteLeg  int    `json:"owner_route_leg,omitempty"`
+	// FrozenRoute is the complete admitted route snapshot (all legs plus
+	// review/merge/release metadata). Later consumption, including later
+	// fallback legs, reads this snapshot instead of live config.
+	FrozenRoute *frozenOwnerRoute `json:"frozen_route,omitempty"`
 	// LastRouteAttempt preserves requested/actual identity and the latest observation/proof even
 	// after the task advances to another route leg. It contains no prompt, output, or credential data.
 	LastRouteAttempt *RouteAttemptReadback `json:"last_route_attempt,omitempty"`

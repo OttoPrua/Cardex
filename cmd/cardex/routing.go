@@ -10,7 +10,7 @@ func invalidExplicitRouteClass(t *Task) bool {
 		return false
 	}
 	class := strings.ToLower(strings.TrimSpace(t.RouteClass))
-	return class != "" && class != routeClassBackend && class != routeClassGeneral
+	return class != "" && class != routeClassBackend && class != routeClassGeneral && class != routeClassFrontend
 }
 
 // ownerRoutingPolicyWaitReason centralizes fail-closed task-shape guards consumed by tick, board,
@@ -27,7 +27,7 @@ func ownerRoutingPolicyWaitReason(cfg *Config, t *Task) string {
 		return "work_class requires owner_mixed_routing"
 	}
 	if invalidExplicitRouteClass(t) {
-		return fmt.Sprintf("route_class=%q 无效；仅允许 backend|general", t.RouteClass)
+		return fmt.Sprintf("route_class=%q 无效；仅允许 backend|general|frontend", t.RouteClass)
 	}
 	if err := closedOwnerTaskStateError(t); err != nil {
 		return "Owner 闭合路由状态无效：" + err.Error()
@@ -53,7 +53,7 @@ func validateNewTaskRouteClass(cfg *Config, t *Task) error {
 	}
 	class := strings.ToLower(strings.TrimSpace(t.RouteClass))
 	if invalidExplicitRouteClass(t) {
-		return fmt.Errorf("route_class 只允许 backend|general，收到 %q", t.RouteClass)
+		return fmt.Errorf("route_class 只允许 backend|general|frontend，收到 %q", t.RouteClass)
 	}
 	if cfg != nil && cfg.OwnerRoutingEnforced && modelTierKeyword(cfg, t.Model) == "fable" {
 		// Fable is a read-only decision/synthesis lineage. Subject matter cannot classify the Fable
@@ -62,7 +62,7 @@ func validateNewTaskRouteClass(cfg *Config, t *Task) error {
 		return nil
 	}
 	if cfg != nil && cfg.OwnerRoutingEnforced && class == "" {
-		return fmt.Errorf("owner_routing_enforced=true 时新 sequence 卡必须显式指定 route_class=backend|general")
+		return fmt.Errorf("owner_routing_enforced=true 时新 sequence 卡必须显式指定 route_class=backend|general|frontend")
 	}
 	return nil
 }
@@ -136,7 +136,7 @@ func backendDevelopmentTask(t *Task) bool {
 	switch class {
 	case routeClassBackend:
 		return true
-	case routeClassGeneral:
+	case routeClassGeneral, routeClassFrontend:
 		return false
 	}
 	if class != "" {

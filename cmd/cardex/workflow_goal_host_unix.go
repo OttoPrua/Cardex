@@ -5,6 +5,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unsafe"
 )
 
 const (
@@ -139,6 +141,12 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 	}
 	defer master.Close()
 	defer slave.Close()
+	// A detached PTY otherwise starts at 0x0: native approval cards may render
+	// only a title. Give the normal output relay a usable, deterministic screen.
+	size := [4]uint16{40, 120, 0, 0}
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, master.Fd(), syscall.TIOCSWINSZ, uintptr(unsafe.Pointer(&size[0]))); errno != 0 {
+		return fmt.Errorf("%s: set terminal size: %w", goalFailPTYIoctl, errno)
+	}
 
 	cmd := exec.CommandContext(ctx, cfg.GrokBuildBin, args...)
 	cmd.Dir = t.Dir
@@ -186,6 +194,9 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 	}
 	defer ctl.Close()
 	if err := persistHostedGoalSupervisorStart(root, t); err != nil {
+		return err
+	}
+	if err := writeGoalHostStatus(root, t.ID, attemptID, goalHostStatus{SessionID: t.SessionID, SupervisorAlive: true, InputProtocol: hostedInputProtocol}); err != nil {
 		return err
 	}
 
@@ -310,11 +321,16 @@ func hostedControlLoop(root string, t *Task, grokHome string, master, ctl *os.Fi
 	if ctl == nil {
 		return
 	}
+	hostTaskID, hostAttemptID, hostSessionID := t.ID, attemptIDForHostedTask(t), t.SessionID
 	sc := bufio.NewScanner(ctl)
 	lineCh := make(chan string, 4)
 	go func() {
 		for sc.Scan() {
-			lineCh <- strings.ToLower(strings.TrimSpace(sc.Text()))
+			select {
+			case lineCh <- strings.TrimSpace(sc.Text()):
+			case <-stop:
+				return
+			}
 		}
 		close(lineCh)
 	}()
@@ -366,6 +382,14 @@ func hostedControlLoop(root string, t *Task, grokHome string, master, ctl *os.Fi
 			if action == "" {
 				continue
 			}
+			if strings.HasPrefix(action, "{") {
+				var req hostedInputRequest
+				if json.Unmarshal([]byte(action), &req) == nil && req.Kind == hostedInputKind {
+					handleHostedOperatorInput(root, hostTaskID, hostAttemptID, hostSessionID, master, req)
+				}
+				continue
+			}
+			action = strings.ToLower(action)
 			fresh, err := loadTask(root, t.ID)
 			if err == nil && fresh != nil {
 				*t = *fresh

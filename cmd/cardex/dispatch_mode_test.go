@@ -242,7 +242,8 @@ func TestDispatchModeActualQuotaSuccessorBoundary(t *testing.T) {
 				}
 			} else {
 				if _, err := os.Stat(grokArgs); err != nil {
-					t.Fatal("daily successor not invoked", err)
+					latest, _ := loadTask(root, got.ID)
+					t.Fatalf("daily successor not invoked: %v; state=%+v", err, latest)
 				}
 			}
 		})
@@ -373,7 +374,7 @@ func TestDispatchModeExactClockAndDailyTable(t *testing.T) {
 					t.Fatalf("priority %+v", r)
 				}
 			} else {
-				want := map[string]string{"development": "grok-4.6", "simple-development": "grok-4.6", "gpt-complex": "gpt-6-astra", "gpt-short": "gpt-5.6-sol", "management": "gemini-3.8-flash-high"}[class]
+				want := map[string]string{"development": "grok-4.6", "simple-development": "grok-4.6", "gpt-complex": "gpt-6.1-sol", "gpt-short": "grok-4.6", "management": "gemini-3.8-flash-high"}[class]
 				if r.Legs[0].Model != want {
 					t.Fatalf("daily %+v", r)
 				}
@@ -857,7 +858,7 @@ func TestDispatchModeObserverDoesNotRetainPrivateDiagnostic(t *testing.T) {
 // Exercises the same consumer used by locked manual and scheduled dispatch.
 // These are offline provider fixtures, not live quota or Kimi capability claims.
 func TestDispatchModeDailySnapshotActualAdmission(t *testing.T) {
-	for _, class := range []string{"gpt-complex", "gpt-short"} {
+	for _, class := range []string{"gpt-complex"} {
 		for _, boundary := range []string{"fresh", "stale-before-run", "stale-after-preflight", "recovered-after-preflight", "wrong-account", "held-unknown"} {
 			t.Run(class+"/"+boundary, func(t *testing.T) {
 				cfg, now := modeFixture(t)
@@ -950,7 +951,7 @@ func TestDispatchModeAssemblyDoesNotImplicitlySelectGPT(t *testing.T) {
 	}
 	task.WorkClass = "gpt-complex"
 	route, ok = resolveMixedOwnerRouteAt(cfg, task, now)
-	if !ok || route.Legs[0].Runner != "codex" || route.Legs[0].Model != "gpt-6-astra" {
+	if !ok || route.Legs[0].Runner != "codex" || route.Legs[0].Model != "gpt-6.1-sol" {
 		t.Fatalf("explicit GPT class lost: %+v", route)
 	}
 }

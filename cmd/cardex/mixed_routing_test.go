@@ -25,8 +25,8 @@ func TestMixedRoutingActualConsumers(t *testing.T) {
 	for _, tc := range []struct{ class, runner, model, effort string }{
 		{"development", grokBuildRunnerName, "grok-4.6", "xhigh"},
 		{"simple-development", grokBuildRunnerName, "grok-4.6", "high"},
-		{"gpt-complex", "codex", "gpt-6-astra", "high"},
-		{"gpt-short", "codex", "gpt-5.6-sol", "xhigh"},
+		{"gpt-complex", "codex", "gpt-6.1-sol", "high"},
+		{"gpt-short", grokBuildRunnerName, "grok-4.6", "xhigh"},
 		{"management", antigravityRunnerName, "gemini-3.8-flash-high", "high"},
 	} {
 		t.Run(tc.class, func(t *testing.T) {
@@ -111,7 +111,7 @@ func TestMixedAdmissionDefaultsAndOldIdentity(t *testing.T) {
 			t.Fatal("explicit/session identity rerouted")
 		}
 	}
-	for _, pair := range []struct{ class, effort, want string }{{"gpt-complex", "medium", "medium"}, {"gpt-short", "max", "max"}} {
+	for _, pair := range []struct{ class, effort, want string }{{"gpt-complex", "medium", "medium"}} {
 		task.WorkClass, task.Effort, task.EffortExplicit = pair.class, pair.effort, true
 		route, _ := resolveOwnerRoute(cfg, task)
 		if route.Legs[0].Effort != pair.want {
@@ -240,7 +240,7 @@ func TestMixedRouteCommandNoMutation(t *testing.T) {
 }
 
 func TestMixedAutomaticCodexBudgetRuntimeHold(t *testing.T) {
-	for _, class := range []string{"gpt-complex", "gpt-short"} {
+	for _, class := range []string{"gpt-complex"} {
 		for _, state := range []string{"missing", "stale", "above"} {
 			t.Run(class+"/"+state, func(t *testing.T) {
 				root := testRoot(t)
@@ -355,7 +355,7 @@ func TestMixedAddAndYvonneEmitClassification(t *testing.T) {
 	if len(cards) != 1 || cards[0].WorkClass != "simple-development" || cards[0].Status != statusHeld {
 		t.Fatalf("add classification %+v", cards)
 	}
-	route, ok := resolveOwnerRoute(cfg, cards[0])
+	route, ok := resolveOwnerRouteReadback(cfg, cards[0])
 	if !ok || route.Legs[0].Model != "grok-4.6" {
 		t.Fatalf("add readback %+v", route)
 	}
@@ -373,10 +373,10 @@ func TestMixedAddAndYvonneEmitClassification(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		route, ok := resolveOwnerRoute(cfg, card)
+		route, ok := resolveOwnerRouteReadback(cfg, card)
 		want := "grok-4.6"
 		if i == 1 {
-			want = "gpt-6-astra"
+			want = "gpt-6.1-sol"
 		}
 		if !ok || route.Legs[0].Model != want {
 			t.Fatalf("emit identity %+v", route)
@@ -423,7 +423,7 @@ func TestMixedCursorQuotaLegActualInvocation(t *testing.T) {
 }
 
 func TestMixedCodexExactArgv(t *testing.T) {
-	for _, class := range []string{"gpt-complex", "gpt-short"} {
+	for _, class := range []string{"gpt-complex"} {
 		cfg := mixedTestConfig()
 		capture := filepath.Join(t.TempDir(), "argv")
 		cfg.CodexBin = fakeCodexArgvCapture(t, capture)

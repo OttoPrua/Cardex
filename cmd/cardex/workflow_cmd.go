@@ -11,7 +11,7 @@ import (
 
 func cmdWorkflow(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("用法: cardex workflow init|list|show|writer|fanout|accept|goal-round|goal-direction|goal-launch|goal-run|goal-bootstrap-before-native-recovery|goal-sync|goal-control|goal-observe|bind-session|design-request|design-collect|design-bind|design-result|design-repair|freeze-candidate|review|ingest-review|ingest-external-review|record-local-integration|repair|try-release-integration|mark ...\n  goal-run <id> -manual|-hosted [-budget N] [-sandbox NAME]  # -sandbox selects an existing applicable Grok profile for this invocation only\n  goal-bootstrap-before-native-recovery <id> -authorization FILE -manual|-hosted [-executor-capture FILE -executor-digest SHA256 -executor-call-id CALL]  # explicit single-use authorization; sidecar-missing executor JSONL is optional manager-admitted proof; ordinary goal-run stays fail-closed\n  freeze-candidate <id> -commit C -tree T [-retained-held-source]  # default refuses a live or held writer; -retained-held-source freezes a custody-released held SOURCE candidate without manufacturing done\n  ingest-external-review <id> -receipt FILE  # bind completed independent local manager review evidence; not AUTHOR_ADVERSARIAL and not a fake typeReview")
+		return fmt.Errorf("用法: cardex workflow init|list|show|writer|fanout|accept|goal-round|goal-direction|goal-launch|goal-run|goal-bootstrap-before-native-recovery|goal-sync|goal-control|goal-input|goal-observe|bind-session|design-request|design-collect|design-bind|design-result|design-repair|freeze-candidate|review|ingest-review|ingest-external-review|record-local-integration|repair|try-release-integration|mark ...\n  goal-run <id> -manual|-hosted [-budget N] [-sandbox NAME]  # -sandbox selects an existing applicable Grok profile for this invocation only\n  goal-bootstrap-before-native-recovery <id> -authorization FILE -manual|-hosted [-executor-capture FILE -executor-digest SHA256 -executor-call-id CALL]  # explicit single-use authorization; sidecar-missing executor JSONL is optional manager-admitted proof; ordinary goal-run stays fail-closed\n  freeze-candidate <id> -commit C -tree T [-retained-held-source]  # default refuses a live or held writer; -retained-held-source freezes a custody-released held SOURCE candidate without manufacturing done\n  ingest-external-review <id> -receipt FILE  # bind completed independent local manager review evidence; not AUTHOR_ADVERSARIAL and not a fake typeReview")
 	}
 	switch args[0] {
 	case "init":
@@ -40,6 +40,8 @@ func cmdWorkflow(args []string) error {
 		return cmdWorkflowGoalSync(args[1:])
 	case "goal-control":
 		return cmdWorkflowGoalControl(args[1:])
+	case "goal-input":
+		return cmdWorkflowGoalInput(args[1:])
 	case "goal-observe":
 		return cmdWorkflowGoalObserve(args[1:])
 	case "bind-session":
@@ -181,7 +183,10 @@ func cmdWorkflowInit(args []string) error {
 	writePaths := fs.String("write-paths", "", "逗号分隔的仓相对写路径")
 	writeResources := fs.String("write-resources", "", "逗号分隔的封闭资源 kind:id")
 	engine := fs.String("engine", "", "writer/reviewer 引擎（必填，必须是 tick 能钉定且不会 fail-open 的执行器）")
-	writerEngine := fs.String("writer-engine", "", "写者引擎，默认同 -engine")
+	writerEngine := fs.String("writer-engine", "", "写者引擎，默认同 -engine；auto 使用当前配置路由")
+	writerClass := fs.String("work-class", "", "auto 写者工作类别；空=按层级和类别解析")
+	writerTier := fs.String("model", "sonnet", "auto 写者层级 opus|sonnet|haiku")
+	writerCategory := fs.String("route-class", "general", "auto 写者类别 frontend|backend|general")
 	reviewerEngine := fs.String("reviewer-engine", "", "审核引擎，默认同 -engine")
 	selectGoal := fs.String("select-goal", "", "目标陈述（-goal 的别名）")
 	designModel := fs.String("design-model", "", "设计节点模型（只读角色；须配合 -design-receipt 或 -design-task）")
@@ -266,6 +271,9 @@ func cmdWorkflowInit(args []string) error {
 		TerminalCriteria: strings.TrimSpace(*criteria),
 		MaxRounds:        *maxRounds,
 		WriterEngine:     wEngine,
+		WriterWorkClass:  strings.TrimSpace(*writerClass),
+		WriterModel:      strings.TrimSpace(*writerTier),
+		WriterRouteClass: strings.TrimSpace(*writerCategory),
 		ReviewerEngine:   rEngine,
 		EffectGates: WorkflowEffectGates{
 			Integration: effectGateHeld,

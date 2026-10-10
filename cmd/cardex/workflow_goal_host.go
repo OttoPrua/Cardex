@@ -34,6 +34,9 @@ type goalHostStatus struct {
 	FailureClass     string `json:"failure_class,omitempty"`
 	SupervisorAlive  bool   `json:"supervisor_alive"`
 	UpdatedAt        string `json:"updated_at"`
+	InputProtocol    int    `json:"input_protocol,omitempty"`
+	LastInputID      string `json:"last_input_id,omitempty"`
+	InputError       string `json:"input_error,omitempty"`
 }
 
 func goalHostDir(root, taskID, attemptID string) string {
@@ -54,6 +57,16 @@ func writeGoalHostStatus(root, taskID, attemptID string, st goalHostStatus) erro
 	}
 	st.TaskID = taskID
 	st.AttemptID = attemptID
+	// Control/observation updates retain the capability advertised by this
+	// supervisor. Never advertise it for an older running supervisor.
+	if old, err := loadGoalHostStatus(root, taskID, attemptID); err == nil && old.SessionID == st.SessionID {
+		if st.InputProtocol == 0 {
+			st.InputProtocol = old.InputProtocol
+		}
+		if st.LastInputID == "" {
+			st.LastInputID, st.InputError = old.LastInputID, old.InputError
+		}
+	}
 	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	raw, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {

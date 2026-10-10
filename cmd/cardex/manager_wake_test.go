@@ -1468,9 +1468,9 @@ func fakeCodexQueueHangBin(t *testing.T) (bin, logPath, startedPath, pidPath, de
 		"echo $$ > \"$pidfile\"\n" +
 		"sleep 3600 &\n" +
 		"echo $! > \"$descfile\"\n" +
-		": > \"$started\"\n" +
 		"printf '%s\\n' \"$0\" \"$@\" >> \"$log\"\n" +
 		"trap '' TERM INT\n" +
+		": > \"$started\"\n" +
 		"wait\n"
 	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

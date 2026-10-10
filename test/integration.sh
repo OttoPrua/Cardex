@@ -336,7 +336,8 @@ json.dump(c,open(p,"w"),indent=2,ensure_ascii=False)
 EOF
 printf 'ok\n' > "$MOCK_DIR/plan"; echo 0 > "$MOCK_DIR/n"
 : > "$MOCK_DIR/codex-calls.log"
-"$BIN" add -dir "$PROJ" -title lead-claude -priority 2 "lead work" >/dev/null
+# Pin Claude so the earlier Codex fallback setting cannot bypass this buffer test.
+"$BIN" add -dir "$PROJ" -runner claude -title lead-claude -priority 2 "lead work" >/dev/null
 "$BIN" add -dir "$PROJ2" -runner codex -title lead-codex -priority 2 "lead filler" >/dev/null
 "$BIN" run -quiet
 [ "$(cat "$MOCK_DIR/n")" = "0" ] && echo "  ✔ 缓冲期内 claude 任务不起跑" && pass=$((pass+1)) || { echo "  ✖ 缓冲期未生效"; fail=$((fail+1)); }
@@ -348,7 +349,7 @@ p=sys.argv[1]; c=json.load(open(p)); c["redline_lead_min"]=0
 json.dump(c,open(p,"w"),indent=2,ensure_ascii=False)
 EOF
 "$BIN" run -quiet
-assert "关闭缓冲后 claude 任务正常执行" "one(title='lead-claude')['status']=='done'"
+assert "关闭缓冲后 claude 任务正常执行" "one(title='lead-claude')['status']=='done' and one(title='lead-claude').get('runner') is None"
 
 echo "== 场景21: 设计模型不降级（no_fallback_models）=="
 python3 - "$CARDEX_ROOT/config.json" <<'EOF'

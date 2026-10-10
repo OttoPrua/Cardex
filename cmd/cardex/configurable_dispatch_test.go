@@ -227,11 +227,24 @@ func TestConfigurableDispatchFallbackSafeguards(t *testing.T) {
 	if len(route.Legs) != 2 || route.Legs[1].Runner != cursorRunnerName {
 		t.Fatalf("configured fallback dropped %+v", route)
 	}
+	before, _ := json.Marshal(task)
 	auth, err := authorizePolicyFallback(safeFixtureProof(t))
+	if !policyFallbackProcessProofSupported() {
+		if err == nil || !strings.Contains(err.Error(), "platform cannot prove descendant process cleanup") {
+			t.Fatalf("unsupported platform must refuse fallback proof: %v", err)
+		}
+		if err := queuePolicyFallback(cfg, task, fallbackQuota, auth); err == nil {
+			t.Fatal("unproved quota fallback accepted")
+		}
+		after, _ := json.Marshal(task)
+		if !bytes.Equal(before, after) {
+			t.Fatal("unsupported platform fallback mutated task")
+		}
+		return
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, _ := json.Marshal(task)
 	if err := queuePolicyFallback(cfg, task, fallbackTransport, auth); err == nil {
 		t.Fatal("transport fallback accepted")
 	}
@@ -661,5 +674,27 @@ func TestConfigurableDispatchFrozenSnapshotRejectsDrift(t *testing.T) {
 	route, ok := resolveOwnerRoute(cfg, task)
 	if !ok || route.ReleaseGate == nil {
 		t.Fatal("explicit specialized frontend gate lost")
+	}
+}
+
+func TestConfigurableDispatchStandaloneReviewUnchanged(t *testing.T) {
+	for _, risk := range []string{riskClassOrdinary, riskClassCritical} {
+		t.Run(risk, func(t *testing.T) {
+			cfg := policyTestConfig()
+			task := &Task{Type: typeReview, Model: "sonnet", RouteClass: routeClassGeneral,
+				RiskClass: risk, PreferRunner: "codex", FreshSteps: true, Prompts: []string{"review"}}
+			before, ok := resolveOwnerRoute(cfg, task)
+			if !ok || len(before.Legs) != 1 || !before.Legs[0].ReadOnly || before.Legs[0].Stage != routeStageStandaloneReview {
+				t.Fatalf("missing independent review identity: %+v", before)
+			}
+			cfg.RouteMatrix = RouteMatrix{"medium": {"general": {
+				Runner: grokBuildRunnerName, Model: "grok-4.7", Effort: "high",
+				Fallback: []RouteLegConfig{{Runner: kimiCLIRunnerName, Model: "kimi-code/k3", Effort: "max"}},
+			}}}
+			after, ok := resolveOwnerRoute(cfg, task)
+			if !ok || !reflect.DeepEqual(before, after) {
+				t.Fatalf("development matrix changed standalone review: before=%+v after=%+v", before, after)
+			}
+		})
 	}
 }

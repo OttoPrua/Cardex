@@ -23,7 +23,9 @@ import (
 func TestConfigMapTablesRegistered(t *testing.T) {
 	t.Parallel()
 	registry := map[string]string{
-		"dispatch_presets": "不命中: 无内置预设，导入校验且只作用新卡；既有路由约束仍适用(TestPresetInvalidImportDoesNotChangeConfig/TestPresetImportDispatchOverrideAndPreservation)",
+		"work_class_routes": "不命中: 无内置表条目; 缺键继承, 配置路由须有合法 runner/model/effort; fallback 缺省继承而显式列表精确生效, 回退证明仍强制(TestConfigurableDispatchInvalidConfigRefused/TestConfigurableDispatchExactFallbackAndAliases/TestConfigurableDispatchFallbackSafeguards)",
+		"route_matrix":      "不命中: 无内置表条目; 缺格继承, 已配置格完整校验; fallback 缺省与显式空区分, 独立审核不受开发矩阵覆盖(TestConfigurableDispatch3x3Matrix/TestConfigurableDispatchInvalidConfigRefused/TestConfigurableDispatchExactFallbackAndAliases/TestConfigurableDispatchStandaloneReviewUnchanged)",
+		"dispatch_presets":  "不命中: 无内置预设，导入校验且只作用新卡；既有路由约束仍适用(TestPresetInvalidImportDoesNotChangeConfig/TestPresetImportDispatchOverrideAndPreservation)",
 		// 命中本类，已做字段级回落：
 		"stakes_policy": "命中: 档内留空字段由 stakesRule 回落内置表(TestStakesRuleFieldLevelFallback)",
 		"type_defaults": "命中: 条目内留空字段由 typeDefaultsFor 回落内置表(TestTypeDefaultsFieldLevelFallback)",

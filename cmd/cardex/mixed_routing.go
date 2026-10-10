@@ -541,7 +541,7 @@ func mixedCodexPrimary(t *Task) bool {
 		return false
 	}
 	if completeFrozenRoute(t) && t.OwnerRouteLeg == 1 {
-		return t.FrozenRoute.Legs[0].Runner == "codex"
+		return t.FrozenRoute.Legs[0].Runner == "codex" && t.FrozenRoute.Legs[0].Stage == routeStagePrimary
 	}
 	if t.OwnerRouteName == "mixed_gpt_complex" || t.OwnerRouteName == "mixed_gpt_short" {
 		return true

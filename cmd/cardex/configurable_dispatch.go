@@ -264,7 +264,7 @@ func lookupRouteMatrix(cfg *Config, complexity, category string) (ConfiguredRout
 }
 
 func overlayRouteMatrix(cfg *Config, t *Task, route ownerRoute) ownerRoute {
-	if cfg == nil || t == nil || len(cfg.RouteMatrix) == 0 || t.OwnerRouteName != "" || route.Name == "fable_explicit" {
+	if cfg == nil || t == nil || t.Type == typeReview || len(cfg.RouteMatrix) == 0 || t.OwnerRouteName != "" || route.Name == "fable_explicit" {
 		return route
 	}
 	complexity := complexityFromTier(modelTierKeyword(cfg, t.Model))

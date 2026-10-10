@@ -263,16 +263,30 @@ func syncIntegrationGate(root string, wf *WorkflowRecord) error {
 	if integ.IntegrationGate == nil {
 		integ.IntegrationGate = &IntegrationGate{}
 	}
-	integ.IntegrationGate.WorkflowID = wf.ID
-	integ.IntegrationGate.WriterTaskID = wf.WriterTaskID
-	integ.IntegrationGate.ReviewTaskID = wf.ReviewerTaskID
-	if wf.Candidate != nil {
-		integ.IntegrationGate.CandidateCommit = wf.Candidate.Commit
-		integ.IntegrationGate.CandidateTree = wf.Candidate.Tree
-	} else {
-		integ.IntegrationGate.CandidateCommit = ""
-		integ.IntegrationGate.CandidateTree = ""
+	wantMethod, wantReceipt, wantReceiptSHA := "", "", ""
+	if wf.Review != nil && wf.Review.Method == reviewMethodExternalIndependentLocal {
+		wantMethod = reviewMethodExternalIndependentLocal
+		wantReceipt = wf.Review.ReceiptPath
+		wantReceiptSHA = wf.Review.ReceiptSHA256
 	}
+	wantCommit, wantTree := "", ""
+	if wf.Candidate != nil {
+		wantCommit, wantTree = wf.Candidate.Commit, wf.Candidate.Tree
+	}
+	g := integ.IntegrationGate
+	if g.WorkflowID == wf.ID && g.WriterTaskID == wf.WriterTaskID && g.ReviewTaskID == wf.ReviewerTaskID &&
+		g.CandidateCommit == wantCommit && g.CandidateTree == wantTree &&
+		g.ReviewMethod == wantMethod && g.ExternalReceiptPath == wantReceipt && g.ExternalReceiptSHA256 == wantReceiptSHA {
+		return nil
+	}
+	g.WorkflowID = wf.ID
+	g.WriterTaskID = wf.WriterTaskID
+	g.ReviewTaskID = wf.ReviewerTaskID
+	g.CandidateCommit = wantCommit
+	g.CandidateTree = wantTree
+	g.ReviewMethod = wantMethod
+	g.ExternalReceiptPath = wantReceipt
+	g.ExternalReceiptSHA256 = wantReceiptSHA
 	return saveTask(root, integ)
 }
 
@@ -641,16 +655,39 @@ func freezeWorkflowCandidate(root string, cfg *Config, wf *WorkflowRecord, cand 
 		return fmt.Errorf("%w: writer %s still live; bytes are not frozen",
 			errWorkflowDuplicateRole, taskIDOrUnknown(active))
 	}
+	return bindFrozenWorkflowCandidate(root, cfg, wf, cand, "")
+}
+
+func bindFrozenWorkflowCandidate(root string, cfg *Config, wf *WorkflowRecord, cand WorkflowCandidate, freezeKind string) error {
 	commit, tree, err := verifyWorkflowCandidate(wf.Worktree,
 		strings.TrimSpace(cand.Commit), strings.TrimSpace(cand.Tree))
 	if err != nil {
 		return err
 	}
+	paths := append([]string(nil), cand.ChangedPaths...)
+	var digests map[string]string
+	if freezeKind == freezeKindRetainedHeldSource {
+		if len(paths) == 0 {
+			paths = append([]string(nil), wf.WriteDomain.Paths...)
+		}
+		if err := workflowPathsInsideWriteDomain(wf, paths); err != nil {
+			return err
+		}
+		if err := assertGitDiffCoveredByDeclared(wf.Worktree, commit, paths, wf.WriteDomain.Paths); err != nil {
+			return err
+		}
+		digests, err = digestPathsAtTree(wf.Worktree, tree, paths)
+		if err != nil {
+			return err
+		}
+	}
 	wf.Candidate = &WorkflowCandidate{
 		Commit:       commit,
 		Tree:         tree,
 		Branch:       strings.TrimSpace(cand.Branch),
-		ChangedPaths: append([]string(nil), cand.ChangedPaths...),
+		ChangedPaths: paths,
+		PathDigests:  digests,
+		FreezeKind:   freezeKind,
 	}
 	if err := syncIntegrationGate(root, wf); err != nil {
 		return err
@@ -672,6 +709,9 @@ func tryReleaseWorkflowIntegration(root string, cfg *Config, wf *WorkflowRecord)
 	if err := refreshWorkflow(root, cfg, wf); err != nil {
 		return err
 	}
+	if wf.LocalIntegration != nil {
+		return fmt.Errorf("%w: local integration already recorded; no model dispatch", errWorkflowHeld)
+	}
 	if wf.IntegrationTaskID == "" {
 		return fmt.Errorf("%w: no integration card", errWorkflowMalformed)
 	}
@@ -686,20 +726,21 @@ func tryReleaseWorkflowIntegration(root string, cfg *Config, wf *WorkflowRecord)
 	if !dec.Admit {
 		// Fail closed: a queued integration card that no longer has admissible
 		// evidence goes back on hold through the supported control-plane path.
+		// An already-held card is refused without rewriting workflow/task bytes.
 		if integ.Status == statusQueued {
 			if err := terminalize(root, integ.ID, statusHeld, "workflow:integration-refused",
 				dec.HoldReason, map[string]any{"workflow": wf.ID, "reason": dec.HoldReason}); err != nil {
 				return err
 			}
-		}
-		if wf.Review != nil {
-			wf.Review.Admissible = false
-			wf.Review.HoldReason = dec.HoldReason
-		}
-		wf.EffectGates.Integration = effectGateHeld
-		wf.Status = workflowStatusIntegrationHeld
-		if err := persistWorkflow(root, cfg, wf); err != nil {
-			return err
+			if wf.Review != nil {
+				wf.Review.Admissible = false
+				wf.Review.HoldReason = dec.HoldReason
+			}
+			wf.EffectGates.Integration = effectGateHeld
+			wf.Status = workflowStatusIntegrationHeld
+			if err := persistWorkflow(root, cfg, wf); err != nil {
+				return err
+			}
 		}
 		return fmt.Errorf("%w: %s", errWorkflowHeld, dec.HoldReason)
 	}

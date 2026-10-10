@@ -225,6 +225,13 @@ func evaluateIntegrationRelease(root string, cfg *Config, t *Task) IntegrationRe
 		return dec
 	}
 	gate := t.IntegrationGate
+	if strings.TrimSpace(gate.ReviewMethod) == reviewMethodExternalIndependentLocal {
+		if strings.TrimSpace(gate.ReviewTaskID) != "" {
+			dec.HoldReason = holdReasonIncompleteEvidence
+			return dec
+		}
+		return evaluateExternalIndependentRelease(root, cfg, t)
+	}
 	if strings.TrimSpace(gate.ReviewTaskID) == "" {
 		dec.HoldReason = holdReasonMissingReview
 		return dec

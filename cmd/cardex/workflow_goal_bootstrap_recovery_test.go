@@ -4280,8 +4280,15 @@ func bootstrapAsyncEarlyReturnFixture(t *testing.T, variant string) (root string
 	if !strings.HasSuffix(full, end) {
 		t.Fatal("synthetic aggregate lacks final error")
 	}
-	proof = syntheticExecutorOutputChannels(t, proof, map[string]any{"stdout": nil, "stderr": nil, "formatted_output": nil}, strings.TrimSuffix(full, end))
-	terminal = writeSyntheticWriteStdinTerminal(t, proof, original, syntheticWriteStdinOpts{FirstOutput: end})
+	channels := map[string]any{"stdout": nil, "stderr": nil, "formatted_output": nil}
+	initial, terminalOutput := strings.TrimSuffix(full, end), end
+	if variant == "pty-crcrlf" {
+		channels["aggregated_output"] = strings.ReplaceAll(full, "\n", "\r\r\n")
+		initial = strings.ReplaceAll(initial, "\n", "\r\r\n")
+		terminalOutput = strings.ReplaceAll(end, "\n", "\r\r\n")
+	}
+	proof = syntheticExecutorOutputChannels(t, proof, channels, initial)
+	terminal = writeSyntheticWriteStdinTerminal(t, proof, original, syntheticWriteStdinOpts{FirstOutput: terminalOutput})
 	auth = mintBootstrapBeforeNativeAuthorization(t, tk, wf, time.Time{})
 	bindAsyncAssociation(t, auth, proof, terminal, proof.Handle)
 	return
@@ -4306,12 +4313,30 @@ func TestBootstrapExecutorCaptureAsyncAttemptTime(t *testing.T) {
 	}
 }
 
+func TestBootstrapExecutorCaptureAsyncPTYLineEndings(t *testing.T) {
+	root, wf, tk, original, originalBytes, proof, terminal, auth := bootstrapAsyncEarlyReturnFixture(t, "pty-crcrlf")
+	assertAsyncAdmit(t, root, wf, tk, original, originalBytes, proof, terminal, auth)
+	// A genuine extra blank line must still break strict refusal adjacency.
+	pair := syntheticRealBootstrapPair(tk.Goal.GrokHome, tk.Goal.SandboxProfile)
+	if _, _, ok := realBootstrapRefusalPair(strings.ReplaceAll(pair, "\n", "\n\n")); ok {
+		t.Fatal("real blank line between refusal pair accepted")
+	}
+}
+
 func TestBootstrapExecutorCaptureAsyncAttemptTimeCandidateCLI(t *testing.T) {
+	testBootstrapExecutorCaptureAsyncCandidateCLI(t, "return-before-exit")
+}
+
+func TestBootstrapExecutorCaptureAsyncPTYCandidateCLI(t *testing.T) {
+	testBootstrapExecutorCaptureAsyncCandidateCLI(t, "pty-crcrlf")
+}
+
+func testBootstrapExecutorCaptureAsyncCandidateCLI(t *testing.T, variant string) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("real controlling-TTY command uses macOS script")
 	}
 	bin := resolveCardexCandidateBinary(t)
-	root, wf, tk, original, originalBytes, proof, _, auth := bootstrapAsyncEarlyReturnFixture(t, "return-before-exit")
+	root, wf, tk, original, originalBytes, proof, _, auth := bootstrapAsyncEarlyReturnFixture(t, variant)
 	args := []string{bin, "workflow", "goal-bootstrap-before-native-recovery", "-root", root, wf.ID, "-manual", "-authorization", auth,
 		"-executor-capture", proof.Path, "-executor-digest", proof.Digest, "-executor-call-id", proof.CallID}
 	quoted := make([]string, len(args))

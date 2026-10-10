@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -59,7 +60,11 @@ func newGrokCatalogFake(t *testing.T, catalogPath string, modelsExit int, models
 		"printf '\\n---\\n' >> " + shSingleQuote(productArgs) + "\n" +
 		"cat " + shSingleQuote(payload) + "\n" +
 		"exit 0\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+	// Prevent concurrent forks from inheriting a writable executable fixture.
+	syscall.ForkLock.RLock()
+	err := os.WriteFile(bin, []byte(script), 0o755)
+	syscall.ForkLock.RUnlock()
+	if err != nil {
 		t.Fatal(err)
 	}
 	return bin, productArgs, modelsArgs

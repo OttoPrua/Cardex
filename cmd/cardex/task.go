@@ -68,6 +68,8 @@ type RouteAttemptReadback struct {
 
 	// Grok-only diagnostic projection; absent for other providers and old records.
 	GrokDiagnostics *grokBuildDiagnostics `json:"grok_diagnostics,omitempty"`
+	// AGY-only safe diagnostic projection; absent for other providers and old records.
+	AntigravityDiagnostics *antigravityDiagnostics `json:"antigravity_diagnostics,omitempty"`
 }
 
 type Task struct {

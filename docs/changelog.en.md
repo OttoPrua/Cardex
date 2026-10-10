@@ -1,5 +1,11 @@
 # cardex changelog
 
+## 2026-10-11 · v0.10.36: AGY protocol and execution outcome handling
+
+- Correct AGY mode arguments and distinguish valid terminals, empty SUCCESS, required or optional denied actions, and real errors. Optional denial permits completion only when required artifacts and existing verification succeed; unknown, canceled or incomplete outcomes never authorize automatic replay.
+- Extract the small outcome decision function actually consumed by AGY and remove its superseded runner judgments. Preserve the existing state writer, task identities and observed usage; persist only bounded safe diagnostics.
+- Validate through real temporary Cardex CLI consumers, fake providers and counterexamples. No new successful paid AGY call is claimed. Production code is +849/-124, net +725; gross deletions include extracted or moved code. Grok adoption follows in the next batch.
+
 ## 2026-10-08 · v0.10.25: direction dispatch, overall acceptance and Goal completion
 
 - Add explicit `workflow fanout`, `accept` / `accept -complete`, `goal-round`, `goal-direction` and `goal-launch` commands. Execution directions consume completed design work; acceptance covers current members and candidate artifacts. A completed direction or round limit does not accept the overall goal. Ordinary `add` remains direct even with a saved Goal preference.

@@ -24,7 +24,17 @@ case "$beh" in
     sleep 300
     ;;
   slow)
-    sleep 1.2
+    if [ -n "${MOCK_SLOW_TRACE_DIR:-}" ]; then
+      python3 - "$MOCK_SLOW_TRACE_DIR/$$.json" <<'PYTRACE'
+import json,sys,time
+started=time.monotonic_ns()
+time.sleep(1.2)
+with open(sys.argv[1],"w") as out:
+    json.dump([started,time.monotonic_ns()],out)
+PYTRACE
+    else
+      sleep 1.2
+    fi
     echo '{"type":"result","subtype":"success","is_error":false,"result":"slow ok","session_id":"sess-'"$n"'","num_turns":3,"total_cost_usd":0.01,"duration_ms":1200,"usage":{"input_tokens":800,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}'
     ;;
   ok)

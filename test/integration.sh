@@ -380,11 +380,22 @@ echo "== 场景22: 只读审核卡与同仓写者并行（写者×2 仍串行由
 printf 'slow\nslow\n' > "$MOCK_DIR/plan"; echo 0 > "$MOCK_DIR/n"
 "$BIN" add -dir "$PROJ" -title par-writer -priority 2 "write work" >/dev/null
 "$BIN" add -dir "$PROJ" -type design-review -title par-review -priority 2 "review work" >/dev/null
-T0=$(python3 -c "import time;print(time.time())")
-"$BIN" run -quiet
-EL=$(python3 -c "import time,sys;print(time.time()-$T0)")
+TRACE_DIR="$TMP/review-overlap"
+mkdir -p "$TRACE_DIR"
+MOCK_SLOW_TRACE_DIR="$TRACE_DIR" "$BIN" run -quiet
 assert "同仓审核与写者都完成" "one(title='par-writer')['status']=='done' and one(title='par-review')['status']=='done'"
-python3 -c "import sys;sys.exit(0 if $EL < 2.2 else 1)" && echo "  ✔ 只读审核并行不受目录互斥（${EL%.*}s < 2.2s）" && pass=$((pass+1)) || { echo "  ✖ 审核被目录互斥挡住（耗时 ${EL}s）"; fail=$((fail+1)); }
+# Prove executor overlap directly; total runtime also includes scheduler/CI delays.
+if python3 - "$TRACE_DIR" <<'PYOVERLAP'
+import json,pathlib,sys
+intervals=[json.loads(p.read_text()) for p in pathlib.Path(sys.argv[1]).glob("*.json")]
+assert len(intervals)==2 and all(a < b for a,b in intervals), intervals
+assert max(a for a,b in intervals) < min(b for a,b in intervals), intervals
+PYOVERLAP
+then
+  echo "  ✔ 只读审核与写者的执行区间重叠"; pass=$((pass+1))
+else
+  echo "  ✖ 审核与写者未形成两个重叠的执行区间"; fail=$((fail+1))
+fi
 
 echo "== 场景23: emit 自造未知类型回退 sequence 并烘焙权限 =="
 printf 'coord_badtype\n' > "$MOCK_DIR/plan"; echo 0 > "$MOCK_DIR/n"

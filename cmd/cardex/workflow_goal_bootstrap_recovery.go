@@ -1676,6 +1676,8 @@ func extractExecutorBindingLine(output, key string) string {
 }
 
 func executorNormalizeOutput(s string) string {
+	// Nested PTY ONLCR processing can turn one CRLF into CRCRLF.
+	s = strings.ReplaceAll(s, "\r\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
 	return s

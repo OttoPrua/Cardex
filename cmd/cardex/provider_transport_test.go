@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -87,7 +88,7 @@ func TestAntigravityPreflightChoosesHighestActuallyAdvertisedOpus(t *testing.T) 
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "agy")
 	script := "#!/bin/sh\nprintf '%s\\n' 'claude-sonnet-4-6' 'claude-opus-4-6-thinking' 'claude-opus-4-10-thinking'\n"
-	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+	if err := writeProviderPreflightFixture(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cfg := defaultConfig("")
@@ -103,7 +104,7 @@ func TestAntigravityPreflightDoesNotFallBackToSonnet(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "agy")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nprintf '%s\\n' 'claude-sonnet-4-6'\n"), 0o755); err != nil {
+	if err := writeProviderPreflightFixture(bin, []byte("#!/bin/sh\nprintf '%s\\n' 'claude-sonnet-4-6'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	cfg := defaultConfig("")
@@ -144,7 +145,7 @@ func TestAntigravityCatalogAuthRecoveryIsOrderedAndTerminal(t *testing.T) {
 			dir := t.TempDir()
 			bin := filepath.Join(dir, "agy")
 			script := "#!/bin/sh\nprintf '%s' " + shSingleQuote(tc.stdout) + "\nprintf '%s' " + shSingleQuote(tc.stderr) + " >&2\nexit " + fmt.Sprint(tc.exit) + "\n"
-			if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+			if err := writeProviderPreflightFixture(bin, []byte(script), 0700); err != nil {
 				t.Fatal(err)
 			}
 			cfg := defaultConfig("")
@@ -162,7 +163,7 @@ func TestAntigravityCatalogTimeoutNeverAuthorizesCachedSuccess(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "agy")
 	script := "#!/bin/sh\nprintf '%s\\n' 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)'\nprintf '%s\\n' 'I0922 18:52:16.006284 1 server_oauth.go:201] OAuth: authenticated successfully as test@example.invalid' >&2\nexec sleep 5\n"
-	if err := os.WriteFile(bin, []byte(script), 0700); err != nil {
+	if err := writeProviderPreflightFixture(bin, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
 	cfg := defaultConfig("")
@@ -173,4 +174,12 @@ func TestAntigravityCatalogTimeoutNeverAuthorizesCachedSuccess(t *testing.T) {
 	if r.State == providerReady || r.SelectedModel != "" {
 		t.Fatal("timeout authorized a provider model")
 	}
+}
+
+// Keep concurrent forks from briefly inheriting a writable script descriptor:
+// Linux can otherwise reject the next exec with ETXTBSY before the mock runs.
+func writeProviderPreflightFixture(path string, data []byte, mode os.FileMode) error {
+	syscall.ForkLock.RLock()
+	defer syscall.ForkLock.RUnlock()
+	return os.WriteFile(path, data, mode)
 }

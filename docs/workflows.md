@@ -315,9 +315,13 @@ cardex workflow writer <id> -mode manual                 # 派唯一 Goal writer
 cardex workflow goal-run <id> -manual [-budget N]        # 前台启动交互式 Grok /goal（绑定 session 后才有效果）
 cardex workflow goal-sync <id>                           # 不启动 provider；核对原生证据并更新阶段事实
 cardex workflow design-result <id> -decision stop|input|successor -observation failed|paused|needs-input|budget_limited
-cardex workflow freeze-candidate <id> -commit C -tree T  # writer 终止后冻结精确字节
-cardex workflow review <id>                              # 派独立只读 reviewer，绑定该候选
-cardex workflow ingest-review <id>                       # 重新解析审核日志，记录 verdict 与 hold 原因
+cardex workflow freeze-candidate <id> -commit C -tree T  # 默认：writer 仍 live 或 held 时拒绝
+cardex workflow freeze-candidate <id> -commit C -tree T -retained-held-source
+                                                         # 显式：仅在原 attempt 已 closeout 且 process/lease/资源 custody 已释放后，冻结 held SOURCE；writer 保持 held/unknown，不把 budget_limited 制成 done
+cardex workflow review <id>                              # 派独立只读 reviewer，绑定该候选（仍要求 writer done）
+cardex workflow ingest-review <id>                       # 重新解析模型审核日志，记录 verdict 与 hold 原因
+cardex workflow ingest-external-review <id> -receipt FILE
+                                                         # 消费已完成的外部独立本地 manager 审核收据；不是 AUTHOR_ADVERSARIAL，也不伪造 typeReview/done
 cardex workflow repair <id>                              # 普通卡有界实现修复轮；Goal 卡拒绝并引导 design-result -decision revise
 cardex workflow design-repair <id> -design-receipt R  # 消费当前候选与审核结果，复用 workflow 轮次边界
 cardex workflow try-release-integration <id>             # 仅 admissible pass 才把集成卡转 queued
@@ -370,18 +374,20 @@ cardex workflow design-result <id> -design-receipt /absolute/path/to/fresh-desig
 
 预算与停止：provider token 预算是软的；Cardex `step_timeout_min`（以及卡上的 `hard_timeout_seconds`）才是硬截止。启动前绑定唯一 `session_id`。启动前崩溃保持 unstarted，可在同一 writer 上重试；启动后崩溃为 unknown，阻止再派发，也不会再 admit 第二个 writer。`goal-sync` 核对 session + `params.update.goal_id` + 当前 attempt/revision，并校验 summary `info.id`/`info.cwd`：原生 active → running；已验证 paused/needs-input → held 且同一 session 显式续跑；`status=complete` 且 `last_classifier_verdict=achieved`、进程/后代/lease 已释放、且存在精确 attempt 的 durable transition → done；真失败且 custody 在 → failed；`budget_limited`/`not_achieved`、TERM/丢失/缺终态/矛盾终态、截断 updates、或没有 `last_classifier_verdict=achieved` 的 fail-open complete → held unknown，不猜成功。原生 completed 但 TUI/后代/lease 仍在，只是观察，不是 accepted done。取消先撤销调度资格再停 provider；没有 stop 证据不得声称 canceled。重复 sync 幂等；陈旧 revision、别的 session/goal、旧 attempt 一律拒绝。
 
-一条走完设计审核的例子：`init -design-receipt` → `writer -mode manual` → `goal-run -manual` → 操作员 `/goal` → `goal-sync` 直到 done → `freeze-candidate` → `review` → `ingest-review`。若阶段是 failed/paused/needs-input/`budget_limited`：`design-result` 可 stop、要求 input，或打开一个 Goal 绑定的后继（paused/needs-input 用同 session `goal-run`，不是新 writer）。若审核 `concerns`/`block`：普通卡实现修复走 `repair`（受 `max-rounds` 约束）；Goal 卡的 `repair` 被拒绝，须走 `design-result -decision revise` 消费新鲜独立设计。需要新的独立设计节点时走 `design-repair`（受当前 workflow 轮次限制），新节点必须消费当前候选与审核结果。区分 **provider native goal**（Grok TUI `/goal`）、**阶段 Goal**（Task 上的绑定）和 **看板投影**（`boardgoal.go` 只读）。`try-release-integration` 仍然只在 admissible `pass` 时放行集成卡；live/cutover 另门。
+一条走完设计审核的例子：`init -design-receipt` → `writer -mode manual` → `goal-run -manual` → 操作员 `/goal` → `goal-sync` 直到 done → `freeze-candidate` → `review` → `ingest-review`。若阶段是 failed/paused/needs-input/`budget_limited`：`design-result` 可 stop、要求 input，或打开一个 Goal 绑定的后继（paused/needs-input 用同 session `goal-run`，不是新 writer）。若原生结果是 custody 已释放的 retained held SOURCE：显式 `freeze-candidate -retained-held-source`，再由不同 actor/session 的 manager 走 `ingest-external-review -receipt FILE`（Owner `local-integration`），然后 `try-release-integration`；不把 `budget_limited` 制成 done，也不走伪造的 typeReview。若审核 `concerns`/`block`：普通卡实现修复走 `repair`（受 `max-rounds` 约束）；Goal 卡的 `repair` 被拒绝，须走 `design-result -decision revise` 消费新鲜独立设计。需要新的独立设计节点时走 `design-repair`（受当前 workflow 轮次限制），新节点必须消费当前候选与审核结果。区分 **provider native goal**（Grok TUI `/goal`）、**阶段 Goal**（Task 上的绑定）和 **看板投影**（`boardgoal.go` 只读）。`try-release-integration` 仍然只在 admissible `pass` 时放行集成卡；live/cutover 另门。
 
 联邦模式只多一个 `-mode federated -parent <program-workflow-id>`：父记录必须已存在且可加载，否则 fail closed。`serial` 模式不接受 `-parent`。
 
 机器不变量：
 
 - **一个 writer、一个 reviewer**。writer 或 reviewer 还 live 时重放同一命令返回 duplicate role，不会派第二张卡。manager 重启后重放安全。
-- **候选必须先冻结**。writer 还 live 时 `freeze-candidate` 被拒；没有冻结候选时 `review` 被拒。
+- **候选必须先冻结**。默认 `freeze-candidate` 在 writer 仍 live **或 held** 时被拒（held 仍占用 writer 角色，避免重复派写者）。`-retained-held-source` 是显式例外：原 attempt 必须已有退出记录，且没有活进程、workspace lease 或未决/歧义资源主张；冻结后 writer 的 held/unknown/canceled 与历史 contract/revision/attempt/evidence 不变，`budget_limited` 不会被制成 achieved/`done`。没有冻结候选时 `review` 被拒。
+- **外部独立本地审核入口**。`ingest-external-review -receipt FILE` 绑定真实完成的独立 manager 审核：actor/session 必须与原作者不同，并钉住 writer/task/session/attempt/current revision、已关闭 custody、精确 commit/tree/owned paths/per-path digest、artifact 与 evidence 哈希，以及 Owner 的 `local-integration` 授权范围。收据是本地 manager 见证，**不**密码学验证 Human 身份。AUTHOR_ADVERSARIAL 与本卡作者自审不是独立审核。不发明新的 review actor，不伪造 typeReview/`done`/producer RESULT。模型审核路径（`review` + `ingest-review` + producer-bound RESULT）保持不变。
+- **释放时重新核验**。`try-release-integration` 与 tick 集成门每次从当前 source/artifact/evidence 字节和当前绑定身份重算；库存 pass 不能覆盖漂移。本地集成释放不等于 live/cutover（二者仍 held）。custody 已释放的 held 原 writer 不因其 held 状态挡住已放行的集成卡派发（live 写者互斥仍看 process/lease 证明）。
 - **reviewer 独立**：另一张 `design-review` 卡、`review_of` 指向 writer、无写域、`session_id` 清空、同一 writer 不得有第二个 active reviewer。
 - **引擎必须可钉定**。`-engine` 只接受 tick 能钉定且不会 fail-open 的执行器（`claude`、`codex`、`agy`、`opencode`、`kimi-cli`、`grok-build`、`cursor`，或 `config.engines` 里已配的引擎档案）。Gemini 已退休；留空或写未知/退休名字会被拒。
 - **有界轮次**。`max_rounds >= 1`。超轮不再派修复卡，记录转 `exhausted` 并写一条 Root 收据。修复轮会清空上一轮的候选、verdict 与集成门上的候选身份。
-- **写域跨记录互斥**。同一 Git identity 内的 exact/subtree 路径重叠、重复 lineage、以及**跨仓**共享的封闭资源都 fail closed。terminal 记录（`exhausted` / `owner_choice` / `external_blocked`）释放自己的 claim，后继模块才能接手。
+- **写域跨记录互斥**。同一 Git identity 内的 exact/subtree 路径重叠、重复 lineage、以及**跨仓**共享的封闭资源都 fail closed。terminal 记录（`exhausted` / `owner_choice` / `external_blocked` / `locally_integrated`）释放自己的 claim，后继模块才能接手。
 - **三道 effect gate 分离**。`integration` 可以被释放；`live` 与 `cutover` 在本树没有任何释放路径，手改记录会在加载时被拒。
 
 ### 耐久 manager hook 与 Root 通知
@@ -441,8 +447,23 @@ cardex workflow design-result <id> -design-receipt /absolute/path/to/fresh-desig
 - [ ] module integration、program integration、final review、live/cutover 是不同门；可写的 module-integrate 与 program-integrate 默认 `add -hold`，live/cutover 另作独立 held 门；审核卡 `done` 不是 `pass`，也不能自动对 live 执行 `cardex release`。审核终局只认 `pass|concerns|block`。
 - [ ] shared runtime/database/profile/manifest/device/credential/cutover 被显式串行。
 - [ ] receipt 明确 exact bytes、测试、review verdict、effects、rollback，以及 not-integrated/not-live 边界。
-- [ ] 用 `cardex workflow` 时：候选已 `freeze-candidate`、reviewer 由 `review` 而不是 `-review-after` 派出、`max-rounds` 有界、集成卡只经 `try-release-integration` 或 `cardex release` 放行，live/cutover 另有独立 held 卡。
+- [ ] 用 `cardex workflow` 时：候选已 `freeze-candidate`（held SOURCE 走显式 `-retained-held-source`）、独立审核来自 `review`/`ingest-review` 或已完成的 `ingest-external-review` 收据而不是 `-review-after`、`max-rounds` 有界、模型集成只经 `try-release-integration` 或 `cardex release` 放行；已授权的零 provider 人工采用使用 `record-local-integration` 记录实际结果，live/cutover 另有独立 held 卡。
 
 `goal-run -hosted` 是前台 supervisor，持续转发 PTY 输出，不会自行后台化。Hermes 等短时工具调用应使用已有受管后台任务（如 `terminal(background=true, notify=true)`），保留 session 并用 `process` 的 poll/wait 读取输出和退出结果。Cardex 内部硬期限仍有效；外层 foreground timeout 可先终止 supervisor。输出或 `/goal` 注入成功都不证明原生 Goal 已接受；超时后先由原 owner 核对进程、后代和 custody，不自动重试。
 
 未知执行结果不能通过 `accept` 或 `revise` 晋升。原 owner 核对并回收 custody 后，管理者可用新设计回执消费精确 task/session/attempt/revision，明确选择 `design-result -decision successor`；它只在既有轮次、路由和预算权限内退休旧写者并创建未启动的新写者，旧原生结果仍是 unknown。显式 sealed/no-successor 限制仍须由管理者遵守，不得把此命令当自动重试许可。
+
+
+### 零 provider 的人工本地采用
+
+当 Owner 明确授权人工本地采用时，先在指定目标仓实际采用已独立审核的精确文件，完成必要本地检查；集成占位卡保持 **held 且从未派发**。随后通过正式命令记录已发生的采用：
+
+```sh
+cardex workflow record-local-integration <id> -root <root> -receipt /absolute/adoption.json -target-repo /absolute/canonical/target-repository
+```
+
+不要先执行 `try-release-integration` 或 `cardex release`，二者会进入模型集成队列。新命令不会复制源码或调用模型，只重核证据后通过既有 terminal CAS 将占位卡记为真实人工采用的 `done`，workflow 为 `locally_integrated`，不可调度，live/cutover 保持 held。旧 writer/native held/unknown 证据不变。
+
+采用收据 schema 为 `cardex.workflow.manual_local_integration.v1`，method 为 `manual_local_integration`；包含 workflow_id、integration_task_id、integration_revision（采用前当前值）、真实 manager actor/session_id、target_repo、owner_authorization_scope=`local-integration`、owner_authorization_target_repo（须精确等于命令给定的 canonical 目标仓）、external_review_sha256（原审核收据的 SHA）、candidate_commit/tree。`file_sha256` 是每个实际采用普通文件的内容 SHA256，`file_git_modes` 对应 Git 的 `100644`/`100755`；精确覆盖已冻结 changed_paths 中的文件。提供非空真实采用产物 artifact_path/artifact_sha256、本地检查 checks_path/checks_sha256 和 checks_passed=true。所有证据路径为绝对路径，输入和目标只允许普通文件，目标文件及祖先不允许符号链接。
+
+这仍是本地经理对授权与身份的声明，不是对 Human 身份的密码学认证；经理须先核具体目标授权。错误目标、过期 revision、漂移、未实际采用、非普通文件和已派发/活跃占位卡会拒绝且不改状态。同一收据并发重放只生成一次 terminal；重放仍核实际字节及原审核。若 terminal 已提交但 workflow 投影失败，重放仅恢复精确匹配的原人工 terminal，不伪造 producer。`locally_integrated` 只释放当前 SOURCE claim，不等于运行时或用户路径验收。

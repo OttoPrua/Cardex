@@ -28,16 +28,17 @@ const (
 	workflowModeSerial    = "serial"
 	workflowModeFederated = "federated"
 
-	workflowStatusDesign          = "design"
-	workflowStatusWriting         = "writing"
-	workflowStatusReviewing       = "reviewing"
-	workflowStatusRepairing       = "repairing"
-	workflowStatusIntegrationHeld = "integration_held"
-	workflowStatusReviewPassed    = "review_passed"
-	workflowStatusIntegrating     = "integrating"
-	workflowStatusExhausted       = "exhausted"
-	workflowStatusExternalBlocked = "external_blocked"
-	workflowStatusOwnerChoice     = "owner_choice"
+	workflowStatusDesign            = "design"
+	workflowStatusWriting           = "writing"
+	workflowStatusReviewing         = "reviewing"
+	workflowStatusRepairing         = "repairing"
+	workflowStatusIntegrationHeld   = "integration_held"
+	workflowStatusReviewPassed      = "review_passed"
+	workflowStatusIntegrating       = "integrating"
+	workflowStatusLocallyIntegrated = "locally_integrated"
+	workflowStatusExhausted         = "exhausted"
+	workflowStatusExternalBlocked   = "external_blocked"
+	workflowStatusOwnerChoice       = "owner_choice"
 
 	effectGateHeld     = "held"
 	effectGateReleased = "released"
@@ -57,6 +58,17 @@ const (
 	holdReasonCandidateMismatch  = "candidate_mismatch"
 	holdReasonCustody            = "incomplete_custody"
 	holdReasonNoGate             = "no_integration_gate"
+	holdReasonSameAuthor         = "same_author"
+	holdReasonStaleRevision      = "stale_revision"
+	holdReasonMissingAuthority   = "missing_local_authority"
+	holdReasonEvidenceDrift      = "evidence_drift"
+	holdReasonAuthorAdversarial  = "author_adversarial_not_independent"
+
+	freezeKindRetainedHeldSource         = "retained_held_source"
+	reviewMethodExternalIndependentLocal = "external_independent_local"
+	ownerScopeLocalIntegration           = "local-integration"
+	externalIndependentReviewSchemaV1    = "cardex.workflow.external_independent_local_review.v1"
+	externalIndependentReviewMethod      = "external_independent_local_review"
 )
 
 var (
@@ -69,6 +81,7 @@ var (
 	errWorkflowRoundsExceeded = errors.New("workflow repair rounds exhausted")
 	errWorkflowParent         = errors.New("workflow parent binding")
 	errWorkflowCustody        = errors.New("workflow custody unresolved")
+	errWorkflowExternalReview = errors.New("workflow external independent review refused")
 )
 
 // IntegrationGate is a fail-closed dispatch latch carried on an integration
@@ -77,74 +90,94 @@ var (
 // matches the frozen candidate and passes the custody checks before the card
 // may leave `held`.
 type IntegrationGate struct {
-	WorkflowID      string `json:"workflow_id,omitempty"`
-	ReviewTaskID    string `json:"review_task_id,omitempty"`
-	WriterTaskID    string `json:"writer_task_id,omitempty"`
-	CandidateCommit string `json:"candidate_commit,omitempty"`
-	CandidateTree   string `json:"candidate_tree,omitempty"`
+	WorkflowID            string `json:"workflow_id,omitempty"`
+	ReviewTaskID          string `json:"review_task_id,omitempty"`
+	WriterTaskID          string `json:"writer_task_id,omitempty"`
+	CandidateCommit       string `json:"candidate_commit,omitempty"`
+	CandidateTree         string `json:"candidate_tree,omitempty"`
+	ReviewMethod          string `json:"review_method,omitempty"`
+	ExternalReceiptPath   string `json:"external_receipt_path,omitempty"`
+	ExternalReceiptSHA256 string `json:"external_receipt_sha256,omitempty"`
 }
 
 // WorkflowRecord is the durable module/program goal binding.
 type WorkflowRecord struct {
-	Schema             string                 `json:"schema"`
-	ID                 string                 `json:"id"`
-	Mode               string                 `json:"mode"`
-	ModuleID           string                 `json:"module_id"`
-	GoalID             string                 `json:"goal_id"`
-	Goal               string                 `json:"goal"`
-	ParentID           string                 `json:"parent_id,omitempty"`
-	Repo               string                 `json:"repo"`
-	Worktree           string                 `json:"worktree"`
-	WriteDomain        WriteDomain            `json:"write_domain"`
-	TerminalCriteria   string                 `json:"terminal_criteria"`
-	MaxRounds          int                    `json:"max_rounds"`
-	CurrentRound       int                    `json:"current_round"`
-	WriterEngine       string                 `json:"writer_engine"`
-	ReviewerEngine     string                 `json:"reviewer_engine"`
-	WriterTaskID       string                 `json:"writer_task_id,omitempty"`
-	ReviewerTaskID     string                 `json:"reviewer_task_id,omitempty"`
-	IntegrationTaskID  string                 `json:"integration_task_id,omitempty"`
-	Candidate          *WorkflowCandidate     `json:"candidate,omitempty"`
-	Review             *WorkflowReview        `json:"review,omitempty"`
-	EffectGates        WorkflowEffectGates    `json:"effect_gates"`
-	Progress           WorkflowProgressCoords `json:"progress"`
-	Status             string                 `json:"status"`
-	MaterialNotify     *WorkflowNotify        `json:"material_notify,omitempty"`
-	DesignLineage      *WorkflowDesignLineage `json:"design_lineage,omitempty"`
-	DesignSession      *PersistentSessionRef  `json:"design_session,omitempty"`
-	ManagerSession     *PersistentSessionRef  `json:"manager_session,omitempty"`
-	OwnerDesignEntry   *PersistentSessionRef  `json:"owner_design_entry,omitempty"`
-	DesignTaskID       string                 `json:"design_task_id,omitempty"`
-	DirectionTaskIDs   []string               `json:"direction_task_ids,omitempty"`
-	NativeGoalTaskIDs  []string               `json:"native_goal_task_ids,omitempty"`
-	AcceptanceTaskID   string                 `json:"acceptance_task_id,omitempty"`
-	AcceptanceCoverage string                 `json:"acceptance_coverage,omitempty"`
-	GoalCompleted      bool                   `json:"goal_completed,omitempty"`
-	CreatedAt          string                 `json:"created_at"`
-	UpdatedAt          string                 `json:"updated_at"`
+	Schema             string                    `json:"schema"`
+	ID                 string                    `json:"id"`
+	Mode               string                    `json:"mode"`
+	ModuleID           string                    `json:"module_id"`
+	GoalID             string                    `json:"goal_id"`
+	Goal               string                    `json:"goal"`
+	ParentID           string                    `json:"parent_id,omitempty"`
+	Repo               string                    `json:"repo"`
+	Worktree           string                    `json:"worktree"`
+	WriteDomain        WriteDomain               `json:"write_domain"`
+	TerminalCriteria   string                    `json:"terminal_criteria"`
+	MaxRounds          int                       `json:"max_rounds"`
+	CurrentRound       int                       `json:"current_round"`
+	WriterEngine       string                    `json:"writer_engine"`
+	ReviewerEngine     string                    `json:"reviewer_engine"`
+	WriterTaskID       string                    `json:"writer_task_id,omitempty"`
+	ReviewerTaskID     string                    `json:"reviewer_task_id,omitempty"`
+	IntegrationTaskID  string                    `json:"integration_task_id,omitempty"`
+	Candidate          *WorkflowCandidate        `json:"candidate,omitempty"`
+	Review             *WorkflowReview           `json:"review,omitempty"`
+	LocalIntegration   *WorkflowLocalIntegration `json:"local_integration,omitempty"`
+	EffectGates        WorkflowEffectGates       `json:"effect_gates"`
+	Progress           WorkflowProgressCoords    `json:"progress"`
+	Status             string                    `json:"status"`
+	MaterialNotify     *WorkflowNotify           `json:"material_notify,omitempty"`
+	DesignLineage      *WorkflowDesignLineage    `json:"design_lineage,omitempty"`
+	DesignSession      *PersistentSessionRef     `json:"design_session,omitempty"`
+	ManagerSession     *PersistentSessionRef     `json:"manager_session,omitempty"`
+	OwnerDesignEntry   *PersistentSessionRef     `json:"owner_design_entry,omitempty"`
+	DesignTaskID       string                    `json:"design_task_id,omitempty"`
+	DirectionTaskIDs   []string                  `json:"direction_task_ids,omitempty"`
+	NativeGoalTaskIDs  []string                  `json:"native_goal_task_ids,omitempty"`
+	AcceptanceTaskID   string                    `json:"acceptance_task_id,omitempty"`
+	AcceptanceCoverage string                    `json:"acceptance_coverage,omitempty"`
+	GoalCompleted      bool                      `json:"goal_completed,omitempty"`
+	CreatedAt          string                    `json:"created_at"`
+	UpdatedAt          string                    `json:"updated_at"`
 }
 
 // WorkflowCandidate is the frozen source identity a review is bound to.
 type WorkflowCandidate struct {
-	Commit       string   `json:"commit,omitempty"`
-	Tree         string   `json:"tree,omitempty"`
-	Branch       string   `json:"branch,omitempty"`
-	ChangedPaths []string `json:"changed_paths,omitempty"`
+	Commit       string            `json:"commit,omitempty"`
+	Tree         string            `json:"tree,omitempty"`
+	Branch       string            `json:"branch,omitempty"`
+	ChangedPaths []string          `json:"changed_paths,omitempty"`
+	PathDigests  map[string]string `json:"path_digests,omitempty"`
+	FreezeKind   string            `json:"freeze_kind,omitempty"`
 }
 
 // WorkflowReview is the machine-readable projection of one review terminal.
 // Admissible is only ever set from a re-derived parse plus custody checks.
 type WorkflowReview struct {
-	TaskID          string   `json:"task_id"`
-	Round           int      `json:"round"`
-	Verdict         string   `json:"verdict,omitempty"`
-	P0              []string `json:"p0,omitempty"`
-	P1              []string `json:"p1,omitempty"`
-	P2              []string `json:"p2,omitempty"`
-	Admissible      bool     `json:"admissible"`
-	CandidateCommit string   `json:"candidate_commit,omitempty"`
-	CandidateTree   string   `json:"candidate_tree,omitempty"`
-	HoldReason      string   `json:"hold_reason,omitempty"`
+	TaskID          string            `json:"task_id"`
+	Round           int               `json:"round"`
+	Verdict         string            `json:"verdict,omitempty"`
+	P0              []string          `json:"p0,omitempty"`
+	P1              []string          `json:"p1,omitempty"`
+	P2              []string          `json:"p2,omitempty"`
+	Admissible      bool              `json:"admissible"`
+	CandidateCommit string            `json:"candidate_commit,omitempty"`
+	CandidateTree   string            `json:"candidate_tree,omitempty"`
+	HoldReason      string            `json:"hold_reason,omitempty"`
+	Method          string            `json:"method,omitempty"`
+	Actor           string            `json:"actor,omitempty"`
+	SessionID       string            `json:"session_id,omitempty"`
+	AttemptID       string            `json:"attempt_id,omitempty"`
+	WriterTaskID    string            `json:"writer_task_id,omitempty"`
+	WriterSessionID string            `json:"writer_session_id,omitempty"`
+	WriterRevision  int64             `json:"writer_revision,omitempty"`
+	ArtifactPath    string            `json:"artifact_path,omitempty"`
+	ArtifactSHA256  string            `json:"artifact_sha256,omitempty"`
+	EvidenceSHA256  string            `json:"evidence_sha256,omitempty"`
+	ReceiptPath     string            `json:"receipt_path,omitempty"`
+	ReceiptSHA256   string            `json:"receipt_sha256,omitempty"`
+	OwnerScope      string            `json:"owner_scope,omitempty"`
+	PathDigests     map[string]string `json:"path_digests,omitempty"`
 }
 
 // WorkflowEffectGates keeps integration, live, and cutover as three separate
@@ -607,7 +640,7 @@ func loadWorkflows(root string, cfg *Config) ([]*WorkflowRecord, error) {
 // Terminal routes release the claim so a successor module can take the paths.
 func workflowClaimsActive(wf *WorkflowRecord) bool {
 	switch wf.Status {
-	case workflowStatusExhausted, workflowStatusOwnerChoice, workflowStatusExternalBlocked:
+	case workflowStatusExhausted, workflowStatusOwnerChoice, workflowStatusExternalBlocked, workflowStatusLocallyIntegrated:
 		return false
 	}
 	return true

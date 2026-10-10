@@ -11,7 +11,7 @@ import (
 
 func cmdWorkflow(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("用法: cardex workflow init|list|show|writer|fanout|accept|goal-round|goal-direction|goal-launch|goal-run|goal-bootstrap-before-native-recovery|goal-sync|goal-control|goal-observe|bind-session|design-request|design-collect|design-bind|design-result|design-repair|freeze-candidate|review|ingest-review|repair|try-release-integration|mark ...\n  goal-run <id> -manual|-hosted [-budget N] [-sandbox NAME]  # -sandbox selects an existing applicable Grok profile for this invocation only\n  goal-bootstrap-before-native-recovery <id> -authorization FILE -manual|-hosted [-executor-capture FILE -executor-digest SHA256 -executor-call-id CALL]  # explicit single-use authorization; sidecar-missing executor JSONL is optional manager-admitted proof; ordinary goal-run stays fail-closed")
+		return fmt.Errorf("用法: cardex workflow init|list|show|writer|fanout|accept|goal-round|goal-direction|goal-launch|goal-run|goal-bootstrap-before-native-recovery|goal-sync|goal-control|goal-observe|bind-session|design-request|design-collect|design-bind|design-result|design-repair|freeze-candidate|review|ingest-review|ingest-external-review|record-local-integration|repair|try-release-integration|mark ...\n  goal-run <id> -manual|-hosted [-budget N] [-sandbox NAME]  # -sandbox selects an existing applicable Grok profile for this invocation only\n  goal-bootstrap-before-native-recovery <id> -authorization FILE -manual|-hosted [-executor-capture FILE -executor-digest SHA256 -executor-call-id CALL]  # explicit single-use authorization; sidecar-missing executor JSONL is optional manager-admitted proof; ordinary goal-run stays fail-closed\n  freeze-candidate <id> -commit C -tree T [-retained-held-source]  # default refuses a live or held writer; -retained-held-source freezes a custody-released held SOURCE candidate without manufacturing done\n  ingest-external-review <id> -receipt FILE  # bind completed independent local manager review evidence; not AUTHOR_ADVERSARIAL and not a fake typeReview")
 	}
 	switch args[0] {
 	case "init":
@@ -60,6 +60,10 @@ func cmdWorkflow(args []string) error {
 		return cmdWorkflowReview(args[1:])
 	case "ingest-review":
 		return cmdWorkflowIngest(args[1:])
+	case "ingest-external-review":
+		return cmdWorkflowIngestExternal(args[1:])
+	case "record-local-integration":
+		return cmdWorkflowRecordLocalIntegration(args[1:])
 	case "repair":
 		return cmdWorkflowRepair(args[1:])
 	case "try-release-integration":
@@ -683,11 +687,12 @@ func cmdWorkflowFreeze(args []string) error {
 	tree := fs.String("tree", "", "候选 tree")
 	branch := fs.String("branch", "", "候选分支")
 	paths := fs.String("changed-paths", "", "逗号分隔 changed paths")
+	retainedHeld := fs.Bool("retained-held-source", false, "freeze a custody-released held SOURCE candidate; writer stays held/unknown")
 	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
 	root, cfg, wf, err := workflowTarget(fs, rootFlag,
-		"cardex workflow freeze-candidate <id> -commit C -tree T")
+		"cardex workflow freeze-candidate <id> -commit C -tree T [-retained-held-source]")
 	if err != nil {
 		return err
 	}
@@ -697,10 +702,56 @@ func cmdWorkflowFreeze(args []string) error {
 		Branch:       *branch,
 		ChangedPaths: splitComma(*paths),
 	}
-	if err := freezeWorkflowCandidate(root, cfg, wf, cand); err != nil {
+	if *retainedHeld {
+		if err := freezeRetainedHeldSourceCandidate(root, cfg, wf, cand); err != nil {
+			return err
+		}
+	} else if err := freezeWorkflowCandidate(root, cfg, wf, cand); err != nil {
 		return err
 	}
+	writerStatus := ""
+	if wf.WriterTaskID != "" {
+		if w, werr := findTaskAnywhere(root, wf.WriterTaskID); werr == nil && w != nil {
+			writerStatus = w.Status
+		}
+	}
+	kind := ""
+	if wf.Candidate != nil {
+		kind = wf.Candidate.FreezeKind
+	}
+	if kind == freezeKindRetainedHeldSource {
+		fmt.Printf("workflow %s 已冻结候选 commit=%s tree=%s freeze=%s writer=%s status=%s\n",
+			wf.ID, wf.Candidate.Commit, wf.Candidate.Tree, kind, orDash(wf.WriterTaskID), orDash(writerStatus))
+		return nil
+	}
 	fmt.Printf("workflow %s 已冻结候选 commit=%s tree=%s\n", wf.ID, wf.Candidate.Commit, wf.Candidate.Tree)
+	return nil
+}
+
+func cmdWorkflowIngestExternal(args []string) error {
+	fs := flag.NewFlagSet("workflow ingest-external-review", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	receipt := fs.String("receipt", "", "completed independent local manager review receipt (JSON)")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag,
+		"cardex workflow ingest-external-review <id> -receipt FILE")
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(*receipt) == "" {
+		return fmt.Errorf("%w: -receipt FILE is required", errWorkflowExternalReview)
+	}
+	if err := ingestExternalIndependentReview(root, cfg, wf, *receipt); err != nil {
+		return err
+	}
+	actor, session, verdict, hold := "", "", "", ""
+	if wf.Review != nil {
+		actor, session, verdict, hold = wf.Review.Actor, wf.Review.SessionID, wf.Review.Verdict, wf.Review.HoldReason
+	}
+	fmt.Printf("workflow %s status=%s verdict=%s method=external_independent_local actor=%s session=%s hold=%s integration=%s\n",
+		wf.ID, wf.Status, orDash(verdict), orDash(actor), orDash(session), orDash(hold), wf.EffectGates.Integration)
 	return nil
 }
 
@@ -807,5 +858,26 @@ func cmdWorkflowMark(args []string) error {
 		return err
 	}
 	fmt.Printf("workflow %s status=%s（已写 Root 通知 %s）\n", wf.ID, wf.Status, wf.MaterialNotify.Kind)
+	return nil
+}
+
+// cmdWorkflowRecordLocalIntegration records an already performed manual adoption;
+// unlike try-release-integration it never queues a provider job.
+func cmdWorkflowRecordLocalIntegration(args []string) error {
+	fs := flag.NewFlagSet("workflow record-local-integration", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	receipt := fs.String("receipt", "", "真实人工本地采用收据 JSON")
+	target := fs.String("target-repo", "", "已明确授权且实际采用的目标仓绝对路径")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow record-local-integration <id> -receipt FILE -target-repo ABS")
+	if err != nil {
+		return err
+	}
+	if err := recordManualLocalIntegration(root, cfg, wf, *receipt, *target); err != nil {
+		return err
+	}
+	fmt.Printf("workflow %s integration=locally_integrated task=%s provider_dispatches=0 live=%s cutover=%s\n", wf.ID, wf.IntegrationTaskID, wf.EffectGates.Live, wf.EffectGates.Cutover)
 	return nil
 }

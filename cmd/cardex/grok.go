@@ -2520,6 +2520,397 @@ func grokBuildResetEpoch(cfg *Config, res *claudeResult, combined string, now ti
 	return engineResetEpoch(combined+"\n"+resultText(res), scan, cfg, EngineProfile{LimitFallbackMin: fallback}, now)
 }
 
+func grokAttemptFacts(cfg *Config, t *Task) executionAttemptFacts {
+	maxAttempts := 0
+	if cfg != nil {
+		maxAttempts = cfg.MaxAttempts
+	}
+	if t != nil && t.MaxAttempts > 0 {
+		maxAttempts = t.MaxAttempts
+	}
+	attempts := 0
+	if t != nil {
+		attempts = t.Attempts
+	}
+	return executionAttemptFacts{Attempts: attempts, MaxAttempts: maxAttempts}
+}
+
+func grokUnknownShortCircuit(res *claudeResult, runErr error) bool {
+	if _, hold := grokBuildZeroEventProcessFailure(res, runErr); hold {
+		return true
+	}
+	if _, unknown := grokTerminalUnknownOutcome(res); unknown {
+		return true
+	}
+	if runErr != nil && runnerNativeTerminalValid(grokBuildRunnerName, res, nil) {
+		return true
+	}
+	return false
+}
+
+func grokCompleteZeroEventStreamIncomplete(res *claudeResult) bool {
+	return res != nil && res.ObservationComplete && res.Subtype == "grok_build_stream_incomplete" &&
+		res.SemanticEvents == 0 && res.ModelEvents == 0 && res.ToolEvents == 0
+}
+
+func observationFromGrok(t *Task, res *claudeResult, combined string, runErr error) executionObservation {
+	obs := executionObservation{}
+	if t != nil && t.Dir != "" {
+		files := nativeWorktreeRelFiles(t.Dir)
+		obs.WorkspaceHasDiff = nativeWorktreeHasDiff(t.Dir, files)
+	}
+	if res == nil {
+		obs.Incomplete = true
+		obs.Reason = "missing_result"
+		if runErr != nil {
+			obs.FailureClass = classifyFailure(runErr.Error(), combined, nil, runErr)
+		}
+		return obs
+	}
+	obs.Complete = res.ObservationComplete
+	obs.Incomplete = !res.ObservationComplete
+	obs.HasTerminal = res.TerminalEvents > 0
+	obs.ToolEvents = res.ToolEvents
+	obs.SemanticEvents = res.SemanticEvents
+	obs.ModelEvents = res.ModelEvents
+	switch res.Subtype {
+	case "grok_build_process_auth", "grok_build_process_auth_exact", "grok_build_auth_preflight",
+		"grok_build_auth_circuit_open":
+		obs.AuthFailed = true
+		obs.HasTerminal = true
+		obs.Reason = firstNonBlank(obs.Reason, "auth")
+	}
+	if grokBuildIndependentStdoutSuccess(res) && runErr == nil {
+		obs.SuccessStructure = true
+		obs.HasTerminal = true
+	}
+	if runErr != nil && runnerNativeTerminalValid(grokBuildRunnerName, res, nil) {
+		obs.Incomplete = true
+		obs.Complete = false
+		obs.SuccessStructure = false
+		obs.Reason = firstNonBlank(obs.Reason, "process_failure_after_native_terminal")
+	}
+	shortCircuit := grokUnknownShortCircuit(res, runErr)
+	if !shortCircuit && !obs.AuthFailed && isLimitHitGrokBuild(res, combined) {
+		obs.QuotaHit = true
+		obs.HasTerminal = true
+		obs.Reason = firstNonBlank(obs.Reason, "quota")
+	}
+	if grokCompleteZeroEventStreamIncomplete(res) && !obs.QuotaHit {
+		obs.Incomplete = obs.Incomplete || !obs.HasTerminal
+		obs.Reason = firstNonBlank(obs.Reason, "stream_incomplete")
+	}
+	if runErr != nil && !obs.QuotaHit && !obs.AuthFailed && !obs.SuccessStructure {
+		cls := classifyFailure(errorSummary(res, combined, runErr), combined, res, runErr)
+		obs.FailureClass = cls
+		if cls == failureTimeout || cls == failureExecutorCrash {
+			obs.Reason = firstNonBlank(obs.Reason, string(cls))
+		}
+	}
+	return obs
+}
+
+func grokImmediateUnknownHold(res *claudeResult, combined string, runErr error) bool {
+	if grokUnknownShortCircuit(res, runErr) {
+		return true
+	}
+	if grokCompleteZeroEventStreamIncomplete(res) {
+		if kind, ok := classifyPolicyFallbackFailure(grokBuildRunnerName, res, combined, runErr); !ok || kind != fallbackQuota {
+			return true
+		}
+	}
+	return false
+}
+
+func applyGrokExecutionDecision(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time) (cont, handled bool, err error) {
+	if t != nil && root != "" && diskCanceled(root, t.ID) {
+		return false, true, finalizeCanceled(root, t, lg)
+	}
+	if res != nil && res.IsError && res.Subtype == "grok_build_auth_circuit_open" {
+		return false, true, persistGrokAuthCircuit(root, t, res, lg)
+	}
+	obs := observationFromGrok(t, res, combined, runErr)
+	dec := decideExecutionOutcome(obs, grokAttemptFacts(cfg, t))
+	if grokImmediateUnknownHold(res, combined, runErr) {
+		return applyGrokUnknownHold(ctx, root, cfg, t, via, prompt, res, runErr, lg, now, dec)
+	}
+	switch dec.Kind {
+	case executionDecisionCancel:
+		return false, true, finalizeCanceled(root, t, lg)
+	case executionDecisionWaiting:
+		return false, true, nil
+	case executionDecisionSuccess:
+		if res != nil && res.SessionID != "" {
+			t.SessionID = res.SessionID
+		}
+		cont, err = finishProviderSuccess(ctx, root, cfg, t, via, prompt, res, lg, false, false, false, false, false, true, false, grokBuildRunnerName)
+		return cont, true, err
+	case executionDecisionHeld:
+		if obs.AuthFailed {
+			if res != nil {
+				applyProviderResultUsage(root, t, res)
+				if res.SessionID != "" {
+					t.SessionID = res.SessionID
+				}
+			}
+			if grokBuildExactAuthResult(res) && !classificationFromTranscript(res, runErr) {
+				setGrokBuildAuthCooldown(root, canonicalGrokBuildAuthReason(errorSummary(res, combined, runErr)), now)
+			}
+			msg := errorSummary(res, combined, runErr)
+			cls := dec.FailureClass
+			if cls == "" {
+				cls = failureAuth
+			}
+			return false, true, applyFailureDisposition(root, cfg, t, lg, msg, cls, now, false)
+		}
+	}
+	return false, false, nil
+}
+
+func applyGrokDeferredDisposition(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time) (cont, handled bool, err error) {
+	if t != nil && root != "" && diskCanceled(root, t.ID) {
+		return false, true, finalizeCanceled(root, t, lg)
+	}
+	obs := observationFromGrok(t, res, combined, runErr)
+	dec := decideExecutionOutcome(obs, grokAttemptFacts(cfg, t))
+	switch dec.Kind {
+	case executionDecisionCancel:
+		return false, true, finalizeCanceled(root, t, lg)
+	case executionDecisionSuccess:
+		if res != nil && res.SessionID != "" {
+			t.SessionID = res.SessionID
+		}
+		cont, err = finishProviderSuccess(ctx, root, cfg, t, via, prompt, res, lg, false, false, false, false, false, true, false, grokBuildRunnerName)
+		return cont, true, err
+	case executionDecisionLimitPause:
+		return false, true, pauseGrokBuildLimit(root, cfg, t, res, combined, lg, now)
+	case executionDecisionRetry, executionDecisionFailed, executionDecisionHeld:
+		return false, true, persistGrokFailureDisposition(root, cfg, t, res, combined, runErr, lg, now, dec)
+	default:
+		if runErr != nil || res == nil || res.IsError {
+			return false, true, persistGrokFailureDisposition(root, cfg, t, res, combined, runErr, lg, now, dec)
+		}
+		if res != nil && res.SessionID != "" {
+			t.SessionID = res.SessionID
+		}
+		cont, err = finishProviderSuccess(ctx, root, cfg, t, via, prompt, res, lg, false, false, false, false, false, true, false, grokBuildRunnerName)
+		return cont, true, err
+	}
+}
+
+func applyGrokUnknownHold(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, runErr error, lg *os.File, now time.Time, dec executionDecision) (cont, handled bool, err error) {
+	resRef := res
+	harvestHandled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &resRef, runErr, now, prompt, lg, false, false, false, false, false, true, false, "")
+	if harvestHandled {
+		if errors.Is(herr, errHarvestContinueLoop) {
+			return true, true, nil
+		}
+		return false, true, herr
+	}
+	if processClass, hold := grokBuildZeroEventProcessFailure(res, runErr); hold {
+		return false, true, persistGrokZeroEventProcessHold(root, t, res, lg, processClass)
+	}
+	if kind, unknown := grokTerminalUnknownOutcome(res); unknown {
+		return false, true, persistGrokTerminalUnknownHold(root, t, res, lg, kind)
+	}
+	if grokCompleteZeroEventStreamIncomplete(res) {
+		return false, true, holdNativeExecution(root, t, via, "stream_incomplete", "unknown_outcome")
+	}
+	if runErr != nil && runnerNativeTerminalValid(via, res, nil) {
+		return false, true, holdNativeExecution(root, t, via, "process_failure_after_native_terminal", "process_failure")
+	}
+	kind := dec.Reason
+	if kind == "" {
+		kind = "unknown_terminal"
+	}
+	class := string(dec.FailureClass)
+	if class == "" {
+		class = "unknown_outcome"
+	}
+	return false, true, holdNativeExecution(root, t, via, kind, class)
+}
+
+func persistGrokFailureDisposition(root string, cfg *Config, t *Task, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time, dec executionDecision) error {
+	if res != nil {
+		applyProviderResultUsage(root, t, res)
+		if res.SessionID != "" {
+			t.SessionID = res.SessionID
+		}
+	}
+	msg := errorSummary(res, combined, runErr)
+	cls := dec.FailureClass
+	if cls == "" {
+		cls = classifyFailure(msg, combined, res, runErr)
+	}
+	if t != nil && t.LastRouteAttempt != nil {
+		t.LastRouteAttempt.FailureClass = string(cls)
+	}
+	transcriptDerived := classificationFromTranscript(res, runErr)
+	if grokBuildExactAuthResult(res) && cls == failureAuth && !transcriptDerived {
+		setGrokBuildAuthCooldown(root, canonicalGrokBuildAuthReason(msg), now)
+	}
+	softenedFromTranscript := false
+	if policyFor(cls).Terminal != "" && transcriptDerived {
+		if lg != nil {
+			logBlock(lg, "CLASS_SOFTENED", fmt.Sprintf(
+				"[%s→retry_backoff] transcript 来源判据不落终态(would-be %s),降级现行 retry_backoff: %s",
+				cls, policyFor(cls).Terminal, msg))
+		}
+		softenedFromTranscript = true
+	}
+	return applyFailureDisposition(root, cfg, t, lg, msg, cls, now, softenedFromTranscript)
+}
+
+func persistGrokZeroEventProcessHold(root string, t *Task, res *claudeResult, lg *os.File, processClass string) error {
+	failureKind := res.Subtype
+	safeErr := failureKind
+	if strings.TrimSpace(res.Result) != "" {
+		safeErr += ": " + strings.TrimSpace(res.Result)
+	}
+	if t.LastRouteAttempt != nil {
+		t.LastRouteAttempt.FailureKind = failureKind
+		t.LastRouteAttempt.FailureClass = processClass
+	}
+	t.Status = statusHeld
+	t.LastError = "Grok zero-event process exit held: " + safeErr
+	t.touch()
+	if lg != nil {
+		logBlock(lg, "GROK_PROCESS_HELD", fmt.Sprintf(
+			"zero-event process exit held (class=%s, kind=%s, observation_complete=true)",
+			processClass, failureKind))
+	}
+	detail := map[string]any{
+		"reason": "grok_zero_event_process_exit_held", "err": safeErr,
+		"failure_class": processClass, "failure_kind": failureKind,
+		"observation_complete": true, "semantic_events": 0,
+		"model_events": 0, "tool_events": 0,
+	}
+	if res.ProcessStderrSHA256 != "" {
+		detail["stderr_bytes"] = res.ProcessStderrBytes
+		detail["stderr_sha256"] = res.ProcessStderrSHA256
+		detail["stderr_line_count_bucket"] = res.ProcessStderrLineCountBucket
+	}
+	return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:classifier", statusHeld, t.Step,
+		withCostTelemetry(withRouteAttempt(annotateHarvestHold(detail, t), t), t)))
+}
+
+func persistGrokTerminalUnknownHold(root string, t *Task, res *claudeResult, lg *os.File, kind fallbackFailureKind) error {
+	semanticEvents, modelEvents, toolEvents, observationComplete := 0, 0, 0, false
+	if res != nil {
+		semanticEvents = res.SemanticEvents
+		if res.NumTurns > semanticEvents {
+			semanticEvents = res.NumTurns
+		}
+		modelEvents = res.ModelEvents
+		toolEvents = res.ToolEvents
+		observationComplete = res.ObservationComplete
+	}
+	if t.LastRouteAttempt != nil {
+		t.LastRouteAttempt.FailureKind = string(kind)
+		t.LastRouteAttempt.FailureClass = "unknown_outcome"
+	}
+	t.Status = statusHeld
+	t.LastError = "Grok terminal unknown outcome held: " + string(kind)
+	t.touch()
+	if lg != nil {
+		logBlock(lg, "GROK_TERMINAL_HELD", fmt.Sprintf(
+			"unknown outcome held (kind=%s, observation_complete=%v, semantic=%d, model=%d, tools=%d)",
+			kind, observationComplete, semanticEvents, modelEvents, toolEvents))
+	}
+	return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:grok-build", statusHeld, t.Step,
+		withCostTelemetry(withRouteAttempt(annotateHarvestHold(map[string]any{
+			"reason": "grok_terminal_unknown_outcome_held", "reason_class": "unknown_outcome",
+			"failure_class": "unknown_outcome", "failure_kind": string(kind),
+			"observation_complete": observationComplete,
+			"semantic_events":      semanticEvents, "model_events": modelEvents, "tool_events": toolEvents,
+		}, t), t), t)))
+}
+
+func persistGrokAuthCircuit(root string, t *Task, res *claudeResult, lg *os.File) error {
+	if t.LastRouteAttempt != nil {
+		t.LastRouteAttempt.FailureClass = string(failureAuth)
+	}
+	t.Status = statusQueued
+	t.SessionID = ""
+	t.MidStep = false
+	t.ResumeAtEpoch = 0
+	t.NotBeforeEpoch = 0
+	t.LastError = "[auth] " + res.Result
+	t.touch()
+	cd := loadEngineCooldown(root, grokBuildCooldownName)
+	detail := map[string]any{"engine": grokBuildRunnerName, "reason": "auth_circuit_open",
+		"failure_class": string(failureAuth)}
+	if cd != nil {
+		detail["cooldown_until"] = cd.UntilEpoch
+	}
+	if err := persistTaskEvent(root, t, evRetry, "runner:grok-build", statusQueued, t.Step, withRouteAttempt(detail, t)); err != nil {
+		return finishIfStopped(err)
+	}
+	if lg != nil {
+		logBlock(lg, "AUTH_CIRCUIT", res.Result)
+	}
+	return nil
+}
+
+func pauseGrokBuildLimit(root string, cfg *Config, t *Task, res *claudeResult, combined string, lg *os.File, now time.Time) error {
+	if res != nil {
+		applyProviderResultUsage(root, t, res)
+		if res.SessionID != "" {
+			t.SessionID = res.SessionID
+		}
+	}
+	scan := grokBuildLimitScanText(res, combined)
+	until := grokBuildResetEpoch(cfg, res, combined, now)
+	reason := firstLine(strings.TrimSpace(scan))
+	if reason == "" {
+		reason = "Grok Build 用量限额"
+	}
+	setEngineCooldown(root, grokBuildCooldownName, until, reason)
+	t.Status = statusLimitPaused
+	t.ResumeAtEpoch = until
+	t.MidStep = t.SessionID != ""
+	if t.FreshSteps {
+		t.SessionID = ""
+		t.MidStep = false
+	}
+	t.LastError = "Grok Build 车道用量限额: " + reason
+	t.touch()
+	if lg != nil {
+		logBlock(lg, "LIMIT", fmt.Sprintf("Grok Build 车道命中限额，%s 后恢复（%s）\n%s",
+			fmtIn(until, now), fmtClock(until), reason))
+	}
+	return finishIfStopped(persistTaskEvent(root, t, evLimitPaused, "runner:grok-build", statusLimitPaused, t.Step, map[string]any{
+		"engine": grokBuildRunnerName, "resume_at": until, "mid_step": t.MidStep,
+	}))
+}
+
+// grokBuildZeroEventProcessFailure returns the closed, value-free process class only
+// when invokeGrokBuild proved a complete zero-work observation. These terminals are
+// actionable infrastructure/invocation failures, but none is safe to retry or route to
+// another writer automatically: the original process may have failed before Cardex could
+// prove whether provider-side work started.
+func grokBuildZeroEventProcessFailure(res *claudeResult, runErr error) (string, bool) {
+	if runErr == nil || res == nil || !res.IsError || !res.ObservationComplete ||
+		res.SemanticEvents != 0 || res.ModelEvents != 0 || res.ToolEvents != 0 ||
+		res.TerminalEvents != 0 || res.NumTurns != 0 {
+		return "", false
+	}
+	const prefix = "grok_build_process_"
+	class := strings.TrimPrefix(res.Subtype, prefix)
+	if class == res.Subtype {
+		return "", false
+	}
+	switch grokBuildProcessClass(class) {
+	case grokBuildProcessClassTransport,
+		grokBuildProcessClassPermissionEnvironment,
+		grokBuildProcessClassInvalidInvocation,
+		grokBuildProcessClassUnclassified:
+		return class, true
+	default:
+		return "", false
+	}
+}
+
 func firstPrinciplesReviewModel(cfg *Config) string {
 	if cfg != nil && cfg.GrokBuild != nil {
 		if model := strings.TrimSpace(cfg.GrokBuild.ReviewCodexModel); model != "" {

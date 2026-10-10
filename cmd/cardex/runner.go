@@ -1319,34 +1319,6 @@ func holdNativeExecution(root string, t *Task, via, kind, class string) error {
 		withCostTelemetry(withRouteAttempt(detail, t), t)))
 }
 
-// grokBuildZeroEventProcessFailure returns the closed, value-free process class only
-// when invokeGrokBuild proved a complete zero-work observation. These terminals are
-// actionable infrastructure/invocation failures, but none is safe to retry or route to
-// another writer automatically: the original process may have failed before Cardex could
-// prove whether provider-side work started. Keep this policy beside the runner decision
-// instead of smuggling a generic permission token through classifyFailure.
-func grokBuildZeroEventProcessFailure(res *claudeResult, runErr error) (string, bool) {
-	if runErr == nil || res == nil || !res.IsError || !res.ObservationComplete ||
-		res.SemanticEvents != 0 || res.ModelEvents != 0 || res.ToolEvents != 0 ||
-		res.TerminalEvents != 0 || res.NumTurns != 0 {
-		return "", false
-	}
-	const prefix = "grok_build_process_"
-	class := strings.TrimPrefix(res.Subtype, prefix)
-	if class == res.Subtype {
-		return "", false
-	}
-	switch grokBuildProcessClass(class) {
-	case grokBuildProcessClassTransport,
-		grokBuildProcessClassPermissionEnvironment,
-		grokBuildProcessClassInvalidInvocation,
-		grokBuildProcessClassUnclassified:
-		return class, true
-	default:
-		return "", false
-	}
-}
-
 func withRouteAttempt(detail map[string]any, t *Task) map[string]any {
 	if detail == nil {
 		detail = map[string]any{}
@@ -2098,6 +2070,15 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 				return aerr
 			}
 		}
+		if useGrokBuild {
+			cont, handled, gerr := applyGrokExecutionDecision(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now)
+			if handled {
+				if cont {
+					continue
+				}
+				return gerr
+			}
+		}
 		if frozenDispatchMode(t) != "" && useCodex && (res == nil || !res.ObservationComplete) {
 			if handled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
 				if errors.Is(herr, errHarvestContinueLoop) {
@@ -2108,7 +2089,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			return holdNativeExecution(root, t, via, "codex_stream_incomplete", "unknown_outcome")
 		}
 
-		if (useGrokBuild || useKimiCLI || useOpenCode) && runErr != nil && runnerNativeTerminalValid(via, res, nil) {
+		if (useKimiCLI || useOpenCode) && runErr != nil && runnerNativeTerminalValid(via, res, nil) {
 			kind := "process_failure_after_native_terminal"
 			if useKimiCLI {
 				kind = kimiCLIProcessFailureSubtype(runErr)
@@ -2136,108 +2117,6 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 					return herr
 				}
 				return holdNativeExecution(root, t, via, kind, "unknown_outcome")
-			}
-		}
-
-		// A non-zero Grok process exit with a complete zero-event observation has a closed,
-		// redacted subtype. Persist that exact class before the fallback and generic retry
-		// machinery: fabricating a permission token makes the ledger lie, while allowing the
-		// generic classifier to consume it schedules another writer. The same card is held,
-		// attempts stay unchanged, and the operator can act on the truthful process class.
-		if via == grokBuildRunnerName {
-			if processClass, hold := grokBuildZeroEventProcessFailure(res, runErr); hold {
-				if handled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
-					if errors.Is(herr, errHarvestContinueLoop) {
-						continue
-					}
-					return herr
-				}
-				failureKind := res.Subtype
-				safeErr := failureKind
-				if strings.TrimSpace(res.Result) != "" {
-					safeErr += ": " + strings.TrimSpace(res.Result)
-				}
-				if t.LastRouteAttempt != nil {
-					t.LastRouteAttempt.FailureKind = failureKind
-					t.LastRouteAttempt.FailureClass = processClass
-				}
-				t.Status = statusHeld
-				t.LastError = "Grok zero-event process exit held: " + safeErr
-				t.touch()
-				logBlock(lg, "GROK_PROCESS_HELD", fmt.Sprintf(
-					"zero-event process exit held (class=%s, kind=%s, observation_complete=true)",
-					processClass, failureKind))
-				detail := map[string]any{
-					"reason": "grok_zero_event_process_exit_held", "err": safeErr,
-					"failure_class": processClass, "failure_kind": failureKind,
-					"observation_complete": true, "semantic_events": 0,
-					"model_events": 0, "tool_events": 0,
-				}
-				if res.ProcessStderrSHA256 != "" {
-					detail["stderr_bytes"] = res.ProcessStderrBytes
-					detail["stderr_sha256"] = res.ProcessStderrSHA256
-					detail["stderr_line_count_bucket"] = res.ProcessStderrLineCountBucket
-				}
-				return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:classifier", statusHeld, t.Step,
-					withCostTelemetry(withRouteAttempt(annotateHarvestHold(detail, t), t), t)))
-			}
-		}
-
-		// Proved-complete metadata-only missing-end (0/0/0) cannot authorize fallback, but
-		// must not steal incomplete observation (runner:grok-build) or quota classification.
-		if useGrokBuild && res != nil && res.ObservationComplete && res.Subtype == "grok_build_stream_incomplete" &&
-			res.SemanticEvents == 0 && res.ModelEvents == 0 && res.ToolEvents == 0 {
-			if kind, ok := classifyPolicyFallbackFailure(via, res, combined, runErr); !ok || kind != fallbackQuota {
-				if handled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
-					if errors.Is(herr, errHarvestContinueLoop) {
-						continue
-					}
-					return herr
-				}
-				return holdNativeExecution(root, t, via, "stream_incomplete", "unknown_outcome")
-			}
-		}
-
-		// Grok stream_incomplete / invalid_terminal_result with semantic/model/tool activity (or an
-		// incomplete observation) is an unknown first outcome: hold the same card without attempts,
-		// requeue, resume, or serial fallback. Kind is taken from the parser subtype before any
-		// fallback/limit/classifier/retry path; competing diagnostics do not change the family. A
-		// proved complete 0/0/0/0 metadata-only terminal remains eligible for the bounded path below.
-		if via == grokBuildRunnerName {
-			if kind, unknown := grokTerminalUnknownOutcome(res); unknown {
-				if handled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &res, runErr, now, prompt, lg, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor, engineName); handled {
-					if errors.Is(herr, errHarvestContinueLoop) {
-						continue
-					}
-					return herr
-				}
-				semanticEvents, modelEvents, toolEvents, observationComplete := 0, 0, 0, false
-				if res != nil {
-					semanticEvents = res.SemanticEvents
-					if res.NumTurns > semanticEvents {
-						semanticEvents = res.NumTurns
-					}
-					modelEvents = res.ModelEvents
-					toolEvents = res.ToolEvents
-					observationComplete = res.ObservationComplete
-				}
-				if t.LastRouteAttempt != nil {
-					t.LastRouteAttempt.FailureKind = string(kind)
-					t.LastRouteAttempt.FailureClass = "unknown_outcome"
-				}
-				t.Status = statusHeld
-				t.LastError = "Grok terminal unknown outcome held: " + string(kind)
-				t.touch()
-				logBlock(lg, "GROK_TERMINAL_HELD", fmt.Sprintf(
-					"unknown outcome held (kind=%s, observation_complete=%v, semantic=%d, model=%d, tools=%d)",
-					kind, observationComplete, semanticEvents, modelEvents, toolEvents))
-				return finishIfStopped(persistTaskEvent(root, t, evHeld, "runner:grok-build", statusHeld, t.Step,
-					withCostTelemetry(withRouteAttempt(annotateHarvestHold(map[string]any{
-						"reason": "grok_terminal_unknown_outcome_held", "reason_class": "unknown_outcome",
-						"failure_class": "unknown_outcome", "failure_kind": string(kind),
-						"observation_complete": observationComplete,
-						"semantic_events":      semanticEvents, "model_events": modelEvents, "tool_events": toolEvents,
-					}, t), t), t)))
 			}
 		}
 
@@ -2394,6 +2273,16 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			}
 		}
 
+		if useGrokBuild {
+			cont, handled, gerr := applyGrokDeferredDisposition(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now)
+			if handled {
+				if cont {
+					continue
+				}
+				return gerr
+			}
+		}
+
 		// 1d) gemini 车道挂起（当日配额耗尽 / 认证资格错误）：只写 cooldown-gemini.json，
 		// **绝不写 claude 全局冷却**。Google 配额是账号级每日请求数——挂车道（而非像 codex
 		// 只挂本卡）防止队里 N 张 gemini 卡各撞一次白烧派发轮。认证错误（IneligibleTierError/
@@ -2448,32 +2337,6 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 				fmtIn(until, now), fmtClock(until), reason))
 			return finishIfStopped(persistTaskEvent(root, t, evLimitPaused, "runner:kimi-cli", statusLimitPaused, t.Step, map[string]any{
 				"engine": kimiCLIRunnerName, "resume_at": until, "mid_step": t.MidStep,
-			}))
-		}
-
-		// 1g) Grok Build 车道限额。策略卡的下一腿同样只能从统一证明闸进入；证明未通过
-		// 或人工钉定的 Grok 卡均留在本车道等待，避免任何无凭证重放。
-		if useGrokBuild && !remote && limitHitForRunner(via, remote, t, res, combined) {
-			scan := grokBuildLimitScanText(res, combined)
-			until := grokBuildResetEpoch(cfg, res, combined, now)
-			reason := firstLine(strings.TrimSpace(scan))
-			if reason == "" {
-				reason = "Grok Build 用量限额"
-			}
-			setEngineCooldown(root, grokBuildCooldownName, until, reason)
-			t.Status = statusLimitPaused
-			t.ResumeAtEpoch = until
-			t.MidStep = t.SessionID != ""
-			if t.FreshSteps {
-				t.SessionID = ""
-				t.MidStep = false
-			}
-			t.LastError = "Grok Build 车道用量限额: " + reason
-			t.touch()
-			logBlock(lg, "LIMIT", fmt.Sprintf("Grok Build 车道命中限额，%s 后恢复（%s）\n%s",
-				fmtIn(until, now), fmtClock(until), reason))
-			return finishIfStopped(persistTaskEvent(root, t, evLimitPaused, "runner:grok-build", statusLimitPaused, t.Step, map[string]any{
-				"engine": grokBuildRunnerName, "resume_at": until, "mid_step": t.MidStep,
 			}))
 		}
 
@@ -2639,32 +2502,6 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			}))
 		}
 
-		// Grok 认证熔断在首张卡已经留下 held 根因。并发派发中已经进入 runTask 的跟随卡只退回
-		// 原 Grok 队列等待，不再重复探针、不烧 attempts、更不能串行回退到另一 writer。
-		if useGrokBuild && res != nil && res.IsError && res.Subtype == "grok_build_auth_circuit_open" {
-			if t.LastRouteAttempt != nil {
-				t.LastRouteAttempt.FailureClass = string(failureAuth)
-			}
-			t.Status = statusQueued
-			t.SessionID = ""
-			t.MidStep = false
-			t.ResumeAtEpoch = 0
-			t.NotBeforeEpoch = 0
-			t.LastError = "[auth] " + res.Result
-			t.touch()
-			cd := loadEngineCooldown(root, grokBuildCooldownName)
-			detail := map[string]any{"engine": grokBuildRunnerName, "reason": "auth_circuit_open",
-				"failure_class": string(failureAuth)}
-			if cd != nil {
-				detail["cooldown_until"] = cd.UntilEpoch
-			}
-			if err := persistTaskEvent(root, t, evRetry, "runner:grok-build", statusQueued, t.Step, withRouteAttempt(detail, t)); err != nil {
-				return finishIfStopped(err)
-			}
-			logBlock(lg, "AUTH_CIRCUIT", res.Result)
-			return nil
-		}
-
 		// 2) 其他失败：CG-3 分类分流决定策略——认证/权限直接 held 升级人工；输入超长直接 failed
 		// 不重试；超时/执行器崩溃/未知类沿用现行 retry_backoff（回归基线：未知类的 last_error/事件
 		// 字段与旧版逐字节一致，只多一个 detail.failure_class 供审计聚合）。
@@ -2679,9 +2516,6 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			}
 			policy := policyFor(cls)
 			transcriptDerived := classificationFromTranscript(res, runErr)
-			if useGrokBuild && cls == failureAuth && !transcriptDerived && grokBuildExactAuthResult(res) {
-				setGrokBuildAuthCooldown(root, canonicalGrokBuildAuthReason(msg), now)
-			}
 			// 【P1 教训 · Round-3 复审】classifyFailure 只吃 msg 是第一道防线,但 msg 可能是
 			// invokeCodex/invokeRemoteCodex/invokeRemoteClaude 从 combined 挑走的 transcript 行,
 			// 或 errorSummary fallback 分支拼进的 firstLine(combined)——transcript 天然含分类正则

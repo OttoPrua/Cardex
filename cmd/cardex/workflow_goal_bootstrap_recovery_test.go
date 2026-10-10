@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -4240,6 +4241,105 @@ func TestBootstrapExecutorTerminalMissingOutputRefuses(t *testing.T) {
 	if _, err := executorRequireWriteStdinFirstTerminal(payload, 1); err == nil {
 		t.Fatal("missing output was treated as explicit empty terminal output")
 	}
+}
+
+func bootstrapAsyncEarlyReturnFixture(t *testing.T, variant string) (root string, wf *WorkflowRecord, tk *Task, original *AttemptRecord, originalBytes []byte, proof, terminal syntheticCodexExecutorResult, auth string) {
+	t.Helper()
+	root, _, wf, tk, original, originalBytes, _, _, _ = bootstrapAsyncExecutorFixture(t, "", syntheticWriteStdinOpts{})
+	created, err := parseExecutorTime(original.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := parseExecutorTime(original.UpdatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := syntheticCodexExecutorOpts{Attempt: original, ProcessID: syntheticAsyncHandle, GoalRunOmitExit: true, GoalRunSessionID: syntheticAsyncHandle,
+		RefusalLine:   syntheticRealBootstrapPair(tk.Goal.GrokHome, tk.Goal.SandboxProfile),
+		CallTimestamp: created.Add(-time.Second).Format(time.RFC3339Nano), ItemTimestamp: updated.Add(7 * time.Millisecond).Format(time.RFC3339Nano),
+		ReturnTimestamp: created.Add(updated.Sub(created) / 2).Format(time.RFC3339Nano)}
+	switch variant {
+	case "return-before-created":
+		opts.ReturnTimestamp = created.Add(-time.Millisecond).Format(time.RFC3339Nano)
+	case "call-after-created":
+		opts.CallTimestamp = created.Add(time.Millisecond).Format(time.RFC3339Nano)
+	case "metadata-before-exit":
+		opts.ItemTimestamp = updated.Add(-time.Millisecond).Format(time.RFC3339Nano)
+	case "metadata-after-wait":
+		opts.ItemTimestamp = updated.Add(time.Second).Format(time.RFC3339Nano)
+	case "late-unrelated-return":
+		opts.ReturnTimestamp = updated.Add(time.Hour).Format(time.RFC3339Nano)
+	}
+	proof = writeSyntheticCodexExecutorCaptureResult(t, tk, wf, opts)
+	records, err := splitExecutorJSONL(proof.Raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := executorString(executorPayload(records[1])["item"].(map[string]any)["aggregated_output"])
+	const end = "错误: exit status 1\n"
+	if !strings.HasSuffix(full, end) {
+		t.Fatal("synthetic aggregate lacks final error")
+	}
+	proof = syntheticExecutorOutputChannels(t, proof, map[string]any{"stdout": nil, "stderr": nil, "formatted_output": nil}, strings.TrimSuffix(full, end))
+	terminal = writeSyntheticWriteStdinTerminal(t, proof, original, syntheticWriteStdinOpts{FirstOutput: end})
+	auth = mintBootstrapBeforeNativeAuthorization(t, tk, wf, time.Time{})
+	bindAsyncAssociation(t, auth, proof, terminal, proof.Handle)
+	return
+}
+
+func TestBootstrapExecutorCaptureAsyncAttemptTime(t *testing.T) {
+	for _, variant := range []string{"return-before-exit", "return-before-created", "call-after-created", "metadata-before-exit", "metadata-after-wait", "late-unrelated-return"} {
+		t.Run(variant, func(t *testing.T) {
+			root, wf, tk, original, originalBytes, proof, terminal, auth := bootstrapAsyncEarlyReturnFixture(t, variant)
+			if variant == "return-before-exit" {
+				assertAsyncAdmit(t, root, wf, tk, original, originalBytes, proof, terminal, auth)
+			} else {
+				if err := runBootstrapRecoveryCLIWithExecutor(root, wf.ID, auth, proof.Path, proof.Digest, proof.CallID); err == nil {
+					t.Fatal("invalid async time accepted")
+				}
+				if countBootstrapConsumeEvents(t, root, tk.ID) != 0 {
+					t.Fatal("invalid async time consumed authorization")
+				}
+				assertOriginalAttemptUnchanged(t, root, tk.ID, original.AttemptID, originalBytes)
+			}
+		})
+	}
+}
+
+func TestBootstrapExecutorCaptureAsyncAttemptTimeCandidateCLI(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("real controlling-TTY command uses macOS script")
+	}
+	bin := resolveCardexCandidateBinary(t)
+	root, wf, tk, original, originalBytes, proof, _, auth := bootstrapAsyncEarlyReturnFixture(t, "return-before-exit")
+	args := []string{bin, "workflow", "goal-bootstrap-before-native-recovery", "-root", root, wf.ID, "-manual", "-authorization", auth,
+		"-executor-capture", proof.Path, "-executor-digest", proof.Digest, "-executor-call-id", proof.CallID}
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = shSingleQuote(arg)
+	}
+	cmd := exec.Command("script", "-q", "/dev/null", "/bin/sh", "-c", strings.Join(quoted, " ")+"; code=$?; printf '\\nCARDEX_BINARY_EXIT=%s\\n' \"$code\"; exit \"$code\"")
+	out, err := cmd.CombinedOutput()
+	t.Logf("candidate binary stdout and actual exit marker:\n%s", out)
+	if err != nil || !bytes.Contains(out, []byte("CARDEX_BINARY_EXIT=0")) {
+		t.Fatalf("actual candidate recovery: %v", err)
+	}
+	if countBootstrapConsumeEvents(t, root, tk.ID) != 1 {
+		t.Fatal("candidate recovery did not consume exactly once")
+	}
+	assertOriginalAttemptUnchanged(t, root, tk.ID, original.AttemptID, originalBytes)
+	stdout, stderr, code := runCardexBootstrapRecoveryProcess(t, bin, root, wf.ID, auth, "-executor-capture", proof.Path, "-executor-digest", proof.Digest, "-executor-call-id", proof.CallID)
+	t.Logf("same single-use authorization retry exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	if code == 0 || countBootstrapConsumeEvents(t, root, tk.ID) != 1 {
+		t.Fatal("candidate reused consumed authorization")
+	}
+	rootN, wfN, tkN, originalN, beforeN, proofN, _, authN := bootstrapAsyncEarlyReturnFixture(t, "metadata-after-wait")
+	stdout, stderr, code = runCardexBootstrapRecoveryProcess(t, bin, rootN, wfN.ID, authN, "-executor-capture", proofN.Path, "-executor-digest", proofN.Digest, "-executor-call-id", proofN.CallID)
+	t.Logf("invalid time actual binary exit=%d stdout=%s stderr=%s", code, stdout, stderr)
+	if code == 0 || countBootstrapConsumeEvents(t, rootN, tkN.ID) != 0 {
+		t.Fatal("candidate accepted invalid terminal time")
+	}
+	assertOriginalAttemptUnchanged(t, rootN, tkN.ID, originalN.AttemptID, beforeN)
 }
 
 func fakeGrokGoalBinRealPair(t *testing.T, exitCode int) string {

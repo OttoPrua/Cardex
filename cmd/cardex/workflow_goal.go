@@ -3199,6 +3199,14 @@ func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecor
 		return nil, fmt.Errorf("%w: duplicate/stale design result", errGoalDesignResult)
 	}
 	doneStage := t.Status == statusDone || currentObs == goalObsDone
+	if t.Status == statusCanceled && (decision == goalDecisionSuccessor || decision == goalDecisionRevise) {
+		terminal, err := loadTransition(root, t.ID, t.LastCommittedTransitionID)
+		if err != nil || terminal == nil || terminal.State != transitionCommitted ||
+			terminal.TaskID != t.ID || terminal.Status != statusCanceled || terminal.EventType != evCanceled ||
+			terminal.NewRevision != t.Revision || currentObs != goalObsCanceled || !t.Goal.StopEvidence {
+			return nil, fmt.Errorf("%w: canceled stage requires durable cancellation and stop evidence", errGoalDesignResult)
+		}
+	}
 	if decision == goalDecisionAccept || decision == goalDecisionSuccessor || decision == goalDecisionRevise {
 		if doneStage && (!taskDurablyDone(root, t) || currentObs != goalObsDone || !goalCustodyReleased(root, t)) {
 			return nil, fmt.Errorf("%w: completed stage requires durable terminal and released producer custody", errGoalDesignResult)
@@ -3280,7 +3288,9 @@ func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecor
 		if !doneStage && !goalCustodyReleased(root, t) {
 			return nil, fmt.Errorf("%w: cannot open a successor while custody is held", errGoalDesignResult)
 		}
-		if !doneStage && t.Status != statusFailed {
+		// A canceled producer is already terminal, possibly archived. Keep its
+		// cancellation evidence intact instead of rewriting it through tasks/.
+		if !doneStage && t.Status != statusFailed && t.Status != statusCanceled {
 			if t.ActiveAttemptID == "" && t.Goal.BoundAttemptID != "" {
 				t.ActiveAttemptID = t.Goal.BoundAttemptID
 			}

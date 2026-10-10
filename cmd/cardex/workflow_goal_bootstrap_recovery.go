@@ -1371,7 +1371,7 @@ func validateBootstrapExecutorCapture(raw []byte, admitted bootstrapExecutorCapt
 	if jsonlWriter != "" && writer != nil && jsonlWriter != strings.TrimSpace(writer.ID) {
 		return nil, bootstrapRecoveryRefused("wrong writer identity")
 	}
-	if err := validateExecutorAttemptTimestamps(records, rec); err != nil {
+	if err := validateExecutorAttemptTimestamps(records, rec, admitted.AssociationKind == bootstrapExecutorAsyncAssociation); err != nil {
 		return nil, err
 	}
 	if err := validateExecutorCaptureProvenance(raw, admitted); err != nil {
@@ -1990,7 +1990,7 @@ func executorRecordTimestamp(rec map[string]any) (time.Time, error) {
 	return parseExecutorTime(executorString(rec["timestamp"]))
 }
 
-func validateExecutorAttemptTimestamps(records []map[string]any, rec *AttemptRecord) error {
+func validateExecutorAttemptTimestamps(records []map[string]any, rec *AttemptRecord, async bool) error {
 	if rec == nil || len(records) < 3 {
 		return bootstrapRecoveryRefused("wrong attempt time")
 	}
@@ -2017,7 +2017,16 @@ func validateExecutorAttemptTimestamps(records []map[string]any, rec *AttemptRec
 	if retTs.Sub(updated) > 5*time.Second || callTs.Sub(created) > 5*time.Second {
 		return bootstrapRecoveryRefused("later executor event is not original capture")
 	}
-	if !callTs.Before(created) || updated.Before(created) || !updated.Before(termTs) || !termTs.Before(retTs) {
+	if !callTs.Before(created) || updated.Before(created) || !updated.Before(termTs) {
+		return bootstrapRecoveryRefused("wrong attempt time")
+	}
+	// An async return reports a running handle, not the terminal event. Its
+	// separately bound wait must follow it and return after the terminal event.
+	if async {
+		if !created.Before(retTs) {
+			return bootstrapRecoveryRefused("wrong attempt time")
+		}
+	} else if !termTs.Before(retTs) {
 		return bootstrapRecoveryRefused("wrong attempt time")
 	}
 	return nil
@@ -2388,9 +2397,13 @@ func validateExecutorWriteStdinTimestamps(original, later []map[string]any, rec 
 	if err != nil {
 		return bootstrapRecoveryRefused("missing executor timestamp")
 	}
+	termTs, err := executorRecordTimestamp(original[1])
+	if err != nil {
+		return bootstrapRecoveryRefused("missing executor timestamp")
+	}
 	// Stdout collection follows original event order: original return,
 	// then write_stdin call, then write_stdin return.
-	if !origRet.Before(callTs) || !callTs.Before(retTs) {
+	if !origRet.Before(callTs) || !callTs.Before(retTs) || !termTs.Before(retTs) {
 		return bootstrapRecoveryRefused("wrong attempt time")
 	}
 	return nil

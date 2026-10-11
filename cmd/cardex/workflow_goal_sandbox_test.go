@@ -445,6 +445,55 @@ func TestGoalRunSandboxSelectorRejectsBeforeEffect(t *testing.T) {
 	}
 }
 
+func TestGoalRunDirectoryGrantPreflight(t *testing.T) {
+	for _, field := range []string{"read_only", "read_write"} {
+		t.Run(field, func(t *testing.T) {
+			root, dir, argv, home, _, wf, tk, _ := setupInvocationSandboxLaunch(t)
+			material := filepath.Join(t.TempDir(), "stage.md")
+			if err := os.WriteFile(material, []byte("frozen material"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			profile := filepath.Join(home, "sandbox.toml")
+			if field == "read_write" {
+				writeGrokSandboxTOML(t, profile, testInvocationSandboxProfile, "workspace", []string{canonicalGitCommonDir(dir), material})
+			} else {
+				raw, err := os.ReadFile(profile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(profile, append(raw, []byte(fmt.Sprintf("read_only = [%q]\n", material))...), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := os.ReadFile(taskPath(root, tk.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			headlessGoalStdin(t)
+			err = cmdWorkflowGoalRun([]string{"-root", root, wf.ID, "-manual", "-sandbox", testInvocationSandboxProfile})
+			if !errors.Is(err, errGoalUnsupportedTuple) || !strings.Contains(err.Error(), "expects a directory, got a file") {
+				t.Fatalf("file grant must refuse before admission, got %v", err)
+			}
+			after, err := os.ReadFile(taskPath(root, tk.ID))
+			if err != nil || string(after) != string(before) {
+				t.Fatalf("task changed: %v", err)
+			}
+			if _, err := os.Stat(argv); !os.IsNotExist(err) {
+				t.Fatalf("provider was probed/launched: %v", err)
+			}
+			attempts, err := filepath.Glob(filepath.Join(attemptsDir(root, tk.ID), "*.json"))
+			if err != nil || len(attempts) != 0 {
+				t.Fatalf("attempt created: %v %v", attempts, err)
+			}
+		})
+	}
+	for _, field := range []string{"read_only", "read_write"} {
+		if _, err := normalizeLiteralGrants("valid", field, []string{t.TempDir()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestParseGrokSandboxTOMLRejectsUnsupportedSyntax(t *testing.T) {
 	t.Parallel()
 	if _, err := parseGrokSandboxTOML([]byte("[profiles.ok]\nunknown = true\n"), "f"); err == nil {

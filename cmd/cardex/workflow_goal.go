@@ -160,14 +160,18 @@ type TaskGoalBinding struct {
 	LaunchSandboxSelector string `json:"-"`
 	// RecoveryOriginalAttemptID and LaunchRemainingTimeout are invocation-scoped
 	// bootstrap-before-native recovery fields and are never persisted.
-	RecoveryOriginalAttemptID string        `json:"-"`
-	LaunchRemainingTimeout    time.Duration `json:"-"`
-	SandboxProfile            string        `json:"sandbox_profile,omitempty"`
-	SandboxProfileDigest      string        `json:"sandbox_profile_digest,omitempty"`
-	GitCommonDir              string        `json:"git_common_dir,omitempty"`
-	CardexRoot                string        `json:"cardex_root,omitempty"`
-	SandboxWorktree           string        `json:"sandbox_worktree,omitempty"`
-	LauncherSandbox           string        `json:"launcher_sandbox,omitempty"`
+	RecoveryOriginalAttemptID    string                          `json:"-"`
+	LaunchRemainingTimeout       time.Duration                   `json:"-"`
+	RecoveryLaunchProfileDigest  string                          `json:"recovery_launch_profile_digest,omitempty"`
+	RecoveryLaunchContractPath   string                          `json:"recovery_launch_contract_path,omitempty"`
+	RecoveryLaunchContractDigest string                          `json:"recovery_launch_contract_digest,omitempty"`
+	RecoveryLaunchAuthorization  *bootstrapRecoveryAuthorization `json:"-"`
+	SandboxProfile               string                          `json:"sandbox_profile,omitempty"`
+	SandboxProfileDigest         string                          `json:"sandbox_profile_digest,omitempty"`
+	GitCommonDir                 string                          `json:"git_common_dir,omitempty"`
+	CardexRoot                   string                          `json:"cardex_root,omitempty"`
+	SandboxWorktree              string                          `json:"sandbox_worktree,omitempty"`
+	LauncherSandbox              string                          `json:"launcher_sandbox,omitempty"`
 }
 
 // GoalCapability is owned by this adapter file. supported requires actual
@@ -1442,6 +1446,22 @@ func executeAdmittedGoalLaunch(root string, cfg *Config, wf *WorkflowRecord, t *
 		_ = abandonGoalLaunchUnstarted(root, cfg, t)
 		return err
 	}
+	if t.Goal.RecoveryLaunchContractPath != "" {
+		if t.Goal.RecoveryLaunchAuthorization == nil {
+			_ = abandonGoalLaunchUnstarted(root, cfg, t)
+			return bootstrapRecoveryRefused("missing invocation repair authorization")
+		}
+		if err := prepareBootstrapSandbox(root, wf, t, t.Goal.RecoveryLaunchAuthorization); err != nil {
+			_ = abandonGoalLaunchUnstarted(root, cfg, t)
+			return err
+		}
+		sum, _, err := fileSHA256Hex(t.Goal.RecoveryLaunchContractPath)
+		_, profile, _, profileErr := resolveExistingSandboxSelector(t, t.Goal.SandboxProfile)
+		if err != nil || sum != t.Goal.RecoveryLaunchContractDigest || profileErr != nil || profile != t.Goal.RecoveryLaunchProfileDigest {
+			_ = abandonGoalLaunchUnstarted(root, cfg, t)
+			return bootstrapRecoveryRefused("recovery launch materials/profile changed after admission")
+		}
+	}
 
 	if hook := goalLaunchBeforeStartHook; hook != nil {
 		if herr := hook(); herr != nil {
@@ -1453,6 +1473,12 @@ func executeAdmittedGoalLaunch(root string, cfg *Config, wf *WorkflowRecord, t *
 	timeout := time.Duration(t.Goal.HardTimeoutSec) * time.Second
 	if t.Goal != nil && t.Goal.LaunchRemainingTimeout > 0 {
 		timeout = t.Goal.LaunchRemainingTimeout
+		remaining, _, _, err := bootstrapRemainingTimeout(root, t, t.Goal.RecoveryOriginalAttemptID)
+		if err != nil {
+			_ = abandonGoalLaunchUnstarted(root, cfg, t)
+			return err
+		}
+		timeout = remaining
 	}
 	if timeout <= 0 && cfg != nil && cfg.StepTimeoutMin > 0 {
 		timeout = time.Duration(cfg.StepTimeoutMin) * time.Minute
@@ -1463,13 +1489,13 @@ func executeAdmittedGoalLaunch(root string, cfg *Config, wf *WorkflowRecord, t *
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	contractPath := filepath.Join(workflowsDir(root), wf.ID+".stage-contract.txt")
+	contractPath, contractDigest := goalLaunchContractReference(root, wf, t)
 	if hosted {
 		// Hosted PTY bytes are drained in runHostedGrokGoal
 		// (cmd/cardex/workflow_goal_host_unix.go). Feeding that stream into
 		// bootstrap-before-provider proof is an adjacent callsite outside this
 		// owned write domain; missing hosted capture refuses with no invented proof.
-		return runHostedGrokGoal(root, cfg, wf, t, ctx, args, grokHome, contractPath, t.Goal.InputDigest)
+		return runHostedGrokGoal(root, cfg, wf, t, ctx, args, grokHome, contractPath, contractDigest)
 	}
 
 	stdin := os.Stdin
@@ -2268,7 +2294,7 @@ func copyableNativeGoalCommand(contractPath, digest string, budget int64) string
 }
 
 func printManualGoalInstructions(root string, wf *WorkflowRecord, t *Task, contract, digest string) {
-	contractPath := filepath.Join(workflowsDir(root), wf.ID+".stage-contract.txt")
+	contractPath, digest := goalLaunchContractReference(root, wf, t)
 	fmt.Printf("session_id=%s bound before launch\n", t.SessionID)
 	fmt.Printf("stage_contract_path=%s\n", contractPath)
 	fmt.Printf("stage_contract_digest=%s\n", digest)
@@ -2384,6 +2410,15 @@ func matchFrozenGoalInputDigest(root string, wf *WorkflowRecord, t *Task) error 
 	}
 	if sha256Hex(string(raw)) != t.Goal.InputDigest {
 		return fmt.Errorf("%w: InputDigest mismatch for this native session/goal/input", errGoalSyncRejected)
+	}
+	if t.Goal.RecoveryLaunchContractPath != "" || t.Goal.RecoveryLaunchContractDigest != "" || t.Goal.RecoveryLaunchProfileDigest != "" {
+		if t.Goal.RecoveryLaunchContractPath == "" || t.Goal.RecoveryLaunchContractDigest == "" || t.Goal.RecoveryLaunchProfileDigest == "" {
+			return fmt.Errorf("%w: incomplete recovery launch input binding", errGoalSyncRejected)
+		}
+		launch, err := readRegularFileNoBlock(t.Goal.RecoveryLaunchContractPath)
+		if err != nil || sha256Hex(string(launch)) != t.Goal.RecoveryLaunchContractDigest {
+			return fmt.Errorf("%w: recovery launch contract missing or changed", errGoalSyncRejected)
+		}
 	}
 	return nil
 }

@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -2314,6 +2315,117 @@ func TestStageCandidateCLIHostedGoalCloseout(t *testing.T) {
 	if !recordedAttemptCloseout(root, got) {
 		t.Fatal("recordedAttemptCloseout must be true")
 	}
+}
+
+func TestBootstrapMaterialRecoveryCandidateCLI(t *testing.T) {
+	skipIfGoalPTYUnavailable(t)
+	bin := stageCandidateBin(t)
+	root, cfg, wf, tk, original, before, auth := bootstrapMaterialFixture(t)
+	worktree, err := filepath.EvalSymlinks(tk.Dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope := filepath.Join(worktree, ".cardex-stage", "bootstrap-launch-"+auth.consumeDigest()[:16]+".md")
+	inner := fakeHostedGrokBinNaturalComplete(t)
+	pythonPath := filepath.Join(filepath.Dir(inner), "grok.py")
+	body, err := os.ReadFile(pythonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	materialJSON, _ := json.Marshal(auth.SandboxRepair.Materials)
+	needle := `write_state("complete", "achieved", "goal_completed")`
+	checks := fmt.Sprintf("import hashlib\n            envelope_path = %q\n            if envelope_path not in line: sys.exit(41)\n            envelope_text = open(envelope_path).read()\n            for material in %s:\n                if material['source'] not in envelope_text or material['copy'] not in envelope_text: sys.exit(42)\n                if hashlib.sha256(open(material['copy'], 'rb').read()).hexdigest() != material['sha256']: sys.exit(43)\n            ", envelope, materialJSON)
+	if strings.Count(string(body), needle) != 1 {
+		t.Fatal("natural-complete fixture changed")
+	}
+	if err := os.WriteFile(pythonPath, []byte(strings.Replace(string(body), needle, checks+needle, 1)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	count := filepath.Join(t.TempDir(), "native-calls")
+	cfg.GrokBuildBin = countFakeHostedNativeBin(t, inner, count)
+	saveGoalCfg(t, root, cfg)
+	authPath := filepath.Join(t.TempDir(), "recovery.json")
+	raw, _ := json.Marshal(auth)
+	if err := os.WriteFile(authPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	args := []string{"workflow", "goal-bootstrap-before-native-recovery", wf.ID, "-root", root, "-hosted", "-authorization", authPath}
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.Dir = tk.Dir
+	cmd.Env = append(os.Environ(), "GROK_HOME="+tk.Goal.GrokHome)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("candidate recovery: %v\n%s", err, out)
+	}
+	after, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !taskDurablyDone(root, after) || after.ActiveAttemptID != "" || !after.Goal.CustodyReleased {
+		t.Fatalf("recovery did not close durably: %+v", after.Goal)
+	}
+	if after.Goal.SandboxProfileDigest != tk.Goal.SandboxProfileDigest || after.Goal.InputDigest != tk.Goal.InputDigest || after.Goal.RecoveryLaunchProfileDigest != auth.SandboxRepair.LaunchProfileDigest {
+		t.Fatal("original/launch bindings lost")
+	}
+	if !strings.Contains(string(out), copyableNativeGoalCommand(envelope, after.Goal.RecoveryLaunchContractDigest, after.Goal.BudgetTokens)) {
+		t.Fatal("printed recovery command does not bind actual envelope and digest")
+	}
+	calls, _ := os.ReadFile(count)
+	if string(calls) != "1" || countBootstrapConsumeEvents(t, root, tk.ID) != 1 {
+		t.Fatalf("native calls=%q", calls)
+	}
+	replay := exec.CommandContext(ctx, bin, args...)
+	replay.Dir = tk.Dir
+	if replayOut, err := replay.CombinedOutput(); err == nil || !strings.Contains(string(replayOut), "replayed authorization") {
+		t.Fatalf("replay: %v %s", err, replayOut)
+	}
+	calls, _ = os.ReadFile(count)
+	if string(calls) != "1" {
+		t.Fatal("replayed provider")
+	}
+	assertOriginalAttemptUnchanged(t, root, tk.ID, original.AttemptID, before)
+	envelopeBytes, err := os.ReadFile(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"changed", "missing"} {
+		if mode == "changed" {
+			err = os.WriteFile(envelope, []byte("changed launch input"), 0o600)
+		} else {
+			err = os.Remove(envelope)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		sync := exec.CommandContext(ctx, bin, "workflow", "goal-sync", wf.ID, "-root", root)
+		sync.Dir = tk.Dir
+		if output, err := sync.CombinedOutput(); err != nil {
+			t.Fatalf("candidate sync after %s: %v %s", mode, err, output)
+		}
+		got, err := loadTask(root, tk.ID)
+		if err != nil || got.Status != statusHeld || got.Goal.Observation != goalObsUnknown {
+			t.Fatalf("%s launch input accepted terminal: %+v err=%v", mode, got, err)
+		}
+		if err := os.WriteFile(envelope, envelopeBytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		sync = exec.CommandContext(ctx, bin, "workflow", "goal-sync", wf.ID, "-root", root)
+		sync.Dir = tk.Dir
+		if output, err := sync.CombinedOutput(); err != nil {
+			t.Fatalf("candidate sync after restoring original bytes: %v %s", err, output)
+		}
+		got, err = loadTask(root, tk.ID)
+		if err != nil || !taskDurablyDone(root, got) {
+			t.Fatalf("same bytes did not recover terminal: %+v err=%v", got, err)
+		}
+	}
+	calls, _ = os.ReadFile(count)
+	if string(calls) != "1" {
+		t.Fatal("sync invoked another provider")
+	}
+	t.Log("compiled hosted recovery read mapped copies; one native call, durable done, replay refused; goal-sync rejects changed/missing launch input and accepts restored exact bytes")
 }
 
 func TestHostedNaturalQuitBytesAreNotRelease(t *testing.T) {

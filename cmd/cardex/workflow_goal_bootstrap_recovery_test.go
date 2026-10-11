@@ -4308,6 +4308,105 @@ func TestBootstrapExecutorActualTruncatedCapture(t *testing.T) {
 	t.Log("read-only exact original capture accepted; no recovery ticket consumption or provider launch")
 }
 
+func TestDirectoryBootstrapRefusalBinding(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "stage.md")
+	profile := "material-profile"
+	pair := directoryBootstrapWarningPrefix + path + "\n" + realBootstrapErrorPrefix + profile + realBootstrapErrorSuffix
+	writer := &Task{Goal: &TaskGoalBinding{SandboxProfile: profile}}
+	for _, bad := range []string{
+		directoryBootstrapWarningPrefix + path,
+		strings.Replace(pair, path, "relative.md", 1),
+		strings.Replace(pair, "\n", "\nother output\n", 1),
+		pair + "\n" + pair,
+		pair + "\n" + realBootstrapWarningPrefix,
+		"Expected a directory but got a file: " + path,
+	} {
+		if _, ok := matchAcceptedBootstrapBeforeProviderRefusal(bad); ok {
+			t.Fatalf("accepted malformed refusal: %q", bad)
+		}
+	}
+	if got, ok := matchAcceptedBootstrapBeforeProviderRefusal(pair); !ok || got != pair {
+		t.Fatal("exact directory refusal not retained")
+	}
+	if err := bindRealBootstrapPairToGoal(pair, writer); err != nil {
+		t.Fatal(err)
+	}
+	if err := bindRealBootstrapPairToGoal(strings.ReplaceAll(pair, profile, "other"), writer); err == nil {
+		t.Fatal("wrong profile accepted")
+	}
+	output := "sandbox_profile: " + profile + "\n" + pair
+	if err := validateRealBootstrapRefusalBinding(output, "cardex workflow goal-run wf -sandbox "+profile, writer); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateRealBootstrapRefusalBinding(output, "cardex workflow goal-run wf -sandbox other", writer); err == nil {
+		t.Fatal("wrong command sandbox accepted")
+	}
+	if err := validateRealBootstrapRefusalBinding(pair, "cardex workflow goal-run wf", writer); err == nil {
+		t.Fatal("missing profile metadata accepted")
+	}
+}
+
+// Opt-in, read-only validation of the retained original launcher records.
+// The metadata file is not a recovery authorization and cannot launch a model.
+func TestBootstrapExecutorActualDirectoryCapture(t *testing.T) {
+	meta := os.Getenv("CARDEX_BOOTSTRAP_DIRECTORY_CAPTURE_META")
+	if meta == "" {
+		t.Skip("optional retained directory-refusal capture check")
+	}
+	rawMeta, err := os.ReadFile(meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m struct {
+		Root, Task, Attempt string
+		Capture             bootstrapExecutorCaptureAdmitted
+	}
+	if err := json.Unmarshal(rawMeta, &m); err != nil {
+		t.Fatal(err)
+	}
+	tk, err := loadTask(m.Root, m.Task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := loadAttempt(m.Root, m.Task, m.Attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(m.Capture.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := validateBootstrapExecutorCapture(raw, m.Capture, rec, tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.ExitCode != 1 || !strings.Contains(proof.Output, directoryBootstrapWarningPrefix) {
+		t.Fatal("not the exact directory refusal")
+	}
+	if err := proveBootstrapBeforeNative(m.Root, tk, m.Capture); err != nil {
+		t.Fatal(err)
+	}
+	if proposed := os.Getenv("CARDEX_BOOTSTRAP_PROPOSED_SANDBOX"); proposed != "" {
+		raw, err := os.ReadFile(proposed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		profiles, err := parseGrokSandboxTOML(raw, proposed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		def, ok := profiles[tk.Goal.SandboxProfile]
+		if !ok {
+			t.Fatal("proposed profile name missing")
+		}
+		if err := applyExistingSandboxProfileRules(def, tk.Dir, canonicalGitCommonDir(tk.Dir)); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("proposed profile passes directory preflight without applying it; launch_profile_digest=%s", profileDigest(def))
+	}
+	t.Log("original call/return/completion capture, closed custody and absence of native execution validated without admission, ticket consumption or provider launch")
+}
+
 func TestBootstrapExecutorCaptureAsyncAggregatedOnly(t *testing.T) {
 	for _, name := range []string{"complete-initial", "complete-initial-tampered-terminal", "incremental-terminal", "tampered-terminal", "wrong-handle", "wrong-return", "wrong-time"} {
 		t.Run(name, func(t *testing.T) {
@@ -4435,6 +4534,54 @@ func TestBootstrapExecutorCaptureAsyncAttemptTime(t *testing.T) {
 					t.Fatal("invalid async time consumed authorization")
 				}
 				assertOriginalAttemptUnchanged(t, root, tk.ID, original.AttemptID, originalBytes)
+			}
+		})
+	}
+}
+
+func TestBootstrapStartupTerminalCaptureBoundaries(t *testing.T) {
+	for _, name := range []string{"original-order", "wrong-source", "wrong-handle", "extra-tail", "late-terminal", "wrong-profile"} {
+		t.Run(name, func(t *testing.T) {
+			_, _, tk, attempt, _, proof, _, _ := bootstrapAsyncEarlyReturnFixture(t, "return-before-exit")
+			records, err := splitExecutorJSONL(proof.Raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := executorCommandItem(records[1])
+			item["source"] = "unified_exec_startup"
+			switch name {
+			case "wrong-source":
+				item["source"] = "unrelated"
+			case "wrong-handle":
+				item["process_id"] = "999999"
+			case "extra-tail":
+				item["aggregated_output"] = executorString(item["aggregated_output"]) + "provider executed\n"
+			case "late-terminal":
+				updated, _ := parseExecutorTime(attempt.UpdatedAt)
+				records[1]["timestamp"] = updated.Add(time.Minute).Format(time.RFC3339Nano)
+			case "wrong-profile":
+				tk.Goal.SandboxProfile = "different"
+			}
+			var b bytes.Buffer
+			enc := json.NewEncoder(&b)
+			for _, index := range []int{0, 2, 1} {
+				if err := enc.Encode(records[index]); err != nil {
+					t.Fatal(err)
+				}
+			}
+			raw := b.Bytes()
+			path := filepath.Join(t.TempDir(), "chronological.jsonl")
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			admitted := bootstrapExecutorCaptureAdmitted{Path: path, Digest: sha256Hex(string(raw)), CallID: proof.CallID, ItemID: proof.ItemID, ReturnID: proof.ReturnID, Provenance: writeSyntheticExecutorProvenance(t, raw, proof), SessionID: tk.SessionID, ContractDigest: tk.Goal.InputDigest, ProfileDigest: tk.Goal.SandboxProfileDigest, TaskID: tk.ID, AttemptID: attempt.AttemptID}
+			_, err = validateBootstrapExecutorCapture(raw, admitted, attempt, tk)
+			if name == "original-order" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil {
+				t.Fatal("invalid startup terminal accepted")
 			}
 		})
 	}

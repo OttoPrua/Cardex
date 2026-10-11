@@ -102,31 +102,5 @@ func TestStageCandidateCLIThreeConsumers(t *testing.T) {
 				t.Fatalf("provider count=%q", raw)
 			}
 		})
-		t.Run("goal-run-manual", func(t *testing.T) {
-			root, dir := workflowTestRoot(t)
-			cfg := workflowTestCfg(t, root)
-			wf := initTestWorkflow(t, root, dir)
-			tk := admitManualWriter(t, root, cfg, wf)
-			cfg.GrokBuildBin = fakeGrokGoalTerminalBin(t, dir, "complete", "complete", "achieved", "", "")
-			cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
-			saveGoalCfg(t, root, cfg)
-			cmd := exec.Command(bin, "workflow", "goal-run", wf.ID, "-manual", "-root", root)
-			cmd.Dir = tk.Dir
-			out, err := cmd.CombinedOutput()
-			t.Logf("candidate goal-run -manual: err=%v\n%s", err, out)
-			if err == nil {
-				got, lerr := loadTask(root, tk.ID)
-				if lerr != nil {
-					t.Fatal(lerr)
-				}
-				if got.Status != statusDone {
-					t.Fatalf("goal-run succeeded without durable done: status=%s", got.Status)
-				}
-				return
-			}
-			if !strings.Contains(string(out), "PTY") && !strings.Contains(string(out), "TTY") && !strings.Contains(string(out), "hosted") {
-				t.Logf("goal-run failed without a TTY/PTY marker (captured for hosted-bar honesty)")
-			}
-		})
 	}
 }

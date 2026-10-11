@@ -1423,7 +1423,12 @@ func TestRunTaskGrokScannerOverflowRemainsFailClosed(t *testing.T) {
 
 func TestCardexReleaseIdentity(t *testing.T) {
 	t.Parallel()
-	if version != "0.10.40" {
-		t.Fatalf("release identity %q want 0.10.40", version)
+	bin := buildCardexCLI(t)
+	want := "cardex " + version + "\n"
+	for _, arg := range []string{"version", "-v", "--version"} {
+		out, err := exec.Command(bin, arg).CombinedOutput()
+		if err != nil || string(out) != want {
+			t.Fatalf("%s: output %q, error %v; want %q", arg, out, err, want)
+		}
 	}
 }

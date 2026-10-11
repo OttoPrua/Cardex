@@ -142,11 +142,29 @@ func TestNativeCompletionProcessAndConsumer(t *testing.T) {
 			})
 			t.Run("ordinary task needs no artifact", func(t *testing.T) {
 				t.Parallel()
-				_, _, got := runNativeCompletionTask(t, via, nativeCompletionPayload(via, ""), typeSequence, 0)
+				body := ""
+				if via == grokBuildRunnerName {
+					// No review artifact is required, but an empty Grok result is
+					// unknown under the shared outcome contract, not successful work.
+					body = "synthetic task completed"
+				}
+				_, _, got := runNativeCompletionTask(t, via, nativeCompletionPayload(via, body), typeSequence, 0)
 				if got.Status != statusDone || got.Step != 1 || got.ReviewOutput != nil {
 					t.Fatalf("normal no-artifact task must complete: %+v", got)
 				}
 			})
+			if via == grokBuildRunnerName {
+				t.Run("empty output stays held without replay", func(t *testing.T) {
+					t.Parallel()
+					// Keep the previous empty-payload case, including its nonzero
+					// turn counters: counters alone do not establish a result.
+					root, _, got := runNativeCompletionTask(t, via, nativeCompletionPayload(via, ""), typeSequence, 0)
+					assertNativeHeldWithoutReplay(t, root, got)
+					if got.ReviewOutput != nil {
+						t.Fatal("empty result supplied an artifact")
+					}
+				})
+			}
 			t.Run("process fails after native terminal", func(t *testing.T) {
 				t.Parallel()
 				root, _, got := runNativeCompletionTask(t, via, payload, typeReview, 7)

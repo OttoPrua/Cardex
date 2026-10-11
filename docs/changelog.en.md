@@ -4,7 +4,7 @@
 
 - Consolidate ordinary Grok result decisions and persistence through the shared disposition path, removing replaced runner branches. Native Goal and hosted state machines, process identity, and permission boundaries remain intact.
 - Hold incomplete or unknown outcomes without false success or automatic retry; preserve structured input-too-long and permission-denied classifications. Quota stops retain partial work and observed usage; fallback still requires the existing evidence.
-- Validate with a real temporary Cardex CLI, fake providers, process boundaries, and independent counterexamples. Production changes are +388/-186, net +202; tests add 545 lines. Gross deletions include moved code and do not establish net slimming. No additional live paid Grok probe was made.
+- Validate with a real temporary Cardex CLI, fake providers, process boundaries, and independent counterexamples. Production changes are +388/-186, net +202; R06 source tests add 545 lines. Release checks also separate ordinary tasks needing no review artifact from empty results staying held. Gross deletions include moved code and do not establish net slimming. No additional live paid Grok probe was made.
 
 ## 2026-10-11 · v0.10.36: AGY protocol and execution outcome handling
 

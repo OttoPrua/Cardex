@@ -4181,6 +4181,133 @@ func TestBootstrapExecutorCaptureAggregatedOnlyChannels(t *testing.T) {
 	}
 }
 
+func TestBootstrapExecutorTruncatedContractDisplay(t *testing.T) {
+	for _, name := range []string{"valid", "missing-metadata", "wrong-count", "wrong-visible", "prefix-only", "multiple-markers", "hidden-provider", "hidden-refusal", "contract-drift", "wrong-command", "wrong-call"} {
+		t.Run(name, func(t *testing.T) {
+			root, _, wf, tk, attempt, _ := bootstrapBeforeNativeFixture(t)
+			contract := "frozen contract\n" + strings.Repeat("retained source and acceptance\n", 40)
+			tk.Goal.CardexRoot, tk.Goal.InputDigest = root, sha256Hex(contract)
+			if err := writeGoalStageContract(root, wf.ID, contract); err != nil {
+				t.Fatal(err)
+			}
+			res := writeSyntheticCodexExecutorCaptureResult(t, tk, wf, syntheticCodexExecutorOpts{Attempt: attempt})
+			records, err := splitExecutorJSONL(res.Raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := executorCommandItem(records[1])
+			original := executorNormalizeOutput(executorString(item["aggregated_output"]))
+			full := original + contract
+			begin, end := len(original)+20, len(full)-20
+			if name == "hidden-provider" {
+				full = full[:begin] + "{\"type\":\"assistant\",\"content\":\"provider executed\"}\n" + full[begin:]
+				end += 60
+			}
+			if name == "hidden-refusal" {
+				begin, end = 0, len(original)
+			}
+			shown := fmt.Sprintf("Warning: truncated output (original token count: 1000)\nTotal output lines: %d\n\n", strings.Count(full, "\n")) + full[:begin] + "…500 tokens truncated…" + full[end:]
+			switch name {
+			case "wrong-count":
+				shown = strings.Replace(shown, "Total output lines:", "Total output lines: 999", 1)
+			case "wrong-visible":
+				shown += "forged suffix"
+			case "prefix-only":
+				shown = full[:begin]
+			case "multiple-markers":
+				shown += "…1 tokens truncated…"
+			case "contract-drift":
+				tk.Goal.InputDigest = sha256Hex("different")
+			case "wrong-command":
+				item["command"] = []any{"/bin/zsh", "-lc", "cardex workflow goal-run wf-wrong -manual"}
+			case "wrong-call":
+				executorPayload(records[0])["call_id"] = "wrong"
+			}
+			item["stdout"], item["aggregated_output"], item["formatted_output"], item["stderr"] = full, full, full, ""
+			payload := executorPayload(records[2])
+			chunks := executorOutputChunks(payload)
+			for i := len(chunks) - 1; i >= 0; i-- {
+				var obj map[string]any
+				if json.Unmarshal([]byte(executorString(chunks[i]["text"])), &obj) != nil {
+					continue
+				}
+				if _, ok := executorJSONInt(obj["exit_code"]); !ok {
+					continue
+				}
+				obj["output"], obj["original_token_count"] = shown, 1000
+				if name == "missing-metadata" {
+					delete(obj, "original_token_count")
+				}
+				b, _ := json.Marshal(obj)
+				chunks[i]["text"] = string(b)
+				break
+			}
+			var buf bytes.Buffer
+			enc := json.NewEncoder(&buf)
+			for _, r := range records {
+				if err := enc.Encode(r); err != nil {
+					t.Fatal(err)
+				}
+			}
+			raw := buf.Bytes()
+			path := filepath.Join(t.TempDir(), "display.jsonl")
+			if err := os.WriteFile(path, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			provenance := writeSyntheticExecutorProvenance(t, raw, res)
+			admitted := bootstrapExecutorCaptureAdmitted{Path: path, Digest: sha256Hex(string(raw)), CallID: res.CallID, ItemID: res.ItemID, ReturnID: res.ReturnID, Provenance: provenance, SessionID: tk.SessionID, ContractDigest: tk.Goal.InputDigest, ProfileDigest: tk.Goal.SandboxProfileDigest, TaskID: tk.ID, AttemptID: attempt.AttemptID}
+			proof, err := validateBootstrapExecutorCapture(raw, admitted, attempt, tk)
+			if name == "valid" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if proof.Output != full {
+					t.Fatal("display replaced complete original")
+				}
+			} else if err == nil {
+				t.Fatal("invalid display accepted")
+			}
+		})
+	}
+}
+
+func TestBootstrapExecutorActualTruncatedCapture(t *testing.T) {
+	path := os.Getenv("CARDEX_BOOTSTRAP_CAPTURE_CHECK")
+	if path == "" {
+		t.Skip("optional read-only retained capture check")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := os.Getenv("CARDEX_BOOTSTRAP_CAPTURE_ROOT")
+	tk, err := loadTask(root, os.Getenv("CARDEX_BOOTSTRAP_CAPTURE_TASK"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := os.ReadFile(os.Getenv("CARDEX_BOOTSTRAP_CAPTURE_AUTH"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a bootstrapRecoveryAuthorization
+	if err = json.Unmarshal(auth, &a); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := loadAttempt(root, tk.ID, a.OriginalAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admitted := bootstrapExecutorCaptureAdmitted{Path: path, Digest: a.ExecutorRawDigest, CallID: a.ExecutorCallID, ItemID: a.ExecutorItemID, ReturnID: a.ExecutorReturnID, Provenance: a.ExecutorProvenance, SessionID: tk.SessionID, ContractDigest: tk.Goal.InputDigest, ProfileDigest: tk.Goal.SandboxProfileDigest, TaskID: tk.ID, AttemptID: rec.AttemptID}
+	proof, err := validateBootstrapExecutorCapture(raw, admitted, rec, tk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proof.ExitCode != 1 || !strings.Contains(proof.Output, realBootstrapWarningPrefix) {
+		t.Fatal("not complete original bootstrap refusal")
+	}
+	t.Log("read-only exact original capture accepted; no recovery ticket consumption or provider launch")
+}
+
 func TestBootstrapExecutorCaptureAsyncAggregatedOnly(t *testing.T) {
 	for _, name := range []string{"complete-initial", "complete-initial-tampered-terminal", "incremental-terminal", "tampered-terminal", "wrong-handle", "wrong-return", "wrong-time"} {
 		t.Run(name, func(t *testing.T) {

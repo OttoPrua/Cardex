@@ -550,6 +550,13 @@ func normalizeLiteralGrants(profile, field string, paths []string) ([]string, er
 		if strings.ContainsAny(p, "*?[") {
 			return nil, fmt.Errorf("%w: sandbox profile %q %s must be a literal directory", errGoalUnsupportedTuple, profile, field)
 		}
+		info, err := os.Stat(p)
+		if err != nil {
+			return nil, fmt.Errorf("%w: sandbox profile %q %s directory %q: %v", errGoalUnsupportedTuple, profile, field, p, err)
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("%w: sandbox profile %q %s expects a directory, got a file: %s", errGoalUnsupportedTuple, profile, field, p)
+		}
 		out = append(out, filepath.Clean(p))
 	}
 	return out, nil

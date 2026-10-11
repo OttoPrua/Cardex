@@ -1,5 +1,12 @@
 # cardex changelog
 
+## 2026-10-11 · v0.10.40: directory sandbox bootstrap recovery
+
+- Reject regular files in directory-only read/write grants before creating an attempt or invoking a provider.
+- One-use recovery of the original task may bind same-byte material copies in a dedicated directory. Preserve original refusal evidence, contract/input identity, permission scope, budget and absolute deadline without automatic replay or extension.
+- Bind the actual native command and terminal acceptance to the launch materials and profile; missing or drifted input stays held/unknown, and repeated recovery is refused.
+- This separate compatibility repair changes production +392/-25 (net +367), adds 490 test lines and changes the dispatch skill +5/-2. Reuse author focused checks and different-context Root review; real CLI/PTY checks use a fake native provider and do not prove recovery of a real model task. Windows hosted PTY remains unsupported; ARM64 has build-only coverage.
+
 ## 2026-10-11 · v0.10.39: defer dispatch scans and repair terminal consumers
 
 - Defer AGY / Grok worktree inspection until the outcome decision needs it, preserving cancellation, valid terminal and verification semantics without wider permissions or replay of unknown work.

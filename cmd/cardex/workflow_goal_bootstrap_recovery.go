@@ -27,6 +27,7 @@ const (
 	// launch path. Broad FailureClass values and inferred event zeros are
 	// not this proof.
 	acceptedBootstrapBeforeProviderRefusal = "Grok hook write-deny ensure failed: cannot create managed_config.toml: Operation not permitted; named profile refused with protections missing"
+	directoryBootstrapWarningPrefix        = "warning: sandbox could not be applied: Expected a directory but got a file: "
 )
 
 var acceptedBootstrapBeforeProviderRefusalLines = []string{
@@ -40,17 +41,18 @@ var (
 )
 
 type bootstrapRecoveryAuthorization struct {
-	Kind              string `json:"kind"`
-	WorkflowID        string `json:"workflow_id"`
-	WriterTaskID      string `json:"writer_task_id"`
-	Revision          int64  `json:"revision"`
-	OriginalAttemptID string `json:"original_attempt_id"`
-	SessionID         string `json:"session_id"`
-	ContractDigest    string `json:"contract_digest"`
-	ProfileDigest     string `json:"profile_digest"`
-	IssuedAt          string `json:"issued_at"`
-	ExpiresAt         string `json:"expires_at"`
-	Nonce             string `json:"nonce"`
+	Kind              string                  `json:"kind"`
+	WorkflowID        string                  `json:"workflow_id"`
+	WriterTaskID      string                  `json:"writer_task_id"`
+	Revision          int64                   `json:"revision"`
+	OriginalAttemptID string                  `json:"original_attempt_id"`
+	SessionID         string                  `json:"session_id"`
+	ContractDigest    string                  `json:"contract_digest"`
+	ProfileDigest     string                  `json:"profile_digest"`
+	SandboxRepair     *bootstrapSandboxRepair `json:"sandbox_repair,omitempty"`
+	IssuedAt          string                  `json:"issued_at"`
+	ExpiresAt         string                  `json:"expires_at"`
+	Nonce             string                  `json:"nonce"`
 	// Executor* bind sidecar-missing original-executor proof into the same
 	// single-use consume identity. Empty on the sidecar-backed path.
 	ExecutorRawDigest  string `json:"executor_raw_digest,omitempty"`
@@ -102,6 +104,10 @@ func (a bootstrapRecoveryAuthorization) consumeDigest() string {
 		a.ContractDigest,
 		a.ProfileDigest,
 		a.Nonce,
+	}
+	if a.SandboxRepair != nil {
+		raw, _ := json.Marshal(a.SandboxRepair)
+		parts = append(parts, sha256Hex(string(raw)))
 	}
 	digest := strings.ToLower(strings.TrimSpace(a.ExecutorRawDigest))
 	call := strings.TrimSpace(a.ExecutorCallID)
@@ -232,6 +238,13 @@ func launchBootstrapBeforeNativeRecovery(root string, cfg *Config, wf *WorkflowR
 	}); err != nil {
 		return err
 	}
+	if t.Goal.RecoveryLaunchContractPath != "" {
+		contract, err := readRegularFileNoBlock(t.Goal.RecoveryLaunchContractPath)
+		if err != nil {
+			return err
+		}
+		printManualGoalInstructions(root, wf, t, string(contract), t.Goal.RecoveryLaunchContractDigest)
+	}
 	return executeAdmittedGoalLaunch(root, cfg, wf, t, hosted)
 }
 
@@ -279,6 +292,9 @@ func admitBootstrapBeforeNativeRecoveryLocked(root string, cfg *Config, wf *Work
 	originalAttempt := strings.TrimSpace(auth.OriginalAttemptID)
 	remaining, originalStart, originalDeadline, err := bootstrapRemainingTimeout(root, t, originalAttempt)
 	if err != nil {
+		return err
+	}
+	if err := prepareBootstrapSandbox(root, wf, t, auth); err != nil {
 		return err
 	}
 
@@ -583,6 +599,13 @@ func realBootstrapRefusalPair(captured string) (registry, profile string, ok boo
 }
 
 func bindRealBootstrapPairToGoal(captured string, writer *Task) error {
+	if strings.Contains(captured, directoryBootstrapWarningPrefix) {
+		_, profile, ok := directoryBootstrapRefusalPair(captured)
+		if !ok || writer == nil || writer.Goal == nil || profile != writer.Goal.SandboxProfile {
+			return bootstrapRecoveryRefused("wrong directory bootstrap profile binding")
+		}
+		return nil
+	}
 	if !strings.Contains(captured, realBootstrapWarningPrefix) {
 		return nil
 	}
@@ -597,6 +620,15 @@ func bindRealBootstrapPairToGoal(captured string, writer *Task) error {
 }
 
 func validateRealBootstrapRefusalBinding(captured, command string, writer *Task) error {
+	if strings.Contains(captured, directoryBootstrapWarningPrefix) {
+		if err := bindRealBootstrapPairToGoal(captured, writer); err != nil {
+			return err
+		}
+		if extractExecutorBindingLine(captured, "sandbox_profile:") != writer.Goal.SandboxProfile {
+			return bootstrapRecoveryRefused("wrong directory bootstrap profile binding")
+		}
+		return validateBootstrapCommandProfile(command, writer.Goal.SandboxProfile)
+	}
 	if !strings.Contains(captured, realBootstrapWarningPrefix) {
 		return nil
 	}
@@ -606,6 +638,10 @@ func validateRealBootstrapRefusalBinding(captured, command string, writer *Task)
 		extractExecutorBindingLine(captured, "sandbox_profile:") != profile {
 		return bootstrapRecoveryRefused("wrong real bootstrap registry/profile binding")
 	}
+	return validateBootstrapCommandProfile(command, profile)
+}
+
+func validateBootstrapCommandProfile(command, profile string) error {
 	fields := strings.Fields(command)
 	for i, field := range fields {
 		if field == "-sandbox" {
@@ -621,6 +657,12 @@ func validateRealBootstrapRefusalBinding(captured, command string, writer *Task)
 
 func matchAcceptedBootstrapBeforeProviderRefusal(captured string) (string, bool) {
 	normalized := executorNormalizeOutput(captured)
+	if path, profile, ok := directoryBootstrapRefusalPair(normalized); ok {
+		return directoryBootstrapWarningPrefix + path + "\n" + realBootstrapErrorPrefix + profile + realBootstrapErrorSuffix, true
+	}
+	if strings.Contains(normalized, directoryBootstrapWarningPrefix) {
+		return "", false
+	}
 	if registry, profile, ok := realBootstrapRefusalPair(normalized); ok {
 		return realBootstrapWarningPrefix + registry + realBootstrapWarningSuffix + "\n" +
 			realBootstrapErrorPrefix + profile + realBootstrapErrorSuffix, true
@@ -640,6 +682,44 @@ func matchAcceptedBootstrapBeforeProviderRefusal(captured string) (string, bool)
 		}
 	}
 	return "", false
+}
+
+// This is the exact adjacent pre-provider launcher pair, not a generic
+// permission error. Recovery still requires the original executor provenance,
+// task/profile identity, nonzero exit, no native execution and closed custody.
+func directoryBootstrapRefusalPair(captured string) (path, profile string, found bool) {
+	if strings.Contains(captured, realBootstrapWarningPrefix) {
+		return "", "", false
+	}
+	lines := strings.Split(executorNormalizeOutput(captured), "\n")
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, directoryBootstrapWarningPrefix) {
+			continue
+		}
+		if found || i+1 >= len(lines) {
+			return "", "", false
+		}
+		path = strings.TrimPrefix(line, directoryBootstrapWarningPrefix)
+		if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
+			return "", "", false
+		}
+		next := strings.TrimSpace(lines[i+1])
+		if !strings.HasPrefix(next, realBootstrapErrorPrefix) || !strings.HasSuffix(next, realBootstrapErrorSuffix) {
+			return "", "", false
+		}
+		profile = strings.TrimSuffix(strings.TrimPrefix(next, realBootstrapErrorPrefix), realBootstrapErrorSuffix)
+		if profile == "" {
+			return "", "", false
+		}
+		for _, c := range profile {
+			if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+				return "", "", false
+			}
+		}
+		found = true
+	}
+	return path, profile, found
 }
 
 func outputContainsAcceptedBootstrapBeforeProviderRefusal(captured string) bool {
@@ -946,6 +1026,12 @@ func recordBootstrapRecoveryConsume(root string, t *Task, auth *bootstrapRecover
 		"budget_tokens":        t.Goal.BudgetTokens,
 		"hard_timeout_seconds": t.Goal.HardTimeoutSec,
 	}
+	if auth.SandboxRepair != nil {
+		detail["sandbox_repair"] = auth.SandboxRepair
+		detail["launch_profile_digest"] = t.Goal.RecoveryLaunchProfileDigest
+		detail["launch_contract_path"] = t.Goal.RecoveryLaunchContractPath
+		detail["launch_contract_digest"] = t.Goal.RecoveryLaunchContractDigest
+	}
 	if !originalStart.IsZero() {
 		detail["original_started_at"] = originalStart.UTC().Format(time.RFC3339Nano)
 	}
@@ -1229,9 +1315,19 @@ func validateBootstrapExecutorCapture(raw []byte, admitted bootstrapExecutorCapt
 		return nil, bootstrapRecoveryRefused("modified original executor capture")
 	}
 
+	// Some original startup calls return a live handle before the retained
+	// CommandExecution terminal event. Keep raw bytes/order for provenance;
+	// only the in-memory view is arranged for the shared identity checks.
+	startupTerminal := executorPayloadType(records[1]) == "custom_tool_call_output" && executorPayloadType(records[2]) == "item_completed"
+	if startupTerminal {
+		records = []map[string]any{records[0], records[2], records[1]}
+	}
 	callPayload, item, outPayload, err := parseKnownExecutorTriple(records)
 	if err != nil {
 		return nil, err
+	}
+	if startupTerminal && (executorString(item["source"]) != "unified_exec_startup" || admitted.AssociationKind != "") {
+		return nil, bootstrapRecoveryRefused("unknown startup terminal association")
 	}
 
 	callID := strings.TrimSpace(executorString(callPayload["call_id"]))
@@ -1298,7 +1394,19 @@ func validateBootstrapExecutorCapture(raw []byte, admitted bootstrapExecutorCapt
 		stdout = agg
 	}
 	var retNorm string
-	if admitted.AssociationKind != "" {
+	if startupTerminal {
+		retOut, err := executorOriginalAsyncHandleOutput(outPayload, processID, processID)
+		if err != nil {
+			return nil, err
+		}
+		retNorm = executorNormalizeOutput(retOut)
+		// The completed command may add only Cardex's final exit diagnostic.
+		// Missing provider/tool output cannot be supplied by an invented tail.
+		if stdout != retNorm && stdout != retNorm+fmt.Sprintf("错误: exit status %d\n", code) {
+			return nil, bootstrapRecoveryRefused("contradictory startup terminal output")
+		}
+		retNorm = stdout
+	} else if admitted.AssociationKind != "" {
 		if admitted.AssociationKind != bootstrapExecutorAsyncAssociation {
 			return nil, bootstrapRecoveryRefused("unbound original-async/terminal association")
 		}
@@ -1372,8 +1480,16 @@ func validateBootstrapExecutorCapture(raw []byte, admitted bootstrapExecutorCapt
 	if jsonlWriter != "" && writer != nil && jsonlWriter != strings.TrimSpace(writer.ID) {
 		return nil, bootstrapRecoveryRefused("wrong writer identity")
 	}
-	if err := validateExecutorAttemptTimestamps(records, rec, admitted.AssociationKind == bootstrapExecutorAsyncAssociation); err != nil {
+	if err := validateExecutorAttemptTimestamps(records, rec, startupTerminal || admitted.AssociationKind == bootstrapExecutorAsyncAssociation); err != nil {
 		return nil, err
+	}
+	if startupTerminal {
+		retTs, _ := executorRecordTimestamp(records[2])
+		termTs, _ := executorRecordTimestamp(records[1])
+		updated, _ := parseExecutorTime(rec.UpdatedAt)
+		if !retTs.Before(updated) || termTs.Sub(updated) > 5*time.Second {
+			return nil, bootstrapRecoveryRefused("wrong startup terminal time")
+		}
 	}
 	if err := validateExecutorCaptureProvenance(raw, admitted); err != nil {
 		return nil, err
@@ -2557,7 +2673,12 @@ func validateExecutorCaptureProvenance(raw []byte, admitted bootstrapExecutorCap
 	selected := append([]byte{}, callLine...)
 	selected = append(selected, itemLine...)
 	selected = append(selected, retLine...)
-	if !bytes.Equal(selected, raw) {
+	// Also accept the original chronological startup return/terminal ordering.
+	// It is independently bound above; never rewrite the source snapshot.
+	chronological := append([]byte{}, callLine...)
+	chronological = append(chronological, retLine...)
+	chronological = append(chronological, itemLine...)
+	if !bytes.Equal(selected, raw) && !bytes.Equal(chronological, raw) {
 		return bootstrapRecoveryRefused("rewritten executor snapshot is not original capture")
 	}
 	return nil

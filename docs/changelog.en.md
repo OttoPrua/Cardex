@@ -1,5 +1,12 @@
 # cardex changelog
 
+## 2026-10-11 · v0.10.38: simplify AGY / Grok execution disposition
+
+- Remove unread status, retry and attempt-cap shadow decisions and unused reserved branches. Existing persistence consumers retain cancellation, verification, quota/auth, unknown-no-replay and task MaxAttempts semantics.
+- Remove two Grok wrappers and duplicate observation/worktree collection. Share only common observation and session/usage updates; provider-specific protocol and hosted lifecycle consumers remain intact.
+- Simplification alone changes production +143/-224, net -81. A separate bootstrap truncated-display compatibility repair adds +49/-1, net +48 while retaining intact source and identity checks. Combined net is -33 from v37 and +894 from v35; moved code is not removed behavior.
+- Reuse exact-candidate CLI/fake-provider/runTaskVia checks and Root independent source review. No additional paid model probe. Windows ARM64 is build-validated; native Windows hosted PTY remains unsupported.
+
 ## 2026-10-11 · v0.10.37: Grok ordinary-task outcome handling
 
 - Consolidate ordinary Grok result decisions and persistence through the shared disposition path, removing replaced runner branches. Native Goal and hosted state machines, process identity, and permission boundaries remain intact.

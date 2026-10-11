@@ -2071,7 +2071,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			}
 		}
 		if useGrokBuild {
-			cont, handled, gerr := applyGrokExecutionDecision(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now)
+			cont, handled, gerr := applyGrokOutcome(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now, true)
 			if handled {
 				if cont {
 					continue
@@ -2274,7 +2274,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		}
 
 		if useGrokBuild {
-			cont, handled, gerr := applyGrokDeferredDisposition(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now)
+			cont, handled, gerr := applyGrokOutcome(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now, false)
 			if handled {
 				if cont {
 					continue

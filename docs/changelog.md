@@ -2,6 +2,13 @@
 
 **中文** | [English](changelog.en.md) · 返回 [README](../README.md)
 
+## 2026-10-11 · v0.10.38：AGY / Grok 执行处置精简
+
+- 删除未消费的状态、重试和上限影子决策及预留分支，由既有持久化入口决定真实终态；保留取消、验证、quota/auth、未知不得重放和任务 MaxAttempts 的差异。
+- 删除两个 Grok 包装函数与重复 observation / 工作树扫描，共享真正相同的基础字段和 session / usage 更新；不同渠道协议及 hosted 生命周期保持原消费者。
+- 单独精简生产 +143/-224，净减 81 行；独立 bootstrap 展示截断兼容修复 +49/-1，净增 48 行，完整来源与身份校验继续保留。相对 v37 合计净减 33 行，相对 v35 累计净增 894 行；搬迁不算功能删减。
+- 复用精确候选的实际 CLI / fake provider / runTaskVia 消费者检查与 Root 独立源码审查。没有新增付费模型探针；Windows ARM64 为构建验证，Windows hosted PTY 仍不支持。
+
 ## 2026-10-11 · v0.10.37：Grok 普通任务的执行结果收尾
 
 - 将 Grok 普通任务的结果判定与持久化汇入共用处置入口，删除 runner 中被替代的重复分支；保留原生 Goal / hosted 状态机、进程身份和权限边界。

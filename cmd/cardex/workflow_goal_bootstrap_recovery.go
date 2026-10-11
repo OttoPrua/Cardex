@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1348,7 +1349,7 @@ func validateBootstrapExecutorCapture(raw []byte, admitted bootstrapExecutorCapt
 	if err := executorRequireRefusalChannel("return", retNorm, true); err != nil {
 		return nil, err
 	}
-	if retNorm != stdout {
+	if retNorm != stdout && !executorTruncatedContractDisplayMatches(outPayload, retNorm, stdout, writer) {
 		return nil, bootstrapRecoveryRefused("contradictory executor output")
 	}
 	if err := validateRealBootstrapRefusalBinding(stdout, selected, writer); err != nil {
@@ -1681,6 +1682,53 @@ func executorNormalizeOutput(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
 	return s
+}
+
+// Only the display of an intact, digest-bound frozen contract may be omitted.
+// Runtime/refusal output and every visible byte remain checked; the caller
+// still classifies the complete original CommandExecution, never this display.
+func executorTruncatedContractDisplayMatches(payload map[string]any, shown, full string, writer *Task) bool {
+	if writer == nil || writer.Goal == nil || writer.WorkflowID == "" {
+		return false
+	}
+	var selected map[string]any
+	for _, ch := range executorOutputChunks(payload) {
+		var obj map[string]any
+		if json.Unmarshal([]byte(executorString(ch["text"])), &obj) == nil {
+			if _, ok := executorJSONInt(obj["exit_code"]); ok {
+				selected = obj // Same last command as executorLastFailedChunkOutput.
+			}
+		}
+	}
+	tokens, ok := executorJSONInt(selected["original_token_count"])
+	if !ok || tokens <= 0 {
+		return false
+	}
+	header := fmt.Sprintf("Warning: truncated output (original token count: %d)\nTotal output lines: %d\n\n", tokens, strings.Count(full, "\n"))
+	if !strings.HasPrefix(shown, header) {
+		return false
+	}
+	body := strings.TrimPrefix(shown, header)
+	markers := regexp.MustCompile(`…([1-9][0-9]*) tokens truncated…`).FindAllStringSubmatchIndex(body, -1)
+	if len(markers) != 1 {
+		return false
+	}
+	m := markers[0]
+	omitted, err := strconv.Atoi(body[m[2]:m[3]])
+	if err != nil || omitted >= tokens {
+		return false
+	}
+	before, after := body[:m[0]], body[m[1]:]
+	if before == "" || after == "" || !strings.HasPrefix(full, before) || !strings.HasSuffix(full, after) || len(before)+len(after) >= len(full) {
+		return false
+	}
+	contract, err := readRegularFileNoBlock(filepath.Join(workflowsDir(writer.Goal.CardexRoot), writer.WorkflowID+".stage-contract.txt"))
+	if err != nil || sha256Hex(string(contract)) != writer.Goal.InputDigest {
+		return false
+	}
+	bound := executorNormalizeOutput(string(contract))
+	start := strings.Index(full, bound)
+	return start >= 0 && strings.Count(full, bound) == 1 && len(before) >= start && len(full)-len(after) <= start+len(bound)
 }
 
 func executorRequireRefusalChannel(name, body string, required bool) error {

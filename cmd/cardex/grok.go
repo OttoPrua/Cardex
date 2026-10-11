@@ -2520,32 +2520,47 @@ func grokBuildResetEpoch(cfg *Config, res *claudeResult, combined string, now ti
 	return engineResetEpoch(combined+"\n"+resultText(res), scan, cfg, EngineProfile{LimitFallbackMin: fallback}, now)
 }
 
-func grokAttemptFacts(cfg *Config, t *Task) executionAttemptFacts {
-	maxAttempts := 0
-	if cfg != nil {
-		maxAttempts = cfg.MaxAttempts
-	}
-	if t != nil && t.MaxAttempts > 0 {
-		maxAttempts = t.MaxAttempts
-	}
-	attempts := 0
-	if t != nil {
-		attempts = t.Attempts
-	}
-	return executionAttemptFacts{Attempts: attempts, MaxAttempts: maxAttempts}
+type grokUnknownHoldKind int
+
+const (
+	grokUnknownHoldNone grokUnknownHoldKind = iota
+	grokUnknownHoldZeroEventProcess
+	grokUnknownHoldTerminal
+	grokUnknownHoldProcessAfterTerminal
+	grokUnknownHoldStreamIncomplete
+)
+
+type grokUnknownHold struct {
+	kind         grokUnknownHoldKind
+	processClass string
+	terminalKind fallbackFailureKind
 }
 
-func grokUnknownShortCircuit(res *claudeResult, runErr error) bool {
-	if _, hold := grokBuildZeroEventProcessFailure(res, runErr); hold {
+func grokUnknownBlocksQuota(h grokUnknownHold) bool {
+	switch h.kind {
+	case grokUnknownHoldZeroEventProcess, grokUnknownHoldTerminal, grokUnknownHoldProcessAfterTerminal:
 		return true
+	default:
+		return false
 	}
-	if _, unknown := grokTerminalUnknownOutcome(res); unknown {
-		return true
+}
+
+func classifyGrokUnknownHold(res *claudeResult, combined string, runErr error) grokUnknownHold {
+	if processClass, hold := grokBuildZeroEventProcessFailure(res, runErr); hold {
+		return grokUnknownHold{kind: grokUnknownHoldZeroEventProcess, processClass: processClass}
+	}
+	if kind, unknown := grokTerminalUnknownOutcome(res); unknown {
+		return grokUnknownHold{kind: grokUnknownHoldTerminal, terminalKind: kind}
 	}
 	if runErr != nil && runnerNativeTerminalValid(grokBuildRunnerName, res, nil) {
-		return true
+		return grokUnknownHold{kind: grokUnknownHoldProcessAfterTerminal}
 	}
-	return false
+	if grokCompleteZeroEventStreamIncomplete(res) {
+		if kind, ok := classifyPolicyFallbackFailure(grokBuildRunnerName, res, combined, runErr); !ok || kind != fallbackQuota {
+			return grokUnknownHold{kind: grokUnknownHoldStreamIncomplete}
+		}
+	}
+	return grokUnknownHold{}
 }
 
 func grokCompleteZeroEventStreamIncomplete(res *claudeResult) bool {
@@ -2553,26 +2568,15 @@ func grokCompleteZeroEventStreamIncomplete(res *claudeResult) bool {
 		res.SemanticEvents == 0 && res.ModelEvents == 0 && res.ToolEvents == 0
 }
 
-func observationFromGrok(t *Task, res *claudeResult, combined string, runErr error) executionObservation {
-	obs := executionObservation{}
-	if t != nil && t.Dir != "" {
-		files := nativeWorktreeRelFiles(t.Dir)
-		obs.WorkspaceHasDiff = nativeWorktreeHasDiff(t.Dir, files)
-	}
+func observationFromGrok(t *Task, res *claudeResult, combined string, runErr error) (executionObservation, grokUnknownHold) {
+	obs := baseExecutionObservation(t, res)
+	unk := classifyGrokUnknownHold(res, combined, runErr)
 	if res == nil {
-		obs.Incomplete = true
-		obs.Reason = "missing_result"
 		if runErr != nil {
 			obs.FailureClass = classifyFailure(runErr.Error(), combined, nil, runErr)
 		}
-		return obs
+		return obs, unk
 	}
-	obs.Complete = res.ObservationComplete
-	obs.Incomplete = !res.ObservationComplete
-	obs.HasTerminal = res.TerminalEvents > 0
-	obs.ToolEvents = res.ToolEvents
-	obs.SemanticEvents = res.SemanticEvents
-	obs.ModelEvents = res.ModelEvents
 	switch res.Subtype {
 	case "grok_build_process_auth", "grok_build_process_auth_exact", "grok_build_auth_preflight",
 		"grok_build_auth_circuit_open":
@@ -2584,14 +2588,13 @@ func observationFromGrok(t *Task, res *claudeResult, combined string, runErr err
 		obs.SuccessStructure = true
 		obs.HasTerminal = true
 	}
-	if runErr != nil && runnerNativeTerminalValid(grokBuildRunnerName, res, nil) {
+	if unk.kind == grokUnknownHoldProcessAfterTerminal {
 		obs.Incomplete = true
 		obs.Complete = false
 		obs.SuccessStructure = false
 		obs.Reason = firstNonBlank(obs.Reason, "process_failure_after_native_terminal")
 	}
-	shortCircuit := grokUnknownShortCircuit(res, runErr)
-	if !shortCircuit && !obs.AuthFailed && isLimitHitGrokBuild(res, combined) {
+	if !grokUnknownBlocksQuota(unk) && !obs.AuthFailed && isLimitHitGrokBuild(res, combined) {
 		obs.QuotaHit = true
 		obs.HasTerminal = true
 		obs.Reason = firstNonBlank(obs.Reason, "quota")
@@ -2617,65 +2620,42 @@ func observationFromGrok(t *Task, res *claudeResult, combined string, runErr err
 			obs.Reason = firstNonBlank(obs.Reason, string(cls))
 		}
 	}
-	return obs
-}
-
-func grokImmediateUnknownHold(res *claudeResult, combined string, runErr error) bool {
-	if grokUnknownShortCircuit(res, runErr) {
-		return true
-	}
-	if grokCompleteZeroEventStreamIncomplete(res) {
-		if kind, ok := classifyPolicyFallbackFailure(grokBuildRunnerName, res, combined, runErr); !ok || kind != fallbackQuota {
-			return true
-		}
-	}
-	return false
-}
-
-func applyGrokExecutionDecision(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time) (cont, handled bool, err error) {
-	return applyGrokOutcome(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now, true)
-}
-
-func applyGrokDeferredDisposition(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time) (cont, handled bool, err error) {
-	return applyGrokOutcome(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now, false)
+	return obs, unk
 }
 
 func applyGrokOutcome(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time, deferQuota bool) (cont, handled bool, err error) {
 	if t != nil && root != "" && diskCanceled(root, t.ID) {
 		return false, true, finalizeCanceled(root, t, lg)
 	}
+	if !deferQuota {
+		if isLimitHitGrokBuild(res, combined) {
+			return false, true, pauseGrokBuildLimit(root, cfg, t, res, combined, lg, now)
+		}
+		return false, false, nil
+	}
 	if res != nil && res.IsError && res.Subtype == "grok_build_auth_circuit_open" {
 		return false, true, persistGrokAuthCircuit(root, t, res, lg)
 	}
-	obs := observationFromGrok(t, res, combined, runErr)
-	dec := decideExecutionOutcome(obs, grokAttemptFacts(cfg, t))
-	if grokImmediateUnknownHold(res, combined, runErr) || dec.Kind == executionDecisionUnknown {
-		return applyGrokUnknownHold(ctx, root, cfg, t, via, prompt, res, runErr, lg, now, dec)
+	obs, unk := observationFromGrok(t, res, combined, runErr)
+	dec := decideExecutionOutcome(obs)
+	if unk.kind != grokUnknownHoldNone || dec.Kind == executionDecisionUnknown {
+		return applyGrokUnknownHold(ctx, root, cfg, t, via, prompt, res, runErr, lg, now, dec, unk)
 	}
 	switch dec.Kind {
-	case executionDecisionCancel:
-		return false, true, finalizeCanceled(root, t, lg)
-	case executionDecisionWaiting:
-		return false, true, nil
 	case executionDecisionSuccess:
-		if res != nil && res.SessionID != "" {
-			t.SessionID = res.SessionID
-		}
+		applyProviderSession(t, res)
 		cont, err = finishProviderSuccess(ctx, root, cfg, t, via, prompt, res, lg, false, false, false, false, false, true, false, grokBuildRunnerName)
 		return cont, true, err
 	case executionDecisionLimitPause:
-		if deferQuota {
-			return false, false, nil
-		}
-		return false, true, pauseGrokBuildLimit(root, cfg, t, res, combined, lg, now)
+		return false, false, nil
 	case executionDecisionRetry, executionDecisionFailed, executionDecisionHeld:
 		return false, true, persistGrokFailureDisposition(root, cfg, t, res, combined, runErr, lg, now, dec)
 	default:
-		return applyGrokUnknownHold(ctx, root, cfg, t, via, prompt, res, runErr, lg, now, dec)
+		return applyGrokUnknownHold(ctx, root, cfg, t, via, prompt, res, runErr, lg, now, dec, unk)
 	}
 }
 
-func applyGrokUnknownHold(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, runErr error, lg *os.File, now time.Time, dec executionDecision) (cont, handled bool, err error) {
+func applyGrokUnknownHold(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, runErr error, lg *os.File, now time.Time, dec executionDecision, unk grokUnknownHold) (cont, handled bool, err error) {
 	resRef := res
 	harvestHandled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &resRef, runErr, now, prompt, lg, false, false, false, false, false, true, false, "")
 	if harvestHandled {
@@ -2684,16 +2664,14 @@ func applyGrokUnknownHold(ctx context.Context, root string, cfg *Config, t *Task
 		}
 		return false, true, herr
 	}
-	if processClass, hold := grokBuildZeroEventProcessFailure(res, runErr); hold {
-		return false, true, persistGrokZeroEventProcessHold(root, t, res, lg, processClass)
-	}
-	if kind, unknown := grokTerminalUnknownOutcome(res); unknown {
-		return false, true, persistGrokTerminalUnknownHold(root, t, res, lg, kind)
-	}
-	if grokCompleteZeroEventStreamIncomplete(res) {
+	switch unk.kind {
+	case grokUnknownHoldZeroEventProcess:
+		return false, true, persistGrokZeroEventProcessHold(root, t, res, lg, unk.processClass)
+	case grokUnknownHoldTerminal:
+		return false, true, persistGrokTerminalUnknownHold(root, t, res, lg, unk.terminalKind)
+	case grokUnknownHoldStreamIncomplete:
 		return false, true, holdNativeExecution(root, t, via, "stream_incomplete", "unknown_outcome")
-	}
-	if runErr != nil && runnerNativeTerminalValid(via, res, nil) {
+	case grokUnknownHoldProcessAfterTerminal:
 		return false, true, holdNativeExecution(root, t, via, "process_failure_after_native_terminal", "process_failure")
 	}
 	kind := dec.Reason
@@ -2708,12 +2686,7 @@ func applyGrokUnknownHold(ctx context.Context, root string, cfg *Config, t *Task
 }
 
 func persistGrokFailureDisposition(root string, cfg *Config, t *Task, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time, dec executionDecision) error {
-	if res != nil {
-		applyProviderResultUsage(root, t, res)
-		if res.SessionID != "" {
-			t.SessionID = res.SessionID
-		}
-	}
+	applyProviderSessionAndUsage(root, t, res)
 	msg := errorSummary(res, combined, runErr)
 	cls := dec.FailureClass
 	if cls == "" {
@@ -2830,12 +2803,7 @@ func persistGrokAuthCircuit(root string, t *Task, res *claudeResult, lg *os.File
 }
 
 func pauseGrokBuildLimit(root string, cfg *Config, t *Task, res *claudeResult, combined string, lg *os.File, now time.Time) error {
-	if res != nil {
-		applyProviderResultUsage(root, t, res)
-		if res.SessionID != "" {
-			t.SessionID = res.SessionID
-		}
-	}
+	applyProviderSessionAndUsage(root, t, res)
 	scan := grokBuildLimitScanText(res, combined)
 	until := grokBuildResetEpoch(cfg, res, combined, now)
 	reason := firstLine(strings.TrimSpace(scan))

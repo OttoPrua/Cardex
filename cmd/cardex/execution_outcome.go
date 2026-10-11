@@ -8,8 +8,6 @@ import "strings"
 type executionDecisionKind string
 
 const (
-	executionDecisionCancel     executionDecisionKind = "cancel"
-	executionDecisionWaiting    executionDecisionKind = "waiting"
 	executionDecisionSuccess    executionDecisionKind = "success"
 	executionDecisionHeld       executionDecisionKind = "held"
 	executionDecisionFailed     executionDecisionKind = "failed"
@@ -23,15 +21,12 @@ const (
 type executionObservation struct {
 	Complete         bool
 	HasTerminal      bool
-	Canceled         bool
-	WaitingApproval  bool
 	NeedsInteraction bool
 	SuccessStructure bool
 	QuotaHit         bool
 	AuthFailed       bool
 	InputTooLong     bool
 	NecessaryDenied  bool
-	VerifyFailed     bool
 	WorkspaceHasDiff bool
 	RemoteUnknown    bool
 	Incomplete       bool
@@ -42,89 +37,113 @@ type executionObservation struct {
 	Reason           string
 }
 
-type executionAttemptFacts struct {
-	Attempts    int
-	MaxAttempts int
-}
-
 type executionDecision struct {
-	Kind            executionDecisionKind
-	ConsumesAttempt bool
-	AllowsRetry     bool
-	Status          string
-	Reason          string
-	FailureClass    failureClass
+	Kind         executionDecisionKind
+	Reason       string
+	FailureClass failureClass
 }
 
-func decideExecutionOutcome(obs executionObservation, facts executionAttemptFacts) executionDecision {
+func baseExecutionObservation(t *Task, res *claudeResult) executionObservation {
+	obs := executionObservation{}
+	if t != nil && t.Dir != "" {
+		files := nativeWorktreeRelFiles(t.Dir)
+		obs.WorkspaceHasDiff = nativeWorktreeHasDiff(t.Dir, files)
+	}
+	if res == nil {
+		obs.Incomplete = true
+		obs.Reason = "missing_result"
+		return obs
+	}
+	obs.Complete = res.ObservationComplete
+	obs.Incomplete = !res.ObservationComplete
+	obs.HasTerminal = res.TerminalEvents > 0
+	obs.ToolEvents = res.ToolEvents
+	obs.SemanticEvents = res.SemanticEvents
+	obs.ModelEvents = res.ModelEvents
+	return obs
+}
+
+func applyProviderSession(t *Task, res *claudeResult) {
+	if t != nil && res != nil && res.SessionID != "" {
+		t.SessionID = res.SessionID
+	}
+}
+
+func applyProviderSessionAndUsage(root string, t *Task, res *claudeResult) {
+	if res == nil {
+		return
+	}
+	applyProviderResultUsage(root, t, res)
+	applyProviderSession(t, res)
+}
+
+func stampRouteFailure(t *Task, kind, class string) {
+	if t == nil || t.LastRouteAttempt == nil {
+		return
+	}
+	if kind != "" {
+		t.LastRouteAttempt.FailureKind = kind
+	}
+	if class != "" {
+		t.LastRouteAttempt.FailureClass = class
+	}
+}
+
+func decideExecutionOutcome(obs executionObservation) executionDecision {
 	reason := strings.TrimSpace(obs.Reason)
-	if obs.Canceled {
-		return executionDecision{
-			Kind: executionDecisionCancel, Status: statusCanceled,
-			Reason: firstNonBlank(reason, "canceled"), FailureClass: obs.FailureClass,
-		}
-	}
-	if obs.WaitingApproval {
-		return executionDecision{
-			Kind: executionDecisionWaiting, Reason: firstNonBlank(reason, "waiting_approval"),
-			FailureClass: obs.FailureClass,
-		}
-	}
 	if obs.NeedsInteraction || obs.NecessaryDenied {
 		return executionDecision{
-			Kind: executionDecisionHeld, Status: statusHeld,
+			Kind:         executionDecisionHeld,
 			Reason:       firstNonBlank(reason, "needs_interaction"),
 			FailureClass: failurePermission,
 		}
 	}
 	if obs.QuotaHit {
 		return executionDecision{
-			Kind: executionDecisionLimitPause, Status: statusLimitPaused,
-			Reason: firstNonBlank(reason, "quota"), FailureClass: obs.FailureClass,
+			Kind:         executionDecisionLimitPause,
+			Reason:       firstNonBlank(reason, "quota"),
+			FailureClass: obs.FailureClass,
 		}
 	}
 	if obs.AuthFailed {
 		return executionDecision{
-			Kind: executionDecisionHeld, Status: statusHeld,
-			Reason: firstNonBlank(reason, "auth"), FailureClass: failureAuth,
+			Kind:         executionDecisionHeld,
+			Reason:       firstNonBlank(reason, "auth"),
+			FailureClass: failureAuth,
 		}
 	}
 	if obs.InputTooLong {
 		return executionDecision{
-			Kind: executionDecisionFailed, Status: statusFailed,
-			Reason: firstNonBlank(reason, "input_too_long"), FailureClass: failureInputTooLong,
+			Kind:         executionDecisionFailed,
+			Reason:       firstNonBlank(reason, "input_too_long"),
+			FailureClass: failureInputTooLong,
 		}
 	}
-	if obs.VerifyFailed && obs.SuccessStructure {
+	if obs.SuccessStructure {
 		return executionDecision{
-			Kind: executionDecisionHeld, Status: statusHeld,
-			Reason: firstNonBlank(reason, "verify_failed"), FailureClass: obs.FailureClass,
-		}
-	}
-	if obs.SuccessStructure && !obs.VerifyFailed {
-		return executionDecision{
-			Kind: executionDecisionSuccess, Status: statusDone,
-			Reason: firstNonBlank(reason, "success"), FailureClass: obs.FailureClass,
+			Kind:         executionDecisionSuccess,
+			Reason:       firstNonBlank(reason, "success"),
+			FailureClass: obs.FailureClass,
 		}
 	}
 	if replayForbidden(obs) {
 		return executionDecision{
-			Kind: executionDecisionUnknown, Status: statusHeld,
-			Reason: firstNonBlank(reason, "unknown_no_replay"), FailureClass: failureUnknown,
+			Kind:         executionDecisionUnknown,
+			Reason:       firstNonBlank(reason, "unknown_no_replay"),
+			FailureClass: failureUnknown,
 		}
 	}
 	if (obs.FailureClass == failureTimeout || obs.FailureClass == failureExecutorCrash) && retryEvidenceSufficient(obs) {
-		return retryDecision(obs, facts, reason)
-	}
-	if !obs.HasTerminal || obs.Incomplete || !obs.Complete || obs.RemoteUnknown {
 		return executionDecision{
-			Kind: executionDecisionUnknown, Status: statusHeld,
-			Reason: firstNonBlank(reason, "unknown_terminal"), FailureClass: failureUnknown,
+			Kind:         executionDecisionRetry,
+			Reason:       firstNonBlank(reason, string(obs.FailureClass)),
+			FailureClass: obs.FailureClass,
 		}
 	}
 	return executionDecision{
-		Kind: executionDecisionUnknown, Status: statusHeld,
-		Reason: firstNonBlank(reason, "unknown_terminal"), FailureClass: failureUnknown,
+		Kind:         executionDecisionUnknown,
+		Reason:       firstNonBlank(reason, "unknown_terminal"),
+		FailureClass: failureUnknown,
 	}
 }
 
@@ -153,28 +172,4 @@ func replayForbidden(obs executionObservation) bool {
 
 func retryEvidenceSufficient(obs executionObservation) bool {
 	return obs.Complete && !obs.Incomplete && obs.HasTerminal && obs.ToolEvents == 0 && !obs.RemoteUnknown
-}
-
-func retryDecision(obs executionObservation, facts executionAttemptFacts, reason string) executionDecision {
-	if replayForbidden(obs) || !retryEvidenceSufficient(obs) {
-		return executionDecision{
-			Kind: executionDecisionUnknown, Status: statusHeld,
-			Reason: firstNonBlank(reason, "unknown_no_replay"), FailureClass: obs.FailureClass,
-		}
-	}
-	maxAttempts := facts.MaxAttempts
-	if maxAttempts <= 0 {
-		maxAttempts = 3
-	}
-	next := facts.Attempts + 1
-	if next >= maxAttempts {
-		return executionDecision{
-			Kind: executionDecisionFailed, ConsumesAttempt: true, Status: statusFailed,
-			Reason: firstNonBlank(reason, "max_attempts"), FailureClass: obs.FailureClass,
-		}
-	}
-	return executionDecision{
-		Kind: executionDecisionRetry, ConsumesAttempt: true, AllowsRetry: true, Status: statusQueued,
-		Reason: firstNonBlank(reason, string(obs.FailureClass)), FailureClass: obs.FailureClass,
-	}
 }

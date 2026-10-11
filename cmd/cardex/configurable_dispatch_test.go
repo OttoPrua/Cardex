@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -261,6 +262,181 @@ func TestConfigurableDispatchFallbackSafeguards(t *testing.T) {
 	got, ok := resolveOwnerRouteReadback(cfg, task)
 	if !ok || got.Legs[1].Model != "cursor-grok-4.6-xhigh" {
 		t.Fatalf("frozen fallback readback %+v", got)
+	}
+}
+
+func TestConfiguredMatrixGrokCursorQuotaOnly(t *testing.T) {
+	for _, tier := range []struct{ complexity, model, effort string }{
+		{"high", "opus", "xhigh"}, {"medium", "sonnet", "high"}, {"low", "haiku", "high"},
+	} {
+		for _, category := range []string{"frontend", "backend", "general"} {
+			t.Run(tier.complexity+"/"+category, func(t *testing.T) {
+				cfg := mixedTestConfig()
+				cfg.RouteMatrix = RouteMatrix{tier.complexity: {category: {
+					Runner: grokBuildRunnerName, Model: "grok-4.6", Effort: tier.effort,
+					Fallback: []RouteLegConfig{{Runner: cursorRunnerName, Model: "cursor-grok-4.6-" + tier.effort, Effort: tier.effort}},
+				}}}
+				task := &Task{ID: "matrix-quota", Type: typeSequence, Model: tier.model,
+					RouteClass: category, RiskClass: riskClassOrdinary, PreferRunner: "codex",
+					FreshSteps: true, Prompts: []string{"bounded work"}, Dir: t.TempDir()}
+				route, ok := resolveOwnerRoute(cfg, task)
+				if !ok || !pinOwnerPrimaryRoute(task, route) || mixedOwnerTask(task) {
+					t.Fatal("expected frozen non-mixed matrix route")
+				}
+				task.Runner = grokBuildRunnerName
+				task.Attempts, task.MaxAttempts = 2, 4
+				for _, tc := range []struct {
+					message, subtype string
+					allowed          bool
+				}{
+					{"quota exhausted", "grok_build_error", true},
+					{"HTTP 429: usage limit reached", "grok_build_error", true},
+					{"429", "grok_build_error", false},
+					{"rate limit", "grok_build_error", false},
+					{"401 unauthorized; quota exhausted", "grok_build_error", false},
+					{"permission denied; quota exhausted", "grok_build_error", false},
+					{"refusal: quota exhausted", "grok_build_error", false},
+					{"connection reset; quota exhausted", "grok_build_error", false},
+					{"semantic timeout; quota exhausted", "grok_build_error", false},
+					{"quota exhausted", "grok_build_invalid_terminal", false},
+					{"quota exhausted", "grok_build_stream_incomplete", false},
+					{"unclassified process exit", "grok_build_process_unclassified", false},
+				} {
+					res := &claudeResult{IsError: true, Result: tc.message, Subtype: tc.subtype, ObservationComplete: true}
+					kind, allowed := classifyTaskPolicyFallbackFailure(task, grokBuildRunnerName, res, "", errors.New("exit status 1"))
+					if allowed != tc.allowed || allowed && kind != fallbackQuota {
+						t.Errorf("%s/%s: kind=%s allowed=%v", tc.message, tc.subtype, kind, allowed)
+					}
+				}
+				before, _ := json.Marshal(task)
+				proof := safeFixtureProof(t)
+				auth, err := authorizePolicyFallback(proof)
+				if !policyFallbackProcessProofSupported() {
+					if err == nil {
+						t.Fatal("unsupported process proof accepted")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, kind := range []fallbackFailureKind{fallbackTransport, fallbackSemanticStall, fallbackInvalidTerminal, fallbackStreamIncomplete, fallbackExecutionEnv} {
+					if err := queuePolicyFallback(cfg, task, kind, auth); err == nil {
+						t.Fatalf("non-quota transition accepted: %s", kind)
+					}
+					after, _ := json.Marshal(task)
+					if !bytes.Equal(before, after) {
+						t.Fatal("rejected transition mutated task")
+					}
+				}
+				for _, mutate := range []func(*policyFallbackProof){
+					func(p *policyFallbackProof) { p.ObservationComplete = false },
+					func(p *policyFallbackProof) { p.SemanticEvents = 1 },
+					func(p *policyFallbackProof) { p.ModelEvents = 1 },
+					func(p *policyFallbackProof) { p.ToolEvents = 1 },
+					func(p *policyFallbackProof) {
+						p.After = &policyWorkspaceFingerprint{Root: p.Before.Root, Digest: "changed"}
+					},
+					func(p *policyFallbackProof) { p.ProcessResidue = true },
+				} {
+					bad := proof
+					mutate(&bad)
+					if _, err := authorizePolicyFallback(bad); err == nil {
+						t.Fatal("unsafe proof accepted")
+					}
+				}
+				for _, mutate := range []func(*Task){
+					func(t *Task) { t.MaxAttempts = t.Attempts + 1 },
+					func(t *Task) { t.Status = statusHeld },
+					func(t *Task) { t.Status = statusCanceled },
+				} {
+					blocked := *task
+					mutate(&blocked)
+					if err := queuePolicyFallback(cfg, &blocked, fallbackQuota, auth); err == nil {
+						t.Fatal("closed attempt authority accepted")
+					}
+				}
+				if err := queuePolicyFallback(cfg, task, fallbackQuota, auth); err != nil {
+					t.Fatal(err)
+				}
+				if task.Attempts != 3 || task.MaxAttempts != 4 {
+					t.Fatal("quota transition reset attempt budget")
+				}
+				if task.PreferRunner != cursorRunnerName || task.CursorModel != "cursor-grok-4.6-"+tier.effort || task.Effort != tier.effort {
+					t.Fatalf("wrong quota successor: %+v", task)
+				}
+				if _, ok := resolveOwnerRouteReadback(cfg, task); !ok {
+					t.Fatal("frozen successor readback failed")
+				}
+			})
+		}
+	}
+}
+
+func TestMatrixGrokCursorQuotaRunTask(t *testing.T) {
+	for _, tc := range []struct {
+		diagnostic string
+		fallback   bool
+	}{
+		{"HTTP 429: usage limit reached", true}, {"rate limit", false},
+		{"401 unauthorized; quota exhausted", false}, {"permission denied; quota exhausted", false},
+		{"connection reset; quota exhausted", false}, {"semantic timeout; quota exhausted", false},
+	} {
+		t.Run(tc.diagnostic, func(t *testing.T) {
+			root := testRoot(t)
+			event, _ := json.Marshal(map[string]string{"type": "error", "message": tc.diagnostic})
+			grok, _, _ := fakeGrokBuild(t, string(event), "", 1)
+			cursor, argv := fakeCursorAgent(t, `{"type":"result","subtype":"success","result":"CURSOR_OK"}`, "", 0)
+			cfg := mixedTestConfig()
+			cfg.GrokBuildBin, cfg.CursorBin = grok, cursor
+			isolateGrokLifecycleHome(t, cfg)
+			cfg.RouteMatrix = RouteMatrix{"high": {"backend": {
+				Runner: grokBuildRunnerName, Model: "grok-4.6", Effort: "xhigh",
+				Fallback: []RouteLegConfig{{Runner: cursorRunnerName, Model: "cursor-grok-4.6-xhigh", Effort: "xhigh"}},
+			}}}
+			task := newTask(root, cfg, typeSequence, "matrix quota fixture", t.TempDir(), []string{"p"}, 1)
+			task.WorkClass, task.Model, task.RouteClass, task.RiskClass = "", "opus", routeClassBackend, riskClassOrdinary
+			task.MaxAttempts = 2
+			route, ok := resolveOwnerRoute(cfg, task)
+			if !ok || !pinOwnerPrimaryRoute(task, route) || mixedOwnerTask(task) {
+				t.Fatal("matrix fixture route")
+			}
+			if err := saveTask(root, task); err != nil {
+				t.Fatal(err)
+			}
+			if err := runTaskVia(context.Background(), root, cfg, task, grokBuildRunnerName); err != nil {
+				t.Fatal(err)
+			}
+			got, err := loadTask(root, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (got.PreferRunner == cursorRunnerName) != tc.fallback {
+				t.Fatalf("unexpected fallback: %+v", got)
+			}
+			if !tc.fallback {
+				if _, err := os.Stat(argv); !os.IsNotExist(err) {
+					t.Fatal("rejected failure invoked Cursor")
+				}
+				return
+			}
+			if got.Attempts != 1 || got.MaxAttempts != 2 {
+				t.Fatal("quota successor reset attempt budget")
+			}
+			if err := runTaskVia(context.Background(), root, cfg, got, cursorRunnerName); err != nil {
+				t.Fatal(err)
+			}
+			args, err := os.ReadFile(argv)
+			if err != nil || !strings.Contains(string(args), "cursor-grok-4.6-xhigh") {
+				t.Fatalf("Cursor argv: %s %v", args, err)
+			}
+			got, err = loadTask(root, task.ID)
+			// The Cursor leg finished; the existing backend review requirement still
+			// owns overall acceptance and must not be cleared by quota fallback.
+			if err != nil || got.Status != statusHeld || got.ReviewTaskID == "" || got.Step != 1 || got.LastSummary != "CURSOR_OK" || got.LastRouteAttempt.RequestedRunner != cursorRunnerName {
+				t.Fatalf("Cursor result readback: %+v %v", got, err)
+			}
+		})
 	}
 }
 

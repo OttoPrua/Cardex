@@ -500,7 +500,7 @@ var mixedQuotaExhaustedRe = regexp.MustCompile(`(?i)quota (?:exceeded|exhausted)
 var mixedRefusalRe = regexp.MustCompile(`(?i)refus(?:al|ed)|cannot (?:comply|assist|help)|can't (?:comply|assist|help)|policy (?:denied|violation)|unauthenticated|unauthorized|\b401\b|\b403\b`)
 
 func classifyTaskPolicyFallbackFailure(t *Task, via string, res *claudeResult, combined string, runErr error) (fallbackFailureKind, bool) {
-	if frozenDispatchMode(t) != "" {
+	if frozenDispatchMode(t) != "" || grokCursorQuotaOnly(t) {
 		if res == nil || !res.IsError || !res.ObservationComplete {
 			return "", false
 		}

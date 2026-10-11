@@ -1280,6 +1280,16 @@ func policyFallbackResolvedEffort(cfg *Config, t *Task) string {
 	}
 }
 
+// Grok through Cursor changes the subscription, not the work. The frozen next
+// leg must therefore use the same strict quota proof as work-class routing.
+func grokCursorQuotaOnly(t *Task) bool {
+	if t == nil || t.FrozenRoute == nil || t.OwnerRouteLeg < 1 || t.OwnerRouteLeg >= len(t.FrozenRoute.Legs) {
+		return false
+	}
+	return t.FrozenRoute.Legs[t.OwnerRouteLeg-1].Runner == grokBuildRunnerName &&
+		t.FrozenRoute.Legs[t.OwnerRouteLeg].Runner == cursorRunnerName
+}
+
 // queuePolicyFallback is the only mutation helper for Grok/Kimi/Codex next-leg transitions. Its opaque
 // authorization is created only after the previous invocation returned and all three proof axes pass.
 func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fallbackAuthorization) error {
@@ -1299,6 +1309,19 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 	}
 	nextIndex := t.OwnerRouteLeg
 	next := route.Legs[nextIndex]
+	if grokCursorQuotaOnly(t) && kind != fallbackQuota {
+		return fmt.Errorf("Grok to Cursor fallback requires confirmed quota exhaustion")
+	}
+	matrixQuotaOnly := grokCursorQuotaOnly(t) && !mixedOwnerTask(t)
+	if matrixQuotaOnly {
+		limit := cfg.MaxAttempts
+		if t.MaxAttempts > 0 {
+			limit = t.MaxAttempts
+		}
+		if t.Status == statusHeld || t.terminal() || (limit > 0 && t.Attempts+1 >= limit) {
+			return fmt.Errorf("Grok to Cursor fallback requires remaining attempt authority")
+		}
+	}
 	if mixedOwnerTask(t) {
 		if frozenDispatchMode(t) != "" {
 			limit := cfg.MaxAttempts
@@ -1396,7 +1419,7 @@ func queuePolicyFallback(cfg *Config, t *Task, kind fallbackFailureKind, auth fa
 	t.OwnerRouteLeg = nextIndex + 1
 	t.OwnerRouteStage = next.Stage
 	t.FallbackReason = string(kind)
-	if frozenDispatchMode(t) != "" {
+	if frozenDispatchMode(t) != "" || matrixQuotaOnly {
 		t.AutomaticCodex = next.Runner == "codex"
 		t.RouteReason = mixedQuotaReason
 		t.Status = statusQueued

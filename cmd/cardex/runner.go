@@ -2122,7 +2122,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 
 		// Mixed subscription routing must not reinterpret auth/refusal/transport or a
 		// transient rate limit as spent subscription quota through the legacy limiter below.
-		if (useGrokBuild || frozenDispatchMode(t) != "") && mixedOwnerTask(t) && (runErr != nil || (res != nil && res.IsError)) {
+		if (useGrokBuild || frozenDispatchMode(t) != "") && (mixedOwnerTask(t) || grokCursorQuotaOnly(t)) && (runErr != nil || (res != nil && res.IsError)) {
 			if _, allowed := classifyTaskPolicyFallbackFailure(t, via, res, combined, runErr); !allowed {
 				scan := policyFailureScanText(via, res, combined, runErr)
 				if frozenDispatchMode(t) != "" || policyUnsafeTerminal(scan) || mixedRefusalRe.MatchString(scan) || policyTransportRe.MatchString(scan) || grokBuildQuotaRe.MatchString(scan) {

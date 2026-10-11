@@ -622,7 +622,10 @@ json.dump(c,open(p,"w"),indent=2,ensure_ascii=False)
 PYEOF
 rm -f "$CARDEX_ROOT/cooldown.json"
 echo 0 > "$MOCK_DIR/codex-n"; touch "$MOCK_DIR/codex-fail-all"   # 本轮所有 codex 调用一律网络失败(确定性,不受 drain 顺序影响)
-"$BIN" add -dir "$PROJ" -runner codex -title codex-netfail -priority 9 "codex single-leg work" >/dev/null
+# Earlier scenarios deliberately leave queued cards; isolate this error-classification check from their workspace lease.
+NETFAIL_PROJ="$TMP/netfail-proj"
+mkdir -p "$NETFAIL_PROJ"
+"$BIN" add -dir "$NETFAIL_PROJ" -runner codex -title codex-netfail -priority 9 "codex single-leg work" >/dev/null
 "$BIN" run -quiet >/dev/null 2>&1
 assert "codex 瞬时失败→取真错误(非横幅)且判 transient 退避重试" "one(title='codex-netfail')['status']=='queued' and one(title='codex-netfail')['attempts']==1 and 'stream' in one(title='codex-netfail')['last_error'].lower() and 'reading additional input' not in one(title='codex-netfail')['last_error'].lower()"
 rm -f "$MOCK_DIR/codex-fail-all"  # 解除失败标记

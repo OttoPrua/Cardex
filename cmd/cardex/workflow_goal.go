@@ -1522,9 +1522,10 @@ func executeAdmittedGoalLaunch(root string, cfg *Config, wf *WorkflowRecord, t *
 		recordRetainedBootstrapBeforeProviderEvidence(root, t, rec, runErr, captured.capturedOutput())
 	}
 	restoreErr := restore()
-	finalErr := withWorkflowSchedulerLock(root, cfg, func() error {
-		return finalizeManualGoalLaunch(root, cfg, wf, t, ctx, runErr)
-	})
+	// Post-exit completion uses task lock/CAS and the same native/attempt/
+	// input/custody gates as goal-sync. Waiting on the root scheduler lock
+	// here lets an unrelated holder skip finalization after native complete.
+	finalErr := finalizeManualGoalLaunch(root, cfg, wf, t, ctx, runErr)
 	if finalErr != nil {
 		return finalErr
 	}

@@ -73,8 +73,10 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 	type doneMsg struct {
 		t   *Task
 		via string
+		err error
 	}
 	ch := make(chan doneMsg)
+	var runErr error
 	activeIDs := map[string]bool{}
 	activeRunners := map[string]int{}
 	var activeWriters []*Task
@@ -91,9 +93,15 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 	launched := 0
 	lastConfigReloadErr := ""
 
-	report := func(t *Task) {
+	report := func(t *Task) error {
+		if err := restoreTaskFromDisk(root, t); err != nil {
+			if !quiet {
+				fmt.Printf("✖ %s 任务状态不可读: %v\n", t.ID, err)
+			}
+			return err
+		}
 		if quiet {
-			return
+			return nil
 		}
 		switch t.Status {
 		case statusDone:
@@ -107,6 +115,7 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 		case statusCanceled:
 			fmt.Printf("⏹ %s 已取消，执行进程已终止并归档。\n", t.ID)
 		}
+		return nil
 	}
 
 	for {
@@ -358,10 +367,11 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 					}
 					runCfg := cfg
 					go func(t *Task, via string, taskCfg *Config) {
-						if err := tickRunTask(runCtx, root, taskCfg, t, via); err != nil && !quiet {
+						err := tickRunTask(runCtx, root, taskCfg, t, via)
+						if err != nil && !quiet {
 							fmt.Printf("✖ %s 执行出错: %v\n", t.ID, err)
 						}
-						ch <- doneMsg{t: t, via: via}
+						ch <- doneMsg{t: t, via: via, err: err}
 					}(next, via, runCfg)
 					continue // 尝试继续填下一个槽位
 				}
@@ -372,6 +382,9 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 		if len(activeIDs) == 0 {
 			if onlyID != "" && launched == 0 {
 				return singleIDNotDispatchedError(root, onlyID, blockReason)
+			}
+			if runErr != nil {
+				return runErr
 			}
 			if !quiet {
 				switch {
@@ -410,7 +423,12 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 				cancelRun() // 正常完成也要释放 ctx，别泄漏
 				delete(activeCancels, msg.t.ID)
 			}
-			report(msg.t)
+			if rerr := report(msg.t); rerr != nil && runErr == nil {
+				runErr = rerr
+			}
+			if msg.err != nil && (onlyID != "" || terminalPersistRejected(msg.err)) {
+				runErr = msg.err
+			}
 		case <-time.After(rescan):
 			// 重扫超时：不动任何在跑任务，回循环顶用空闲槽位尝试派发新就绪任务，并做取消对账。
 		}

@@ -366,6 +366,19 @@ func runManualGoalLaunch(t *testing.T, root string, cfg *Config, wf *WorkflowRec
 	return launchManualWorkflowGoal(root, cfg, wf, budget, "")
 }
 
+func plantForeignSchedulerLock(t *testing.T, root string) {
+	t.Helper()
+	pid, cleanup := spawnLiveForeignPID(t)
+	t.Cleanup(cleanup)
+	info, err := json.Marshal(lockInfo{PID: pid, At: time.Now().Format(time.RFC3339)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath(root), info, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func launchExitedManualGoal(t *testing.T, root string, cfg *Config, wf *WorkflowRecord, tk *Task, goalID string) *Task {
 	t.Helper()
 	enableManualGrok(t, root, cfg, filepath.Join(t.TempDir(), "argv"))
@@ -3500,6 +3513,87 @@ func TestGoalAutoSync(t *testing.T) {
 		}
 		assertNoGoalEvDone(t, root, got)
 	})
+}
+
+func TestGoalCloseoutRegistersDoneWhileForeignSchedulerLockHeld(t *testing.T) {
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	home := t.TempDir()
+	tk.Goal.GrokHome = home
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	cfg.GrokBuildBin = fakeGrokGoalTerminalBin(t, dir, "complete", "complete", "achieved", "", "")
+	cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+	cfg.ManagerWake = &ManagerWakeConfig{Enabled: true}
+	saveGoalCfg(t, root, cfg)
+
+	orig := goalLaunchBeforeStartHook
+	t.Cleanup(func() { goalLaunchBeforeStartHook = orig })
+	goalLaunchBeforeStartHook = func() error {
+		plantForeignSchedulerLock(t, root)
+		return nil
+	}
+
+	if err := runManualGoalLaunch(t, root, cfg, wf, 12000); err != nil {
+		t.Fatalf("complete return with foreign scheduler lock: %v", err)
+	}
+	got, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != statusDone || got.Goal == nil || got.Goal.Observation != goalObsDone {
+		t.Fatalf("exited complete must register done without root scheduler lock: status=%s obs=%s note=%s",
+			got.Status, goalObsOrEmpty(got), got.Goal.ObservationNote)
+	}
+	if !taskDurablyDone(root, got) {
+		t.Fatal("done must be durable on the exact attempt")
+	}
+}
+
+func TestGoalCloseoutForeignLockStillRefusesNonzeroAndUnknown(t *testing.T) {
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	home := t.TempDir()
+	tk.Goal.GrokHome = home
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	cfg.GrokBuildBin = fakeGrokGoalTerminalBin(t, dir, "nonzero", "complete", "achieved", "", "")
+	cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+	saveGoalCfg(t, root, cfg)
+
+	orig := goalLaunchBeforeStartHook
+	t.Cleanup(func() { goalLaunchBeforeStartHook = orig })
+	goalLaunchBeforeStartHook = func() error {
+		plantForeignSchedulerLock(t, root)
+		return nil
+	}
+
+	err := runManualGoalLaunch(t, root, cfg, wf, 12000)
+	if err == nil {
+		t.Fatal("nonzero provider exit must surface while a foreign lock is held")
+	}
+	got, lerr := loadTask(root, tk.ID)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if got.Status != statusHeld || got.Goal == nil || got.Goal.Observation != goalObsUnknown {
+		t.Fatalf("nonzero must stay held/unknown: status=%s obs=%s note=%s",
+			got.Status, goalObsOrEmpty(got), got.Goal.ObservationNote)
+	}
+	assertNoGoalEvDone(t, root, got)
+}
+
+func goalObsOrEmpty(t *Task) string {
+	if t == nil || t.Goal == nil {
+		return ""
+	}
+	return t.Goal.Observation
 }
 
 func TestGoalSyncResidualActivePersistsKnownUsageOnce(t *testing.T) {

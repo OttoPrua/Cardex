@@ -2071,7 +2071,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			}
 		}
 		if useGrokBuild {
-			cont, handled, gerr := applyGrokOutcome(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now, true)
+			cont, handled, gerr := applyGrokOutcome(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now)
 			if handled {
 				if cont {
 					continue
@@ -2274,11 +2274,8 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		}
 
 		if useGrokBuild {
-			cont, handled, gerr := applyGrokOutcome(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now, false)
+			handled, gerr := applyGrokQuotaAfterFallback(root, cfg, t, res, combined, lg, now)
 			if handled {
-				if cont {
-					continue
-				}
 				return gerr
 			}
 		}

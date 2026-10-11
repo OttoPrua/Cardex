@@ -471,11 +471,12 @@ func invokeAntigravity(ctx context.Context, cfg *Config, t *Task, prompt string)
 }
 
 func observationFromAntigravity(t *Task, res *claudeResult, runErr error) executionObservation {
-	obs := baseExecutionObservation(t, res)
+	obs := baseExecutionObservation(res)
 	if res == nil {
 		if runErr != nil {
 			obs.FailureClass = classifyFailure(runErr.Error(), "", nil, runErr)
 		}
+		attachWorktreeIfNeeded(t, &obs)
 		return obs
 	}
 	d := res.AntigravityDiagnostics
@@ -521,6 +522,7 @@ func observationFromAntigravity(t *Task, res *claudeResult, runErr error) execut
 			obs.Reason = firstNonBlank(obs.Reason, string(cls))
 		}
 	}
+	attachWorktreeIfNeeded(t, &obs)
 	return obs
 }
 

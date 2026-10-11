@@ -347,6 +347,41 @@ func TestR05SingleStateWriter(t *testing.T) {
 		if countProductCalls(t, productCalls) != 1 {
 			t.Fatalf("duplicate observation started another provider call: %d\n%s", countProductCalls(t, productCalls), run2)
 		}
+		if dump := strings.TrimSpace(os.Getenv("R05_CLI_DUMP")); dump != "" {
+			if err := os.MkdirAll(dump, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dump, "run1.out"), run1, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dump, "run2.out"), run2, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			taskPath := taskPath(root, id)
+			if _, err := os.Stat(taskPath); err != nil {
+				taskPath = filepath.Join(archiveDir(root), id+".json")
+			}
+			taskRaw, err := os.ReadFile(taskPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dump, "task.json"), taskRaw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			evRaw, err := os.ReadFile(eventsPath(root, id))
+			if err != nil {
+				evRaw, err = os.ReadFile(filepath.Join(archivedEventsDir(root), id+".jsonl"))
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dump, "events.jsonl"), evRaw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dump, "product.calls"), []byte(strconv.Itoa(countProductCalls(t, productCalls))+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
 	})
 	t.Run("cancel", func(t *testing.T) {
 		root, work, productCalls := writeAntigravityCLIRoot(t, payload, "", 0)

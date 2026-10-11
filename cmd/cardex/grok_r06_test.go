@@ -326,8 +326,8 @@ func TestR06ProcessTruthParity(t *testing.T) {
 	})
 	t.Run("residue-blocks-fallback", func(t *testing.T) {
 		proof := policyFallbackProof{
-			Before: &policyWorkspaceFingerprint{Root: "/r", Digest: "a"},
-			After:  &policyWorkspaceFingerprint{Root: "/r", Digest: "a"},
+			Before:              &policyWorkspaceFingerprint{Root: "/r", Digest: "a"},
+			After:               &policyWorkspaceFingerprint{Root: "/r", Digest: "a"},
 			ObservationComplete: true, ProcessResidue: true,
 		}
 		if _, err := authorizePolicyFallback(proof); err == nil {
@@ -424,16 +424,26 @@ func TestR06NoDuplicateBranch(t *testing.T) {
 			t.Fatalf("deleted Grok result-judgment branch still live in runner.go: %s", needle)
 		}
 	}
-	if !strings.Contains(runner, "applyGrokExecutionDecision") || !strings.Contains(runner, "applyGrokDeferredDisposition") {
-		t.Fatal("replacement consumer applyGrokExecutionDecision/applyGrokDeferredDisposition missing from runner.go")
+	if !strings.Contains(runner, "applyGrokOutcome") {
+		t.Fatal("replacement consumer applyGrokOutcome missing from runner.go")
+	}
+	if strings.Contains(runner, "applyGrokExecutionDecision") || strings.Contains(runner, "applyGrokDeferredDisposition") {
+		t.Fatal("deleted dual Grok wrappers still live in runner.go")
+	}
+	if strings.Count(runner, "applyGrokOutcome(") != 2 {
+		t.Fatal("runner must call applyGrokOutcome once before the fallback gate and once after")
 	}
 	grokSrc, err := os.ReadFile(filepath.Join(dir, "grok.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(grokSrc), "func applyGrokExecutionDecision") ||
-		!strings.Contains(string(grokSrc), "decideExecutionOutcome") ||
-		!strings.Contains(string(grokSrc), "applyFailureDisposition") {
+	grok := string(grokSrc)
+	if strings.Contains(grok, "func applyGrokExecutionDecision") || strings.Contains(grok, "func applyGrokDeferredDisposition") {
+		t.Fatal("deleted dual Grok wrappers still defined in grok.go")
+	}
+	if !strings.Contains(grok, "func applyGrokOutcome") ||
+		!strings.Contains(grok, "decideExecutionOutcome") ||
+		!strings.Contains(grok, "applyFailureDisposition") {
 		t.Fatal("Grok adapter must map into decideExecutionOutcome and existing persist writers")
 	}
 	goalSrc, err := os.ReadFile(filepath.Join(dir, "workflow_goal.go"))
@@ -514,6 +524,86 @@ func TestR06UnknownDecisionPersistsHold(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("product calls=%d", calls)
 	}
+}
+
+func TestR06TaskMaxAttemptsHeldNotFailed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX fake Grok process fixtures")
+	}
+	payload := `{"type":"error","message":"context deadline exceeded"}` + "\n" + grok105PublicEnd
+	t.Run("task-cap-held", func(t *testing.T) {
+		root := testRoot(t)
+		bin, productCalls := fakeGrokBuildCounted(t, payload, "", 1)
+		cfg := grokBuildTestConfig(t, bin)
+		cfg.GrokBuild.OpusAdversarialReview = false
+		cfg.HarvestMode = harvestModeOff
+		cfg.OwnerRoutingEnforced = false
+		cfg.MaxAttempts = 3
+		isolateGrokLifecycleHome(t, cfg)
+		task := newTask(root, cfg, typeSequence, "r06 task max attempts", t.TempDir(), []string{"synthetic read-only review"}, 1)
+		task.PreferRunner = grokBuildRunnerName
+		task.RunnerExplicit = true
+		task.GrokModel = "grok-4.6"
+		task.GrokEffort = "xhigh"
+		task.ReviewAfter = false
+		task.MaxAttempts = 1
+		if err := saveTask(root, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := runTaskVia(context.Background(), root, cfg, task, grokBuildRunnerName); err != nil {
+			t.Fatal(err)
+		}
+		got := loadMust(t, root, task.ID)
+		r06AssertNoFakeSuccess(t, got)
+		if got.Status != statusHeld {
+			t.Fatalf("task MaxAttempts exhaustion must stay held, got status=%s attempts=%d last=%q",
+				got.Status, got.Attempts, got.LastError)
+		}
+		if got.Attempts != 1 {
+			t.Fatalf("task-cap persist must consume the attempt: %+v", got)
+		}
+		if countProductCalls(t, productCalls) != 1 {
+			t.Fatalf("product calls=%d", countProductCalls(t, productCalls))
+		}
+		assertEventTypes(t, root, task.ID, true, evHeld)
+		assertEventTypes(t, root, task.ID, false, evFailed)
+	})
+	t.Run("cfg-cap-failed", func(t *testing.T) {
+		root := testRoot(t)
+		bin, productCalls := fakeGrokBuildCounted(t, payload, "", 1)
+		cfg := grokBuildTestConfig(t, bin)
+		cfg.GrokBuild.OpusAdversarialReview = false
+		cfg.HarvestMode = harvestModeOff
+		cfg.OwnerRoutingEnforced = false
+		cfg.MaxAttempts = 1
+		isolateGrokLifecycleHome(t, cfg)
+		task := newTask(root, cfg, typeSequence, "r06 cfg max attempts", t.TempDir(), []string{"synthetic read-only review"}, 1)
+		task.PreferRunner = grokBuildRunnerName
+		task.RunnerExplicit = true
+		task.GrokModel = "grok-4.6"
+		task.GrokEffort = "xhigh"
+		task.ReviewAfter = false
+		if err := saveTask(root, task); err != nil {
+			t.Fatal(err)
+		}
+		if err := runTaskVia(context.Background(), root, cfg, task, grokBuildRunnerName); err != nil {
+			t.Fatal(err)
+		}
+		got := loadMust(t, root, task.ID)
+		r06AssertNoFakeSuccess(t, got)
+		if got.Status != statusFailed {
+			t.Fatalf("cfg MaxAttempts exhaustion must fail, got status=%s attempts=%d last=%q",
+				got.Status, got.Attempts, got.LastError)
+		}
+		if got.Attempts != 1 {
+			t.Fatalf("cfg-cap persist must consume the attempt: %+v", got)
+		}
+		if countProductCalls(t, productCalls) != 1 {
+			t.Fatalf("product calls=%d", countProductCalls(t, productCalls))
+		}
+		assertEventTypes(t, root, task.ID, true, evFailed)
+		assertEventTypes(t, root, task.ID, false, evHeld)
+	})
 }
 
 func TestR06TerminalFailureClassification(t *testing.T) {

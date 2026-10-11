@@ -133,7 +133,7 @@ func TestR01TerminalPrecedence(t *testing.T) {
 	unknown := parseAntigravityJSON([]byte(`{}`))
 	attachAntigravityInvokeFacts(unknown, &Task{Type: typeSequence}, "", nil)
 	uobs := observationFromAntigravity(&Task{Type: typeSequence, Dir: t.TempDir()}, unknown, nil)
-	udec := decideExecutionOutcome(uobs, executionAttemptFacts{Attempts: 0, MaxAttempts: 3})
+	udec := decideExecutionOutcome(uobs)
 	if udec.Kind != executionDecisionUnknown || strings.Contains(udec.Reason, "no_input") {
 		t.Fatalf("unknown terminal must not be reported as capability: obs=%+v dec=%+v", uobs, udec)
 	}

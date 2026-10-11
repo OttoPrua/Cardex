@@ -471,26 +471,14 @@ func invokeAntigravity(ctx context.Context, cfg *Config, t *Task, prompt string)
 }
 
 func observationFromAntigravity(t *Task, res *claudeResult, runErr error) executionObservation {
-	obs := executionObservation{}
-	if t != nil && t.Dir != "" {
-		files := nativeWorktreeRelFiles(t.Dir)
-		obs.WorkspaceHasDiff = nativeWorktreeHasDiff(t.Dir, files)
-	}
+	obs := baseExecutionObservation(t, res)
 	if res == nil {
-		obs.Incomplete = true
-		obs.Reason = "missing_result"
 		if runErr != nil {
 			obs.FailureClass = classifyFailure(runErr.Error(), "", nil, runErr)
 		}
 		return obs
 	}
 	d := res.AntigravityDiagnostics
-	obs.Complete = res.ObservationComplete
-	obs.Incomplete = !res.ObservationComplete
-	obs.HasTerminal = res.TerminalEvents > 0
-	obs.ToolEvents = res.ToolEvents
-	obs.SemanticEvents = res.SemanticEvents
-	obs.ModelEvents = res.ModelEvents
 	if d != nil {
 		obs.NeedsInteraction = d.NeedsInteraction || res.Subtype == antigravitySubtypeNeedsInteraction
 	}
@@ -541,24 +529,8 @@ func applyAntigravityExecutionDecision(ctx context.Context, root string, cfg *Co
 		return false, true, finalizeCanceled(root, t, lg)
 	}
 	obs := observationFromAntigravity(t, res, runErr)
-	maxAttempts := 0
-	if cfg != nil {
-		maxAttempts = cfg.MaxAttempts
-	}
-	if t != nil && t.MaxAttempts > 0 {
-		maxAttempts = t.MaxAttempts
-	}
-	attempts := 0
-	if t != nil {
-		attempts = t.Attempts
-	}
-	dec := decideExecutionOutcome(obs, executionAttemptFacts{Attempts: attempts, MaxAttempts: maxAttempts})
-	if t != nil && t.LastRouteAttempt != nil {
-		t.LastRouteAttempt.FailureKind = dec.Reason
-		if dec.FailureClass != "" {
-			t.LastRouteAttempt.FailureClass = string(dec.FailureClass)
-		}
-	}
+	dec := decideExecutionOutcome(obs)
+	stampRouteFailure(t, dec.Reason, string(dec.FailureClass))
 	msg := dec.Reason
 	if res != nil && strings.TrimSpace(res.Result) != "" {
 		msg = errorSummary(res, "", runErr)
@@ -566,14 +538,8 @@ func applyAntigravityExecutionDecision(ctx context.Context, root string, cfg *Co
 		msg = runErr.Error()
 	}
 	switch dec.Kind {
-	case executionDecisionCancel:
-		return false, true, finalizeCanceled(root, t, lg)
-	case executionDecisionWaiting:
-		return false, true, nil
 	case executionDecisionSuccess:
-		if res != nil && res.SessionID != "" {
-			t.SessionID = res.SessionID
-		}
+		applyProviderSession(t, res)
 		if d := antigravityResultDiagnostics(res); d != nil && d.DeniedCount > 0 && !completionVerifyOptedIn(t) {
 			if res != nil {
 				applyProviderResultUsage(root, t, res)
@@ -590,12 +556,7 @@ func applyAntigravityExecutionDecision(ctx context.Context, root string, cfg *Co
 		}
 		return false, true, applyFailureDisposition(root, cfg, t, lg, msg, dec.FailureClass, now, false)
 	default:
-		if res != nil {
-			applyProviderResultUsage(root, t, res)
-			if res.SessionID != "" {
-				t.SessionID = res.SessionID
-			}
-		}
+		applyProviderSessionAndUsage(root, t, res)
 		if dec.FailureClass == failureAuth || dec.FailureClass == failurePermission {
 			return false, true, applyFailureDisposition(root, cfg, t, lg, msg, dec.FailureClass, now, false)
 		}
@@ -618,12 +579,7 @@ func antigravityResultDiagnostics(res *claudeResult) *antigravityDiagnostics {
 }
 
 func pauseAntigravityLimit(root string, cfg *Config, t *Task, res *claudeResult, lg *os.File, now time.Time) error {
-	if res != nil {
-		applyProviderResultUsage(root, t, res)
-		if res.SessionID != "" {
-			t.SessionID = res.SessionID
-		}
-	}
+	applyProviderSessionAndUsage(root, t, res)
 	until := parseResetEpoch(resultText(res), cfg, now)
 	reason := "Antigravity 用量限额"
 	setEngineCooldown(root, antigravityCooldownName, until, reason)

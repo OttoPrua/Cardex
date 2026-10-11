@@ -1,5 +1,12 @@
 # cardex changelog
 
+## 2026-10-12 · v0.10.41: quota-only matrix fallback
+
+- Allow Grok Build → Cursor fallback in complexity/category routes only for confirmed exhausted quota with no model/tool activity, workspace changes or residual process. Ordinary rate limits, authentication/permission failures, refusals, transport failures and incomplete results cannot trigger this switch.
+- Preserve and consume the existing attempt budget. Held, terminal or exhausted tasks cannot resume automatically; existing review requirements remain in force.
+- Align the management skill with current configurable routing for direct cards, one-stage orchestration and native Goal directions, preserving explicit owner pins and frozen historical routes.
+- Product logic changes +26/-3 with 176 focused test lines. Checks use fake providers and do not prove real subscription quota recovery. The local configuration owner applies matrix settings separately after installation.
+
 ## 2026-10-11 · v0.10.40: directory sandbox bootstrap recovery
 
 - Reject regular files in directory-only read/write grants before creating an attempt or invoking a provider.

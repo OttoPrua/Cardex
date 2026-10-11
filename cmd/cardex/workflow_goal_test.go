@@ -2617,6 +2617,8 @@ func TestCopyableNativeGoalIsLiteralPathDigest(t *testing.T) {
 		}
 	}
 	digest := sha256Hex(contract)
+	// Match the frozen binding populated by actual Goal admission before printing.
+	tk.Goal.InputDigest = digest
 	path := filepath.Join(workflowsDir(root), wf.ID+".stage-contract.txt")
 	cmd := copyableNativeGoalCommand(path, digest, 60000)
 	if strings.Contains(cmd, "$(cat") || strings.Contains(cmd, "`") {

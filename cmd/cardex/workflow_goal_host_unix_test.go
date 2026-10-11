@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -2253,6 +2254,65 @@ func TestHostedNaturalCompleteQuitsWithoutStop(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].TransitionID != synced.LastCommittedTransitionID || rows[0].EventType != evDone || rows[0].TaskID != synced.ID {
 		t.Fatalf("outbox rows: %+v", rows)
+	}
+}
+
+func countFakeHostedNativeBin(t *testing.T, inner, countPath string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "grok")
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in --version|-v) exec " + shSingleQuote(inner) + " \"$@\";; esac\n" +
+		"n=$(cat " + shSingleQuote(countPath) + " 2>/dev/null || echo 0)\n" +
+		"n=$((n+1)); printf '%s' \"$n\" > " + shSingleQuote(countPath) + "\n" +
+		"exec " + shSingleQuote(inner) + " \"$@\"\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestStageCandidateCLIHostedGoalCloseout(t *testing.T) {
+	skipIfGoalPTYUnavailable(t)
+	bin := stageCandidateBin(t)
+	countPath := filepath.Join(t.TempDir(), "native-calls")
+	grok := countFakeHostedNativeBin(t, fakeHostedGrokBinNaturalComplete(t), countPath)
+	root, _, home, _, wf, tk, _ := startHostedNaturalLaunch(t, grok, true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "workflow", "goal-run", wf.ID, "-hosted", "-root", root)
+	cmd.Dir = tk.Dir
+	cmd.Env = append(os.Environ(), "GROK_HOME="+home)
+	out, err := cmd.CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("candidate hosted goal-run timed out:\n%s", out)
+	}
+	if err != nil {
+		t.Fatalf("candidate hosted goal-run: %v\n%s", err, out)
+	}
+	raw, _ := os.ReadFile(countPath)
+	if strings.TrimSpace(string(raw)) != "1" {
+		t.Fatalf("fake native executions=%q want 1\n%s", raw, out)
+	}
+	got, lerr := loadTask(root, tk.ID)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if !taskDurablyDone(root, got) || got.Goal == nil || got.Goal.Observation != goalObsDone {
+		t.Fatalf("candidate hosted closeout must be durably done: status=%s goal=%+v", got.Status, got.Goal)
+	}
+	if got.ActiveAttemptID != "" || !got.Goal.CustodyReleased {
+		t.Fatalf("original custody must be closed: active=%q custody=%v", got.ActiveAttemptID, got.Goal.CustodyReleased)
+	}
+	if strings.TrimSpace(got.Goal.BoundAttemptID) == "" {
+		t.Fatal("BoundAttemptID must remain the original attempt identity")
+	}
+	rec, rerr := loadRequiredGoalAttempt(root, got)
+	if rerr != nil || rec == nil || rec.State != attemptExited {
+		t.Fatalf("original attempt closeout: rec=%+v err=%v", rec, rerr)
+	}
+	if !recordedAttemptCloseout(root, got) {
+		t.Fatal("recordedAttemptCloseout must be true")
 	}
 }
 

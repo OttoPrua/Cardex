@@ -208,6 +208,41 @@ func TestHostedBudgetLimitedFinalizeSyncClearsActiveAttempt(t *testing.T) {
 	assertNoGoalEvDone(t, root, fresh)
 }
 
+func TestHostedCompleteFinalizeWithForeignSchedulerLock(t *testing.T) {
+	root, cfg, wf, tk := admitHostedGoalThenRelease(t)
+	bindExitedHostedAttempt(t, root, tk)
+	home := t.TempDir()
+	sid := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	gid := "goal-complete-foreign-lock"
+	tk.SessionID = sid
+	tk.Goal.NativeGoalID = gid
+	tk.Goal.GrokHome = home
+	if err := persistHostedGoalOwned(root, cfg, tk); err != nil {
+		t.Fatalf("persist session identity: %v", err)
+	}
+	writeGrokGoalFixture(t, home, tk.Dir, sid, gid, "complete", grokNativeGoalStateFile{
+		LastClassifierVerdict: "achieved",
+		Phase:                 "Idle",
+	})
+	plantForeignSchedulerLock(t, root)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := completeHostedGrokGoalAfterCmd(root, cfg, wf, tk, ctx, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("hosted complete finalize with foreign scheduler lock: %v", err)
+	}
+	fresh, lerr := loadTask(root, tk.ID)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if fresh.Status != statusDone || fresh.Goal == nil || fresh.Goal.Observation != goalObsDone {
+		t.Fatalf("hosted complete must register done without root scheduler lock: status=%s goal=%+v", fresh.Status, fresh.Goal)
+	}
+	if !taskDurablyDone(root, fresh) {
+		t.Fatal("hosted done must be durable on the exact attempt")
+	}
+}
+
 func TestHostedPauseNotConfirmedOwnedPersist(t *testing.T) {
 	root, cfg, _, tk := admitHostedGoalThenRelease(t)
 	if err := persistHostedControlUnconfirmed(root, cfg, tk, goalControlStop); err != nil {

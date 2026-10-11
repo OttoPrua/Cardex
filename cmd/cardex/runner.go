@@ -1804,7 +1804,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			// 无 prompt 可跑的空转 done(如 retry 后 Step 已越界的兜底路径):也是"终态"必须留事件。
 			if err := persistTaskEvent(root, t, evDone, "runner", statusDone, t.Step,
 				withCostTelemetry(mergeCompletionVerifyDetail(map[string]any{"reason": "no_more_prompts"}, t), t)); err != nil {
-				return finishIfStopped(err)
+				return finishRejectedTerminalPersist(root, t, err)
 			}
 			noteTaskDoneLogged(root, cfg, t, lg) // 复盘计数器:两条 done 出口都要记,漏一条 N 就永远偏小
 			return nil
@@ -2071,7 +2071,7 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 			}
 		}
 		if useGrokBuild {
-			cont, handled, gerr := applyGrokOutcome(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now, true)
+			cont, handled, gerr := applyGrokOutcome(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now)
 			if handled {
 				if cont {
 					continue
@@ -2274,11 +2274,8 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 		}
 
 		if useGrokBuild {
-			cont, handled, gerr := applyGrokOutcome(ctx, root, cfg, t, via, prompt, res, combined, runErr, lg, now, false)
+			handled, gerr := applyGrokQuotaAfterFallback(root, cfg, t, res, combined, lg, now)
 			if handled {
-				if cont {
-					continue
-				}
 				return gerr
 			}
 		}
@@ -2694,11 +2691,14 @@ func finishProviderSuccess(ctx context.Context, root string, cfg *Config, t *Tas
 		if err := persistTaskEvent(root, t, evStepOK, "runner", statusRunning, t.Step, withRouteAttempt(mergeCompletionVerifyDetail(map[string]any{
 			"turns": res.NumTurns, "cost_usd": res.TotalCostUSD, "final_step": true,
 		}, t), t)); err != nil {
+			if t.Status == statusDone || t.Status == statusFailed {
+				return false, finishRejectedTerminalPersist(root, t, err)
+			}
 			return false, finishIfStopped(err)
 		}
 		if t.Status == statusDone {
 			if err := persistTaskEvent(root, t, evDone, "runner", statusDone, t.Step, withCostTelemetry(withRouteAttempt(mergeCompletionVerifyDetail(nil, t), t), t)); err != nil {
-				return false, finishIfStopped(err)
+				return false, finishRejectedTerminalPersist(root, t, err)
 			}
 			// 复盘计数器：只数真 done。上面交叉 C 契约违规改判 failed 的分支不该计入
 			// "产能"，否则复盘窗口里混进从未交付的卡。
@@ -2714,7 +2714,7 @@ func finishProviderSuccess(ctx context.Context, root string, cfg *Config, t *Tas
 			withCostTelemetry(map[string]any{
 				"err": t.LastError, "reason": "cross_merge_contract_violation",
 			}, t)); err != nil {
-			return false, finishIfStopped(err)
+			return false, finishRejectedTerminalPersist(root, t, err)
 		}
 		if t.Status == statusHeld {
 			return false, nil

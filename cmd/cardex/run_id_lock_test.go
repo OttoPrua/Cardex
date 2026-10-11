@@ -2,8 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -227,5 +232,324 @@ func TestCmdRunHelpDocumentsHeldRootFailClosed(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("run --help missing %q:\n%s", want, out)
 		}
+	}
+}
+
+func captureCmdRun(t *testing.T, args []string) (string, error) {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	runErr := cmdRun(args)
+	_ = w.Close()
+	os.Stdout = old
+	raw, readErr := io.ReadAll(r)
+	_ = r.Close()
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	return string(raw), runErr
+}
+
+func killLockPID(root string) {
+	data, err := os.ReadFile(lockPath(root))
+	if err != nil {
+		return
+	}
+	var li lockInfo
+	if json.Unmarshal(data, &li) != nil || li.PID <= 0 {
+		return
+	}
+	if p, err := os.FindProcess(li.PID); err == nil {
+		_ = p.Kill()
+		_, _ = p.Wait()
+	}
+}
+
+func fakeClaudeStealLockBin(t *testing.T, root, countPath string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude")
+	lock := lockPath(root)
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in --version|-v) echo 'claude 1.0'; exit 0;; esac\n" +
+		"n=$(cat " + shSingleQuote(countPath) + " 2>/dev/null || echo 0)\n" +
+		"n=$((n+1)); printf '%s' \"$n\" > " + shSingleQuote(countPath) + "\n" +
+		"sleep 60 &\n" +
+		"printf '{\"pid\":%s,\"at\":\"%s\"}\\n' \"$!\" \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\" > " + shSingleQuote(lock) + "\n" +
+		"cat <<'JSON_EOF'\n" + mkOKResultJSON("sess-reject") + "\nJSON_EOF\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestCmdRunIDRejectedTerminalPersistIsNonzero(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX lock steal")
+	}
+	root := testRoot(t)
+	t.Cleanup(func() { killLockPID(root) })
+	countPath := filepath.Join(t.TempDir(), "calls")
+	cfg := runTaskCfg(t, fakeClaudeStealLockBin(t, root, countPath))
+	cfg.DrainRescanSec = 1
+	if err := saveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	tk := newTask(root, cfg, typeSequence, "persist-reject", work, []string{"p"}, 5)
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := captureCmdRun(t, []string{"-root", root, tk.ID})
+	if err == nil {
+		t.Fatalf("rejected terminal persist must be nonzero, stdout=%q", out)
+	}
+	if !errors.Is(err, errSchedulerLockLost) && !errors.Is(err, errStaleTaskWrite) && !errors.Is(err, errProducerInvalidated) {
+		t.Fatalf("want rejected persist error, got %v stdout=%q", err, out)
+	}
+	if strings.Contains(out, "完成") || strings.Contains(strings.ToLower(out), "done") {
+		t.Fatalf("stdout must not report done: %q", out)
+	}
+
+	got, lerr := loadTask(root, tk.ID)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if got.Status == statusDone {
+		t.Fatalf("disk status must stay non-done, got %s", got.Status)
+	}
+	if !hasStaleWriteEvent(root, got.ID, got.ActiveAttemptID) && !hasStaleWriteEvent(root, got.ID, "") {
+		t.Fatal("missing stale_attempt_write_rejected")
+	}
+
+	raw, _ := os.ReadFile(countPath)
+	if strings.TrimSpace(string(raw)) != "1" {
+		t.Fatalf("provider invoked %q, want 1", raw)
+	}
+
+	replay := persistTaskEvent(root, got, evDone, "runner", statusDone, got.Step, withCostTelemetry(nil, got))
+	if replay == nil || (!errors.Is(replay, errStaleTaskWrite) && !errors.Is(replay, errSchedulerLockLost) && !errors.Is(replay, errProducerInvalidated) && !errors.Is(replay, errAlreadyTerminal)) {
+		t.Fatalf("no-replay must block a second terminal write: %v", replay)
+	}
+
+	out2, err2 := captureCmdRun(t, []string{"-root", root, "-quiet", tk.ID})
+	if err2 == nil {
+		t.Fatalf("second run while lock is lost must not exit 0, stdout=%q", out2)
+	}
+	raw, _ = os.ReadFile(countPath)
+	if strings.TrimSpace(string(raw)) != "1" {
+		t.Fatalf("second run must not invoke provider again, count=%q", raw)
+	}
+}
+
+func TestCmdRunIDSuccessStillDone(t *testing.T) {
+	root := testRoot(t)
+	cfg := runTaskCfg(t, fakeClaudeBin(t, mkOKResultJSON("sess-ok"), "", 0))
+	if err := saveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	tk := newTask(root, cfg, typeSequence, "ordinary-success", work, []string{"p"}, 5)
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	out, err := captureCmdRun(t, []string{"-root", root, tk.ID})
+	if err != nil {
+		t.Fatalf("ordinary success: %v stdout=%q", err, out)
+	}
+	if !strings.Contains(out, "完成") {
+		t.Fatalf("ordinary success stdout: %q", out)
+	}
+	got, lerr := loadTask(root, tk.ID)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if got.Status != statusDone {
+		t.Fatalf("ordinary success status=%s", got.Status)
+	}
+}
+
+func TestCmdRunIDCancelKeepsSuccessContract(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX sleep holder")
+	}
+	root := testRoot(t)
+	bin, started := fakeClaudeBlockOnNthCall(t, 1)
+	cfg := runTaskCfg(t, bin)
+	cfg.DrainRescanSec = 1
+	if err := saveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	tk := newTask(root, cfg, typeSequence, "cancel-contract", work, []string{"p"}, 5)
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct {
+		out string
+		err error
+	}, 1)
+	go func() {
+		out, err := captureCmdRun(t, []string{"-root", root, tk.ID})
+		done <- struct {
+			out string
+			err error
+		}{out, err}
+	}()
+
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		select {
+		case res := <-done:
+			t.Fatalf("run exited before provider started: %v stdout=%q", res.err, res.out)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("provider did not start")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := cmdSetStatus([]string{"-root", root, tk.ID}, "cancel"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("expected cancel/stop must keep success contract: %v stdout=%q", res.err, res.out)
+		}
+		if strings.Contains(res.out, "完成") {
+			t.Fatalf("cancel stdout reported done: %q", res.out)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("canceled run did not return")
+	}
+	events, _, err := loadTaskEvents(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sawCancel := false
+	for _, ev := range events {
+		if ev.Type == evCanceled {
+			sawCancel = true
+		}
+		if ev.Type == evDone {
+			t.Fatalf("cancel emitted done: %+v", events)
+		}
+	}
+	if !sawCancel {
+		t.Fatalf("cancel must persist canceled, events=%v", eventTypes(events))
+	}
+}
+
+func TestRestoreTaskFromDiskUsesArchiveAndFailsClosedOnUnreadable(t *testing.T) {
+	root := testRoot(t)
+	cfg := testCfg()
+	tk := newTask(root, cfg, typeSequence, "archive-restore", t.TempDir(), []string{"p"}, 5)
+	tk.Status = statusCanceled
+	markControlTerminal(tk)
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	if err := archiveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+
+	mem := *tk
+	mem.Status = statusDone
+	if err := restoreTaskFromDisk(root, &mem); err != nil {
+		t.Fatalf("archived cancel must restore: %v", err)
+	}
+	if mem.Status != statusCanceled {
+		t.Fatalf("archive recovery status=%s want canceled", mem.Status)
+	}
+	if _, err := os.Stat(taskPath(root, tk.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("restore must not rewrite the archived card back into tasks/")
+	}
+
+	gone := *tk
+	gone.ID = "t-missing-restore"
+	gone.Status = statusDone
+	if err := restoreTaskFromDisk(root, &gone); err == nil {
+		t.Fatal("missing task must be an explicit read error")
+	}
+	if gone.Status == statusDone {
+		t.Fatal("unreadable restore must not keep in-memory done")
+	}
+
+	corrupt := newTask(root, cfg, typeSequence, "corrupt-restore", t.TempDir(), []string{"p"}, 5)
+	if err := saveTask(root, corrupt); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(taskPath(root, corrupt.ID), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lie := *corrupt
+	lie.Status = statusDone
+	before, err := os.ReadFile(taskPath(root, corrupt.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreTaskFromDisk(root, &lie); err == nil {
+		t.Fatal("corrupt task JSON must be an explicit read error")
+	}
+	if lie.Status == statusDone {
+		t.Fatal("corrupt restore must not keep in-memory done")
+	}
+	after, err := os.ReadFile(taskPath(root, corrupt.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatal("read failure must not rewrite disk")
+	}
+}
+
+func TestCmdRunDrainRejectedTerminalPersistIsNonzero(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX lock steal")
+	}
+	root := testRoot(t)
+	t.Cleanup(func() { killLockPID(root) })
+	countPath := filepath.Join(t.TempDir(), "calls")
+	cfg := runTaskCfg(t, fakeClaudeStealLockBin(t, root, countPath))
+	cfg.DrainRescanSec = 1
+	if err := saveConfig(root, cfg); err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	tk := newTask(root, cfg, typeSequence, "drain-persist-reject", work, []string{"p"}, 5)
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := captureCmdRun(t, []string{"-root", root})
+	if err == nil {
+		t.Fatalf("ordinary drain rejected terminal persist must be nonzero, stdout=%q", out)
+	}
+	if !terminalPersistRejected(err) {
+		t.Fatalf("want terminal persist rejection, got %v stdout=%q", err, out)
+	}
+	if strings.Contains(out, "完成") || strings.Contains(strings.ToLower(out), "done") {
+		t.Fatalf("drain stdout must not report done: %q", out)
+	}
+	got, lerr := loadTask(root, tk.ID)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	if got.Status == statusDone {
+		t.Fatalf("disk status must stay non-done, got %s", got.Status)
+	}
+	raw, _ := os.ReadFile(countPath)
+	if strings.TrimSpace(string(raw)) != "1" {
+		t.Fatalf("provider invoked %q, want 1", raw)
 	}
 }

@@ -470,9 +470,7 @@ func completeHostedGrokGoalAfterCmd(root string, cfg *Config, wf *WorkflowRecord
 			return fmt.Errorf("%s: %w", t.Goal.FailureClass, runErr)
 		}
 	}
-	finalErr := withWorkflowSchedulerLock(root, cfg, func() error {
-		return finalizeManualGoalLaunch(root, cfg, wf, t, ctx, runErr)
-	})
+	finalErr := finalizeManualGoalLaunch(root, cfg, wf, t, ctx, runErr)
 	if finalErr != nil {
 		return finalErr
 	}

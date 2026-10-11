@@ -123,6 +123,30 @@ func assertRetainedHeldSourceFreezeAllowed(root string, wf *WorkflowRecord) erro
 		return fmt.Errorf("%w: writer %s is %s; -retained-held-source only freezes a held SOURCE candidate",
 			errWorkflowCustody, writer.ID, writer.Status)
 	}
+	return assertWriterReleasedCloseout(root, wf, writer)
+}
+
+func assertExternalReviewWriterCloseoutAllowed(root string, wf *WorkflowRecord) error {
+	if wf == nil || strings.TrimSpace(wf.WriterTaskID) == "" {
+		return fmt.Errorf("%w: external review ingest needs the original writer", errWorkflowMalformed)
+	}
+	writer, err := findTaskAnywhere(root, wf.WriterTaskID)
+	if err != nil || writer == nil {
+		return fmt.Errorf("%w: writer %s missing/unreadable", errWorkflowCustody, wf.WriterTaskID)
+	}
+	switch writer.Status {
+	case statusDone, statusHeld:
+	default:
+		return fmt.Errorf("%w: writer %s is %s; external review ingest needs a done or held writer with closed attempt/custody",
+			errWorkflowCustody, writer.ID, writer.Status)
+	}
+	return assertWriterReleasedCloseout(root, wf, writer)
+}
+
+func assertWriterReleasedCloseout(root string, wf *WorkflowRecord, writer *Task) error {
+	if writer == nil {
+		return fmt.Errorf("%w: writer missing/unreadable", errWorkflowCustody)
+	}
 	if taskHasLiveWriterProof(root, writer) {
 		return fmt.Errorf("%w: writer %s still has live process/lease/resource custody",
 			errWorkflowCustody, writer.ID)
@@ -506,7 +530,7 @@ func validateExternalIndependentReview(root string, cfg *Config, wf *WorkflowRec
 		strings.EqualFold(rec.OwnerAuthorizationScope, "cutover") {
 		return nil, fmt.Errorf("%w: %s", errWorkflowExternalReview, holdReasonMissingAuthority)
 	}
-	if err := assertRetainedHeldSourceFreezeAllowed(root, wf); err != nil {
+	if err := assertExternalReviewWriterCloseoutAllowed(root, wf); err != nil {
 		return nil, err
 	}
 	if !rec.CustodyClosed {

@@ -214,6 +214,46 @@ func finishIfStopped(err error) error {
 	return err
 }
 
+func restoreTaskFromDisk(root string, t *Task) error {
+	if t == nil || strings.TrimSpace(t.ID) == "" {
+		return nil
+	}
+	fresh, err := findTaskAnywhere(root, t.ID)
+	if err == nil && fresh != nil {
+		*t = *fresh
+		return nil
+	}
+	if err == nil {
+		err = fmt.Errorf("task %s unreadable", t.ID)
+	}
+	// True read failure: do not keep in-memory done and do not rewrite disk.
+	t.LastError = "task status unreadable: " + err.Error()
+	if t.Status == statusDone {
+		t.Status = ""
+	}
+	return fmt.Errorf("task %s status unreadable: %w", t.ID, err)
+}
+
+func terminalPersistRejected(err error) bool {
+	return errors.Is(err, errSchedulerLockLost) ||
+		errors.Is(err, errStaleTaskWrite) ||
+		errors.Is(err, errProducerInvalidated)
+}
+
+// finishRejectedTerminalPersist keeps write-rejection/no-replay. Unlike
+// finishIfStopped, a rejected terminal CAS is returned so callers report the
+// persisted disk state and a real error.
+func finishRejectedTerminalPersist(root string, t *Task, err error) error {
+	if err == nil {
+		return nil
+	}
+	if producerWriteStopped(err) {
+		_ = restoreTaskFromDisk(root, t)
+		return err
+	}
+	return finishIfStopped(err)
+}
+
 func atomicWriteSync(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

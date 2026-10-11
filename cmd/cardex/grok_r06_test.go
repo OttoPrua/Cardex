@@ -430,8 +430,19 @@ func TestR06NoDuplicateBranch(t *testing.T) {
 	if strings.Contains(runner, "applyGrokExecutionDecision") || strings.Contains(runner, "applyGrokDeferredDisposition") {
 		t.Fatal("deleted dual Grok wrappers still live in runner.go")
 	}
-	if strings.Count(runner, "applyGrokOutcome(") != 2 {
-		t.Fatal("runner must call applyGrokOutcome once before the fallback gate and once after")
+	if strings.Contains(runner, "deferQuota") {
+		t.Fatal("opaque deferQuota boolean must stay deleted from runner.go")
+	}
+	if strings.Count(runner, "applyGrokOutcome(") != 1 {
+		t.Fatal("runner must call applyGrokOutcome once before the fallback gate")
+	}
+	if strings.Count(runner, "applyGrokQuotaAfterFallback(") != 1 {
+		t.Fatal("runner must call applyGrokQuotaAfterFallback once after the fallback gate")
+	}
+	beforeFallback := strings.Index(runner, "applyGrokOutcome(")
+	afterFallback := strings.Index(runner, "applyGrokQuotaAfterFallback(")
+	if beforeFallback < 0 || afterFallback < 0 || beforeFallback > afterFallback {
+		t.Fatal("quota pause must stay after the fallback gate")
 	}
 	grokSrc, err := os.ReadFile(filepath.Join(dir, "grok.go"))
 	if err != nil {
@@ -441,10 +452,14 @@ func TestR06NoDuplicateBranch(t *testing.T) {
 	if strings.Contains(grok, "func applyGrokExecutionDecision") || strings.Contains(grok, "func applyGrokDeferredDisposition") {
 		t.Fatal("deleted dual Grok wrappers still defined in grok.go")
 	}
+	if strings.Contains(grok, "deferQuota") {
+		t.Fatal("opaque deferQuota boolean must stay deleted from grok.go")
+	}
 	if !strings.Contains(grok, "func applyGrokOutcome") ||
+		!strings.Contains(grok, "func applyGrokQuotaAfterFallback") ||
 		!strings.Contains(grok, "decideExecutionOutcome") ||
 		!strings.Contains(grok, "applyFailureDisposition") {
-		t.Fatal("Grok adapter must map into decideExecutionOutcome and existing persist writers")
+		t.Fatal("Grok adapter must map into decideExecutionOutcome, explicit quota-after-fallback, and existing persist writers")
 	}
 	goalSrc, err := os.ReadFile(filepath.Join(dir, "workflow_goal.go"))
 	if err != nil {

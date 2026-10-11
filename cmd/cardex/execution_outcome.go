@@ -43,12 +43,8 @@ type executionDecision struct {
 	FailureClass failureClass
 }
 
-func baseExecutionObservation(t *Task, res *claudeResult) executionObservation {
+func baseExecutionObservation(res *claudeResult) executionObservation {
 	obs := executionObservation{}
-	if t != nil && t.Dir != "" {
-		files := nativeWorktreeRelFiles(t.Dir)
-		obs.WorkspaceHasDiff = nativeWorktreeHasDiff(t.Dir, files)
-	}
 	if res == nil {
 		obs.Incomplete = true
 		obs.Reason = "missing_result"
@@ -61,6 +57,37 @@ func baseExecutionObservation(t *Task, res *claudeResult) executionObservation {
 	obs.SemanticEvents = res.SemanticEvents
 	obs.ModelEvents = res.ModelEvents
 	return obs
+}
+
+// observationNeedsWorktree is true when the live worktree snapshot can still
+// change decideExecutionOutcome. The false/true WorkspaceHasDiff pair is the
+// only probe; decide remains the single priority source.
+func observationNeedsWorktree(obs executionObservation) bool {
+	without := obs
+	without.WorkspaceHasDiff = false
+	with := obs
+	with.WorkspaceHasDiff = true
+	return decideExecutionOutcome(without) != decideExecutionOutcome(with)
+}
+
+func attachWorktreeIfNeeded(t *Task, obs *executionObservation) {
+	if obs == nil || !observationNeedsWorktree(*obs) {
+		return
+	}
+	dir := ""
+	if t != nil {
+		dir = t.Dir
+	}
+	obs.WorkspaceHasDiff = observeExecutionWorktree(dir)
+}
+
+func observeExecutionWorktree(dir string) bool {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return false
+	}
+	files := nativeWorktreeRelFiles(dir)
+	return nativeWorktreeHasDiff(dir, files)
 }
 
 func applyProviderSession(t *Task, res *claudeResult) {

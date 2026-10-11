@@ -53,6 +53,46 @@ func holdClosedBudgetLimitedWriter(t *testing.T, root string, wf *WorkflowRecord
 	return fresh
 }
 
+func doneClosedWriter(t *testing.T, root string, wf *WorkflowRecord) *Task {
+	t.Helper()
+	tk := holdClosedBudgetLimitedWriter(t, root, wf)
+	tk.Status = statusDone
+	if tk.Goal != nil {
+		tk.Goal.Observation = goalObsDone
+		tk.Goal.ClassifierVerdict = "achieved"
+		tk.Goal.CustodyReleased = true
+		tk.Goal.EvidenceComplete = true
+	}
+	tk.LastError = ""
+	markControlTerminal(tk)
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status != statusDone {
+		t.Fatalf("done fixture status=%s", fresh.Status)
+	}
+	return fresh
+}
+
+func writeDoneClosedReviewReceipt(t *testing.T, dir string, wf *WorkflowRecord, writer *Task) string {
+	t.Helper()
+	return writeExternalReviewReceipt(t, wf, writer, verdictJSON("pass", nil, nil), func(r *externalIndependentReviewReceipt) {
+		if len(r.ChangedPaths) == 0 {
+			r.ChangedPaths = []string{"internal/auth"}
+		}
+		digests, err := digestPathsAtTree(dir, r.CandidateTree, r.ChangedPaths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.PathDigests = digests
+		r.EvidenceSHA256 = externalReviewEvidenceSHA256(r.ArtifactSHA256, r.CandidateCommit, r.CandidateTree, digests)
+	})
+}
+
 func commitOwnedSourceChange(t *testing.T, dir string) (commit, tree string) {
 	t.Helper()
 	mustWriteFile(t, filepath.Join(dir, "internal", "auth", "token.go"), "package auth\n// owned source change\n")
@@ -772,6 +812,237 @@ func TestExternalReviewTempCLI(t *testing.T) {
 		}
 		if !strings.Contains(rel, "live="+effectGateHeld) || !strings.Contains(rel, "cutover="+effectGateHeld) {
 			t.Fatalf("live/cutover must stay held: %s", rel)
+		}
+	}
+	runFlow(t)
+	runFlow(t)
+}
+
+func TestExternalReviewIngestAcceptsDoneClosedWriter(t *testing.T) {
+	t.Parallel()
+	root, dir := workflowTestRoot(t)
+	wf := initTestWorkflow(t, root, dir)
+	writer := doneClosedWriter(t, root, wf)
+	commit, tree := commitOwnedSourceChange(t, dir)
+	if err := cmdFreeze(root, wf.ID, commit, tree, false); err != nil {
+		t.Fatalf("default freeze of done writer: %v", err)
+	}
+	wf = reloadWF(t, root, wf.ID)
+	writer, err := loadTask(root, writer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer.Status != statusDone {
+		t.Fatalf("freeze rewrote done writer to %s", writer.Status)
+	}
+	receipt := writeDoneClosedReviewReceipt(t, dir, wf, writer)
+	if err := cmdWorkflow([]string{"ingest-external-review", wf.ID, "-root", root, "-receipt", receipt}); err != nil {
+		t.Fatalf("ingest of done+closed writer: %v", err)
+	}
+	wf = reloadWF(t, root, wf.ID)
+	if wf.Review == nil || !wf.Review.Admissible || wf.Review.Method != reviewMethodExternalIndependentLocal {
+		t.Fatalf("review snapshot: %+v", wf.Review)
+	}
+	fresh, err := loadTask(root, writer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status != statusDone {
+		t.Fatalf("ingest rewrote done writer to %s", fresh.Status)
+	}
+}
+
+func TestExternalReviewRetainedHeldFreezeStillHeldOnly(t *testing.T) {
+	t.Parallel()
+	root, dir := workflowTestRoot(t)
+	wf := initTestWorkflow(t, root, dir)
+	writer := doneClosedWriter(t, root, wf)
+	commit, tree := commitOwnedSourceChange(t, dir)
+	before := snapshotWorkflowAndTasks(t, root, wf.ID)
+	err := cmdFreeze(root, wf.ID, commit, tree, true)
+	if err == nil || !errors.Is(err, errWorkflowCustody) {
+		t.Fatalf("retained-held freeze must refuse a done writer: %v", err)
+	}
+	if !strings.Contains(err.Error(), "-retained-held-source only freezes a held SOURCE candidate") {
+		t.Fatalf("held-only freeze error: %v", err)
+	}
+	assertWorkflowStateUnchanged(t, before, snapshotWorkflowAndTasks(t, root, wf.ID))
+	fresh, err := loadTask(root, writer.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Status != statusDone {
+		t.Fatalf("refused freeze mutated writer to %s", fresh.Status)
+	}
+}
+
+func TestExternalReviewIngestDoneClosedNegatives(t *testing.T) {
+	t.Parallel()
+	t.Run("stale-revision", func(t *testing.T) {
+		t.Parallel()
+		root, dir := workflowTestRoot(t)
+		wf := initTestWorkflow(t, root, dir)
+		writer := doneClosedWriter(t, root, wf)
+		commit, tree := commitOwnedSourceChange(t, dir)
+		if err := cmdFreeze(root, wf.ID, commit, tree, false); err != nil {
+			t.Fatal(err)
+		}
+		wf = reloadWF(t, root, wf.ID)
+		writer, err := loadTask(root, writer.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := snapshotWorkflowAndTasks(t, root, wf.ID)
+		receipt := writeExternalReviewReceipt(t, wf, writer, verdictJSON("pass", nil, nil), func(r *externalIndependentReviewReceipt) {
+			if len(r.ChangedPaths) == 0 {
+				r.ChangedPaths = []string{"internal/auth"}
+			}
+			digests, derr := digestPathsAtTree(dir, r.CandidateTree, r.ChangedPaths)
+			if derr != nil {
+				t.Fatal(derr)
+			}
+			r.PathDigests = digests
+			r.EvidenceSHA256 = externalReviewEvidenceSHA256(r.ArtifactSHA256, r.CandidateCommit, r.CandidateTree, digests)
+			r.WriterRevision = r.WriterRevision + 9
+		})
+		err = cmdWorkflow([]string{"ingest-external-review", wf.ID, "-root", root, "-receipt", receipt})
+		if !errors.Is(err, errWorkflowExternalReview) {
+			t.Fatalf("stale revision: %v", err)
+		}
+		assertWorkflowStateUnchanged(t, before, snapshotWorkflowAndTasks(t, root, wf.ID))
+	})
+	t.Run("wrong-identity", func(t *testing.T) {
+		t.Parallel()
+		root, dir := workflowTestRoot(t)
+		wf := initTestWorkflow(t, root, dir)
+		writer := doneClosedWriter(t, root, wf)
+		commit, tree := commitOwnedSourceChange(t, dir)
+		if err := cmdFreeze(root, wf.ID, commit, tree, false); err != nil {
+			t.Fatal(err)
+		}
+		wf = reloadWF(t, root, wf.ID)
+		writer, err := loadTask(root, writer.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := snapshotWorkflowAndTasks(t, root, wf.ID)
+		receipt := writeExternalReviewReceipt(t, wf, writer, verdictJSON("pass", nil, nil), func(r *externalIndependentReviewReceipt) {
+			if len(r.ChangedPaths) == 0 {
+				r.ChangedPaths = []string{"internal/auth"}
+			}
+			digests, derr := digestPathsAtTree(dir, r.CandidateTree, r.ChangedPaths)
+			if derr != nil {
+				t.Fatal(derr)
+			}
+			r.PathDigests = digests
+			r.EvidenceSHA256 = externalReviewEvidenceSHA256(r.ArtifactSHA256, r.CandidateCommit, r.CandidateTree, digests)
+			r.WriterTaskID = "t-other-writer"
+		})
+		err = cmdWorkflow([]string{"ingest-external-review", wf.ID, "-root", root, "-receipt", receipt})
+		if !errors.Is(err, errWorkflowExternalReview) {
+			t.Fatalf("wrong identity: %v", err)
+		}
+		assertWorkflowStateUnchanged(t, before, snapshotWorkflowAndTasks(t, root, wf.ID))
+	})
+	t.Run("live-custody", func(t *testing.T) {
+		t.Parallel()
+		root, dir := workflowTestRoot(t)
+		wf := initTestWorkflow(t, root, dir)
+		writer := doneClosedWriter(t, root, wf)
+		commit, tree := commitOwnedSourceChange(t, dir)
+		if err := cmdFreeze(root, wf.ID, commit, tree, false); err != nil {
+			t.Fatal(err)
+		}
+		wf = reloadWF(t, root, wf.ID)
+		writer, err := loadTask(root, writer.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		registerTaskInvoke(writer.ID, os.Getpid())
+		t.Cleanup(func() { unregisterTaskInvoke(writer.ID, os.Getpid()) })
+		before := snapshotWorkflowAndTasks(t, root, wf.ID)
+		receipt := writeDoneClosedReviewReceipt(t, dir, wf, writer)
+		err = cmdWorkflow([]string{"ingest-external-review", wf.ID, "-root", root, "-receipt", receipt})
+		if !errors.Is(err, errWorkflowCustody) {
+			t.Fatalf("live custody: %v", err)
+		}
+		assertWorkflowStateUnchanged(t, before, snapshotWorkflowAndTasks(t, root, wf.ID))
+	})
+	t.Run("failed-writer", func(t *testing.T) {
+		t.Parallel()
+		root, dir := workflowTestRoot(t)
+		wf := initTestWorkflow(t, root, dir)
+		writer := holdClosedBudgetLimitedWriter(t, root, wf)
+		writer.Status = statusFailed
+		writer.LastError = "provider failed"
+		markControlTerminal(writer)
+		if err := saveTask(root, writer); err != nil {
+			t.Fatal(err)
+		}
+		commit, tree := commitOwnedSourceChange(t, dir)
+		if err := cmdFreeze(root, wf.ID, commit, tree, false); err != nil {
+			t.Fatal(err)
+		}
+		wf = reloadWF(t, root, wf.ID)
+		writer, err := loadTask(root, writer.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := snapshotWorkflowAndTasks(t, root, wf.ID)
+		receipt := writeDoneClosedReviewReceipt(t, dir, wf, writer)
+		err = cmdWorkflow([]string{"ingest-external-review", wf.ID, "-root", root, "-receipt", receipt})
+		if !errors.Is(err, errWorkflowCustody) {
+			t.Fatalf("failed writer: %v", err)
+		}
+		assertWorkflowStateUnchanged(t, before, snapshotWorkflowAndTasks(t, root, wf.ID))
+	})
+}
+
+func TestExternalReviewDoneClosedTempCLI(t *testing.T) {
+	t.Parallel()
+	bin := filepath.Join(t.TempDir(), "cardex-tempcli-done")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
+	build := exec.Command("go", "build", "-o", bin, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+	runFlow := func(t *testing.T) {
+		t.Helper()
+		root, dir := workflowTestRoot(t)
+		wf := initTestWorkflow(t, root, dir)
+		writer := doneClosedWriter(t, root, wf)
+		commit, tree := commitOwnedSourceChange(t, dir)
+		cmd := exec.Command(bin, "workflow", "freeze-candidate", wf.ID, "-root", root,
+			"-commit", commit, "-tree", tree, "-changed-paths", "internal/auth")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("freeze: %v\n%s", err, out)
+		}
+		wf = reloadWF(t, root, wf.ID)
+		writer, err = loadTask(root, writer.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if writer.Status != statusDone {
+			t.Fatalf("CLI freeze rewrote done writer to %s", writer.Status)
+		}
+		receipt := writeDoneClosedReviewReceipt(t, dir, wf, writer)
+		ing := exec.Command(bin, "workflow", "ingest-external-review", wf.ID, "-root", root, "-receipt", receipt)
+		ingOut, err := ing.CombinedOutput()
+		if err != nil {
+			t.Fatalf("ingest: %v\n%s", err, ingOut)
+		}
+		if !strings.Contains(string(ingOut), "method=external_independent_local") {
+			t.Fatalf("ingest output: %s", ingOut)
+		}
+		fresh, err := loadTask(root, writer.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fresh.Status != statusDone {
+			t.Fatalf("CLI ingest rewrote done writer to %s", fresh.Status)
 		}
 	}
 	runFlow(t)

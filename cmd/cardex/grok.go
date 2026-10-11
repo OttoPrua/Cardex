@@ -2569,12 +2569,13 @@ func grokCompleteZeroEventStreamIncomplete(res *claudeResult) bool {
 }
 
 func observationFromGrok(t *Task, res *claudeResult, combined string, runErr error) (executionObservation, grokUnknownHold) {
-	obs := baseExecutionObservation(t, res)
+	obs := baseExecutionObservation(res)
 	unk := classifyGrokUnknownHold(res, combined, runErr)
 	if res == nil {
 		if runErr != nil {
 			obs.FailureClass = classifyFailure(runErr.Error(), combined, nil, runErr)
 		}
+		attachWorktreeIfNeeded(t, &obs)
 		return obs, unk
 	}
 	switch res.Subtype {
@@ -2620,18 +2621,13 @@ func observationFromGrok(t *Task, res *claudeResult, combined string, runErr err
 			obs.Reason = firstNonBlank(obs.Reason, string(cls))
 		}
 	}
+	attachWorktreeIfNeeded(t, &obs)
 	return obs, unk
 }
 
-func applyGrokOutcome(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time, deferQuota bool) (cont, handled bool, err error) {
+func applyGrokOutcome(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time) (cont, handled bool, err error) {
 	if t != nil && root != "" && diskCanceled(root, t.ID) {
 		return false, true, finalizeCanceled(root, t, lg)
-	}
-	if !deferQuota {
-		if isLimitHitGrokBuild(res, combined) {
-			return false, true, pauseGrokBuildLimit(root, cfg, t, res, combined, lg, now)
-		}
-		return false, false, nil
 	}
 	if res != nil && res.IsError && res.Subtype == "grok_build_auth_circuit_open" {
 		return false, true, persistGrokAuthCircuit(root, t, res, lg)
@@ -2653,6 +2649,16 @@ func applyGrokOutcome(ctx context.Context, root string, cfg *Config, t *Task, vi
 	default:
 		return applyGrokUnknownHold(ctx, root, cfg, t, via, prompt, res, runErr, lg, now, dec, unk)
 	}
+}
+
+func applyGrokQuotaAfterFallback(root string, cfg *Config, t *Task, res *claudeResult, combined string, lg *os.File, now time.Time) (handled bool, err error) {
+	if t != nil && root != "" && diskCanceled(root, t.ID) {
+		return true, finalizeCanceled(root, t, lg)
+	}
+	if isLimitHitGrokBuild(res, combined) {
+		return true, pauseGrokBuildLimit(root, cfg, t, res, combined, lg, now)
+	}
+	return false, nil
 }
 
 func applyGrokUnknownHold(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, runErr error, lg *os.File, now time.Time, dec executionDecision, unk grokUnknownHold) (cont, handled bool, err error) {

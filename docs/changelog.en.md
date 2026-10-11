@@ -1,5 +1,13 @@
 # cardex changelog
 
+## 2026-10-11 · v0.10.39: defer dispatch scans and repair terminal consumers
+
+- Defer AGY / Grok worktree inspection until the outcome decision needs it, preserving cancellation, valid terminal and verification semantics without wider permissions or replay of unknown work.
+- Admit an actually completed SOURCE with a closed original attempt/custody through external independent review, retaining held-source, candidate identity, revision and evidence checks.
+- Register exited native Goal completion through existing task locks/CAS instead of waiting on an unrelated root scheduler lock. Manual / hosted paths retain cancellation, stale-attempt and unknown-result rejection.
+- Report durable state and a nonzero exit when an ordinary targeted run cannot persist its terminal; do not advertise in-memory done or call the provider again.
+- Production delta from v38 is +150/-34, net +116; cumulative from v35 is +1336/-326, net +1010. Gross deletions include replaced or moved code, not net slimming. Adopt the complete three-commit candidate with Root independent review and existing real CLI/fake-provider/hosted PTY evidence. No new paid model probes. Native Windows hosted PTY remains unsupported; ARM64 has build-only coverage.
+
 ## 2026-10-11 · v0.10.38: simplify AGY / Grok execution disposition
 
 - Remove unread status, retry and attempt-cap shadow decisions and unused reserved branches. Existing persistence consumers retain cancellation, verification, quota/auth, unknown-no-replay and task MaxAttempts semantics.

@@ -287,6 +287,7 @@ func runCmdRegisteredHarvestForTaskWorkspace(cmd *exec.Cmd, resultInBuf func() b
 	holdingGate := false
 	var launchRoot string
 	var launchAttemptID string
+	var undoStartMarker func() error
 	releaseGate := func() {
 		if holdingGate {
 			admissionLaunchGate.RUnlock()
@@ -338,13 +339,21 @@ func runCmdRegisteredHarvestForTaskWorkspace(cmd *exec.Cmd, resultInBuf func() b
 		}
 		admissionLaunchGate.RLock()
 		holdingGate = true
-		if err := revalidateTaskAttemptAdmission(launchRoot, taskID, launchAttemptID); err != nil {
+		var err error
+		undoStartMarker, err = prepareAttemptInvoke(launchRoot, taskID, launchAttemptID)
+		if err != nil {
 			releaseGate()
 			abortLease()
 			return err
 		}
 	}
 	if err := cmd.Start(); err != nil {
+		if undoStartMarker != nil {
+			// Failure to persist the undo retains uncertainty and blocks replay.
+			if undoErr := undoStartMarker(); undoErr != nil {
+				err = fmt.Errorf("%w; start marker retained: %v", err, undoErr)
+			}
+		}
 		releaseGate()
 		abortLease()
 		return err

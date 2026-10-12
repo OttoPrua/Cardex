@@ -8,6 +8,42 @@ import (
 	"time"
 )
 
+// processObservation is the raw liveness class from a PID probe.
+// Steal and admission consume this class separately: only a definite dead
+// owner is stealable; live and permission-unknown owners stay fail-closed.
+type processObservation int
+
+const (
+	processObservationDead processObservation = iota
+	processObservationLive
+	processObservationUnknown
+)
+
+func (o processObservation) String() string {
+	switch o {
+	case processObservationDead:
+		return "dead"
+	case processObservationLive:
+		return "live"
+	case processObservationUnknown:
+		return "unknown"
+	default:
+		return fmt.Sprintf("processObservation(%d)", int(o))
+	}
+}
+
+// processAlive reports whether pid may still exist. Permission-denied and
+// other failed observations are not evidence of death.
+func processAlive(pid int) bool {
+	return classifyProcessObservation(pid) != processObservationDead
+}
+
+// processObservationAllowsLockSteal is the steal predicate. Only a known-dead
+// owner is recoverable; live and permission-unknown stay owned.
+func processObservationAllowsLockSteal(obs processObservation) bool {
+	return obs == processObservationDead
+}
+
 // schedulerOwned records roots this process successfully acquired. A writer
 // that once owned the lock and then lost the file/contents is fail-closed;
 // CLI/tests that never acquired a given root remain able to write.
@@ -132,7 +168,7 @@ func staleLock(path string, ttl time.Duration) bool {
 	if json.Unmarshal(data, &li) != nil || li.PID <= 0 {
 		return time.Since(fi.ModTime()) > ttl
 	}
-	return !processAlive(li.PID)
+	return processObservationAllowsLockSteal(classifyProcessObservation(li.PID))
 }
 
 func schedulerLockOwnerPID(root string) (int, bool) {
@@ -218,7 +254,7 @@ func releaseLockUnderGuard(root string) {
 // 的 TOCTOU 复核使用: 我们用 os.Rename 抢下的可能是间隙内被他人 Link 上的新鲜锁, 若属存
 // 活异 PID 需要归还 (否则会误删他人正在持有的锁, 造成双持)。
 // 返回 true 才归还; 属自身/已死/不可解析/文件不存在都返回 false, 调用方按"确实抢下 stale"
-// 继续处理。processAlive 已跨 POSIX/Windows 差异实现 (见 state_unix.go / state_windows.go)。
+// 继续处理。classifyProcessObservation 已跨 POSIX/Windows 差异实现 (见 state_unix.go / state_windows.go)。
 func isForeignLiveLock(stalePath string) bool {
 	data, err := os.ReadFile(stalePath)
 	if err != nil {
@@ -231,7 +267,7 @@ func isForeignLiveLock(stalePath string) bool {
 	if li.PID <= 0 || li.PID == os.Getpid() {
 		return false
 	}
-	return processAlive(li.PID)
+	return classifyProcessObservation(li.PID) != processObservationDead
 }
 
 func lockTTL(cfg *Config) time.Duration {

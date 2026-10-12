@@ -69,8 +69,9 @@ const (
 	// evNeedsOwner is an attention signal, not a fabricated terminal. Custody timeout
 	// stays visible without claiming held/done/failed.
 	evNeedsOwner = "needs_owner"
-	// evDeferred is a non-transition skip: the card stays queued. Tick uses it
-	// for write conflicts and automatic Codex budget backoff.
+	// evDeferred is a non-transition skip. Status is the observed task status
+	// (not a queued projection). Tick uses it for write conflicts, live-writer
+	// proof, already-started max1/unknown replay, and automatic Codex budget backoff.
 	evDeferred = "deferred"
 	// evStaleAttemptWrite is a diagnostic: a runner/CAS write lost authority. At most
 	// one is appended per attempt; it never restores scheduling eligibility.

@@ -2272,6 +2272,130 @@ func countFakeHostedNativeBin(t *testing.T, inner, countPath string) string {
 	return path
 }
 
+// This consumer has no in-process or PTY-unavailable fallback: a pass requires
+// the selected installed/candidate executable to launch and close a fake Goal.
+func TestExtraRoundInstalledHostedRenewal(t *testing.T) {
+	bin := strings.TrimSpace(os.Getenv("CARDEX_CANDIDATE"))
+	if bin == "" {
+		t.Skip("set CARDEX_CANDIDATE to the executable under verification")
+	}
+	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("GROK_HOME", home)
+	root, cfg, wf, original, receipt := extraRoundExhaustedFixture(t)
+	origTask, origAttempt := snapshotOldWriterBytes(t, root, original)
+	run := func(args ...string) string {
+		t.Helper()
+		out, stderr, err := runCardexWorkflowProcess(t, bin, args...)
+		if err != nil {
+			t.Fatalf("actual binary %s: %v\n%s\n%s", bin, err, out, stderr)
+		}
+		return out
+	}
+	auth1 := mintExtraRoundAuthorization(t, wf, original, receipt, nil)
+	run(extraRoundDesignResultArgs(wf.ID, root, receipt, auth1)...)
+	disk, err := loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := loadTask(root, disk.WriterTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	receipt2 := closeHeldUnknownGoalWriter(t, root, cfg, wf, first, extraRoundSessionID(2), "att-extra-round-2")
+	oldAttempt, err := loadRequiredGoalAttempt(root, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldAttempt.CreatedAt = time.Now().Add(-24 * time.Hour).Format(time.RFC3339Nano)
+	if err := writeAttempt(root, oldAttempt); err != nil {
+		t.Fatal(err)
+	}
+	_, _, oldDeadline, expired := bootstrapRemainingTimeout(root, first, oldAttempt.AttemptID)
+	if expired == nil || !oldDeadline.Before(time.Now()) {
+		t.Fatal("predecessor fixture must have an expired hard deadline")
+	}
+	firstTask, firstAttempt := snapshotOldWriterBytes(t, root, first)
+	auth2 := mintExtraRoundAuthorization(t, wf, first, receipt2, extraRoundCompose(extraRoundHuman(2), func(g *workflowExtraRoundGrant) {
+		g.BudgetTokens, g.HardTimeoutSeconds = extraRoundAltBudgetTokens, extraRoundAltHardTimeoutSeconds
+	}))
+	run(extraRoundDesignResultArgs(wf.ID, root, receipt2, auth2)...)
+	showOut := run("show", wf.ID, "-root", root)
+	var show map[string]any
+	if err := json.Unmarshal([]byte(showOut), &show); err != nil {
+		t.Fatal(err)
+	}
+	if intFromShow(t, show["current_round"]) != 3 || intFromShow(t, show["max_rounds"]) != 1 || len(extraRoundShowConsumptions(t, show)) != 2 {
+		t.Fatalf("actual CLI did not preserve 3/1 history: %s", showOut)
+	}
+	countPath := filepath.Join(t.TempDir(), "native-calls")
+	cfg.GrokBuildBin = countFakeHostedNativeBin(t, fakeHostedGrokBinNaturalComplete(t), countPath)
+	cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+	saveGoalCfg(t, root, cfg)
+	_, widenErr, widen := runCardexWorkflowProcess(t, bin, "goal-run", wf.ID, "-root", root, "-hosted", "-budget", "250001")
+	if widen == nil || !strings.Contains(widenErr, "budget is frozen") {
+		t.Fatalf("budget widening was accepted: %v %s", widen, widenErr)
+	}
+	if _, err := os.Stat(countPath); !os.IsNotExist(err) {
+		t.Fatal("budget refusal launched a provider")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	started := time.Now()
+	cmd := exec.CommandContext(ctx, bin, "workflow", "goal-run", wf.ID, "-root", root, "-hosted")
+	cmd.Dir = first.Dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("actual binary hosted launch required, no fallback: %v\n%s", err, out)
+	}
+	for _, want := range []string{"--budget 250000", "hard_timeout_seconds: 1800"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("frozen bound %q absent from actual launch: %s", want, out)
+		}
+	}
+	disk, err = loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := loadTask(root, disk.WriterTaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !taskDurablyDone(root, next) || !next.Goal.CustodyReleased || next.ActiveAttemptID != "" || next.SessionID == "" || next.SessionID == first.SessionID {
+		t.Fatalf("new native identity or closeout missing: %+v", next)
+	}
+	if next.Goal.BudgetTokens != 250000 || next.Goal.HardTimeoutSec != 1800 || next.MaxAttempts != 1 || next.AutomaticCodex {
+		t.Fatal("launch changed the frozen grant")
+	}
+	rec, err := loadRequiredGoalAttempt(root, next)
+	if err != nil || rec.State != attemptExited || rec.AttemptID == oldAttempt.AttemptID {
+		t.Fatalf("new attempt missing or not exited: %+v %v", rec, err)
+	}
+	newStart := originalAttemptStartTime(root, next, rec.AttemptID)
+	if newStart.Before(started.Add(-time.Second)) {
+		t.Fatal("new stage reused the expired predecessor clock")
+	}
+	if _, _, err := runCardexWorkflowProcess(t, bin, extraRoundDesignResultArgs(wf.ID, root, receipt2, auth2)...); err == nil {
+		t.Fatal("consumed grant replay admitted another writer")
+	}
+	calls, err := os.ReadFile(countPath)
+	if err != nil || string(calls) != "1" || countExtraRoundWriters(t, root, wf.ID) != 2 {
+		t.Fatalf("replay duplicated writer/provider: calls=%q err=%v", calls, err)
+	}
+	extraRoundAssertBytes(t, root, original, origTask, origAttempt)
+	extraRoundAssertBytes(t, root, first, firstTask, firstAttempt)
+	native, err := os.ReadFile(filepath.Join(grokGoalSessionDir(home, next.Dir, next.SessionID), "goal", "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, _ := json.Marshal(map[string]any{"binary": bin, "binary_sha256": sha256Hex(string(binary)), "round": "3/1", "consumptions": 2, "budget": next.Goal.BudgetTokens, "timeout": next.Goal.HardTimeoutSec, "task": next.ID, "session": next.SessionID, "attempt": rec.AttemptID, "provider_calls": 1, "fallback": false, "native": json.RawMessage(native), "old_task_sha256": sha256Hex(string(firstTask)), "old_attempt_sha256": sha256Hex(string(firstAttempt)), "old_deadline_unchanged": oldDeadline, "new_start": newStart})
+	t.Logf("INSTALLED_HOSTED_RENEWAL %s", proof)
+}
+
 func TestStageCandidateCLIHostedGoalCloseout(t *testing.T) {
 	skipIfGoalPTYUnavailable(t)
 	bin := stageCandidateBin(t)

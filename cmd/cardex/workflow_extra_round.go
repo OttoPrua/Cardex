@@ -18,7 +18,7 @@ const (
 	extraRoundBudgetTokens       = int64(400000)
 	extraRoundHardTimeoutSeconds = int64(5400)
 	extraRoundMaxAttempts        = 1
-	extraRoundAuthRequiredNote = "explicit one-use extra-round authorization bound to workflow/current round/base max/previous task/session/attempt/revision/fresh design digest/one-use Human source-message identity/positive finite budget_tokens/representable hard_timeout_seconds/1/no_auto_retry; each distinct grant admits one same-lineage stage"
+	extraRoundAuthRequiredNote   = "explicit one-use extra-round authorization bound to workflow/current round/base max/previous task/session/attempt/revision/fresh design digest/one-use Human source-message identity/positive finite budget_tokens/representable hard_timeout_seconds/1/no_auto_retry; each distinct grant admits one same-lineage stage"
 )
 
 var (
@@ -101,7 +101,7 @@ func extraRoundValidateLoadedHistory(wf *WorkflowRecord) error {
 		}
 		return nil
 	}
-	if g := len(wf.ExtraRoundGrants); g != 0 && g != extra {
+	if g := len(wf.ExtraRoundGrants); g != extra {
 		return fmt.Errorf("%w: extra-round grants/consumptions length mismatch", errWorkflowMalformed)
 	}
 	seenDigest := map[string]struct{}{}
@@ -110,6 +110,16 @@ func extraRoundValidateLoadedHistory(wf *WorkflowRecord) error {
 		digest := strings.ToLower(strings.TrimSpace(c.GrantDigest))
 		if digest == "" {
 			return fmt.Errorf("%w: extra-round consumption missing grant_digest", errWorkflowMalformed)
+		}
+		grant := c.Grant
+		if grant == nil || grant.consumeDigest() != digest || wf.ExtraRoundGrants[i].consumeDigest() != digest {
+			return fmt.Errorf("%w: extra-round grant identity missing or inconsistent at index %d", errWorkflowMalformed, i)
+		}
+		if grant.Kind != extraRoundKind || c.Kind != extraRoundKind || grant.WorkflowID != wf.ID ||
+			grant.CurrentRound != wf.MaxRounds+i || grant.BaseMaxRounds != wf.MaxRounds ||
+			!strings.EqualFold(grant.DesignDigest, c.DesignDigest) ||
+			strings.TrimSpace(grant.HumanSource) == "" || strings.TrimSpace(grant.HumanMessage) == "" {
+			return fmt.Errorf("%w: extra-round grant lineage missing or inconsistent at index %d", errWorkflowMalformed, i)
 		}
 		if _, dup := seenDigest[digest]; dup {
 			return fmt.Errorf("%w: extra-round consumption grant_digest reused", errWorkflowMalformed)

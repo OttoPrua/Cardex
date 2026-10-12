@@ -1399,6 +1399,43 @@ func TestExtraRoundHistoryTruncationSkipAndV01043(t *testing.T) {
 	})
 }
 
+func TestExtraRoundHistoryGrantIdentityCannotDisappear(t *testing.T) {
+	for _, name := range []string{"missing-identities", "changed-identity", "reordered-grants"} {
+		t.Run(name, func(t *testing.T) {
+			root, cfg, wf, old, receipt := extraRoundExhaustedFixture(t)
+			auth := mintExtraRoundAuthorization(t, wf, old, receipt, nil)
+			first, err := applyWorkflowDesignResultAuth(root, cfg, wf, goalDecisionSuccessor, "budget_limited", receipt, auth)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if name == "reordered-grants" {
+				receipt2 := closeHeldUnknownGoalWriter(t, root, cfg, wf, first, extraRoundSessionID(2), "att-extra-round-2")
+				auth2 := mintExtraRoundAuthorization(t, wf, first, receipt2, extraRoundHuman(2))
+				if _, err := applyWorkflowDesignResultAuth(root, cfg, wf, goalDecisionSuccessor, "budget_limited", receipt2, auth2); err != nil {
+					t.Fatal(err)
+				}
+			}
+			extraRoundPatchWorkflowJSON(t, root, wf.ID, func(obj map[string]any) {
+				cons := obj["extra_round_consumptions"].([]any)
+				grants := obj["extra_round_grants"].([]any)
+				switch name {
+				case "missing-identities":
+					delete(obj, "extra_round_grants")
+					delete(cons[0].(map[string]any), "grant")
+				case "changed-identity":
+					grants[0].(map[string]any)["human_message"] = "different-message"
+					cons[0].(map[string]any)["grant"].(map[string]any)["human_message"] = "different-message"
+				case "reordered-grants":
+					grants[0], grants[1] = grants[1], grants[0]
+				}
+			})
+			if _, err := loadWorkflow(root, cfg, wf.ID); err == nil {
+				t.Fatal("missing or mismatched consumed Human identity must not allow renewal")
+			}
+		})
+	}
+}
+
 func TestExtraRoundArchivedClosedWriterAllowsIndependentGrant(t *testing.T) {
 	t.Parallel()
 	root, cfg, wf, original, receipt := extraRoundExhaustedFixture(t)

@@ -329,11 +329,19 @@ func publishWorkflowWriterLocked(root string, cfg *Config, wf *WorkflowRecord, p
 
 type workflowWriterPublishOpts struct {
 	exceptLiveWriterID        string
+	exceptLiveWriterIDs       []string
 	prepare                   func(*Task)
 	rollbackTaskOnPersistFail bool
 }
 
-func workflowLiveWriterExcept(root string, wf *WorkflowRecord, exceptID string) (*Task, bool) {
+func workflowLiveWriterExcept(root string, wf *WorkflowRecord, exceptIDs ...string) (*Task, bool) {
+	except := make(map[string]struct{}, len(exceptIDs))
+	for _, id := range exceptIDs {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			except[id] = struct{}{}
+		}
+	}
 	tasks, err := loadTasks(root)
 	if err != nil {
 		return nil, true
@@ -346,7 +354,7 @@ func workflowLiveWriterExcept(root string, wf *WorkflowRecord, exceptID string) 
 		if t.IntegrationGate != nil {
 			continue
 		}
-		if exceptID != "" && t.ID == exceptID {
+		if _, skip := except[t.ID]; skip {
 			continue
 		}
 		if !taskIsLive(t) {
@@ -368,7 +376,9 @@ func publishWorkflowWriterWithOpts(root string, cfg *Config, wf *WorkflowRecord,
 			return nil, err
 		}
 	}
-	if active, found := workflowLiveWriterExcept(root, wf, opts.exceptLiveWriterID); found {
+	except := append([]string(nil), opts.exceptLiveWriterIDs...)
+	except = append(except, opts.exceptLiveWriterID)
+	if active, found := workflowLiveWriterExcept(root, wf, except...); found {
 		return active, duplicateRoleErr("writer", active)
 	}
 	explicitPrompt := strings.TrimSpace(prompt)

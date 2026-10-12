@@ -316,7 +316,7 @@ cardex workflow goal-run <id> -manual [-budget N]        # 前台启动交互式
 cardex workflow goal-sync <id>                           # 不启动 provider；核对原生证据并更新阶段事实
 cardex workflow design-result <id> -decision stop|input|successor -observation failed|paused|needs-input|budget_limited
 cardex workflow design-result <id> -design-receipt R -decision successor -observation budget_limited \
-  -extra-round-authorization FILE   # exhausted ceiling only; explicit one-use grant; ordinary no-grant successor stays fail-closed
+  -extra-round-authorization FILE   # exhausted ceiling; same-lineage successive one-grant-one-stage Human grants; Human source/message is one-use; ordinary no-grant successor stays fail-closed
 cardex workflow freeze-candidate <id> -commit C -tree T  # 默认：writer 仍 live 或 held 时拒绝
 cardex workflow freeze-candidate <id> -commit C -tree T -retained-held-source
                                                          # 显式：仅在原 attempt 已 closeout 且 process/lease/资源 custody 已释放后，冻结 held SOURCE；writer 保持 held/unknown，不把 budget_limited 制成 done
@@ -374,16 +374,20 @@ cardex workflow design-result <id> -design-receipt /absolute/path/to/fresh-desig
   -decision accept|revise|stop|input|successor -observation complete|failed|paused|needs-input|budget_limited
 
 # Ordinary ceiling exhausted (current_round == max_rounds, including 1/1): no-grant successor still refuses.
-# Exactly one extra SOURCE round requires a manager-attested local authorization file, a fresh
-# independent design receipt, and released custody. Original max_rounds is unchanged. The new
-# writer's budget_tokens and hard_timeout_seconds are the grant's own positive integer literals
-# (timeout must be representable as a duration), with max_attempts=1 and no auto retry, bound
-# before the writer is persisted. The current backend-consumer example is 400000 / 5400.
-# Authority is local evidence whose bytes and bindings are checked; the CLI does not
-# cryptographically authenticate a Human chat message. This is not an auto-grant service.
-# Missing, mismatched, replayed, stale-design, paused, or active-custody grants refuse without
-# a second writer. `workflow show` reports original max, the authorized extra round, and
-# consumed grant bindings.
+# Same-lineage extra-round renewal: each distinct manager-attested Human grant admits exactly one
+# next unstarted manual Goal under the same workflow (1/1 → 2/1, then 2/1 → 3/1, then 4/1).
+# Original max_rounds is unchanged. The new writer's budget_tokens and hard_timeout_seconds are
+# the grant's own positive integer literals (timeout must be representable as a duration), with
+# max_attempts=1 and no auto retry, bound before the writer is persisted. The current
+# backend-consumer example is 400000 / 5400. Human source/message is one-use in this workflow:
+# a changed nonce, evidence path, digest, or predecessor binding of an already-consumed Human
+# identity refuses. Prior extra-round grants/consumptions stay ordered; closed or archived
+# extra-round writers do not globally block a new independent grant; a live or uncommitted
+# extra-round writer does. Authority is local evidence whose bytes and bindings are checked;
+# the CLI does not cryptographically authenticate a Human chat message. This is not an
+# auto-grant service. Missing, mismatched, replayed, stale-design, paused, skipped-history, or
+# active-custody grants refuse without a second writer. `workflow show` reports original max,
+# the authorized extra round, and ordered grant/consumption history.
 cardex workflow design-result wf-fake -root /absolute/path/to/fake-root \
   -design-receipt /absolute/path/to/fake-fresh-design.json \
   -decision successor -observation budget_limited \
@@ -494,7 +498,7 @@ Synthetic extra-round authorization (placeholders only; never paste live consume
 
 `goal-run -hosted` 是前台 supervisor，持续转发 PTY 输出，不会自行后台化。Hermes 等短时工具调用应使用已有受管后台任务（如 `terminal(background=true, notify=true)`），保留 session 并用 `process` 的 poll/wait 读取输出和退出结果。Cardex 内部硬期限仍有效；外层 foreground timeout 可先终止 supervisor。输出或 `/goal` 注入成功都不证明原生 Goal 已接受；超时后先由原 owner 核对进程、后代和 custody，不自动重试。
 
-未知执行结果不能通过 `accept` 或 `revise` 晋升。原 owner 核对并回收 custody 后，管理者可用新设计回执消费精确 task/session/attempt/revision，明确选择 `design-result -decision successor`；它只在既有轮次、路由和预算权限内退休旧写者并创建未启动的新写者，旧原生结果仍是 unknown。显式 sealed/no-successor 限制仍须由管理者遵守，不得把此命令当自动重试许可。普通 `successor` 在 `current_round == max_rounds`（含 1/1）时仍拒绝。若管理者持有一次性 extra-round 授权文件，可在同一命令上加 `-extra-round-authorization FILE`：只打开一个新的 manual Goal 写者（round = max_rounds+1），原 `max_rounds` 不变，旧 held/unknown 字节不改写、不临时重新入队；新阶段冻结授权文件自身的正有限 `budget_tokens` 与可表示为 duration 的 `hard_timeout_seconds`，以及 `max_attempts=1` / no-auto（当前 backend-consumer 示例为 400000/5400）。授权是经理见证的本地证据，不是对 Human 的密码学认证，也不是自动发放服务。消耗后不可重放。未成功写出 extra writer 之前的发布失败不永久消耗仍有效的授权。
+未知执行结果不能通过 `accept` 或 `revise` 晋升。原 owner 核对并回收 custody 后，管理者可用新设计回执消费精确 task/session/attempt/revision，明确选择 `design-result -decision successor`；它只在既有轮次、路由和预算权限内退休旧写者并创建未启动的新写者，旧原生结果仍是 unknown。显式 sealed/no-successor 限制仍须由管理者遵守，不得把此命令当自动重试许可。普通 `successor` 在 `current_round == max_rounds`（含 1/1）时仍拒绝，无新授权的 successor/revise/repair 在 extra-round 之后仍拒绝。同一 lineage 的 extra-round 续轮走现有 `design-result -decision successor -extra-round-authorization FILE`：每一份独立的新鲜 Human 授权只打开一个下一未启动 manual Goal 写者（`1/1 → 2/1`，关闭后的 extra-round 前驱再加新授权可到 `3/1`、`4/1`），原 `max_rounds` 不变；Human `source`/`message` 在本 workflow 一次性，改 nonce/evidence/digest/predecessor 也不能重用已消耗的 Human 身份。旧 held/unknown 与先前 extra-round 的 task/attempt/Goal/预算/截止字节不改写、不临时重新入队；新阶段冻结该授权自身的正有限 `budget_tokens` 与可表示为 duration 的 `hard_timeout_seconds`，以及 `max_attempts=1` / no-auto（当前 backend-consumer 示例为 400000/5400），启动使用新的 session/attempt 与新的硬时长。授权是经理见证的本地证据，不是对 Human 的密码学认证，也不是自动发放服务。已关闭或已归档的 extra-round 写者不全局挡住新的独立 Human 授权；可见未提交/仍 live 的 extra-round 写者、并发同一当前态授权、task 已发布但 workflow 未保存的缝，不能再开第二个写者。未成功写出 extra writer 之前的发布失败不永久消耗仍有效的授权。截断或跳轮的 extra-round 历史拒绝加载；已安装 v0.10.43 的 extra-round 记录仍可读取。`workflow show` 报告原 max、当前授权 extra round，以及有序 grant/consumption 历史。
 
 
 ### 零 provider 的人工本地采用

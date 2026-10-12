@@ -320,8 +320,8 @@ func normalizeWorkflowRecordOpts(cfg *Config, wf *WorkflowRecord, historical boo
 	if wf.MaxRounds < 1 {
 		return fmt.Errorf("%w: max_rounds must be >= 1", errWorkflowMalformed)
 	}
-	if !extraRoundCurrentRoundAllowed(wf) {
-		return fmt.Errorf("%w: current_round %d out of 0..%d", errWorkflowMalformed, wf.CurrentRound, wf.MaxRounds)
+	if err := extraRoundValidateLoadedHistory(wf); err != nil {
+		return err
 	}
 	if wf.WriterEngine == "auto" {
 		if !validMixedWorkClass(wf.WriterWorkClass) || canonicalCategory(wf.WriterRouteClass) == "" || strings.TrimSpace(wf.WriterModel) == "" {

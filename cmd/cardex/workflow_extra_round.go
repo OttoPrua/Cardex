@@ -18,7 +18,7 @@ const (
 	extraRoundBudgetTokens       = int64(400000)
 	extraRoundHardTimeoutSeconds = int64(5400)
 	extraRoundMaxAttempts        = 1
-	extraRoundAuthRequiredNote   = "explicit one-use extra-round authorization bound to workflow/current round/base max/previous task/session/attempt/revision/fresh design digest/Human source-message-evidence identity/positive finite budget_tokens/representable hard_timeout_seconds/1/no_auto_retry"
+	extraRoundAuthRequiredNote = "explicit one-use extra-round authorization bound to workflow/current round/base max/previous task/session/attempt/revision/fresh design digest/one-use Human source-message identity/positive finite budget_tokens/representable hard_timeout_seconds/1/no_auto_retry; each distinct grant admits one same-lineage stage"
 )
 
 var (
@@ -71,26 +71,139 @@ func extraRoundHasConsumption(wf *WorkflowRecord) bool {
 	return wf != nil && len(wf.ExtraRoundConsumptions) > 0
 }
 
+func extraRoundExpectedCount(wf *WorkflowRecord) int {
+	if wf == nil || wf.CurrentRound <= wf.MaxRounds {
+		return 0
+	}
+	return wf.CurrentRound - wf.MaxRounds
+}
+
+func extraRoundHumanKey(source, message string) string {
+	return strings.TrimSpace(source) + "\x1e" + strings.TrimSpace(message)
+}
+
+func extraRoundValidateLoadedHistory(wf *WorkflowRecord) error {
+	if wf == nil {
+		return errWorkflowMalformed
+	}
+	if wf.CurrentRound < 0 {
+		return fmt.Errorf("%w: current_round %d out of 0..%d", errWorkflowMalformed, wf.CurrentRound, wf.MaxRounds)
+	}
+	extra := extraRoundExpectedCount(wf)
+	n := len(wf.ExtraRoundConsumptions)
+	if n != extra {
+		return fmt.Errorf("%w: extra-round history missing, inconsistent, or skipped (current_round=%d max_rounds=%d consumptions=%d)",
+			errWorkflowMalformed, wf.CurrentRound, wf.MaxRounds, n)
+	}
+	if extra == 0 {
+		if len(wf.ExtraRoundGrants) != 0 {
+			return fmt.Errorf("%w: extra-round grants present without matching consumptions", errWorkflowMalformed)
+		}
+		return nil
+	}
+	if g := len(wf.ExtraRoundGrants); g != 0 && g != extra {
+		return fmt.Errorf("%w: extra-round grants/consumptions length mismatch", errWorkflowMalformed)
+	}
+	seenDigest := map[string]struct{}{}
+	seenHuman := map[string]struct{}{}
+	for i, c := range wf.ExtraRoundConsumptions {
+		digest := strings.ToLower(strings.TrimSpace(c.GrantDigest))
+		if digest == "" {
+			return fmt.Errorf("%w: extra-round consumption missing grant_digest", errWorkflowMalformed)
+		}
+		if _, dup := seenDigest[digest]; dup {
+			return fmt.Errorf("%w: extra-round consumption grant_digest reused", errWorkflowMalformed)
+		}
+		seenDigest[digest] = struct{}{}
+		if c.AdmittedRound != 0 && c.AdmittedRound != wf.MaxRounds+i+1 {
+			return fmt.Errorf("%w: extra-round history skipped or inconsistent at index %d", errWorkflowMalformed, i)
+		}
+		if c.Grant != nil {
+			key := extraRoundHumanKey(c.Grant.HumanSource, c.Grant.HumanMessage)
+			if key != "\x1e" {
+				if _, dup := seenHuman[key]; dup {
+					return fmt.Errorf("%w: extra-round Human source/message reused in history", errWorkflowMalformed)
+				}
+				seenHuman[key] = struct{}{}
+			}
+		}
+	}
+	return nil
+}
+
 func extraRoundCurrentRoundAllowed(wf *WorkflowRecord) bool {
-	if wf == nil || wf.CurrentRound < 0 {
-		return false
-	}
-	if wf.CurrentRound <= wf.MaxRounds {
-		return true
-	}
-	return extraRoundHasConsumption(wf) && wf.CurrentRound == wf.MaxRounds+1
+	return extraRoundValidateLoadedHistory(wf) == nil
 }
 
 func extraRoundGrantConsumed(wf *WorkflowRecord, digest string) bool {
 	if wf == nil || digest == "" {
 		return false
 	}
+	want := strings.ToLower(strings.TrimSpace(digest))
 	for _, c := range wf.ExtraRoundConsumptions {
-		if strings.EqualFold(strings.TrimSpace(c.GrantDigest), digest) {
+		if strings.EqualFold(strings.TrimSpace(c.GrantDigest), want) {
+			return true
+		}
+	}
+	for _, g := range wf.ExtraRoundGrants {
+		if strings.EqualFold(g.consumeDigest(), want) {
 			return true
 		}
 	}
 	return false
+}
+
+func extraRoundHumanConsumed(wf *WorkflowRecord, source, message string) bool {
+	if wf == nil {
+		return false
+	}
+	key := extraRoundHumanKey(source, message)
+	if key == "\x1e" {
+		return false
+	}
+	for _, g := range wf.ExtraRoundGrants {
+		if extraRoundHumanKey(g.HumanSource, g.HumanMessage) == key {
+			return true
+		}
+	}
+	for _, c := range wf.ExtraRoundConsumptions {
+		if c.Grant == nil {
+			continue
+		}
+		if extraRoundHumanKey(c.Grant.HumanSource, c.Grant.HumanMessage) == key {
+			return true
+		}
+	}
+	return false
+}
+
+func extraRoundStageReleased(root string, t *Task) bool {
+	if t == nil || t.Goal == nil {
+		return false
+	}
+	switch t.Goal.Observation {
+	case goalObsUnstarted, goalObsRunning:
+		return false
+	}
+	if taskIsDispatchable(t) {
+		return false
+	}
+	if strings.TrimSpace(t.Goal.Continuation) != "" {
+		return false
+	}
+	obs := strings.TrimSpace(t.Goal.Observation)
+	native := strings.TrimSpace(t.Goal.LastNativeStatus)
+	if obs == "paused" || obs == "needs-input" || native == "paused" || native == "needs-input" || native == "user_paused" {
+		return false
+	}
+	return goalCustodyReleased(root, t)
+}
+
+func extraRoundWriterBlocksAdmission(root string, t *Task) bool {
+	if t == nil || t.Goal == nil || !t.Goal.ExtraRoundAuthorized {
+		return false
+	}
+	return !extraRoundStageReleased(root, t)
 }
 
 func extraRoundExistingWriter(root string, wf *WorkflowRecord, exceptWriterID string) (*Task, error) {
@@ -108,14 +221,36 @@ func extraRoundExistingWriter(root string, wf *WorkflowRecord, exceptWriterID st
 		if exceptWriterID != "" && t.ID == exceptWriterID {
 			continue
 		}
-		return t, nil
+		if extraRoundWriterBlocksAdmission(root, t) {
+			return t, nil
+		}
 	}
 	return nil, nil
 }
 
+func extraRoundReleasedWriterIDs(root string, wf *WorkflowRecord) ([]string, error) {
+	if wf == nil {
+		return nil, extraRoundRefused("missing workflow")
+	}
+	tasks, err := loadTasks(root)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, t := range tasks {
+		if t == nil || t.WorkflowID != wf.ID || t.IntegrationGate != nil {
+			continue
+		}
+		if extraRoundStageReleased(root, t) {
+			ids = append(ids, t.ID)
+		}
+	}
+	return ids, nil
+}
+
 func extraRoundRefuseIfAlreadyAdmitted(root string, wf *WorkflowRecord, exceptWriterID string) error {
-	if extraRoundHasConsumption(wf) {
-		return extraRoundRefused("extra-round grant already consumed")
+	if err := extraRoundValidateLoadedHistory(wf); err != nil {
+		return extraRoundRefused("extra-round history is missing, inconsistent, or skipped")
 	}
 	existing, err := extraRoundExistingWriter(root, wf, exceptWriterID)
 	if err != nil {
@@ -299,6 +434,9 @@ func bindExtraRoundAuthorization(grant *workflowExtraRoundGrant, wf *WorkflowRec
 		return err
 	}
 	digest := grant.consumeDigest()
+	if extraRoundHumanConsumed(wf, grant.HumanSource, grant.HumanMessage) {
+		return extraRoundRefused("Human source/message already consumed")
+	}
 	if extraRoundGrantConsumed(wf, digest) {
 		return extraRoundRefused("authorization already consumed")
 	}
@@ -310,10 +448,14 @@ func extraRoundShowView(wf *WorkflowRecord) map[string]any {
 		return nil
 	}
 	last := wf.ExtraRoundConsumptions[len(wf.ExtraRoundConsumptions)-1]
+	consumptions := append([]workflowExtraRoundConsumption(nil), wf.ExtraRoundConsumptions...)
+	grants := append([]workflowExtraRoundGrant(nil), wf.ExtraRoundGrants...)
 	return map[string]any{
 		"original_max_rounds":    wf.MaxRounds,
 		"authorized_extra_round": wf.CurrentRound,
 		"consumed":               last,
+		"consumptions":           consumptions,
+		"grants":                 grants,
 	}
 }
 
@@ -350,6 +492,13 @@ func admitAuthorizedExtraRoundLocked(root string, cfg *Config, wf *WorkflowRecor
 	}
 	if !goalCustodyReleased(root, t) {
 		return nil, extraRoundRefused("cannot open an extra-round successor while custody is held")
+	}
+	if t.Goal != nil && t.Goal.ExtraRoundAuthorized && extraRoundWriterBlocksAdmission(root, t) {
+		return nil, extraRoundRefused("previous extra-round writer is still live")
+	}
+	exceptIDs, err := extraRoundReleasedWriterIDs(root, wf)
+	if err != nil {
+		return nil, extraRoundRefused("cannot inspect extra-round writers: " + err.Error())
 	}
 	grant, err := loadExtraRoundAuthorization(authPath)
 	if err != nil {
@@ -398,6 +547,7 @@ func admitAuthorizedExtraRoundLocked(root string, cfg *Config, wf *WorkflowRecor
 	oldWriterID := t.ID
 	next, err := publishWorkflowWriterWithOpts(root, cfg, wf, "", goal, true, workflowWriterPublishOpts{
 		exceptLiveWriterID:        oldWriterID,
+		exceptLiveWriterIDs:       exceptIDs,
 		rollbackTaskOnPersistFail: false,
 		prepare: func(next *Task) {
 			next.MaxAttempts = extraRoundMaxAttempts
@@ -411,6 +561,14 @@ func admitAuthorizedExtraRoundLocked(root string, cfg *Config, wf *WorkflowRecor
 				next.Goal.ExtraRoundAuthorized = true
 				next.Goal.WriterMode = goalWriterManual
 				next.Goal.Observation = goalObsUnstarted
+				next.Goal.BoundAttemptID = ""
+				next.Goal.NativeGoalID = ""
+				next.Goal.Started = false
+				next.Goal.LastNativeStatus = ""
+				next.Goal.Continuation = ""
+				next.Goal.CustodyReleased = false
+				next.Goal.ObservationNote = ""
+				next.Goal.LaunchRemainingTimeout = 0
 			}
 			if n := len(wf.ExtraRoundConsumptions); n > 0 {
 				wf.ExtraRoundConsumptions[n-1].WriterTaskID = next.ID

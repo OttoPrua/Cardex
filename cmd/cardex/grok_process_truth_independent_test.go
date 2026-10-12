@@ -11,13 +11,14 @@ package main
 //  1. Fail-closed evidence anywhere in the full stderr stream keeps the closed
 //     process classes unreachable, no matter how far past the bounded
 //     positive-selection window the evidence appears.
-//  2. No byte of raw stderr, and no credential material carried on it, reaches
-//     any file under the state root. The whole root is walked, including the
-//     per-task log that the candidate's own leak assertion does not read.
+//  2. Credentials never reach any state file. Raw diagnostics stay out of public
+//     state, including the per-task log. The explicitly private, bounded stderr
+//     excerpt introduced in 0.10.42 is checked separately from public metadata.
 //  3. A zero-semantic non-zero exit is held truthfully: no retry, no fallback
 //     writer, no resume/backoff, no cooldown, no attempt consumption.
 import (
 	"context"
+	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -305,6 +306,16 @@ func cprocProductCalls(t *testing.T, path string) int {
 // and any cooldown written along the way are all in scope.
 func cprocAssertRootFree(t *testing.T, root string, needles ...string) {
 	t.Helper()
+	cprocAssertStateFree(t, root, false, needles...)
+}
+
+func cprocAssertPublicStateFree(t *testing.T, root string, needles ...string) {
+	t.Helper()
+	cprocAssertStateFree(t, root, true, needles...)
+}
+
+func cprocAssertStateFree(t *testing.T, root string, allowPrivateExcerpt bool, needles ...string) {
+	t.Helper()
 	scanned := 0
 	sawTask, sawEvents, sawLog := false, false, false
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -331,6 +342,25 @@ func cprocAssertRootFree(t *testing.T, root string, needles ...string) {
 		}
 		scanned++
 		blob := string(data)
+		if allowPrivateExcerpt && filepath.Dir(path) == logsDir(root) && strings.HasPrefix(filepath.Base(path), "grok-stderr-") && strings.HasSuffix(path, ".json") {
+			var evidence map[string]any
+			if err := json.Unmarshal(data, &evidence); err != nil {
+				t.Fatal(err)
+			}
+			excerpt, ok := evidence["excerpt"].(string)
+			info, err := os.Stat(path)
+			if err != nil || !lifecycleProbeModeValid(info) || !ok || evidence["excerpt_format"] != "redacted_bounded_excerpt" || len(excerpt) > grokBuildProcessStderrMaxBytes || strings.Count(excerpt, "\n") > grokBuildProcessStderrMaxLines {
+				t.Fatal("invalid private stderr excerpt")
+			}
+			// Only the explicit private excerpt is exempt from public-text checks.
+			// cprocAssertRootFree still scans credentials in the complete file.
+			delete(evidence, "excerpt")
+			metadata, err := json.Marshal(evidence)
+			if err != nil {
+				t.Fatal(err)
+			}
+			blob = string(metadata)
+		}
 		for _, needle := range needles {
 			if needle == "" {
 				continue
@@ -372,21 +402,21 @@ func cprocProcessCases() []cprocProcessCase {
 			stderr:    "connection reset by peer\ncontext: authorization " + cprocBearerSecret + " target " + cprocURLSecret,
 			exitCode:  1,
 			wantClass: grokBuildProcessClassTransport,
-			secrets:   []string{cprocBearerSecret, cprocURLSecret, "connection reset by peer"},
+			secrets:   []string{cprocBearerSecret, cprocURLSecret},
 		},
 		{
 			name:      "permission environment with credential path",
 			stderr:    "permission denied opening " + cprocHomePathSecret + "\nkey " + cprocAPIKeySecret,
 			exitCode:  2,
 			wantClass: grokBuildProcessClassPermissionEnvironment,
-			secrets:   []string{cprocHomePathSecret, cprocAPIKeySecret, "permission denied"},
+			secrets:   []string{cprocHomePathSecret, cprocAPIKeySecret},
 		},
 		{
 			name:      "invalid invocation echoing a secret flag value",
 			stderr:    "invalid option --token=" + cprocBearerSecret,
 			exitCode:  3,
 			wantClass: grokBuildProcessClassInvalidInvocation,
-			secrets:   []string{cprocBearerSecret, "invalid option"},
+			secrets:   []string{cprocBearerSecret},
 		},
 		{
 			name:      "unclassified carrying every secret shape",
@@ -395,7 +425,7 @@ func cprocProcessCases() []cprocProcessCase {
 			wantClass: grokBuildProcessClassUnclassified,
 			secrets: []string{
 				cprocBearerSecret, cprocAPIKeySecret, cprocURLSecret,
-				cprocPasswordSecret, cprocHomePathSecret, "internal failure",
+				cprocPasswordSecret, cprocHomePathSecret,
 			},
 		},
 		{
@@ -403,7 +433,7 @@ func cprocProcessCases() []cprocProcessCase {
 			stderr:    "connection refused\n" + strings.Join(cprocNoise(500), "\n") + "\ntrailing " + cprocBearerSecret,
 			exitCode:  5,
 			wantClass: grokBuildProcessClassTransport,
-			secrets:   []string{cprocBearerSecret, "connection refused"},
+			secrets:   []string{cprocBearerSecret},
 		},
 	}
 }
@@ -523,13 +553,14 @@ func TestCPROCPersistentStateNeverRetainsRawStderrOrCredentials(t *testing.T) {
 			root, got, productCalls := cprocRunHeld(t, tc.stderr, tc.exitCode, false)
 			cprocAssertTruthfulHold(t, root, got, productCalls, tc.wantClass, strconv.Itoa(tc.exitCode))
 			needles := append([]string{cprocStdoutSecret}, tc.secrets...)
-			// Every non-empty physical stderr line is also forbidden verbatim.
+			cprocAssertRootFree(t, root, needles...)
+			// Public files still forbid every physical stderr line verbatim.
 			for _, line := range strings.Split(tc.stderr, "\n") {
 				if line = strings.TrimSpace(line); line != "" {
 					needles = append(needles, line)
 				}
 			}
-			cprocAssertRootFree(t, root, needles...)
+			cprocAssertPublicStateFree(t, root, needles...)
 		})
 	}
 }
@@ -546,7 +577,8 @@ func TestCPROCZeroSemanticNonzeroExitsHoldTruthfully(t *testing.T) {
 			root, got, productCalls := cprocRunHeld(t, stderr, exitCode, false)
 			cprocAssertTruthfulHold(t, root, got, productCalls,
 				grokBuildProcessClassTransport, strconv.Itoa(exitCode))
-			cprocAssertRootFree(t, root, cprocBearerSecret, "connection reset by peer")
+			cprocAssertRootFree(t, root, cprocBearerSecret)
+			cprocAssertPublicStateFree(t, root, "connection reset by peer")
 		})
 	}
 }
@@ -559,7 +591,8 @@ func TestCPROCSignalKilledZeroEventHoldsTruthfully(t *testing.T) {
 	stderr := "connection refused\ncontext " + cprocAPIKeySecret
 	root, got, productCalls := cprocRunHeld(t, stderr, 0, true)
 	cprocAssertTruthfulHold(t, root, got, productCalls, grokBuildProcessClassTransport, "-1")
-	cprocAssertRootFree(t, root, cprocAPIKeySecret, "connection refused")
+	cprocAssertRootFree(t, root, cprocAPIKeySecret)
+	cprocAssertPublicStateFree(t, root, "connection refused")
 }
 
 // TestCPROCFailClosedEvidenceNeverBecomesAProcessHold is the end-to-end mirror of

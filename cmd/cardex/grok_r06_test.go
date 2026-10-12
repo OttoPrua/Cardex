@@ -151,7 +151,8 @@ func TestR06ProcessTruthParity(t *testing.T) {
 		root, got, productCalls := cprocRunHeld(t, "connection reset by peer\ncontext "+cprocBearerSecret, 7, false)
 		cprocAssertTruthfulHold(t, root, got, productCalls, grokBuildProcessClassTransport, "7")
 		r06AssertNoFakeSuccess(t, got)
-		cprocAssertRootFree(t, root, cprocBearerSecret, "connection reset by peer")
+		cprocAssertRootFree(t, root, cprocBearerSecret)
+		cprocAssertPublicStateFree(t, root, "connection reset by peer")
 	})
 	t.Run("missing-terminal", func(t *testing.T) {
 		root := testRoot(t)

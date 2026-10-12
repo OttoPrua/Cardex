@@ -201,7 +201,9 @@ func canonicalGrokBuildAuthReason(scan string) string {
 var (
 	grokBuildBearerSecretRe     = regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`)
 	grokBuildAuthorizationRe    = regexp.MustCompile(`(?i)\bauthorization\b\s*[:=]\s*[^,\s)]+`)
-	grokBuildSecretAssignmentRe = regexp.MustCompile(`(?i)\b(access[_-]?token|refresh[_-]?token|api[_-]?key|x-api-key)\b\s*[:=]\s*[^,\s)]+`)
+	grokBuildSecretAssignmentRe = regexp.MustCompile(`(?i)\b(access[_-]?token|refresh[_-]?token|api[_-]?key|x-api-key|token|password|passphrase|client[_-]?secret)\b["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^,\s)]+)`)
+	grokBuildProviderSecretRe   = regexp.MustCompile(`(?i)\b(?:xai|sk)-[a-z0-9_-]{8,}\b`)
+	grokBuildCredentialPathRe   = regexp.MustCompile(`(?i)(?:[a-z]:[\\/]|/|~[\\/])[^\s"'<>]*[\\/]\.grokcreds(?:[\\/][^\s"'<>]*)?`)
 	grokBuildAuthEnvelopeRe     = regexp.MustCompile(`(?i)^(?:(?:http(?:/\d(?:\.\d)?)?\s+)?401\s+unauthorized|unauthorized\s*\(\s*401\s*\)(?:\s+from\s+https://[a-z0-9._~:/?#\[\]@!$&'*+,;=%-]+)?)\s*:\s*invalid or expired credentials\s*(.*)$`)
 	grokBuildTrustedAuthLineRe  = regexp.MustCompile(`(?i)^(?:(?:http(?:/\d(?:\.\d)?)?\s+)?401\s+unauthorized|unauthorized\s*\(\s*401\s*\))(?:\s*:\s*(?:invalid or expired credentials|invalid api key|credentials invalid or expired))?(?:\s*;\s*[a-z_]+\s*=\s*[a-z0-9 _-]+)*$`)
 )
@@ -244,6 +246,8 @@ func safeGrokBuildProbeDiagnostic(raw string, runErr error) string {
 	line = grokBuildBearerSecretRe.ReplaceAllString(line, "Bearer <redacted>")
 	line = grokBuildAuthorizationRe.ReplaceAllString(line, "Authorization=<redacted>")
 	line = grokBuildSecretAssignmentRe.ReplaceAllString(line, "$1=<redacted>")
+	line = grokBuildProviderSecretRe.ReplaceAllString(line, "<redacted>")
+	line = grokBuildCredentialPathRe.ReplaceAllString(line, "<credential-path>")
 	if len(line) > 400 {
 		line = line[:400] + "…"
 	}
@@ -251,6 +255,72 @@ func safeGrokBuildProbeDiagnostic(raw string, runErr error) string {
 		line = "unknown preflight failure"
 	}
 	return line
+}
+
+// Retain failure diagnostics before parsing/harvest can discard stderr. This is
+// evidence only: neither the excerpt nor a capture error is a policy input.
+func retainGrokBuildStderr(root string, t *Task, stderr string) error {
+	meta := map[string]any{
+		"task_id": t.ID, "attempt_id": t.ActiveAttemptID, "step": t.Step, "attempt": t.Attempts,
+		"stderr_bytes": len(stderr), "stderr_sha256": fmt.Sprintf("%x", sha256.Sum256([]byte(stderr))),
+		"stderr_line_count_bucket": grokBuildProcessStderrLineCountBucket(stderr),
+		"excerpt_format":           "redacted_bounded_excerpt",
+	}
+	var excerpt strings.Builder
+	for i, line := range strings.SplitN(stderr, "\n", grokBuildProcessStderrMaxLines+1) {
+		if i == grokBuildProcessStderrMaxLines {
+			break
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		line = safeGrokBuildProbeDiagnostic(line, nil)
+		if excerpt.Len()+len(line)+1 > grokBuildProcessStderrMaxBytes {
+			break
+		}
+		excerpt.WriteString(line + "\n")
+	}
+	// Reuse private provider-file creation (0600 on Unix, protected DACL on
+	// Windows). Unique filenames also preserve repeated invocations of one task.
+	err := os.MkdirAll(logsDir(root), 0700)
+	path := filepath.Join(logsDir(root), "grok-stderr-"+newOpaqueID("")+".json")
+	if err == nil {
+		var f *os.File
+		f, err = createPrivateProviderFile(path)
+		if err == nil {
+			meta["excerpt"] = excerpt.String()
+			err = json.NewEncoder(f).Encode(meta)
+			delete(meta, "excerpt")
+			if err == nil {
+				err = f.Sync()
+			}
+			if closeErr := f.Close(); err == nil {
+				err = closeErr
+			}
+			if err == nil {
+				err = syncContainingDirectory(logsDir(root))
+			}
+		}
+	}
+	meta["capture_status"] = "failed"
+	if err == nil {
+		meta["capture_status"] = "saved"
+		meta["stderr_evidence_path"] = path
+	}
+	// The existing task log contains only safe identity/hash/reference metadata.
+	// The private excerpt is never added to task/event JSON or returned combined.
+	lg, logErr := openTaskLog(root, t.ID)
+	if logErr == nil {
+		data, _ := json.Marshal(meta)
+		_, logErr = fmt.Fprintf(lg, "--- GROK_STDERR_EVIDENCE ---\n%s\n", data)
+		if logErr == nil {
+			logErr = lg.Sync()
+		}
+		if closeErr := lg.Close(); logErr == nil {
+			logErr = closeErr
+		}
+	}
+	return errors.Join(err, logErr)
 }
 
 // runGrokBuildAuthProbe asks the CLI for its model list. This reaches the CLI's authenticated
@@ -2365,6 +2435,11 @@ func invokeGrokBuild(ctx context.Context, root string, cfg *Config, t *Task, pro
 			runErr = fmt.Errorf("步骤超时（%d 分钟）: %w", cfg.StepTimeoutMin, runErr)
 		} else {
 			runErr = fmt.Errorf("步骤超时（%d 分钟）", cfg.StepTimeoutMin)
+		}
+	}
+	if processErr != nil && stderr.Len() > 0 {
+		if err := retainGrokBuildStderr(root, t, stderr.String()); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: Grok stderr evidence capture incomplete for task %s: %v\n", t.ID, err)
 		}
 	}
 	combined := stdout.String() + "\n" + stderr.String()

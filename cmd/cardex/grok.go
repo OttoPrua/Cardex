@@ -201,7 +201,9 @@ func canonicalGrokBuildAuthReason(scan string) string {
 var (
 	grokBuildBearerSecretRe     = regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`)
 	grokBuildAuthorizationRe    = regexp.MustCompile(`(?i)\bauthorization\b\s*[:=]\s*[^,\s)]+`)
-	grokBuildSecretAssignmentRe = regexp.MustCompile(`(?i)\b(access[_-]?token|refresh[_-]?token|api[_-]?key|x-api-key)\b\s*[:=]\s*[^,\s)]+`)
+	grokBuildSecretAssignmentRe = regexp.MustCompile(`(?i)\b(access[_-]?token|refresh[_-]?token|api[_-]?key|x-api-key|token|password|passphrase|client[_-]?secret)\b["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^,\s)]+)`)
+	grokBuildProviderSecretRe   = regexp.MustCompile(`(?i)\b(?:xai|sk)-[a-z0-9_-]{8,}\b`)
+	grokBuildCredentialPathRe   = regexp.MustCompile(`(?i)(?:[a-z]:[\\/]|/|~[\\/])[^\s"'<>]*[\\/]\.grokcreds(?:[\\/][^\s"'<>]*)?`)
 	grokBuildAuthEnvelopeRe     = regexp.MustCompile(`(?i)^(?:(?:http(?:/\d(?:\.\d)?)?\s+)?401\s+unauthorized|unauthorized\s*\(\s*401\s*\)(?:\s+from\s+https://[a-z0-9._~:/?#\[\]@!$&'*+,;=%-]+)?)\s*:\s*invalid or expired credentials\s*(.*)$`)
 	grokBuildTrustedAuthLineRe  = regexp.MustCompile(`(?i)^(?:(?:http(?:/\d(?:\.\d)?)?\s+)?401\s+unauthorized|unauthorized\s*\(\s*401\s*\))(?:\s*:\s*(?:invalid or expired credentials|invalid api key|credentials invalid or expired))?(?:\s*;\s*[a-z_]+\s*=\s*[a-z0-9 _-]+)*$`)
 )
@@ -244,6 +246,8 @@ func safeGrokBuildProbeDiagnostic(raw string, runErr error) string {
 	line = grokBuildBearerSecretRe.ReplaceAllString(line, "Bearer <redacted>")
 	line = grokBuildAuthorizationRe.ReplaceAllString(line, "Authorization=<redacted>")
 	line = grokBuildSecretAssignmentRe.ReplaceAllString(line, "$1=<redacted>")
+	line = grokBuildProviderSecretRe.ReplaceAllString(line, "<redacted>")
+	line = grokBuildCredentialPathRe.ReplaceAllString(line, "<credential-path>")
 	if len(line) > 400 {
 		line = line[:400] + "…"
 	}

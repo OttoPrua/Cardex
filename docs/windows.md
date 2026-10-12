@@ -32,7 +32,7 @@ WSL 使用 Linux 构建及 Unix 进程/锁实现。它的测试结果不等于 W
 在 Windows 原生 Go 环境运行：
 
 ```powershell
-go test ./cmd/cardex -run '^(TestWindows|TestExecutionLease|TestSetup|TestPreset|TestAcquireLockStealsAtomicallyNoDoubleOccupancy|TestDeniedPresemanticStartDoesNotConsumeResumeTombstone|TestReleaseLockRefusesForeignPID|TestGrokStderrRetentionBoundsAndIdentity)' -count=1 -timeout=180s
+go test ./cmd/cardex -run '^(TestWindows|TestExecutionLease|TestSetup|TestPreset|TestAcquireLockStealsAtomicallyNoDoubleOccupancy|TestDeniedPresemanticStartDoesNotConsumeResumeTombstone|TestReleaseLockRefusesForeignPID|TestGrokStderrRetentionBoundsAndIdentity|TestGrokStderrRetentionRedactsCredentialShapes)' -count=1 -timeout=180s
 go vet ./...
 go build -trimpath -o bin/cardex.exe ./cmd/cardex
 python scripts/smoke.py bin/cardex.exe

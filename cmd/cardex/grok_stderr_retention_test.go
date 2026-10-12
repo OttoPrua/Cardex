@@ -144,3 +144,42 @@ func TestGrokStderrRetentionWriteFailure(t *testing.T) {
 		t.Fatal("diagnostic persistence changed execution state")
 	}
 }
+
+func TestGrokStderrRetentionRedactsCredentialShapes(t *testing.T) {
+	for _, tc := range []struct{ name, raw, secret string }{
+		{"bare-xai", "context xai-synthetic-credential123", "xai-synthetic-credential123"},
+		{"bare-sk", "key sk-synthetic-credential123", "sk-synthetic-credential123"},
+		{"passphrase", `passphrase="two secret words"`, "two secret words"},
+		{"json-token", `{"token":"synthetic-token"}`, "synthetic-token"},
+		{"flag-token", "invalid option --token=synthetic-token", "synthetic-token"},
+		{"url-token", "https://example.invalid/?access_token=synthetic-token", "synthetic-token"},
+		{"unix-credential-path", "permission denied /Users/fixture/.grokcreds/private-auth", "/Users/fixture/.grokcreds/private-auth"},
+		{"windows-credential-path", `permission denied C:\Users\fixture\.grokcreds\private-auth`, `C:\Users\fixture\.grokcreds\private-auth`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := testRoot(t)
+			task := &Task{ID: "stderr-fixture", ActiveAttemptID: "attempt-one"}
+			if err := retainGrokBuildStderr(root, task, tc.raw); err != nil {
+				t.Fatal(err)
+			}
+			files, _ := filepath.Glob(filepath.Join(logsDir(root), "grok-stderr-*.json"))
+			if len(files) != 1 {
+				t.Fatal("missing private evidence")
+			}
+			data, err := os.ReadFile(files[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			var evidence map[string]any
+			if err := json.Unmarshal(data, &evidence); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(evidence["excerpt"].(string), tc.secret) {
+				t.Fatal("credential retained in excerpt")
+			}
+			if evidence["stderr_sha256"] != fmt.Sprintf("%x", sha256.Sum256([]byte(tc.raw))) {
+				t.Fatal("original hash changed")
+			}
+		})
+	}
+}

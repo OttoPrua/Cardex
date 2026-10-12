@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGrokStderrRetentionBeforeHarvest(t *testing.T) {
@@ -74,11 +75,101 @@ func TestGrokStderrRetentionBeforeHarvest(t *testing.T) {
 				t.Fatal("stderr artifact is not private")
 			}
 			log, _ := os.ReadFile(taskLogPath(root, task.ID))
+			const marker = "--- GROK_EXIT_DIAGNOSTICS ---\n"
+			if strings.Count(string(log), marker) != 1 {
+				t.Fatalf("expected exactly one exit diagnostic before harvest: %s", log)
+			}
+			rawDiagnostic := strings.SplitN(strings.SplitN(string(log), marker, 2)[1], "\n", 2)[0]
+			var diagnostic map[string]any
+			if err := json.Unmarshal([]byte(rawDiagnostic), &diagnostic); err != nil {
+				t.Fatal(err)
+			}
+			if diagnostic["attempt_id"] != evidence["attempt_id"] || diagnostic["task_id"] != task.ID || diagnostic["stderr_sha256"] != evidence["stderr_sha256"] || diagnostic["stderr_bytes"] != float64(len(stderr)) || diagnostic["failure_class"] != string(grokBuildProcessClassUnclassified) || diagnostic["observation_complete"] != true {
+				t.Fatalf("exit diagnostic lost execution identity/boundary: %s", rawDiagnostic)
+			}
+			parsed := diagnostic["grok_diagnostics"].(map[string]any)
+			if parsed["exit_code"] != float64(1) || parsed["process_error"] != "exit" || parsed["parser_scan_complete"] != true {
+				t.Fatalf("parser/process evidence missing after harvest: %s", rawDiagnostic)
+			}
 			if !strings.Contains(string(log), filepath.Base(files[0])) || !strings.Contains(string(log), evidence["stderr_sha256"].(string)) || strings.Contains(string(log), "synthetic-secret") || strings.Contains(string(log), "launcher failed") {
 				t.Fatalf("task log must retain only evidence metadata: %s", log)
 			}
 			assertNoGrokTerminalLeak(t, root, task.ID, "synthetic-secret", "launcher failed")
 		})
+	}
+}
+
+func TestGrokExitDiagnosticsWriteFailureStopsBeforeHarvest(t *testing.T) {
+	root := testRoot(t)
+	bin, calls := fakeGrokBuildCountedStderrFile(t, "", "synthetic exit diagnostic", 1)
+	cfg := policyTestConfig()
+	cfg.GrokBuildBin, cfg.HarvestMode = bin, harvestModeOn
+	isolateGrokLifecycleHome(t, cfg)
+	work := t.TempDir()
+	useHarvestScript(t, harvestScript{status: "?? reference.txt\n", diff: "diff --git a/reference.txt b/reference.txt\n"}, nil)
+	if err := os.WriteFile(filepath.Join(work, "reference.txt"), []byte("synthetic retained file\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	task := ownerBackendGrokTask(t, root, cfg, work)
+	if err := saveTask(root, task); err != nil {
+		t.Fatal(err)
+	}
+	admitDirectInvoke(t, root, task)
+	res, combined, runErr := invokeGrokBuild(context.Background(), root, cfg, task, "synthetic fixture only")
+	if res == nil || runErr == nil || res.GrokDiagnostics == nil {
+		t.Fatalf("fake process did not produce real exit diagnostics: result=%+v err=%v", res, runErr)
+	}
+	lg, err := openTaskLog(root, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lg.Close() // A real write failure, without a persistence success stub.
+	cont, handled, err := applyGrokOutcome(context.Background(), root, cfg, task, grokBuildRunnerName, "fixture", res, combined, runErr, lg, time.Now())
+	if err == nil || !strings.Contains(err.Error(), "persist Grok exit diagnostics") || cont || !handled {
+		t.Fatalf("diagnostic loss must stop the execution loop: cont=%v handled=%v err=%v", cont, handled, err)
+	}
+	got, err := loadTask(root, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != statusHeld || got.Harvest != nil || got.Attempts != 0 || countProductCalls(t, calls) != 1 {
+		t.Fatalf("write failure harvested or retried: %+v", got)
+	}
+	events, _, err := loadTaskEvents(root, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == evHarvested || event.Type == evRetry || event.Type == evDone {
+			t.Fatalf("persistence failure continued execution: %+v", event)
+		}
+	}
+}
+
+func TestGrokExitDiagnosticsSuccessAddsNoFailureRecord(t *testing.T) {
+	root := testRoot(t)
+	payload := `{"type":"text","data":"OK"}` + "\n" + `{"type":"end","stopReason":"end_turn","sessionId":"session-ok","num_turns":1}`
+	bin, calls := fakeGrokBuildCounted(t, payload, "", 0)
+	cfg := policyTestConfig()
+	cfg.GrokBuildBin, cfg.HarvestMode = bin, harvestModeOff
+	isolateGrokLifecycleHome(t, cfg)
+	task := ownerBackendGrokTask(t, root, cfg, t.TempDir())
+	if err := saveTask(root, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := runTaskVia(context.Background(), root, cfg, task, grokBuildRunnerName); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadTask(root, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, err := os.ReadFile(taskLogPath(root, task.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Step != 1 || countProductCalls(t, calls) != 1 || strings.Contains(string(log), "GROK_EXIT_DIAGNOSTICS") {
+		t.Fatalf("successful execution gained a failure diagnostic: %+v", got)
 	}
 }
 

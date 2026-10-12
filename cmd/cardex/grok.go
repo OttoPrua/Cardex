@@ -2737,6 +2737,16 @@ func applyGrokQuotaAfterFallback(root string, cfg *Config, t *Task, res *claudeR
 }
 
 func applyGrokUnknownHold(ctx context.Context, root string, cfg *Config, t *Task, via, prompt string, res *claudeResult, runErr error, lg *os.File, now time.Time, dec executionDecision, unk grokUnknownHold) (cont, handled bool, err error) {
+	if err := persistGrokExitDiagnostics(root, t, res, lg, dec, unk); err != nil {
+		// Do not let harvest continue to another author after losing exit evidence.
+		// Keep the original execution classification; this is a storage failure.
+		t.Status = statusHeld
+		t.LastError = "Grok exit diagnostics could not be persisted"
+		t.touch()
+		holdErr := persistTaskEvent(root, t, evHeld, "runner:diagnostics", statusHeld, t.Step,
+			withRouteAttempt(map[string]any{"reason": "grok_exit_diagnostics_write_failed"}, t))
+		return false, true, errors.Join(fmt.Errorf("persist Grok exit diagnostics: %w", err), finishIfStopped(holdErr))
+	}
 	resRef := res
 	harvestHandled, herr := dispatchUnknownHarvest(ctx, root, cfg, t, via, &resRef, runErr, now, prompt, lg, false, false, false, false, false, true, false, "")
 	if harvestHandled {
@@ -2764,6 +2774,42 @@ func applyGrokUnknownHold(ctx context.Context, root string, cfg *Config, t *Task
 		class = "unknown_outcome"
 	}
 	return false, true, holdNativeExecution(root, t, via, kind, class)
+}
+
+// The parser's content-free projection must survive harvest's early return.
+// Reuse the task log; no raw stderr, result text, or new diagnostic store.
+func persistGrokExitDiagnostics(root string, t *Task, res *claudeResult, lg *os.File, dec executionDecision, unk grokUnknownHold) (err error) {
+	if res == nil || res.GrokDiagnostics == nil {
+		return nil
+	}
+	if lg == nil {
+		lg, err = openTaskLog(root, t.ID)
+		if err != nil {
+			return err
+		}
+		defer func() { err = errors.Join(err, lg.Close()) }()
+	}
+	detail := map[string]any{
+		"task_id": t.ID, "attempt_id": t.ActiveAttemptID, "step": t.Step,
+		"failure_class":        firstNonBlank(unk.processClass, string(dec.FailureClass)),
+		"failure_kind":         grokBuildDiagnosticSubtype(res.Subtype),
+		"observation_complete": res.ObservationComplete,
+		"semantic_events":      res.SemanticEvents, "model_events": res.ModelEvents, "tool_events": res.ToolEvents,
+		"grok_diagnostics": res.GrokDiagnostics,
+	}
+	if res.ProcessStderrSHA256 != "" {
+		detail["stderr_bytes"] = res.ProcessStderrBytes
+		detail["stderr_sha256"] = res.ProcessStderrSHA256
+		detail["stderr_line_count_bucket"] = res.ProcessStderrLineCountBucket
+	}
+	data, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	if _, err = fmt.Fprintf(lg, "--- GROK_EXIT_DIAGNOSTICS ---\n%s\n", data); err != nil {
+		return err
+	}
+	return lg.Sync()
 }
 
 func persistGrokFailureDisposition(root string, cfg *Config, t *Task, res *claudeResult, combined string, runErr error, lg *os.File, now time.Time, dec executionDecision) error {

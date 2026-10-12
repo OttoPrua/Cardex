@@ -102,46 +102,48 @@ type IntegrationGate struct {
 
 // WorkflowRecord is the durable module/program goal binding.
 type WorkflowRecord struct {
-	Schema             string                    `json:"schema"`
-	ID                 string                    `json:"id"`
-	Mode               string                    `json:"mode"`
-	ModuleID           string                    `json:"module_id"`
-	GoalID             string                    `json:"goal_id"`
-	Goal               string                    `json:"goal"`
-	ParentID           string                    `json:"parent_id,omitempty"`
-	Repo               string                    `json:"repo"`
-	Worktree           string                    `json:"worktree"`
-	WriteDomain        WriteDomain               `json:"write_domain"`
-	TerminalCriteria   string                    `json:"terminal_criteria"`
-	MaxRounds          int                       `json:"max_rounds"`
-	CurrentRound       int                       `json:"current_round"`
-	WriterEngine       string                    `json:"writer_engine"`
-	WriterWorkClass    string                    `json:"writer_work_class,omitempty"`
-	WriterModel        string                    `json:"writer_model,omitempty"`
-	WriterRouteClass   string                    `json:"writer_route_class,omitempty"`
-	ReviewerEngine     string                    `json:"reviewer_engine"`
-	WriterTaskID       string                    `json:"writer_task_id,omitempty"`
-	ReviewerTaskID     string                    `json:"reviewer_task_id,omitempty"`
-	IntegrationTaskID  string                    `json:"integration_task_id,omitempty"`
-	Candidate          *WorkflowCandidate        `json:"candidate,omitempty"`
-	Review             *WorkflowReview           `json:"review,omitempty"`
-	LocalIntegration   *WorkflowLocalIntegration `json:"local_integration,omitempty"`
-	EffectGates        WorkflowEffectGates       `json:"effect_gates"`
-	Progress           WorkflowProgressCoords    `json:"progress"`
-	Status             string                    `json:"status"`
-	MaterialNotify     *WorkflowNotify           `json:"material_notify,omitempty"`
-	DesignLineage      *WorkflowDesignLineage    `json:"design_lineage,omitempty"`
-	DesignSession      *PersistentSessionRef     `json:"design_session,omitempty"`
-	ManagerSession     *PersistentSessionRef     `json:"manager_session,omitempty"`
-	OwnerDesignEntry   *PersistentSessionRef     `json:"owner_design_entry,omitempty"`
-	DesignTaskID       string                    `json:"design_task_id,omitempty"`
-	DirectionTaskIDs   []string                  `json:"direction_task_ids,omitempty"`
-	NativeGoalTaskIDs  []string                  `json:"native_goal_task_ids,omitempty"`
-	AcceptanceTaskID   string                    `json:"acceptance_task_id,omitempty"`
-	AcceptanceCoverage string                    `json:"acceptance_coverage,omitempty"`
-	GoalCompleted      bool                      `json:"goal_completed,omitempty"`
-	CreatedAt          string                    `json:"created_at"`
-	UpdatedAt          string                    `json:"updated_at"`
+	Schema                 string                          `json:"schema"`
+	ID                     string                          `json:"id"`
+	Mode                   string                          `json:"mode"`
+	ModuleID               string                          `json:"module_id"`
+	GoalID                 string                          `json:"goal_id"`
+	Goal                   string                          `json:"goal"`
+	ParentID               string                          `json:"parent_id,omitempty"`
+	Repo                   string                          `json:"repo"`
+	Worktree               string                          `json:"worktree"`
+	WriteDomain            WriteDomain                     `json:"write_domain"`
+	TerminalCriteria       string                          `json:"terminal_criteria"`
+	MaxRounds              int                             `json:"max_rounds"`
+	CurrentRound           int                             `json:"current_round"`
+	WriterEngine           string                          `json:"writer_engine"`
+	WriterWorkClass        string                          `json:"writer_work_class,omitempty"`
+	WriterModel            string                          `json:"writer_model,omitempty"`
+	WriterRouteClass       string                          `json:"writer_route_class,omitempty"`
+	ReviewerEngine         string                          `json:"reviewer_engine"`
+	WriterTaskID           string                          `json:"writer_task_id,omitempty"`
+	ReviewerTaskID         string                          `json:"reviewer_task_id,omitempty"`
+	IntegrationTaskID      string                          `json:"integration_task_id,omitempty"`
+	Candidate              *WorkflowCandidate              `json:"candidate,omitempty"`
+	Review                 *WorkflowReview                 `json:"review,omitempty"`
+	LocalIntegration       *WorkflowLocalIntegration       `json:"local_integration,omitempty"`
+	EffectGates            WorkflowEffectGates             `json:"effect_gates"`
+	Progress               WorkflowProgressCoords          `json:"progress"`
+	Status                 string                          `json:"status"`
+	MaterialNotify         *WorkflowNotify                 `json:"material_notify,omitempty"`
+	DesignLineage          *WorkflowDesignLineage          `json:"design_lineage,omitempty"`
+	DesignSession          *PersistentSessionRef           `json:"design_session,omitempty"`
+	ManagerSession         *PersistentSessionRef           `json:"manager_session,omitempty"`
+	OwnerDesignEntry       *PersistentSessionRef           `json:"owner_design_entry,omitempty"`
+	DesignTaskID           string                          `json:"design_task_id,omitempty"`
+	DirectionTaskIDs       []string                        `json:"direction_task_ids,omitempty"`
+	NativeGoalTaskIDs      []string                        `json:"native_goal_task_ids,omitempty"`
+	AcceptanceTaskID       string                          `json:"acceptance_task_id,omitempty"`
+	AcceptanceCoverage     string                          `json:"acceptance_coverage,omitempty"`
+	GoalCompleted          bool                            `json:"goal_completed,omitempty"`
+	ExtraRoundGrants       []workflowExtraRoundGrant       `json:"extra_round_grants,omitempty"`
+	ExtraRoundConsumptions []workflowExtraRoundConsumption `json:"extra_round_consumptions,omitempty"`
+	CreatedAt              string                          `json:"created_at"`
+	UpdatedAt              string                          `json:"updated_at"`
 }
 
 // WorkflowCandidate is the frozen source identity a review is bound to.
@@ -318,7 +320,7 @@ func normalizeWorkflowRecordOpts(cfg *Config, wf *WorkflowRecord, historical boo
 	if wf.MaxRounds < 1 {
 		return fmt.Errorf("%w: max_rounds must be >= 1", errWorkflowMalformed)
 	}
-	if wf.CurrentRound < 0 || wf.CurrentRound > wf.MaxRounds {
+	if !extraRoundCurrentRoundAllowed(wf) {
 		return fmt.Errorf("%w: current_round %d out of 0..%d", errWorkflowMalformed, wf.CurrentRound, wf.MaxRounds)
 	}
 	if wf.WriterEngine == "auto" {
@@ -556,7 +558,7 @@ func knownWorkflowSidecar(path, name string) bool {
 	if json.Unmarshal(raw, &fields) != nil || fields == nil {
 		return false
 	}
-	for _, key := range []string{"schema", "id", "mode", "module_id", "goal_id", "goal", "parent_id", "repo", "worktree", "write_domain", "writer_engine", "writer_work_class", "writer_model", "writer_route_class", "reviewer_engine", "effect_gates", "current_round", "max_rounds", "writer_task_id", "reviewer_task_id", "integration_task_id", "terminal_criteria", "candidate", "review", "progress", "material_notify", "design_lineage", "design_session", "manager_session", "owner_design_entry", "design_task_id", "direction_task_ids", "native_goal_task_ids", "acceptance_task_id", "acceptance_coverage", "goal_completed", "created_at", "updated_at"} {
+	for _, key := range []string{"schema", "id", "mode", "module_id", "goal_id", "goal", "parent_id", "repo", "worktree", "write_domain", "writer_engine", "writer_work_class", "writer_model", "writer_route_class", "reviewer_engine", "effect_gates", "current_round", "max_rounds", "writer_task_id", "reviewer_task_id", "integration_task_id", "terminal_criteria", "candidate", "review", "progress", "material_notify", "design_lineage", "design_session", "manager_session", "owner_design_entry", "design_task_id", "direction_task_ids", "native_goal_task_ids", "acceptance_task_id", "acceptance_coverage", "goal_completed", "extra_round_grants", "extra_round_consumptions", "created_at", "updated_at"} {
 		for field := range fields {
 			// encoding/json matches struct field tags case-insensitively.
 			// Presence, including null, is enough to retain a possible claim.

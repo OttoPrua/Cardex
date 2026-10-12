@@ -1639,13 +1639,14 @@ func TestGoalWriterPublishedAtomicallyAgainstConcurrentConsumers(t *testing.T) {
 			}
 		}
 	}()
-	goalWriterPublishHook = func(tk *Task) {
+	goalWriterPublishHook = func(tk *Task) error {
 		if tk == nil || tk.Goal == nil {
 			mu.Lock()
 			violation = "publish hook saw Goal-less writer"
 			mu.Unlock()
 		}
 		time.Sleep(20 * time.Millisecond)
+		return nil
 	}
 	t.Cleanup(func() { goalWriterPublishHook = nil })
 	tk, err := admitWorkflowWriterMode(root, cfg, wf, "", goalWriterManual)

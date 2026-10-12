@@ -76,8 +76,9 @@ var goalLaunchBeforeStartHook func() error
 var goalLaunchStdin *os.File
 
 // Test-only: called with the complete Goal-bound task immediately before the
-// first save, so concurrent consumers can observe the publish seam.
-var goalWriterPublishHook func(*Task)
+// first save, so concurrent consumers can observe the publish seam. A non-nil
+// error aborts before the writer is persisted.
+var goalWriterPublishHook func(*Task) error
 
 // WorkflowDesignNode is one independent read-only design role instance.
 type WorkflowDesignNode struct {
@@ -172,6 +173,9 @@ type TaskGoalBinding struct {
 	CardexRoot                   string                          `json:"cardex_root,omitempty"`
 	SandboxWorktree              string                          `json:"sandbox_worktree,omitempty"`
 	LauncherSandbox              string                          `json:"launcher_sandbox,omitempty"`
+	// ExtraRoundAuthorized freezes this grant's budget/timeout/max_attempts=1/no-auto
+	// on this stage. Launch may not raise them. Omitted on ordinary Goal writers.
+	ExtraRoundAuthorized bool `json:"extra_round_authorized,omitempty"`
 }
 
 // GoalCapability is owned by this adapter file. supported requires actual
@@ -1261,6 +1265,9 @@ func encodeWorkflowShow(w io.Writer, root string, wf *WorkflowRecord) error {
 	if len(caps) > 0 {
 		obj["native_goal_capabilities"] = caps
 	}
+	if extra := extraRoundShowView(wf); extra != nil {
+		obj["extra_round"] = extra
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(obj)
@@ -1772,7 +1779,13 @@ func admitManualGoalLaunchLocked(root string, cfg *Config, wf *WorkflowRecord, t
 	}
 	*t = *fresh
 	restoreLaunchSandboxSelector(t, selector)
-	if budget > 0 {
+	if t.Goal.ExtraRoundAuthorized {
+		t.AutomaticCodex = false
+		t.MaxAttempts = extraRoundMaxAttempts
+		if budget > t.Goal.BudgetTokens {
+			return extraRoundRefused(fmt.Sprintf("extra-round budget is frozen at %d", t.Goal.BudgetTokens))
+		}
+	} else if budget > 0 {
 		t.Goal.BudgetTokens = budget
 	}
 	if t.Goal.HardTimeoutSec <= 0 && cfg != nil && cfg.StepTimeoutMin > 0 {
@@ -3149,6 +3162,10 @@ func expandWorkflowWriteDomainForDesignResult(root string, cfg *Config, wf *Work
 }
 
 func applyWorkflowDesignResult(root string, cfg *Config, wf *WorkflowRecord, decision, observation, receiptPath string) (*Task, error) {
+	return applyWorkflowDesignResultAuth(root, cfg, wf, decision, observation, receiptPath, "")
+}
+
+func applyWorkflowDesignResultAuth(root string, cfg *Config, wf *WorkflowRecord, decision, observation, receiptPath, extraRoundAuthPath string) (*Task, error) {
 	decision = strings.TrimSpace(decision)
 	observation = strings.TrimSpace(observation)
 	if strings.TrimSpace(receiptPath) == "" {
@@ -3168,7 +3185,7 @@ func applyWorkflowDesignResult(root string, cfg *Config, wf *WorkflowRecord, dec
 	}
 	var out *Task
 	run := func() error {
-		t, err := applyWorkflowDesignResultLocked(root, cfg, wf, decision, observation, fresh)
+		t, err := applyWorkflowDesignResultLocked(root, cfg, wf, decision, observation, fresh, extraRoundAuthPath)
 		out = t
 		return err
 	}
@@ -3196,9 +3213,14 @@ func designResultRequestsWriteDomainExpansion(decision string, fresh *WorkflowDe
 	}
 }
 
-func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecord, decision, observation string, fresh *WorkflowDesignNode) (*Task, error) {
+func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecord, decision, observation string, fresh *WorkflowDesignNode, extraRoundAuthPath string) (*Task, error) {
 	if err := refreshWorkflow(root, cfg, wf); err != nil {
 		return nil, err
+	}
+	if strings.TrimSpace(extraRoundAuthPath) != "" {
+		if err := extraRoundRefuseIfAlreadyAdmitted(root, wf, wf.WriterTaskID); err != nil {
+			return nil, err
+		}
 	}
 	if fresh == nil {
 		return nil, fmt.Errorf("%w: a fresh independent design receipt is required", errGoalDesignResult)
@@ -3279,19 +3301,12 @@ func applyWorkflowDesignResultLocked(root string, cfg *Config, wf *WorkflowRecor
 		expandedDomain = &got
 	}
 
-	now := time.Now().Format(time.RFC3339)
-	if wf.DesignLineage == nil {
-		wf.DesignLineage = &WorkflowDesignLineage{}
+	if strings.TrimSpace(extraRoundAuthPath) != "" {
+		return admitAuthorizedExtraRoundLocked(root, cfg, wf, t, decision, observation, fresh, extraRoundAuthPath, expandedDomain)
 	}
-	fresh.Provenance = goalDesignProvenanceExt
-	wf.DesignLineage.LatestValid = fresh
-	wf.DesignLineage.LastResultDecision = decision
-	wf.DesignLineage.LastConsumedTaskID = t.ID
-	wf.DesignLineage.LastConsumedObservation = observation
-	wf.DesignLineage.LastConsumedNativeStatus = native
-	wf.DesignLineage.LastConsumedDigest = fresh.Digest
-	wf.DesignLineage.LastConsumedRevision = t.Revision
-	wf.DesignLineage.LastConsumedAt = now
+
+	now := time.Now().Format(time.RFC3339)
+	recordDesignLineageForResult(wf, t, fresh, decision, observation, native, now)
 
 	switch decision {
 	case goalDecisionAccept:

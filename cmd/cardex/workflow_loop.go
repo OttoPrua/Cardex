@@ -195,11 +195,20 @@ func emitRootNotify(root string, wf *WorkflowRecord, kind, summary string) error
 	return nil
 }
 
+// Test-only: after progress is written, before the workflow record.
+// Production leaves this nil. A non-nil error leaves the pair non-atomic.
+var persistWorkflowAfterProgressHook func(*WorkflowRecord) error
+
 // persistWorkflow writes the progress projection and the record together so a
 // reader never sees a record whose progress file describes an older round.
 func persistWorkflow(root string, cfg *Config, wf *WorkflowRecord) error {
 	if err := writeWorkflowProgress(root, wf); err != nil {
 		return err
+	}
+	if hook := persistWorkflowAfterProgressHook; hook != nil {
+		if err := hook(wf); err != nil {
+			return err
+		}
 	}
 	return saveWorkflow(root, cfg, wf)
 }
@@ -315,6 +324,40 @@ func publishWorkflowWriter(root string, cfg *Config, wf *WorkflowRecord, prompt 
 // workflow-admit lock. skipRefresh is true when the caller already refreshed
 // and holds in-memory DesignLineage/round that must not be clobbered.
 func publishWorkflowWriterLocked(root string, cfg *Config, wf *WorkflowRecord, prompt string, goal *TaskGoalBinding, skipRefresh bool) (*Task, error) {
+	return publishWorkflowWriterWithOpts(root, cfg, wf, prompt, goal, skipRefresh, workflowWriterPublishOpts{})
+}
+
+type workflowWriterPublishOpts struct {
+	exceptLiveWriterID        string
+	prepare                   func(*Task)
+	rollbackTaskOnPersistFail bool
+}
+
+func workflowLiveWriterExcept(root string, wf *WorkflowRecord, exceptID string) (*Task, bool) {
+	tasks, err := loadTasks(root)
+	if err != nil {
+		return nil, true
+	}
+	want := workflowRoleType("writer")
+	for _, t := range tasks {
+		if t == nil || t.WorkflowID != wf.ID || t.Type != want {
+			continue
+		}
+		if t.IntegrationGate != nil {
+			continue
+		}
+		if exceptID != "" && t.ID == exceptID {
+			continue
+		}
+		if !taskIsLive(t) {
+			continue
+		}
+		return t, true
+	}
+	return nil, false
+}
+
+func publishWorkflowWriterWithOpts(root string, cfg *Config, wf *WorkflowRecord, prompt string, goal *TaskGoalBinding, skipRefresh bool, opts workflowWriterPublishOpts) (*Task, error) {
 	if !skipRefresh {
 		if err := refreshWorkflow(root, cfg, wf); err != nil {
 			return nil, err
@@ -325,7 +368,7 @@ func publishWorkflowWriterLocked(root string, cfg *Config, wf *WorkflowRecord, p
 			return nil, err
 		}
 	}
-	if active, found := workflowActiveRole(root, wf, "writer"); found {
+	if active, found := workflowLiveWriterExcept(root, wf, opts.exceptLiveWriterID); found {
 		return active, duplicateRoleErr("writer", active)
 	}
 	explicitPrompt := strings.TrimSpace(prompt)
@@ -365,8 +408,13 @@ func publishWorkflowWriterLocked(root string, cfg *Config, wf *WorkflowRecord, p
 	} else if err := admitTaskRoute(cfg, t); err != nil {
 		return nil, err
 	}
+	if opts.prepare != nil {
+		opts.prepare(t)
+	}
 	if hook := goalWriterPublishHook; hook != nil {
-		hook(t)
+		if err := hook(t); err != nil {
+			return nil, err
+		}
 	}
 	if err := saveTask(root, t); err != nil {
 		return nil, err
@@ -380,9 +428,17 @@ func publishWorkflowWriterLocked(root string, cfg *Config, wf *WorkflowRecord, p
 	wf.Review = nil
 	wf.Status = workflowStatusWriting
 	if err := syncIntegrationGate(root, wf); err != nil {
+		if opts.rollbackTaskOnPersistFail {
+			_ = os.Remove(taskPath(root, t.ID))
+			return nil, err
+		}
 		return t, err
 	}
 	if err := persistWorkflow(root, cfg, wf); err != nil {
+		if opts.rollbackTaskOnPersistFail {
+			_ = os.Remove(taskPath(root, t.ID))
+			return nil, err
+		}
 		return t, err
 	}
 	return t, nil
@@ -590,7 +646,9 @@ func admitWorkflowRepairLocked(root string, cfg *Config, wf *WorkflowRecord, fin
 		return nil, err
 	}
 	if hook := goalWriterPublishHook; hook != nil {
-		hook(t)
+		if err := hook(t); err != nil {
+			return nil, err
+		}
 	}
 	if err := saveTask(root, t); err != nil {
 		return nil, err

@@ -29,21 +29,22 @@ const (
 )
 
 var (
-	errStaleTaskWrite       = errors.New("stale task write rejected")
-	errSchedulerLockLost    = errors.New("scheduler lock ownership lost")
-	errNotSchedulable       = errors.New("task is not scheduling-eligible")
-	errAttemptConflict      = errors.New("active attempt already admitted")
-	errCustodyTimeout       = errors.New("producer custody timeout")
-	errAlreadyTerminal      = errors.New("task already terminal")
-	errProducerStillAlive   = errors.New("attempt producer is still alive")
-	errProducerInvalidated  = errors.New("producer writes stopped after rejected CAS")
-	errTransitionCrash      = errors.New("injected transition crash")
-	errAdmissionDenied      = errors.New("admission denied")
-	errProcessExecution     = errors.New("post-start process execution failed")
-	errAttemptEpochConsumed = errors.New("current attempt epoch already consumed")
-	errAttemptEpochUnused   = errors.New("current attempt epoch has not been consumed")
-	terminalizeWaitTimeout  = 45 * time.Second
-	reservedAttemptFreshFor = 30 * time.Second
+	errStaleTaskWrite         = errors.New("stale task write rejected")
+	errSchedulerLockLost      = errors.New("scheduler lock ownership lost")
+	errNotSchedulable         = errors.New("task is not scheduling-eligible")
+	errAttemptConflict        = errors.New("active attempt already admitted")
+	errCustodyTimeout         = errors.New("producer custody timeout")
+	errAlreadyTerminal        = errors.New("task already terminal")
+	errProducerStillAlive     = errors.New("attempt producer is still alive")
+	errProducerInvalidated    = errors.New("producer writes stopped after rejected CAS")
+	errTransitionCrash        = errors.New("injected transition crash")
+	errAdmissionDenied        = errors.New("admission denied")
+	errProcessExecution       = errors.New("post-start process execution failed")
+	errAttemptEpochConsumed   = errors.New("current attempt epoch already consumed")
+	errAttemptEpochUnused     = errors.New("current attempt epoch has not been consumed")
+	errAutomaticReplayBlocked = errors.New("prior max_attempts=1/unknown invocation may have started; automatic replay blocked")
+	terminalizeWaitTimeout    = 45 * time.Second
+	reservedAttemptFreshFor   = 30 * time.Second
 )
 
 const (
@@ -74,6 +75,8 @@ func crashTransitionIf(point string) error {
 }
 
 type AttemptRecord struct {
+	// InvokeStep is persisted before Start. Nil on legacy records or before any start.
+	InvokeStep       *int   `json:"invoke_step,omitempty"`
 	TaskID           string `json:"task_id"`
 	AttemptID        string `json:"attempt_id"`
 	ExpectedRevision int64  `json:"expected_revision"`
@@ -511,6 +514,100 @@ func writeAttempt(root string, rec *AttemptRecord) error {
 		return err
 	}
 	return atomicWriteSync(attemptPath(root, rec.TaskID, rec.AttemptID), append(data, '\n'))
+}
+
+func listAttemptRecords(root, taskID string) ([]*AttemptRecord, error) {
+	entries, err := os.ReadDir(attemptsDir(root, taskID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []*AttemptRecord
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		rec, err := loadAttempt(root, taskID, strings.TrimSuffix(entry.Name(), ".json"))
+		if err != nil {
+			return nil, err
+		}
+		if rec != nil {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
+func attemptRecordStartedProvider(rec *AttemptRecord) bool {
+	if rec == nil {
+		return false
+	}
+	return rec.InvokeStep != nil || rec.PID > 0 || rec.StartIdentity != "" || rec.State == attemptBound
+}
+
+func epochHasStartedProviderWork(root string, t *Task) (bool, error) {
+	if t == nil || t.ID == "" {
+		return false, nil
+	}
+	recs, err := listAttemptRecords(root, t.ID)
+	if err != nil {
+		return false, err
+	}
+	for _, rec := range recs {
+		if rec == nil || rec.ControlEpoch != t.ControlEpoch {
+			continue
+		}
+		// A persisted step advance proves this earlier invocation succeeded.
+		// A legacy record without a step cannot supply that proof.
+		if rec.InvokeStep != nil && *rec.InvokeStep < t.Step {
+			continue
+		}
+		if attemptRecordStartedProvider(rec) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func taskAttemptOutcomeUnknown(t *Task) bool {
+	if t == nil || t.LastRouteAttempt == nil {
+		return false
+	}
+	class := strings.ToLower(strings.TrimSpace(t.LastRouteAttempt.FailureClass))
+	kind := strings.ToLower(strings.TrimSpace(t.LastRouteAttempt.FailureKind))
+	if class == string(failureUnknown) || class == "unknown" {
+		return true
+	}
+	return strings.Contains(kind, "unknown")
+}
+
+// automaticProviderReplayBlocked is the admission gate for a second automatic
+// provider invoke. It uses existing attempt/control records: a reserved-only
+// attempt with no invoke marker or PID/identity has not crossed the Start seam.
+// Explicit retry/release bumps ControlEpoch, so a new epoch is not blocked.
+func automaticProviderReplayBlocked(root string, cfg *Config, t *Task) bool {
+	if t == nil {
+		return false
+	}
+	maxAttempts := t.MaxAttempts
+	if maxAttempts <= 0 && cfg != nil {
+		maxAttempts = cfg.MaxAttempts
+	}
+	started, err := epochHasStartedProviderWork(root, t)
+	if err != nil {
+		return maxAttempts == 1 || taskAttemptOutcomeUnknown(t)
+	}
+	if !started {
+		return false
+	}
+	if maxAttempts == 1 {
+		return true
+	}
+	// Unknown leftover: a started attempt whose outcome was never counted.
+	// Recorded unknown-class retries (Attempts>=1) keep existing backoff.
+	return t.Attempts == 0 && taskAttemptOutcomeUnknown(t)
 }
 
 func loadAttempt(root, taskID, attemptID string) (*AttemptRecord, error) {
@@ -1045,6 +1142,8 @@ func listTaskTransitions(root, taskID string) ([]*TransitionRecord, error) {
 }
 
 func reserveDispatchAttempt(root string, t *Task) error {
+	// Production roots carry the effective default used by runner retry limits.
+	cfg, _ := loadConfig(root)
 	if t == nil || t.ID == "" {
 		return fmt.Errorf("empty task")
 	}
@@ -1071,6 +1170,9 @@ func reserveDispatchAttempt(root string, t *Task) error {
 		}
 		if !current.schedulingAllowed() || current.effectiveControlState() != controlEligible {
 			return errNotSchedulable
+		}
+		if automaticProviderReplayBlocked(root, cfg, current) {
+			return errAutomaticReplayBlocked
 		}
 		if live, _ := liveAttempt(root, current); live {
 			return errAttemptConflict
@@ -1149,6 +1251,45 @@ func requireAdmissionToInvoke(root string, t *Task) error {
 	return withTaskControlLock(root, t.ID, func() error {
 		return checkExactTaskAttemptAdmissionLocked(root, t.ID, t.ActiveAttemptID)
 	})
+}
+
+// prepareAttemptInvoke closes the Start-before-bind crash window using the
+// existing attempt record. Only a definite Start error may undo this marker.
+func prepareAttemptInvoke(root, taskID, attemptID string) (func() error, error) {
+	var previous *int
+	var step int
+	err := withTaskControlLock(root, taskID, func() error {
+		if err := checkExactTaskAttemptAdmissionLocked(root, taskID, attemptID); err != nil {
+			return err
+		}
+		t, err := loadTask(root, taskID)
+		if err != nil {
+			return err
+		}
+		rec, err := loadAttempt(root, taskID, attemptID)
+		if err != nil {
+			return err
+		}
+		previous, step = rec.InvokeStep, t.Step
+		rec.InvokeStep = &step
+		return writeAttempt(root, rec)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return func() error {
+		return withTaskControlLock(root, taskID, func() error {
+			rec, err := loadAttempt(root, taskID, attemptID)
+			if err != nil {
+				return err
+			}
+			if rec == nil || rec.InvokeStep == nil || *rec.InvokeStep != step {
+				return errStaleTaskWrite
+			}
+			rec.InvokeStep = previous
+			return writeAttempt(root, rec)
+		})
+	}, nil
 }
 
 func revalidateTaskAttemptAdmission(root, taskID, attemptID string) error {

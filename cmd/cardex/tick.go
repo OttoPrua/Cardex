@@ -216,6 +216,11 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 						emitWriterDeferral(root, t, "write_conflict", writerConflictsWithActiveIDs(t, liveWriters))
 						continue
 					}
+					if automaticProviderReplayBlocked(root, cfg, t) {
+						laneMetrics.AddWaits(1)
+						emitWriterDeferral(root, t, "already_started_attempt", nil)
+						continue
+					}
 					if ownerRoutingPolicyWaitReason(cfg, t) != "" {
 						// Invalid persisted classification and unsupported explicit Fable shapes are visible
 						// policy waits. They never fall through to a generic/default provider.
@@ -448,7 +453,7 @@ func emitWriterDeferral(root string, t *Task, reason string, blocked []string) {
 		sort.Strings(ids)
 		detail["blocked_by"] = ids
 	}
-	emitTaskEvent(root, t.ID, evDeferred, "tick", statusQueued, t.Step, detail)
+	emitTaskEvent(root, t.ID, evDeferred, "tick", t.Status, t.Step, detail)
 }
 
 // noFallback 判断该模型的任务是否禁止降级到 codex（设计类模型宁可排队等 claude）。

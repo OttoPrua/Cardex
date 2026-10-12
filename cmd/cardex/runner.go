@@ -1741,6 +1741,9 @@ func runTaskVia(ctx context.Context, root string, cfg *Config, t *Task, via stri
 	// Every dispatch reserves a fresh attempt identity. A crash-left
 	// ActiveAttemptID must never be rebound to a new PID/PGID.
 	if err := reserveDispatchAttempt(root, t); err != nil {
+		if errors.Is(err, errAutomaticReplayBlocked) {
+			return err
+		}
 		return finishIfStopped(err)
 	}
 	// 派发事件:tick 已把卡从 queued/limit_paused 拉进 running。actor=runner,detail 记录执行器身份

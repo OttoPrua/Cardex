@@ -11,7 +11,7 @@ import (
 
 func cmdWorkflow(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("用法: cardex workflow init|list|show|writer|fanout|accept|goal-round|goal-direction|goal-launch|goal-run|goal-bootstrap-before-native-recovery|goal-sync|goal-control|goal-input|goal-observe|bind-session|design-request|design-collect|design-bind|design-result|design-repair|freeze-candidate|review|ingest-review|ingest-external-review|record-local-integration|repair|try-release-integration|mark ...\n  goal-run <id> -manual|-hosted [-budget N] [-sandbox NAME]  # -sandbox selects an existing applicable Grok profile for this invocation only\n  goal-bootstrap-before-native-recovery <id> -authorization FILE -manual|-hosted [-executor-capture FILE -executor-digest SHA256 -executor-call-id CALL]  # explicit single-use authorization; sidecar-missing executor JSONL is optional manager-admitted proof; ordinary goal-run stays fail-closed\n  freeze-candidate <id> -commit C -tree T [-retained-held-source]  # default refuses a live or held writer; -retained-held-source freezes a custody-released held SOURCE candidate without manufacturing done\n  ingest-external-review <id> -receipt FILE  # bind completed independent local manager review evidence; not AUTHOR_ADVERSARIAL and not a fake typeReview")
+		return fmt.Errorf("用法: cardex workflow init|list|show|writer|fanout|accept|goal-round|goal-direction|goal-launch|goal-run|goal-bootstrap-before-native-recovery|goal-sync|goal-control|goal-input|goal-observe|bind-session|design-request|design-collect|design-bind|design-result|design-repair|freeze-candidate|review|ingest-review|ingest-external-review|record-local-integration|repair|try-release-integration|mark ...\n  goal-run <id> -manual|-hosted [-budget N] [-sandbox NAME]  # -sandbox selects an existing applicable Grok profile for this invocation only\n  design-result <id> -design-receipt R -decision stop|input|successor|accept|revise [-observation ...] [-extra-round-authorization FILE]  # FILE is explicit one-use extra-round grant after ordinary ceiling; grant budget_tokens/hard_timeout_seconds bind the new stage; ordinary no-grant successor stays fail-closed\n  goal-bootstrap-before-native-recovery <id> -authorization FILE -manual|-hosted [-executor-capture FILE -executor-digest SHA256 -executor-call-id CALL]  # explicit single-use authorization; sidecar-missing executor JSONL is optional manager-admitted proof; ordinary goal-run stays fail-closed\n  freeze-candidate <id> -commit C -tree T [-retained-held-source]  # default refuses a live or held writer; -retained-held-source freezes a custody-released held SOURCE candidate without manufacturing done\n  ingest-external-review <id> -receipt FILE  # bind completed independent local manager review evidence; not AUTHOR_ADVERSARIAL and not a fake typeReview")
 	}
 	switch args[0] {
 	case "init":
@@ -644,15 +644,16 @@ func cmdWorkflowDesignResult(args []string) error {
 	decision := fs.String("decision", "", "stop、input、successor、accept 或 revise")
 	observation := fs.String("observation", "", "failed、paused、needs-input、budget_limited 或 complete")
 	receipt := fs.String("design-receipt", "", "消费当前阶段的新鲜独立设计结果")
+	extraRound := fs.String("extra-round-authorization", "", "exhausted successor only: explicit one-use extra-round authorization JSON; grant budget_tokens and hard_timeout_seconds bind the new stage")
 	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
 	root, cfg, wf, err := workflowTarget(fs, rootFlag,
-		"cardex workflow design-result <id> -design-receipt R -decision stop|input|successor|accept|revise [-observation failed|paused|needs-input|budget_limited|complete]")
+		"cardex workflow design-result <id> -design-receipt R -decision stop|input|successor|accept|revise [-observation failed|paused|needs-input|budget_limited|complete] [-extra-round-authorization FILE]")
 	if err != nil {
 		return err
 	}
-	t, err := applyWorkflowDesignResult(root, cfg, wf, *decision, *observation, *receipt)
+	t, err := applyWorkflowDesignResultAuth(root, cfg, wf, *decision, *observation, *receipt, *extraRound)
 	if err != nil {
 		return err
 	}

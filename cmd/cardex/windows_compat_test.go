@@ -748,6 +748,15 @@ func TestWindowsProtectedProcessIsNotDead(t *testing.T) {
 	if !processAlive(4) {
 		t.Fatal("protected/live System process reported dead")
 	}
+	if classifyWindowsProcessOpenError(windowsERROR_INVALID_PARAMETER) != processObservationDead {
+		t.Fatal("ERROR_INVALID_PARAMETER must be dead")
+	}
+	if classifyWindowsProcessOpenError(windowsERROR_ACCESS_DENIED) != processObservationUnknown {
+		t.Fatal("access denied must be permission-unknown, not dead")
+	}
+	if processObservationAllowsLockSteal(processObservationUnknown) {
+		t.Fatal("permission-unknown must not authorize steal")
+	}
 }
 
 func TestWindowsJobRejectsBreakaway(t *testing.T) {

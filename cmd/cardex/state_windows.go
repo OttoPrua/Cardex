@@ -2,21 +2,43 @@
 
 package main
 
-import "syscall"
+import (
+	"errors"
+	"syscall"
+)
 
-// processAlive 报告 pid 对应的进程是否存活。
-// Wait on the process object: OpenProcess alone can still succeed for an exited
-// process while another handle retains it. Windows does not implement signal 0.
-func processAlive(pid int) bool {
+const (
+	windowsERROR_INVALID_PARAMETER = syscall.Errno(87)
+	windowsERROR_ACCESS_DENIED     = syscall.Errno(5)
+)
+
+// classifyProcessObservation reports Windows liveness for pid.
+// Access denied and other failed observations are permission-unknown, not dead.
+func classifyProcessObservation(pid int) processObservation {
 	if pid <= 0 {
-		return false
+		return processObservationDead
 	}
 	handle, err := syscall.OpenProcess(0x100000, false, uint32(pid)) // SYNCHRONIZE
 	if err != nil {
-		// Access denied or failed observation is not evidence of a dead lock owner.
-		return err != syscall.Errno(87) // ERROR_INVALID_PARAMETER: PID no longer exists
+		return classifyWindowsProcessOpenError(err)
 	}
 	defer syscall.CloseHandle(handle)
 	status, err := syscall.WaitForSingleObject(handle, 0)
-	return err != nil || status != syscall.WAIT_OBJECT_0
+	if err != nil {
+		return processObservationUnknown
+	}
+	if status == syscall.WAIT_OBJECT_0 {
+		return processObservationDead
+	}
+	return processObservationLive
+}
+
+func classifyWindowsProcessOpenError(err error) processObservation {
+	if err == nil {
+		return processObservationLive
+	}
+	if errors.Is(err, windowsERROR_INVALID_PARAMETER) {
+		return processObservationDead
+	}
+	return processObservationUnknown
 }

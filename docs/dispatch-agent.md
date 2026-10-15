@@ -97,7 +97,7 @@ cardex add -preset development -fresh -file task.md -title "CSV 导入" -dir . -
 
 ## 结果如何跟进
 
-`run TASK_ID` 可以等待目标执行；长任务查看 `list -json`、`log TASK_ID` 和 `digest`。常规状态变化不用频繁打扰用户；有实质结果、阻塞或需要决策时简短反馈。`done` 是调度记录，还要读日志中的实际检查与产物，才能描述功能是否可用。
+`run TASK_ID` 可以等待目标执行；长任务查看 `list -json`、`log TASK_ID` 和 `digest`。Grok 只读复审若停在工具许可，用 `cardex grok-permission list -root ROOT TASK` 读 pending 身份，再用 `cardex grok-permission answer -request ID -decision allow-once|reject|cancel -root ROOT TASK` 一次性应答（可附 `-session`/`-attempt`/`-tool-call`/`-digest` 校验）。常规状态变化不用频繁打扰用户；有实质结果、阻塞或需要决策时简短反馈。`done` 是调度记录，还要读日志中的实际检查与产物，才能描述功能是否可用。
 
 遇到限额按 Cardex 的现有冷却策略等待。认证或结果不明时，先查日志、已有工作和进程状态，再修复；不要重复派同一个 writer。失败卡用 `cardex retry ID` 重新入队并保留会话；`cardex retry -fresh ID` 仅在 retry 已合法且本卡 custody 已回收时开新会话（不 `--resume`），不绕过 held/集成门/sealed/no-retry/原生 Goal 身份，LastError 不是许可，不改 provider/model。预设是方便复用的建议，不绕过工作流门、既有 owner 路由或平台限制。
 

@@ -80,6 +80,13 @@ const (
 	evHarvested = "harvested"
 )
 
+const (
+	evGrokAllowPolicy          = "grok_allow_policy"
+	evGrokPermissionPending    = "grok_permission_pending"
+	evGrokPermissionAnswered   = "grok_permission_answered"
+	evGrokPermissionUnanswered = "grok_permission_unanswered"
+)
+
 // 缺口标记：不是被写入的事件，而是活动流读者见 seq 跳号时插入的显式披露。
 // 保留在事件类型枚举里的原因：让活动流序列化字段一致（前端拿到 Type=event_gap 明确渲染红条）。
 const evGap = "event_gap"

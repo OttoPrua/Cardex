@@ -82,6 +82,8 @@ func main() {
 		err = cmdDigest(os.Args[2:])
 	case "log":
 		err = cmdLog(os.Args[2:])
+	case "grok-permission":
+		err = cmdGrokPermission(os.Args[2:])
 	case "clean":
 		err = cmdClean(os.Args[2:])
 	case "migrate":
@@ -166,7 +168,12 @@ func printUsage() {
             持锁结束后再 run -root ROOT ID 可启动。无 ID tick 仍会排空就绪队列。
   daemon                           # 前台常驻轮询（不装 launchd 时用）
   list                             # 任务看板（-json 机器可读，-all 含已归档状态）
-  log <id> [-n 60]                 # 查看任务执行日志
+  log <id> [-n 60]                 # 查看任务执行日志（含 Grok 只读复审 pending request_permission）
+  grok-permission list|answer      # 只读 Grok ACP session/request_permission 待办查看与一次性应答
+            list [-root ROOT] [-json] [TASK]
+            answer -request ID -decision allow-once|reject|cancel [-root ROOT]
+                   [-session S] [-attempt A] [-tool-call C] [-digest D] TASK
+            应答绑定 task/session/attempt/tool-call/operation digest；无永久通配授权
   digest [-manager M] [-last N]    # 终态摘要（读 outbox + 卡片，含收割结论），只读
   harvest [-held] [-apply] [ID...] # 按工作区结果收割判定（默认 dry-run，不改状态）
   quota                            # 5 小时额度视图：队列消耗/红线状态/外部用量源
@@ -2436,6 +2443,12 @@ func cmdLog(args []string) error {
 		lines = lines[len(lines)-*n:]
 	}
 	fmt.Println(strings.Join(lines, "\n"))
+	pending, _ := listGrokPermissionPending(root, t.ID)
+	if len(pending) > 0 {
+		fmt.Println("--- GROK_PERMISSION_PENDING ---")
+		data, _ := json.MarshalIndent(pending, "", "  ")
+		fmt.Println(string(data))
+	}
 	return nil
 }
 

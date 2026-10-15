@@ -343,7 +343,7 @@ cardex workflow list|show <id>                           # 普通记录顶层仍
 
 | runner | level | verified | 原因（摘要） |
 |---|---|---|---|
-| `grok-build` | `manual-only` | 是 | TUI 原生 `/goal` 的 complete 与同 session 重启已手工证明。自动协议与进行中的 pause/resume 未验证。`grok -p` 是单回合，不是 goal 证明 |
+| `grok-build` | `manual-only` | 是 | TUI 原生 `/goal` 的 complete 与同 session 重启已手工证明。自动协议与进行中的 pause/resume 未验证。`grok -p` 是单回合，不是 goal 证明。只读 design-review/crosscheck 适配器另走 `agent stdio` 的 `session/request_permission`（`cardex grok-permission`），与 Goal author 的 prompt-file 路径分开 |
 | `kimi-cli` | `manual-only` | 否 | 源码支持 headless create 与 `goal.summary`；配置引擎探测未验证。不是「没有原生 goal」 |
 | `codex` / `claude` / `cursor` / `agy` | `manual-only` | 否 | 有原生候选 API；headless ongoing-goal 适配器未验证。不是一律 unsupported |
 | `opencode` | `manual-only` | 否 | 当前普通 runner 之一；原生 ongoing-goal 未验证 |

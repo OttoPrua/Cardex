@@ -64,6 +64,8 @@ type claudeResult struct {
 
 	// Grok-only diagnostic projection; absent for other providers and old records.
 	GrokDiagnostics *grokBuildDiagnostics `json:"-"`
+	// GrokAllowPolicy is the requested-vs-consumed frozen allow-rule report.
+	GrokAllowPolicy *grokAllowPolicy `json:"-"`
 	// AGY-only safe diagnostic projection; never carries raw stderr or response bodies.
 	AntigravityDiagnostics *antigravityDiagnostics `json:"-"`
 	// ObservedAssistantModel is the provider-reported assistant model_id.

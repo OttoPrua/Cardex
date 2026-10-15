@@ -2395,27 +2395,17 @@ func invokeGrokBuild(ctx context.Context, root string, cfg *Config, t *Task, pro
 		return nil, "", err
 	}
 
-	writeCapable := grokBuildWriteCapable(t)
-	sandbox, permission := resolvedGrokBuildReadOnlySandbox(cfg), "plan"
-	if writeCapable {
-		sandbox, permission = "workspace", "auto"
+	args, acp, policy, err := grokBuildProductArgs(cfg, t, model, effort, promptPath)
+	if err != nil {
+		return nil, "", err
 	}
-	args := []string{
-		"--no-auto-update",
-		"--model", model,
-		"--reasoning-effort", effort,
-		"--output-format", "streaming-json",
-		"--sandbox", sandbox,
-		"--permission-mode", permission,
-		"--no-memory", "--no-subagents", "--disable-web-search", "--verbatim",
+	if grokBuildArgvHasPrivilegeWidening(args) {
+		return nil, "", fmt.Errorf("Grok invoke refused privilege-widening flags")
 	}
-	if writeCapable {
-		args = append(args, "--no-plan")
+	if acp {
+		res, combined, runErr := invokeGrokBuildACP(ctx, root, cfg, t, home, prompt, args, policy)
+		return res, combined, runErr
 	}
-	if t.SessionID != "" {
-		args = append(args, "--resume", t.SessionID)
-	}
-	args = append(args, "--prompt-file", promptPath)
 
 	runCtx, cancel := context.WithTimeout(ctx, grokBuildStepTimeout(cfg))
 	defer cancel()
@@ -2488,6 +2478,7 @@ func invokeGrokBuild(ctx context.Context, root string, cfg *Config, t *Task, pro
 		// A process classification may replace res with the stdout-only observation. Preserve the
 		// actual parser diagnostics without feeding them into that classification or its policy.
 		res.GrokDiagnostics = diagnostics
+		res.GrokAllowPolicy = &policy
 		diagnostics.Subtype = grokBuildDiagnosticSubtype(res.Subtype)
 		diagnostics.process(cmd, processErr, processTimedOut)
 	}

@@ -409,6 +409,19 @@ func TestBoardShowsCurrentGrokTierRoutes(t *testing.T) {
 	}
 }
 
+func grokACPFakeScript(t *testing.T) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	p := filepath.Join(filepath.Dir(file), "testdata", "grok_acp_fake.py")
+	if _, err := os.Stat(p); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 func fakeGrokBuild(t *testing.T, payload, stderr string, exitCode int) (bin, argsDump, promptDump string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -417,6 +430,14 @@ func fakeGrokBuild(t *testing.T, payload, stderr string, exitCode int) (bin, arg
 	promptDump = filepath.Join(dir, "prompt.dump")
 	payloadPath := filepath.Join(dir, "result.jsonl")
 	if err := os.WriteFile(payloadPath, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if stderr != "" {
+		if err := os.WriteFile(filepath.Join(dir, "stderr.txt"), []byte(stderr+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "exit.code"), []byte(strconv.Itoa(exitCode)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	script := "#!/bin/sh\n" +
@@ -428,6 +449,13 @@ func fakeGrokBuild(t *testing.T, payload, stderr string, exitCode int) (bin, arg
 		"  fi\n" +
 		"done\n" +
 		"printf '%s\\n' \"$@\" > " + shSingleQuote(argsDump) + "\n" +
+		"stdio=0\n" +
+		"for arg in \"$@\"; do\n" +
+		"  if [ \"$arg\" = 'stdio' ]; then stdio=1; fi\n" +
+		"done\n" +
+		"if [ \"$stdio\" = 1 ]; then\n" +
+		"  exec python3 " + shSingleQuote(grokACPFakeScript(t)) + " " + shSingleQuote(dir) + "\n" +
+		"fi\n" +
 		"prev=''\n" +
 		"for arg in \"$@\"; do\n" +
 		"  if [ \"$prev\" = '--prompt-file' ]; then cp \"$arg\" " + shSingleQuote(promptDump) + "; fi\n" +
@@ -544,13 +572,20 @@ func TestInvokeGrokBuildUses46XHighAndSandboxModes(t *testing.T) {
 			argsRaw, _ := os.ReadFile(argsDump)
 			args := string(argsRaw)
 			argv := strings.Split(strings.TrimSuffix(args, "\n"), "\n")
-			for _, want := range []string{
+			acp := !tc.wantNoPlan
+			base := []string{
 				"--no-auto-update\n",
 				"--model\ngrok-4.6\n", "--reasoning-effort\nxhigh\n",
-				"--output-format\nstreaming-json\n", "--sandbox\n" + tc.sandbox + "\n",
-				"--permission-mode\n" + tc.permission + "\n", "--prompt-file\n",
+				"--sandbox\n" + tc.sandbox + "\n",
+				"--permission-mode\n" + tc.permission + "\n",
 				"--no-memory\n", "--no-subagents\n", "--disable-web-search\n", "--verbatim\n",
-			} {
+			}
+			if !acp {
+				base = append(base, "--output-format\nstreaming-json\n", "--prompt-file\n")
+			} else {
+				base = append(base, "agent\n", "--no-leader\n", "stdio\n")
+			}
+			for _, want := range base {
 				if !strings.Contains(args, want) {
 					t.Fatalf("Grok argv missing %q:\n%s", want, args)
 				}
@@ -558,26 +593,42 @@ func TestInvokeGrokBuildUses46XHighAndSandboxModes(t *testing.T) {
 			if hasNoPlan := grokBuildArgIndex(argv, "--no-plan") >= 0; hasNoPlan != tc.wantNoPlan {
 				t.Fatalf("Grok argv --no-plan want=%v got=%v:\n%s", tc.wantNoPlan, hasNoPlan, args)
 			}
+			if grokBuildArgvHasPrivilegeWidening(argv) {
+				t.Fatalf("Grok argv widened privilege:\n%s", args)
+			}
 			if strings.Contains(args, "harmless prompt") {
 				t.Fatalf("prompt must not be exposed in process argv:\n%s", args)
 			}
 			gotPrompt, _ := os.ReadFile(promptDump)
 			if string(gotPrompt) != "harmless prompt" {
-				t.Fatalf("prompt-file mismatch: %q", gotPrompt)
+				t.Fatalf("prompt mismatch: %q", gotPrompt)
 			}
-			if len(argv) < 2 || argv[len(argv)-2] != "--prompt-file" {
-				t.Fatalf("--prompt-file must be the final flag/value pair:\n%s", args)
+			if acp {
+				if grokBuildArgIndex(argv, "--prompt-file") >= 0 || grokBuildArgIndex(argv, "--output-format") >= 0 {
+					t.Fatalf("read-only ACP argv must not use prompt-file/streaming-json:\n%s", args)
+				}
+				if grokBuildArgIndex(argv, "stdio") != len(argv)-1 {
+					t.Fatalf("ACP stdio must be the final argv token:\n%s", args)
+				}
+			} else {
+				if len(argv) < 2 || argv[len(argv)-2] != "--prompt-file" {
+					t.Fatalf("--prompt-file must be the final flag/value pair:\n%s", args)
+				}
 			}
 			order := []string{"--no-memory", "--no-subagents", "--disable-web-search", "--verbatim"}
 			if tc.wantNoPlan {
 				order = append(order, "--no-plan")
 			}
-			if tc.sessionID != "" {
+			if !acp && tc.sessionID != "" {
 				order = append(order, "--resume")
-			} else if grokBuildArgIndex(argv, "--resume") >= 0 {
+			} else if !acp && grokBuildArgIndex(argv, "--resume") >= 0 {
 				t.Fatalf("Grok argv must not include --resume without a session:\n%s", args)
 			}
-			order = append(order, "--prompt-file")
+			if !acp {
+				order = append(order, "--prompt-file")
+			} else {
+				order = append(order, "agent", "--no-leader", "stdio")
+			}
 			prev := -1
 			for _, flag := range order {
 				i := grokBuildArgIndex(argv, flag)
@@ -589,7 +640,7 @@ func TestInvokeGrokBuildUses46XHighAndSandboxModes(t *testing.T) {
 				}
 				prev = i
 			}
-			if tc.sessionID != "" {
+			if !acp && tc.sessionID != "" {
 				i := grokBuildArgIndex(argv, "--resume")
 				if i+1 >= len(argv) || argv[i+1] != tc.sessionID {
 					t.Fatalf("Grok argv --resume value mismatch:\n%s", args)

@@ -1817,30 +1817,8 @@ func admitManualGoalLaunchLocked(root string, cfg *Config, wf *WorkflowRecord, t
 		restoreLaunchSandboxSelector(t, selector)
 	}
 
-	tasks, err := loadTasks(root)
-	if err != nil {
+	if err := goalLaunchConcurrencyBlocked(root, cfg, t); err != nil {
 		return err
-	}
-	if !dagAllowsTask(root, tasks, t.ID) {
-		return fmt.Errorf("%w: DAG predecessor missing or not durably done", errAdmissionDenied)
-	}
-	live := mergeLiveWriterTasks(nil, reconstructLiveWriterClaims(root))
-	if writerConflictsWithActive(t, live) {
-		return fmt.Errorf("%w: write-domain/resource conflict with an active writer", errAdmissionDenied)
-	}
-	maxPar := 1
-	if cfg != nil && cfg.MaxParallel > 0 {
-		maxPar = cfg.MaxParallel
-	}
-	slots, err := liveGoalLaunchSlots(root)
-	if err != nil {
-		return err
-	}
-	if slots >= maxPar {
-		return fmt.Errorf("%w: max_parallel %d reached", errAdmissionDenied, maxPar)
-	}
-	if grokSlots := countLiveRunner(root, grokBuildRunnerName); grokSlots >= providerParallelLimit(cfg, grokBuildRunnerName) {
-		return fmt.Errorf("%w: grok max_parallel reached", errAdmissionDenied)
 	}
 
 	if err := bindGoalSandboxEvidence(root, cfg, t); err != nil {
@@ -2116,7 +2094,7 @@ func residualActiveHeldGoal(root string, t *Task) bool {
 }
 
 func liveGoalLaunchSlots(root string) (int, error) {
-	tasks, err := loadTasks(root)
+	tasks, broken, err := scanTasks(root)
 	if err != nil {
 		return 0, err
 	}
@@ -2130,11 +2108,23 @@ func liveGoalLaunchSlots(root string) (int, error) {
 			n++
 		}
 	}
+	for id := range broken {
+		recs, lerr := listAttemptRecords(root, id)
+		if lerr != nil {
+			continue
+		}
+		for _, rec := range recs {
+			if rec != nil && (attemptProducerAlive(rec) || rec.PID > 0) {
+				n++
+				break
+			}
+		}
+	}
 	return n, nil
 }
 
 func countLiveRunner(root, runner string) int {
-	tasks, err := loadTasks(root)
+	tasks, _, err := scanTasks(root)
 	if err != nil {
 		return 1 << 20
 	}

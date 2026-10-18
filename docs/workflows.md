@@ -16,7 +16,8 @@ Cardex 推荐两种工作流拓扑：
 | 能力 | 当前状态 | 精确语义 |
 |---|---|---|
 | `depends_on` DAG | 已执行 | 前置卡必须有可核验的 durable `done` transition；缺边、环、坏 ID、坏 domain binding 对相关分量 fail closed，不阻塞无关分量 |
-| 显式 write domain | 已执行 | 仓相对路径先规范化；同仓 exact/subtree 重叠、同 domain/lineage、同封闭资源均串行 |
+| 显式 write domain | 已执行 | 仓相对路径先规范化；同仓 exact/subtree 重叠、同 domain/lineage、同封闭资源均串行。损坏的任务文件：`list` 可跳过并警告；tick/admit/launch 把不可读证据当可能写者。独立来源（workflow writer 绑定、attempt lease）能证明范围时只约束该范围；否则不假设互不重叠 |
+| `goal-launch` / `goal-run` 准入 | 已执行 | 共用冲突、DAG、会话、归属与容量检查。已证明互不重叠的方向可在 `max_parallel` 内并行；全局“任意未释放 attempt 即忙”不再挡住互不重叠的方向 |
 | 旧卡兼容 | 已执行 | 写卡没声明 write domain 时，同一 Git common dir 仍按整仓串行；不会因升级而意外放宽 |
 | 独立审核角色 | 部分执行 | `design-review` 是只读类型并不占写域。`cardex workflow` 派出的 reviewer 额外由机器保证：另一张卡、`review_of` 指向 writer、无写域、不继承 writer session、同一 writer 同时只有一个 active reviewer |
 | 直派 / 联邦模式名、父子 manager | 部分执行 | `cardex workflow` 有耐久记录：`mode` = `serial` \| `federated`、`module_id` / `goal_id`、federated 的 `parent_id`、写域、轮次上限、候选身份、三道 effect gate、可选设计谱系。Task 侧一等字段包括 `workflow_id`、`integration_gate` 与可选 `goal`（阶段执行 / 原生 goal 事实）；没有 `goal` 的普通卡语义不变。manager 层级本身仍是约定 |
@@ -37,7 +38,7 @@ Cardex 推荐两种工作流拓扑：
 
 `{"verdict":"pass|concerns|block","p0":["..."],"p1":["..."],"p2":["..."],"summary":"..."}`
 
-`ACCEPT` 与审核结论里的 `HELD` **不是** Cardex 机器 verdict。卡状态 `held`（`add -hold` / `cardex hold`）是调度状态，不要把它写成审核 JSON。模板规定：`verdict=pass` 的唯一标准是 p0 与 p1 皆空。
+`ACCEPT` 与审核结论里的 `HELD` **不是** Cardex 机器 verdict。卡状态 `held`（`add -hold` / `cardex hold`）是调度状态，不要把它写成审核 JSON。模板规定：`verdict=pass` 可被采信当且仅当 JSON 里 **出现** `p0` 与 `p1` 且二者都是空数组。缺字段、`null` 或错类型不是可采信 pass。`summary` / `p2` 与用量统计不是新的验收闸门。`concerns` / `block` / 未知词汇仍不是 pass。
 
 | 机器 token | 操作语义（operator/policy；当前不会从 verdict 自动 `cardex release` 集成卡） |
 |---|---|
@@ -312,6 +313,11 @@ cardex workflow init -mode serial -module auth -goal-id auth-token-v1 \
 
 cardex workflow writer <id>                              # 派唯一普通 writer（tick 可派发；review_after=false）
 cardex workflow writer <id> -mode manual                 # 派唯一 Goal writer（不进普通 tick；须已绑定独立设计）
+cardex workflow fanout <id> -design TASK -directions a,b [-direction-write-paths a=internal/auth;b=internal/billing]
+                                                         # 已完成设计拆成方向卡，不创建验收卡。省略写域则复制 workflow 声明的路径/资源（重叠保护仍在）。显式互不重叠的路径/资源会赋予独立 domain/lineage，避免因复制 ID 被误串行。真重叠、封闭资源和未满足 depends_on 仍串行或拒绝。
+cardex workflow accept <id> [-complete]                  # 必要方向都完成后创建一张验收卡；-complete 只在可采信 pass 绑定当前覆盖时把目标标为已验收
+cardex workflow goal-direction <id> -direction NAME [-write-paths ...]
+cardex workflow goal-launch -task ID -manual|-hosted     # 与 goal-run 共用同一套冲突/DAG/会话/归属/容量规则：已证明互不重叠的方向可并行；重叠写域/资源、复用会话、未知归属不可
 cardex workflow goal-run <id> -manual [-budget N]        # 前台启动交互式 Grok /goal（绑定 session 后才有效果）
 cardex workflow goal-sync <id>                           # 不启动 provider；核对原生证据并更新阶段事实
 cardex workflow design-result <id> -decision stop|input|successor -observation failed|paused|needs-input|budget_limited

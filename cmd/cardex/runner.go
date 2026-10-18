@@ -3798,43 +3798,85 @@ func extractEmitTasks(result, dir string) ([]emitTask, error) {
 }
 
 // reviewVerdict 是对抗审核报告末尾的机读结论（design-review 模板约定的 json 块）。
+// p0Present/p1Present record JSON array presence on the parsed object. A Go
+// zero-value struct is not an admissible pass: the contract is the review JSON.
 type reviewVerdict struct {
-	Verdict string   `json:"verdict"`
-	P0      []string `json:"p0"`
-	P1      []string `json:"p1"`
-	P2      []string `json:"p2"`
-	Summary string   `json:"summary"`
+	Verdict   string   `json:"verdict"`
+	P0        []string `json:"p0"`
+	P1        []string `json:"p1"`
+	P2        []string `json:"p2"`
+	Summary   string   `json:"summary"`
+	p0Present bool     `json:"-"`
+	p1Present bool     `json:"-"`
+}
+
+func jsonValueIsArray(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
+	return len(raw) > 0 && raw[0] == '['
+}
+
+func decodeReviewFindingArray(raw json.RawMessage) ([]string, bool) {
+	if !jsonValueIsArray(raw) {
+		return nil, false
+	}
+	var out []string
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, false
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out, true
+}
+
+func decodeReviewVerdictObject(raw string, strict bool) *reviewVerdict {
+	dec := json.NewDecoder(strings.NewReader(strings.TrimSpace(raw)))
+	var fields map[string]json.RawMessage
+	if err := dec.Decode(&fields); err != nil || fields == nil {
+		return nil
+	}
+	if strict {
+		var extra any
+		if err := dec.Decode(&extra); err != io.EOF {
+			return nil
+		}
+	}
+	verdictRaw, ok := fields["verdict"]
+	if !ok {
+		return nil
+	}
+	var verdict string
+	if err := json.Unmarshal(verdictRaw, &verdict); err != nil {
+		return nil
+	}
+	switch verdict {
+	case "pass", "concerns", "block":
+	default:
+		return nil
+	}
+	v := &reviewVerdict{Verdict: verdict}
+	v.P0, v.p0Present = decodeReviewFindingArray(fields["p0"])
+	v.P1, v.p1Present = decodeReviewFindingArray(fields["p1"])
+	if p2, ok := fields["p2"]; ok && jsonValueIsArray(p2) {
+		_ = json.Unmarshal(p2, &v.P2)
+	}
+	if summary, ok := fields["summary"]; ok {
+		_ = json.Unmarshal(summary, &v.Summary)
+	}
+	return v
 }
 
 // parseReviewVerdict reads only the final fenced conclusion required by the
 // review template. A malformed or unknown last conclusion never falls back to
 // an earlier pass. Legacy unfenced output uses only its last verdict object.
 func parseReviewVerdict(result string) *reviewVerdict {
-	decode := func(raw string, strict bool) *reviewVerdict {
-		var v reviewVerdict
-		dec := json.NewDecoder(strings.NewReader(strings.TrimSpace(raw)))
-		if err := dec.Decode(&v); err != nil {
-			return nil
-		}
-		if strict {
-			var extra any
-			if err := dec.Decode(&extra); err != io.EOF {
-				return nil
-			}
-		}
-		switch v.Verdict {
-		case "pass", "concerns", "block":
-			return &v
-		}
-		return nil
-	}
 	ms := anyFencedRe.FindAllStringSubmatchIndex(result, -1)
 	if len(ms) > 0 {
 		last := ms[len(ms)-1]
 		if strings.TrimSpace(result[last[1]:]) != "" {
 			return nil
 		}
-		return decode(result[last[2]:last[3]], true)
+		return decodeReviewVerdictObject(result[last[2]:last[3]], true)
 	}
 	if strings.Contains(result, "```") {
 		return nil // An unfinished fence is not a legacy unfenced conclusion.
@@ -3847,7 +3889,7 @@ func parseReviewVerdict(result string) *reviewVerdict {
 	if brace < 0 {
 		return nil
 	}
-	return decode(result[brace:], false)
+	return decodeReviewVerdictObject(result[brace:], false)
 }
 
 var fixTitleRe = regexp.MustCompile(`^修复R\d+: `)
@@ -3882,9 +3924,9 @@ func handleReviewVerdict(root string, cfg *Config, t *Task, result string, lg *o
 		return
 	}
 	if v.Verdict == "pass" && !reviewVerdictIsAdmissiblePass(v) {
-		// templates/design-review.md: pass 的唯一标准是 p0 与 p1 皆空。带未闭合
-		// findings 的 pass 既不是收口依据，也不能当修复轮的输入。
-		logBlock(lg, "FIXLOOP", "verdict=pass 但 p0/p1 非空，按模板不是可采信 pass，闭环跳过")
+		// templates/design-review.md: pass 的唯一标准是 JSON 中 p0 与 p1 皆为数组且为空。
+		// 缺字段、null、错类型或带未闭合 findings 的 pass 既不是收口依据，也不能当修复轮的输入。
+		logBlock(lg, "FIXLOOP", "verdict=pass 但 p0/p1 不是可采信的空数组，闭环跳过")
 		return
 	}
 	if v.Verdict == "pass" {

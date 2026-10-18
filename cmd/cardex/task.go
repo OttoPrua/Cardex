@@ -610,30 +610,56 @@ func loadTask(root, id string) (*Task, error) {
 	return &t, nil
 }
 
-func loadTasks(root string) ([]*Task, error) {
+// scanTasks reads every task file once and reports unloadable siblings
+// alongside loadable ones. Listing may warn-and-skip; admission, launch, tick,
+// and reconstructed live writers must consult the broken map instead of
+// treating an unreadable record as absence.
+func scanTasks(root string) ([]*Task, map[string]error, error) {
 	entries, err := os.ReadDir(tasksDir(root))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("找不到 %s，请先运行: cardex init", tasksDir(root))
+			return nil, nil, fmt.Errorf("找不到 %s，请先运行: cardex init", tasksDir(root))
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	var tasks []*Task
+	broken := map[string]error{}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		t, err := loadTask(root, strings.TrimSuffix(e.Name(), ".json"))
+		id := strings.TrimSuffix(e.Name(), ".json")
+		t, err := loadTask(root, id)
 		if err != nil {
-			// ReadDir 与逐个读文件之间任务可能被并发归档移走（如 cancel 收尾），不是损坏，静默跳过。
-			if !os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "警告: 跳过损坏的任务文件 %s: %v\n", e.Name(), err)
+			// ReadDir 与逐个读文件之间任务可能被并发归档移走（如 cancel 收尾），不是损坏。
+			if os.IsNotExist(err) {
+				continue
 			}
+			broken[id] = err
 			continue
 		}
 		tasks = append(tasks, t)
 	}
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].CreatedAt < tasks[j].CreatedAt })
+	return tasks, broken, nil
+}
+
+// loadTasks is the display-side loader: a corrupt sibling must not hide the
+// healthy cards from `cardex list`. Admission paths must not use it as proof
+// that a writer is absent — they go through scanTasks / reconstructLiveWriterClaims.
+func loadTasks(root string) ([]*Task, error) {
+	tasks, broken, err := scanTasks(root)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(broken))
+	for id := range broken {
+		names = append(names, id)
+	}
+	sort.Strings(names)
+	for _, id := range names {
+		fmt.Fprintf(os.Stderr, "警告: 跳过损坏的任务文件 %s.json: %v\n", id, broken[id])
+	}
 	return tasks, nil
 }
 

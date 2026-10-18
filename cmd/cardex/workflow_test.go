@@ -481,8 +481,12 @@ func TestReviewVerdictAdmissiblePassVocabulary(t *testing.T) {
 	if reviewVerdictIsAdmissiblePass(&reviewVerdict{Verdict: "pass", P1: []string{"x"}}) {
 		t.Fatal("pass with a p1 is not admissible")
 	}
-	if !reviewVerdictIsAdmissiblePass(&reviewVerdict{Verdict: "pass"}) {
-		t.Fatal("pass with empty p0/p1 is admissible")
+	if reviewVerdictIsAdmissiblePass(&reviewVerdict{Verdict: "pass"}) {
+		t.Fatal("a Go-zero pass without JSON p0/p1 presence is not admissible")
+	}
+	empty := parseReviewVerdict(`{"verdict":"pass","p0":[],"p1":[]}`)
+	if !reviewVerdictIsAdmissiblePass(empty) {
+		t.Fatal("complete empty-array pass is admissible")
 	}
 	for _, token := range []string{"ACCEPT", "HELD", "done", ""} {
 		if reviewVerdictIsAdmissiblePass(&reviewVerdict{Verdict: token}) {

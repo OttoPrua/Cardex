@@ -1,0 +1,7 @@
+=== compose-loop-1 bin=6342f46cc4c87279daba579faf62068742ae6938863eabf400a28987f7e983a6  /var/folders/cn/57cv_ds10nn7ghvqy5rwf8sc0000gn/T/grok-goal-ad625e4baa73/implementer/cardex 2026-10-18T20:42:28Z ===
+=== RUN   TestTwoDirectionComposedCandidateConsumerLoop
+    goal_admission_composition_test.go:748: composed-loop round=1 alpha=t1019-0442-75b8 beta=t1019-0442-03d2 commit=2f0a2aba7961bbfd8395f81f4898e0ca6541d505 tree=08c9c82994bdeefa21b9ac3995c1ae06efe5686e acceptance=t1019-0442-604a first="acceptance_created=1 id=t1019-0442-604a goal_accepted=false" again="acceptance_created=0 existing=t1019-0442-604a goal_accepted=false"
+    goal_admission_composition_test.go:748: composed-loop round=2 alpha=t1019-0442-d933 beta=t1019-0442-d567 commit=d732c064a7f4484740638f335cbe788a7af15f18 tree=08c9c82994bdeefa21b9ac3995c1ae06efe5686e acceptance=t1019-0442-d7d6 first="acceptance_created=1 id=t1019-0442-d7d6 goal_accepted=false" again="acceptance_created=0 existing=t1019-0442-d7d6 goal_accepted=false"
+--- PASS: TestTwoDirectionComposedCandidateConsumerLoop (3.44s)
+PASS
+ok  	cardex/cmd/cardex	4.758s

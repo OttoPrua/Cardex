@@ -16,7 +16,8 @@ The shape adapts Maestro Flow ideas such as graph, fork, join, gate, and session
 | Capability | Current state | Exact meaning |
 |---|---|---|
 | `depends_on` DAG | Enforced | A predecessor must have a verifiable durable `done` transition. Missing edges, cycles, malformed IDs, and bad domain bindings fail closed for the affected component while unrelated components continue |
-| Explicit write domain | Enforced | Repository-relative paths are normalized first. Exact/subtree overlap in one repository, equal domain/lineage, and equal closed resources all serialize |
+| Explicit write domain | Enforced | Repository-relative paths are normalized first. Exact/subtree overlap in one repository, equal domain/lineage, and equal closed resources all serialize. Unreadable task files: `list` may warn-and-skip; tick/admit/launch treat broken evidence as a possible writer. When an independent source (workflow writer binding, attempt lease) proves scope, only that scope is constrained; otherwise disjointness is not assumed |
+| `goal-launch` / `goal-run` admission | Enforced | One conflict/DAG/session/custody/capacity rule. Proven disjoint directions may run within `max_parallel`. Overlapping domains/resources, reused sessions, and unknown custody cannot. A global “any unreleased attempt is busy” flag no longer serializes disjoint directions |
 | Legacy compatibility | Enforced | A writing task without a write domain retains whole-repository exclusion on the same Git common dir; an upgrade does not silently widen concurrency |
 | Independent reviewer role | Partly enforced | `design-review` is read-only and does not occupy a write domain. A reviewer dispatched by `cardex workflow` is additionally machine-guaranteed to be a separate card whose `review_of` names the writer, with no write domain, no inherited writer session, and no rival active reviewer for the same writer |
 | Serial/federated mode names and manager hierarchy | Partly enforced | `cardex workflow` keeps a durable record: `mode` = `serial` \| `federated`, `module_id`/`goal_id`, a federated `parent_id`, write domain, round bound, candidate identity, three effect gates, and optional design lineage. First-class Task fields include `workflow_id`, `integration_gate`, and optional `goal` (stage execution / native-goal fact). Ordinary cards without `goal` keep current semantics. The manager hierarchy itself is still convention |
@@ -37,7 +38,7 @@ The parsable independent-`design-review` terminal matches `templates/design-revi
 
 `{"verdict":"pass|concerns|block","p0":["..."],"p1":["..."],"p2":["..."],"summary":"..."}`
 
-`ACCEPT` and a review-conclusion `HELD` are **not** Cardex machine verdicts. Card status `held` (`add -hold` / `cardex hold`) is a scheduling state; do not write it into the review JSON. The template's only rule for `verdict=pass` is that both p0 and p1 are empty.
+`ACCEPT` and a review-conclusion `HELD` are **not** Cardex machine verdicts. Card status `held` (`add -hold` / `cardex hold`) is a scheduling state; do not write it into the review JSON. `verdict=pass` is admissible only when the JSON **contains** `p0` and `p1` as empty arrays. Missing fields, `null`, or the wrong type are not an admissible pass. `summary` / `p2` and usage statistics are not new acceptance gates. `concerns` / `block` / unknown vocabulary remain non-pass.
 
 | Machine token | Operational meaning (operator/policy; current tick does not auto-`cardex release` an integrate card from the verdict) |
 |---|---|
@@ -313,6 +314,11 @@ cardex workflow init -mode serial -module auth -goal-id auth-token-v1 \
 
 cardex workflow writer <id>                              # the single ordinary writer (tick may dispatch; review_after=false)
 cardex workflow writer <id> -mode manual                 # the single Goal writer (excluded from ordinary tick; independent design required)
+cardex workflow fanout <id> -design TASK -directions a,b [-direction-write-paths a=internal/auth;b=internal/billing]
+                                                         # split a finished design into direction cards; does not create acceptance. Omitted write domains copy the workflow claim. Explicit disjoint path/resource scope gets independent domain/lineage. True overlap, closed resources, and unmet depends_on still serialize or refuse. Git composition of direction diffs is manual.
+cardex workflow accept <id> [-complete]                  # one acceptance card after required directions are done; -complete only with an admissible pass bound to current coverage
+cardex workflow goal-direction <id> -direction NAME [-write-paths ...]
+cardex workflow goal-launch -task ID -manual|-hosted     # same conflict/DAG/session/custody/capacity rule as goal-run
 cardex workflow goal-run <id> -manual [-budget N]        # foreground interactive Grok /goal (session bound before effect)
 cardex workflow goal-sync <id>                           # does not launch a provider; verifies native evidence and updates stage facts
 cardex workflow design-result <id> -decision stop|input|successor -observation failed|paused|needs-input|budget_limited

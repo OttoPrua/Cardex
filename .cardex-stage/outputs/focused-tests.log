@@ -1,0 +1,651 @@
+=== focused tests count=2 2026-10-18T20:39:37Z ===
+已创建 workflow wf1019-0439-8ec56a mode=serial module=auth integration=t1019-0439-334c（held）
+goal_round=1 task=t1019-0439-a0af retained_previous=true
+goal_round=2 task=t1019-0439-91df retained_previous=true
+staged fanout design=t1019-0439-0b07 directions=2 acceptance_created=0
+staged fanout design=t1019-0439-0b07 directions=2 acceptance_created=0
+acceptance_created=1 id=t1019-0439-9590 goal_accepted=false
+acceptance_created=0 existing=t1019-0439-9590 goal_accepted=false
+acceptance_created=0 existing=t1019-0439-9590 goal_accepted=false
+goal_accepted=false acceptance=t1019-0439-9590 reason=验收卡 t1019-0439-9590 尚未通过（status=queued）
+acceptance_created=0 existing=t1019-0439-9590 goal_accepted=false
+goal_accepted=false acceptance=t1019-0439-9590 reason=concerns
+acceptance_created=0 existing=t1019-0439-9590 goal_accepted=false
+goal_accepted=false acceptance=t1019-0439-9590 reason=unknown_vocabulary
+acceptance_created=0 existing=t1019-0439-9590 goal_accepted=false
+goal_accepted=false acceptance=t1019-0439-9590 reason=block
+acceptance_created=0 existing=t1019-0439-9590 goal_accepted=false
+goal_accepted=true acceptance=t1019-0439-9590
+已创建 workflow wf1019-0439-488fa0 mode=serial module=auth integration=t1019-0439-5b3b（held）
+goal_round=1 task=t1019-0439-d38b retained_previous=true
+native_goal id=t1019-0439-7394 session= goal=-
+native_goal existing=t1019-0439-7394 session= goal=-
+警告: 跳过损坏的任务文件 broken-unknown-writer.json: 解析任务 broken-unknown-writer 失败: unexpected end of JSON input
+已创建 workflow wf1019-0439-f38dbe mode=serial module=authz integration=t1019-0439-6e1c（held）
+已创建 workflow wf1019-0439-983350 mode=serial module=billing integration=t1019-0439-5ba8（held）
+警告: 跳过损坏的任务文件 t1019-0439-7493.json: 解析任务 t1019-0439-7493 失败: unexpected end of JSON input
+session_id=62f81176-80b0-4893-9247-533c5d9f4df5 bound before launch
+stage_contract_path=/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1863123620/001/workflows/wf1019-0439-983350.stage-contract.txt
+stage_contract_digest=e505474be29e3234d1fed94a469318b87cb4f7aafb0af04e2b4d93d29389af19
+Frozen stage contract is the native /goal input (not grok -p, not outcome-only):
+outcome: ship billing
+acceptance: pass
+stop: provider budget is soft; existing step timeout is the hard deadline
+return_to_design: true
+scope: billing
+budget_tokens: 0 (soft)
+hard_timeout_seconds: 3600
+sandbox_profile: workspace
+sandbox_profile_digest: 02432e19791184781b54379018932b2fb77fd71f0995be29b984a409d88c5490
+cardex_root: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1863123620/001
+worktree: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1863123620/008
+git_common_dir: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1863123620/008/.git
+prompts:
+  [1] 你是 workflow 模块 `billing`（模式 serial）的实现写者。工作目录：/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1863123620/008。
+
+目标：ship billing
+
+完成标准：pass
+
+当前轮次：0
+
+纪律：
+
+1. 只改本卡声明的写域内路径。未声明的路径、凭证、设备、live/cutover 一律不碰。
+2. 不要自行开第二个写者。按本卡完成标准执行作者检查或对抗式自审，并如实标注；本卡明确要求独立审核时，仍由指定独立审核者完成。
+3. 收尾给出精确 base/candidate commit 与 tree、changed paths、focused/full 测试结果与
+   external-effect counters；这些是审核与集成门的输入，不能省。
+4. 不得声明集成完成或 live。集成卡默认 held，live 与 cutover 是另外的门。
+5. 例行进度写进模块本地文件；不要把进度当作 Root 通知。
+owned_paths: internal/billing
+write_domain: billing-core
+depends_on: (none)
+session_id: 62f81176-80b0-4893-9247-533c5d9f4df5
+latest_design_path: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1863123620/010/design.md
+latest_design_digest: 58532aa0ab30717994f4b78dab5ccc72e0c2878a73198ac622e20fc43754c59f
+latest_design_input_identity: f394ec92707fe17ff49e781f6bf8780db8db3ef551e5d9f848eb9c3c61eb19dc
+latest_design_decision: 
+Copyable native command (literal path+digest; TUI is not a shell):
+  /goal Read and implement the complete stage contract at /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1863123620/001/workflows/wf1019-0439-983350.stage-contract.txt; verify SHA256 e505474be29e3234d1fed94a469318b87cb4f7aafb0af04e2b4d93d29389af19 before any write.
+  /goal status
+Interactive TUI owner types /goal. Slave writes and exit 0 are not pause. Hosted control is a separate -hosted launch.
+grok -p is a single turn and is not goal proof.
+After the TUI returns: cardex workflow goal-sync wf1019-0439-983350
+goal-sync does not launch a provider; it updates stage facts.
+native_goal_launched id=t1019-0439-a0e3 session=62f81176-80b0-4893-9247-533c5d9f4df5 goal=- observation=unknown
+已创建 workflow wf1019-0439-3b50f7 mode=serial module=authz integration=t1019-0439-dbea（held）
+已创建 workflow wf1019-0439-e027a5 mode=serial module=authz2 integration=t1019-0439-6c99（held）
+警告: 跳过损坏的任务文件 t1019-0439-96f5.json: 解析任务 t1019-0439-96f5 失败: unexpected end of JSON input
+已创建 workflow wf1019-0439-e538ce mode=serial module=auth integration=t1019-0439-98f5（held）
+已创建 workflow wf1019-0439-46731d mode=serial module=auth integration=t1019-0439-2a6f（held）
+staged fanout design=t1019-0439-ec3a directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-0dad5a mode=serial module=auth integration=t1019-0439-f93e（held）
+staged fanout design=t1019-0439-6666 directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-60b0ae mode=serial module=auth integration=t1019-0439-9332（held）
+staged fanout design=t1019-0439-a704 directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-7f05ce mode=serial module=auth integration=t1019-0439-0ddb（held）
+staged fanout design=t1019-0439-4892 directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-886394 mode=serial module=auth integration=t1019-0439-fa29（held）
+staged fanout design=t1019-0439-a989 directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-fa37bc mode=serial module=auth integration=t1019-0439-bdfb（held）
+staged fanout design=t1019-0439-eb37 directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-aa3222 mode=serial module=auth integration=t1019-0439-d94c（held）
+staged fanout design=t1019-0439-223a directions=2 acceptance_created=0
+acceptance_created=1 id=t1019-0439-07eb goal_accepted=false
+acceptance_created=1 id=t1019-0439-5505 goal_accepted=false
+goal_accepted=false acceptance=t1019-0439-5505 reason=验收卡 t1019-0439-5505 尚未通过（status=queued）
+acceptance_created=0 existing=t1019-0439-5505 goal_accepted=false
+已创建 workflow wf1019-0439-e60c9f mode=serial module=auth integration=t1019-0439-9f5c（held）
+已创建 workflow wf1019-0439-60c78e mode=serial module=auth integration=t1019-0439-9b96（held）
+已创建 workflow wf1019-0439-4b48a4 mode=serial module=authz integration=t1019-0439-ab76（held）
+staged fanout design=t1019-0439-ea2e directions=2 acceptance_created=0
+staged fanout design=t1019-0439-5635 directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-395139 mode=serial module=billing integration=t1019-0439-2671（held）
+已创建 workflow wf1019-0439-9c25b8 mode=serial module=auth integration=t1019-0439-d333（held）
+staged fanout design=t1019-0439-0abd directions=2 acceptance_created=0
+acceptance_created=1 id=t1019-0439-a03f goal_accepted=false
+session_id=628dc081-884e-4294-ba0b-061a8ded0913 bound before launch
+stage_contract_path=/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/001/workflows/wf1019-0439-4b48a4.stage-contract.txt
+stage_contract_digest=8d67c4de12e71136875f367fc570c48512c804a8fa102f23046a30354becd3dc
+Frozen stage contract is the native /goal input (not grok -p, not outcome-only):
+outcome: ship authz
+acceptance: pass
+stop: provider budget is soft; existing step timeout is the hard deadline
+return_to_design: true
+scope: authz
+budget_tokens: 0 (soft)
+hard_timeout_seconds: 3600
+sandbox_profile: workspace
+sandbox_profile_digest: 02432e19791184781b54379018932b2fb77fd71f0995be29b984a409d88c5490
+cardex_root: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/001
+worktree: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/002
+git_common_dir: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/002/.git
+prompts:
+  [1] 你是 workflow 模块 `authz`（模式 serial）的实现写者。工作目录：/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/002。
+
+目标：ship authz
+
+完成标准：pass
+
+当前轮次：0
+
+纪律：
+
+1. 只改本卡声明的写域内路径。未声明的路径、凭证、设备、live/cutover 一律不碰。
+2. 不要自行开第二个写者。按本卡完成标准执行作者检查或对抗式自审，并如实标注；本卡明确要求独立审核时，仍由指定独立审核者完成。
+3. 收尾给出精确 base/candidate commit 与 tree、changed paths、focused/full 测试结果与
+   external-effect counters；这些是审核与集成门的输入，不能省。
+4. 不得声明集成完成或 live。集成卡默认 held，live 与 cutover 是另外的门。
+5. 例行进度写进模块本地文件；不要把进度当作 Root 通知。
+owned_paths: internal/auth
+write_domain: authz-core
+depends_on: (none)
+session_id: 628dc081-884e-4294-ba0b-061a8ded0913
+latest_design_path: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/008/design.md
+latest_design_digest: ed559b2ee78f62e0831244a233215e1c697cb2aa8d88b7339e157d14deb6d8a6
+latest_design_input_identity: f394ec92707fe17ff49e781f6bf8780db8db3ef551e5d9f848eb9c3c61eb19dc
+latest_design_decision: 
+Copyable native command (literal path+digest; TUI is not a shell):
+  /goal Read and implement the complete stage contract at /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/001/workflows/wf1019-0439-4b48a4.stage-contract.txt; verify SHA256 8d67c4de12e71136875f367fc570c48512c804a8fa102f23046a30354becd3dc before any write.
+  /goal status
+Interactive TUI owner types /goal. Slave writes and exit 0 are not pause. Hosted control is a separate -hosted launch.
+grok -p is a single turn and is not goal proof.
+After the TUI returns: cardex workflow goal-sync wf1019-0439-4b48a4
+goal-sync does not launch a provider; it updates stage facts.
+已创建 workflow wf1019-0439-f416a0 mode=serial module=auth integration=t1019-0439-cba6（held）
+acceptance_created=0 existing=t1019-0439-a03f goal_accepted=false
+staged fanout design=t1019-0439-762c directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-254c90 mode=serial module=auth integration=t1019-0439-07ad（held）
+goal_accepted=false acceptance=t1019-0439-a03f reason=incomplete_evidence
+staged fanout design=t1019-0439-b47b directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-269e11 mode=serial module=auth integration=t1019-0439-9d46（held）
+acceptance_created=0 existing=t1019-0439-a03f goal_accepted=false
+staged fanout design=t1019-0439-7115 directions=1 acceptance_created=0
+native_goal id=t1019-0439-c129 session= goal=-
+goal_accepted=false acceptance=t1019-0439-a03f reason=incomplete_evidence
+acceptance_created=0 existing=t1019-0439-a03f goal_accepted=false
+session_id=295faeac-19bd-4141-83a2-5ef3f76d9bc6 bound before launch
+stage_contract_path=/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/001/workflows/wf1019-0439-395139.stage-contract.txt
+stage_contract_digest=c95930c41cde483a110010bc82278f52222e36bede9af31f1eb6c240d22a5c16
+Frozen stage contract is the native /goal input (not grok -p, not outcome-only):
+outcome: ship billing
+acceptance: pass
+stop: provider budget is soft; existing step timeout is the hard deadline
+return_to_design: true
+scope: billing
+budget_tokens: 0 (soft)
+hard_timeout_seconds: 3600
+sandbox_profile: workspace
+sandbox_profile_digest: 02432e19791184781b54379018932b2fb77fd71f0995be29b984a409d88c5490
+cardex_root: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/001
+worktree: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/010
+git_common_dir: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/010/.git
+prompts:
+  [1] 你是 workflow 模块 `billing`（模式 serial）的实现写者。工作目录：/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/010。
+
+目标：ship billing
+
+完成标准：pass
+
+当前轮次：0
+
+纪律：
+
+1. 只改本卡声明的写域内路径。未声明的路径、凭证、设备、live/cutover 一律不碰。
+2. 不要自行开第二个写者。按本卡完成标准执行作者检查或对抗式自审，并如实标注；本卡明确要求独立审核时，仍由指定独立审核者完成。
+3. 收尾给出精确 base/candidate commit 与 tree、changed paths、focused/full 测试结果与
+   external-effect counters；这些是审核与集成门的输入，不能省。
+4. 不得声明集成完成或 live。集成卡默认 held，live 与 cutover 是另外的门。
+5. 例行进度写进模块本地文件；不要把进度当作 Root 通知。
+owned_paths: internal/billing
+write_domain: billing-core
+depends_on: (none)
+session_id: 295faeac-19bd-4141-83a2-5ef3f76d9bc6
+latest_design_path: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/012/design.md
+latest_design_digest: d37e39f8c43e0ab0d25a51e93688145cef595def1a9664684dc093368980253d
+latest_design_input_identity: f394ec92707fe17ff49e781f6bf8780db8db3ef551e5d9f848eb9c3c61eb19dc
+latest_design_decision: 
+Copyable native command (literal path+digest; TUI is not a shell):
+  /goal Read and implement the complete stage contract at /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission2377449611/001/workflows/wf1019-0439-395139.stage-contract.txt; verify SHA256 c95930c41cde483a110010bc82278f52222e36bede9af31f1eb6c240d22a5c16 before any write.
+  /goal status
+Interactive TUI owner types /goal. Slave writes and exit 0 are not pause. Hosted control is a separate -hosted launch.
+grok -p is a single turn and is not goal proof.
+After the TUI returns: cardex workflow goal-sync wf1019-0439-395139
+goal-sync does not launch a provider; it updates stage facts.
+goal_accepted=false acceptance=t1019-0439-a03f reason=incomplete_evidence
+acceptance_created=0 existing=t1019-0439-a03f goal_accepted=false
+goal_accepted=true acceptance=t1019-0439-a03f
+native_goal_launched id=t1019-0439-e02e session=628dc081-884e-4294-ba0b-061a8ded0913 goal=- observation=unknown
+native_goal_launched id=t1019-0439-dbd1 session=295faeac-19bd-4141-83a2-5ef3f76d9bc6 goal=- observation=unknown
+已创建 workflow wf1019-0439-4cb002 mode=serial module=authz integration=t1019-0439-bbd5（held）
+已创建 workflow wf1019-0439-3a58e2 mode=serial module=authz2 integration=t1019-0439-7ec9（held）
+session_id=69d4c4a0-071e-4891-a95c-a60217bbec62 bound before launch
+stage_contract_path=/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap2988184304/001/workflows/wf1019-0439-4cb002.stage-contract.txt
+stage_contract_digest=5bf03a1b33f141bf36d670532215cf8030a010157047c0232b6c130b4a88a3cd
+Frozen stage contract is the native /goal input (not grok -p, not outcome-only):
+outcome: ship authz
+acceptance: pass
+stop: provider budget is soft; existing step timeout is the hard deadline
+return_to_design: true
+scope: authz
+budget_tokens: 0 (soft)
+hard_timeout_seconds: 3600
+sandbox_profile: workspace
+sandbox_profile_digest: 02432e19791184781b54379018932b2fb77fd71f0995be29b984a409d88c5490
+cardex_root: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap2988184304/001
+worktree: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap2988184304/002
+git_common_dir: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap2988184304/002/.git
+prompts:
+  [1] 你是 workflow 模块 `authz`（模式 serial）的实现写者。工作目录：/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap2988184304/002。
+
+目标：ship authz
+
+完成标准：pass
+
+当前轮次：0
+
+纪律：
+
+1. 只改本卡声明的写域内路径。未声明的路径、凭证、设备、live/cutover 一律不碰。
+2. 不要自行开第二个写者。按本卡完成标准执行作者检查或对抗式自审，并如实标注；本卡明确要求独立审核时，仍由指定独立审核者完成。
+3. 收尾给出精确 base/candidate commit 与 tree、changed paths、focused/full 测试结果与
+   external-effect counters；这些是审核与集成门的输入，不能省。
+4. 不得声明集成完成或 live。集成卡默认 held，live 与 cutover 是另外的门。
+5. 例行进度写进模块本地文件；不要把进度当作 Root 通知。
+owned_paths: internal/auth
+write_domain: authz-core
+depends_on: (none)
+session_id: 69d4c4a0-071e-4891-a95c-a60217bbec62
+latest_design_path: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap2988184304/007/design.md
+latest_design_digest: 7a651bcb58855eb1316feed967ac4db694d9763e2890fe73b7f43cd740a672ef
+latest_design_input_identity: f394ec92707fe17ff49e781f6bf8780db8db3ef551e5d9f848eb9c3c61eb19dc
+latest_design_decision: 
+Copyable native command (literal path+digest; TUI is not a shell):
+  /goal Read and implement the complete stage contract at /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap2988184304/001/workflows/wf1019-0439-4cb002.stage-contract.txt; verify SHA256 5bf03a1b33f141bf36d670532215cf8030a010157047c0232b6c130b4a88a3cd before any write.
+  /goal status
+Interactive TUI owner types /goal. Slave writes and exit 0 are not pause. Hosted control is a separate -hosted launch.
+grok -p is a single turn and is not goal proof.
+After the TUI returns: cardex workflow goal-sync wf1019-0439-4cb002
+goal-sync does not launch a provider; it updates stage facts.
+native_goal_launched id=t1019-0439-fbac session=69d4c4a0-071e-4891-a95c-a60217bbec62 goal=- observation=unknown
+已创建 workflow wf1019-0439-12f093 mode=serial module=authz integration=t1019-0439-26f7（held）
+已创建 workflow wf1019-0439-d3d759 mode=serial module=billing integration=t1019-0439-3ba8（held）
+已创建 workflow wf1019-0439-257015 mode=serial module=authz integration=t1019-0439-a58b（held）
+已创建 workflow wf1019-0439-440e20 mode=serial module=authz integration=t1019-0439-faeb（held）
+已创建 workflow wf1019-0439-949e3d mode=serial module=authz integration=t1019-0439-1d15（held）
+已创建 workflow wf1019-0439-35f0e7 mode=serial module=billing integration=t1019-0439-bfe5（held）
+session_id=d078a798-cea5-4e24-bd11-cee54719a7b6 bound before launch
+stage_contract_path=/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity4237501351/001/workflows/wf1019-0439-949e3d.stage-contract.txt
+stage_contract_digest=45bb35fd0ab51166a58c33bf17545c8a8d38c982632fc043ce2ebfcd988e9df9
+Frozen stage contract is the native /goal input (not grok -p, not outcome-only):
+outcome: ship authz
+acceptance: pass
+stop: provider budget is soft; existing step timeout is the hard deadline
+return_to_design: true
+scope: authz
+budget_tokens: 0 (soft)
+hard_timeout_seconds: 3600
+sandbox_profile: workspace
+sandbox_profile_digest: 02432e19791184781b54379018932b2fb77fd71f0995be29b984a409d88c5490
+cardex_root: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity4237501351/001
+worktree: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity4237501351/002
+git_common_dir: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity4237501351/002/.git
+prompts:
+  [1] 你是 workflow 模块 `authz`（模式 serial）的实现写者。工作目录：/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity4237501351/002。
+
+目标：ship authz
+
+完成标准：pass
+
+当前轮次：0
+
+纪律：
+
+1. 只改本卡声明的写域内路径。未声明的路径、凭证、设备、live/cutover 一律不碰。
+2. 不要自行开第二个写者。按本卡完成标准执行作者检查或对抗式自审，并如实标注；本卡明确要求独立审核时，仍由指定独立审核者完成。
+3. 收尾给出精确 base/candidate commit 与 tree、changed paths、focused/full 测试结果与
+   external-effect counters；这些是审核与集成门的输入，不能省。
+4. 不得声明集成完成或 live。集成卡默认 held，live 与 cutover 是另外的门。
+5. 例行进度写进模块本地文件；不要把进度当作 Root 通知。
+owned_paths: internal/auth
+write_domain: authz-core
+depends_on: (none)
+session_id: d078a798-cea5-4e24-bd11-cee54719a7b6
+latest_design_path: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity4237501351/007/design.md
+latest_design_digest: f4017431e84ca4f3011cec55ebf1dff5be0f94a253268cae2f608467f37d5445
+latest_design_input_identity: f394ec92707fe17ff49e781f6bf8780db8db3ef551e5d9f848eb9c3c61eb19dc
+latest_design_decision: 
+Copyable native command (literal path+digest; TUI is not a shell):
+  /goal Read and implement the complete stage contract at /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity4237501351/001/workflows/wf1019-0439-949e3d.stage-contract.txt; verify SHA256 45bb35fd0ab51166a58c33bf17545c8a8d38c982632fc043ce2ebfcd988e9df9 before any write.
+  /goal status
+Interactive TUI owner types /goal. Slave writes and exit 0 are not pause. Hosted control is a separate -hosted launch.
+grok -p is a single turn and is not goal proof.
+After the TUI returns: cardex workflow goal-sync wf1019-0439-949e3d
+goal-sync does not launch a provider; it updates stage facts.
+native_goal_launched id=t1019-0439-8d65 session=d078a798-cea5-4e24-bd11-cee54719a7b6 goal=- observation=unknown
+已创建 workflow wf1019-0439-4f52fc mode=serial module=auth integration=t1019-0439-deae（held）
+goal_round=1 task=t1019-0439-0b46 retained_previous=true
+goal_round=2 task=t1019-0439-9d7c retained_previous=true
+staged fanout design=t1019-0439-0195 directions=2 acceptance_created=0
+staged fanout design=t1019-0439-0195 directions=2 acceptance_created=0
+acceptance_created=1 id=t1019-0439-4b21 goal_accepted=false
+acceptance_created=0 existing=t1019-0439-4b21 goal_accepted=false
+acceptance_created=0 existing=t1019-0439-4b21 goal_accepted=false
+goal_accepted=false acceptance=t1019-0439-4b21 reason=验收卡 t1019-0439-4b21 尚未通过（status=queued）
+acceptance_created=0 existing=t1019-0439-4b21 goal_accepted=false
+goal_accepted=false acceptance=t1019-0439-4b21 reason=concerns
+acceptance_created=0 existing=t1019-0439-4b21 goal_accepted=false
+goal_accepted=false acceptance=t1019-0439-4b21 reason=unknown_vocabulary
+acceptance_created=0 existing=t1019-0439-4b21 goal_accepted=false
+goal_accepted=false acceptance=t1019-0439-4b21 reason=block
+acceptance_created=0 existing=t1019-0439-4b21 goal_accepted=false
+goal_accepted=true acceptance=t1019-0439-4b21
+已创建 workflow wf1019-0439-231e4d mode=serial module=auth integration=t1019-0439-3dbb（held）
+goal_round=1 task=t1019-0439-285d retained_previous=true
+native_goal id=t1019-0439-ebf8 session= goal=-
+native_goal existing=t1019-0439-ebf8 session= goal=-
+警告: 跳过损坏的任务文件 broken-unknown-writer.json: 解析任务 broken-unknown-writer 失败: unexpected end of JSON input
+已创建 workflow wf1019-0439-8200cb mode=serial module=authz integration=t1019-0439-a281（held）
+已创建 workflow wf1019-0439-d09137 mode=serial module=billing integration=t1019-0439-f8a6（held）
+警告: 跳过损坏的任务文件 t1019-0439-213d.json: 解析任务 t1019-0439-213d 失败: unexpected end of JSON input
+session_id=52a7b218-c759-44b3-8039-fe65cabcadb0 bound before launch
+stage_contract_path=/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1485200387/001/workflows/wf1019-0439-d09137.stage-contract.txt
+stage_contract_digest=4a5f30c300a895427e9c24be06b957d077d7dab01ef362d30734673953018d54
+Frozen stage contract is the native /goal input (not grok -p, not outcome-only):
+outcome: ship billing
+acceptance: pass
+stop: provider budget is soft; existing step timeout is the hard deadline
+return_to_design: true
+scope: billing
+budget_tokens: 0 (soft)
+hard_timeout_seconds: 3600
+sandbox_profile: workspace
+sandbox_profile_digest: 02432e19791184781b54379018932b2fb77fd71f0995be29b984a409d88c5490
+cardex_root: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1485200387/001
+worktree: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1485200387/008
+git_common_dir: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1485200387/008/.git
+prompts:
+  [1] 你是 workflow 模块 `billing`（模式 serial）的实现写者。工作目录：/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1485200387/008。
+
+目标：ship billing
+
+完成标准：pass
+
+当前轮次：0
+
+纪律：
+
+1. 只改本卡声明的写域内路径。未声明的路径、凭证、设备、live/cutover 一律不碰。
+2. 不要自行开第二个写者。按本卡完成标准执行作者检查或对抗式自审，并如实标注；本卡明确要求独立审核时，仍由指定独立审核者完成。
+3. 收尾给出精确 base/candidate commit 与 tree、changed paths、focused/full 测试结果与
+   external-effect counters；这些是审核与集成门的输入，不能省。
+4. 不得声明集成完成或 live。集成卡默认 held，live 与 cutover 是另外的门。
+5. 例行进度写进模块本地文件；不要把进度当作 Root 通知。
+owned_paths: internal/billing
+write_domain: billing-core
+depends_on: (none)
+session_id: 52a7b218-c759-44b3-8039-fe65cabcadb0
+latest_design_path: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1485200387/010/design.md
+latest_design_digest: 71d07292ccdfd7673b055dcdf9f334b688070c2f507e43ce1a7406391c681083
+latest_design_input_identity: f394ec92707fe17ff49e781f6bf8780db8db3ef551e5d9f848eb9c3c61eb19dc
+latest_design_decision: 
+Copyable native command (literal path+digest; TUI is not a shell):
+  /goal Read and implement the complete stage contract at /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestMalformedTaskRecordDisplayVsAdmissionscoped-unrelated1485200387/001/workflows/wf1019-0439-d09137.stage-contract.txt; verify SHA256 4a5f30c300a895427e9c24be06b957d077d7dab01ef362d30734673953018d54 before any write.
+  /goal status
+Interactive TUI owner types /goal. Slave writes and exit 0 are not pause. Hosted control is a separate -hosted launch.
+grok -p is a single turn and is not goal proof.
+After the TUI returns: cardex workflow goal-sync wf1019-0439-d09137
+goal-sync does not launch a provider; it updates stage facts.
+native_goal_launched id=t1019-0439-c8a8 session=52a7b218-c759-44b3-8039-fe65cabcadb0 goal=- observation=unknown
+已创建 workflow wf1019-0439-acf496 mode=serial module=authz integration=t1019-0439-092f（held）
+已创建 workflow wf1019-0439-72ee1a mode=serial module=authz2 integration=t1019-0439-787a（held）
+警告: 跳过损坏的任务文件 t1019-0439-f2cf.json: 解析任务 t1019-0439-f2cf 失败: unexpected end of JSON input
+已创建 workflow wf1019-0439-0a6ccc mode=serial module=auth integration=t1019-0439-8892（held）
+已创建 workflow wf1019-0439-22b887 mode=serial module=auth integration=t1019-0439-4e19（held）
+staged fanout design=t1019-0439-a35c directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-d57e4a mode=serial module=auth integration=t1019-0439-557d（held）
+staged fanout design=t1019-0439-72b5 directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-2cb4f5 mode=serial module=auth integration=t1019-0439-2a32（held）
+staged fanout design=t1019-0439-7f77 directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-1d386d mode=serial module=auth integration=t1019-0439-d513（held）
+staged fanout design=t1019-0439-daed directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-b0716e mode=serial module=auth integration=t1019-0439-0863（held）
+staged fanout design=t1019-0439-e9d9 directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-c5eea0 mode=serial module=auth integration=t1019-0439-f7fd（held）
+staged fanout design=t1019-0439-d0db directions=2 acceptance_created=0
+已创建 workflow wf1019-0439-3d3184 mode=serial module=auth integration=t1019-0439-da17（held）
+staged fanout design=t1019-0439-41d0 directions=2 acceptance_created=0
+acceptance_created=1 id=t1019-0439-ec13 goal_accepted=false
+acceptance_created=1 id=t1019-0439-6a89 goal_accepted=false
+goal_accepted=false acceptance=t1019-0439-6a89 reason=验收卡 t1019-0439-6a89 尚未通过（status=queued）
+acceptance_created=0 existing=t1019-0439-6a89 goal_accepted=false
+已创建 workflow wf1019-0440-a439b4 mode=serial module=auth integration=t1019-0440-f27b（held）
+已创建 workflow wf1019-0440-d5dc66 mode=serial module=auth integration=t1019-0440-21a9（held）
+已创建 workflow wf1019-0440-8f9eea mode=serial module=authz integration=t1019-0440-57e9（held）
+staged fanout design=t1019-0440-6850 directions=2 acceptance_created=0
+staged fanout design=t1019-0440-8b3e directions=2 acceptance_created=0
+已创建 workflow wf1019-0440-1fba84 mode=serial module=billing integration=t1019-0440-c2a0（held）
+已创建 workflow wf1019-0440-4dada4 mode=serial module=auth integration=t1019-0440-6ca4（held）
+acceptance_created=1 id=t1019-0440-6044 goal_accepted=false
+staged fanout design=t1019-0440-fe60 directions=2 acceptance_created=0
+session_id=104762ef-6c8b-45c7-980b-e4f1dc03a83c bound before launch
+stage_contract_path=/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/001/workflows/wf1019-0440-8f9eea.stage-contract.txt
+stage_contract_digest=f04823a070ac766734a5a8f89a0d2ca1d8a3c72a53464b18d3d60c6d78747aad
+Frozen stage contract is the native /goal input (not grok -p, not outcome-only):
+outcome: ship authz
+acceptance: pass
+stop: provider budget is soft; existing step timeout is the hard deadline
+return_to_design: true
+scope: authz
+budget_tokens: 0 (soft)
+hard_timeout_seconds: 3600
+sandbox_profile: workspace
+sandbox_profile_digest: 02432e19791184781b54379018932b2fb77fd71f0995be29b984a409d88c5490
+cardex_root: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/001
+worktree: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/002
+git_common_dir: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/002/.git
+prompts:
+  [1] 你是 workflow 模块 `authz`（模式 serial）的实现写者。工作目录：/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/002。
+
+目标：ship authz
+
+完成标准：pass
+
+当前轮次：0
+
+纪律：
+
+1. 只改本卡声明的写域内路径。未声明的路径、凭证、设备、live/cutover 一律不碰。
+2. 不要自行开第二个写者。按本卡完成标准执行作者检查或对抗式自审，并如实标注；本卡明确要求独立审核时，仍由指定独立审核者完成。
+3. 收尾给出精确 base/candidate commit 与 tree、changed paths、focused/full 测试结果与
+   external-effect counters；这些是审核与集成门的输入，不能省。
+4. 不得声明集成完成或 live。集成卡默认 held，live 与 cutover 是另外的门。
+5. 例行进度写进模块本地文件；不要把进度当作 Root 通知。
+owned_paths: internal/auth
+write_domain: authz-core
+depends_on: (none)
+session_id: 104762ef-6c8b-45c7-980b-e4f1dc03a83c
+latest_design_path: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/008/design.md
+latest_design_digest: 3739bd5ff115e481ceb1e968c61f3787b10cbdbc6e6b922cfab024aac7e316c8
+latest_design_input_identity: f394ec92707fe17ff49e781f6bf8780db8db3ef551e5d9f848eb9c3c61eb19dc
+latest_design_decision: 
+Copyable native command (literal path+digest; TUI is not a shell):
+  /goal Read and implement the complete stage contract at /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/001/workflows/wf1019-0440-8f9eea.stage-contract.txt; verify SHA256 f04823a070ac766734a5a8f89a0d2ca1d8a3c72a53464b18d3d60c6d78747aad before any write.
+  /goal status
+Interactive TUI owner types /goal. Slave writes and exit 0 are not pause. Hosted control is a separate -hosted launch.
+grok -p is a single turn and is not goal proof.
+After the TUI returns: cardex workflow goal-sync wf1019-0440-8f9eea
+goal-sync does not launch a provider; it updates stage facts.
+acceptance_created=0 existing=t1019-0440-6044 goal_accepted=false
+已创建 workflow wf1019-0440-b8f785 mode=serial module=auth integration=t1019-0440-52a4（held）
+staged fanout design=t1019-0440-1a56 directions=2 acceptance_created=0
+goal_accepted=false acceptance=t1019-0440-6044 reason=incomplete_evidence
+已创建 workflow wf1019-0440-af7d84 mode=serial module=auth integration=t1019-0440-eec1（held）
+staged fanout design=t1019-0440-a705 directions=2 acceptance_created=0
+acceptance_created=0 existing=t1019-0440-6044 goal_accepted=false
+已创建 workflow wf1019-0440-01db2e mode=serial module=auth integration=t1019-0440-31c5（held）
+staged fanout design=t1019-0440-1e0f directions=1 acceptance_created=0
+native_goal id=t1019-0440-92b5 session= goal=-
+goal_accepted=false acceptance=t1019-0440-6044 reason=incomplete_evidence
+acceptance_created=0 existing=t1019-0440-6044 goal_accepted=false
+session_id=4fd618a3-e7be-4247-b670-24dc80b0f108 bound before launch
+stage_contract_path=/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/001/workflows/wf1019-0440-1fba84.stage-contract.txt
+stage_contract_digest=225748c150212e0cd78a7bb8c3fd0e2baa6c86d360ad8f4beef3e294c3f2c313
+Frozen stage contract is the native /goal input (not grok -p, not outcome-only):
+outcome: ship billing
+acceptance: pass
+stop: provider budget is soft; existing step timeout is the hard deadline
+return_to_design: true
+scope: billing
+budget_tokens: 0 (soft)
+hard_timeout_seconds: 3600
+sandbox_profile: workspace
+sandbox_profile_digest: 02432e19791184781b54379018932b2fb77fd71f0995be29b984a409d88c5490
+cardex_root: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/001
+worktree: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/010
+git_common_dir: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/010/.git
+prompts:
+  [1] 你是 workflow 模块 `billing`（模式 serial）的实现写者。工作目录：/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/010。
+
+目标：ship billing
+
+完成标准：pass
+
+当前轮次：0
+
+纪律：
+
+1. 只改本卡声明的写域内路径。未声明的路径、凭证、设备、live/cutover 一律不碰。
+2. 不要自行开第二个写者。按本卡完成标准执行作者检查或对抗式自审，并如实标注；本卡明确要求独立审核时，仍由指定独立审核者完成。
+3. 收尾给出精确 base/candidate commit 与 tree、changed paths、focused/full 测试结果与
+   external-effect counters；这些是审核与集成门的输入，不能省。
+4. 不得声明集成完成或 live。集成卡默认 held，live 与 cutover 是另外的门。
+5. 例行进度写进模块本地文件；不要把进度当作 Root 通知。
+owned_paths: internal/billing
+write_domain: billing-core
+depends_on: (none)
+session_id: 4fd618a3-e7be-4247-b670-24dc80b0f108
+latest_design_path: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/012/design.md
+latest_design_digest: 289989bfb0807d6f91fcf3ff13033510c2965117afa4ee009374ac8f404cefa1
+latest_design_input_identity: f394ec92707fe17ff49e781f6bf8780db8db3ef551e5d9f848eb9c3c61eb19dc
+latest_design_decision: 
+Copyable native command (literal path+digest; TUI is not a shell):
+  /goal Read and implement the complete stage contract at /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmission325472768/001/workflows/wf1019-0440-1fba84.stage-contract.txt; verify SHA256 225748c150212e0cd78a7bb8c3fd0e2baa6c86d360ad8f4beef3e294c3f2c313 before any write.
+  /goal status
+Interactive TUI owner types /goal. Slave writes and exit 0 are not pause. Hosted control is a separate -hosted launch.
+grok -p is a single turn and is not goal proof.
+After the TUI returns: cardex workflow goal-sync wf1019-0440-1fba84
+goal-sync does not launch a provider; it updates stage facts.
+goal_accepted=false acceptance=t1019-0440-6044 reason=incomplete_evidence
+acceptance_created=0 existing=t1019-0440-6044 goal_accepted=false
+goal_accepted=true acceptance=t1019-0440-6044
+native_goal_launched id=t1019-0440-bfda session=104762ef-6c8b-45c7-980b-e4f1dc03a83c goal=- observation=unknown
+native_goal_launched id=t1019-0440-a1be session=4fd618a3-e7be-4247-b670-24dc80b0f108 goal=- observation=unknown
+已创建 workflow wf1019-0440-e97432 mode=serial module=authz integration=t1019-0440-3d2f（held）
+已创建 workflow wf1019-0440-cc455c mode=serial module=authz2 integration=t1019-0440-8e74（held）
+session_id=813e659d-a5f7-4aa5-8713-01e8e79252c0 bound before launch
+stage_contract_path=/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap730487940/001/workflows/wf1019-0440-e97432.stage-contract.txt
+stage_contract_digest=a94adc867290a4bf4966f5d403f0f25369bcd1bf885b1aa95bc00bf1a78f86cb
+Frozen stage contract is the native /goal input (not grok -p, not outcome-only):
+outcome: ship authz
+acceptance: pass
+stop: provider budget is soft; existing step timeout is the hard deadline
+return_to_design: true
+scope: authz
+budget_tokens: 0 (soft)
+hard_timeout_seconds: 3600
+sandbox_profile: workspace
+sandbox_profile_digest: 02432e19791184781b54379018932b2fb77fd71f0995be29b984a409d88c5490
+cardex_root: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap730487940/001
+worktree: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap730487940/002
+git_common_dir: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap730487940/002/.git
+prompts:
+  [1] 你是 workflow 模块 `authz`（模式 serial）的实现写者。工作目录：/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap730487940/002。
+
+目标：ship authz
+
+完成标准：pass
+
+当前轮次：0
+
+纪律：
+
+1. 只改本卡声明的写域内路径。未声明的路径、凭证、设备、live/cutover 一律不碰。
+2. 不要自行开第二个写者。按本卡完成标准执行作者检查或对抗式自审，并如实标注；本卡明确要求独立审核时，仍由指定独立审核者完成。
+3. 收尾给出精确 base/candidate commit 与 tree、changed paths、focused/full 测试结果与
+   external-effect counters；这些是审核与集成门的输入，不能省。
+4. 不得声明集成完成或 live。集成卡默认 held，live 与 cutover 是另外的门。
+5. 例行进度写进模块本地文件；不要把进度当作 Root 通知。
+owned_paths: internal/auth
+write_domain: authz-core
+depends_on: (none)
+session_id: 813e659d-a5f7-4aa5-8713-01e8e79252c0
+latest_design_path: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap730487940/007/design.md
+latest_design_digest: d15665ecc3352459ce97da307edef3941448a69bab7608720d2d587d995eb1bf
+latest_design_input_identity: f394ec92707fe17ff49e781f6bf8780db8db3ef551e5d9f848eb9c3c61eb19dc
+latest_design_decision: 
+Copyable native command (literal path+digest; TUI is not a shell):
+  /goal Read and implement the complete stage contract at /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissionoverlap730487940/001/workflows/wf1019-0440-e97432.stage-contract.txt; verify SHA256 a94adc867290a4bf4966f5d403f0f25369bcd1bf885b1aa95bc00bf1a78f86cb before any write.
+  /goal status
+Interactive TUI owner types /goal. Slave writes and exit 0 are not pause. Hosted control is a separate -hosted launch.
+grok -p is a single turn and is not goal proof.
+After the TUI returns: cardex workflow goal-sync wf1019-0440-e97432
+goal-sync does not launch a provider; it updates stage facts.
+native_goal_launched id=t1019-0440-da3f session=813e659d-a5f7-4aa5-8713-01e8e79252c0 goal=- observation=unknown
+已创建 workflow wf1019-0440-b636dc mode=serial module=authz integration=t1019-0440-cb6f（held）
+已创建 workflow wf1019-0440-cde35a mode=serial module=billing integration=t1019-0440-b9e1（held）
+已创建 workflow wf1019-0440-79fd2e mode=serial module=authz integration=t1019-0440-7f88（held）
+已创建 workflow wf1019-0440-3f260c mode=serial module=authz integration=t1019-0440-71e0（held）
+已创建 workflow wf1019-0440-04b2cb mode=serial module=authz integration=t1019-0440-f51d（held）
+已创建 workflow wf1019-0440-8d5981 mode=serial module=billing integration=t1019-0440-9b05（held）
+session_id=620fdc98-afc2-4144-92c6-6f1e05607f93 bound before launch
+stage_contract_path=/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity988530477/001/workflows/wf1019-0440-04b2cb.stage-contract.txt
+stage_contract_digest=4b47d4f08fca22dfedbbeb5b9fa8b3b654a6b6e07d03145250f4f2330356e163
+Frozen stage contract is the native /goal input (not grok -p, not outcome-only):
+outcome: ship authz
+acceptance: pass
+stop: provider budget is soft; existing step timeout is the hard deadline
+return_to_design: true
+scope: authz
+budget_tokens: 0 (soft)
+hard_timeout_seconds: 3600
+sandbox_profile: workspace
+sandbox_profile_digest: 02432e19791184781b54379018932b2fb77fd71f0995be29b984a409d88c5490
+cardex_root: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity988530477/001
+worktree: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity988530477/002
+git_common_dir: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity988530477/002/.git
+prompts:
+  [1] 你是 workflow 模块 `authz`（模式 serial）的实现写者。工作目录：/Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity988530477/002。
+
+目标：ship authz
+
+完成标准：pass
+
+当前轮次：0
+
+纪律：
+
+1. 只改本卡声明的写域内路径。未声明的路径、凭证、设备、live/cutover 一律不碰。
+2. 不要自行开第二个写者。按本卡完成标准执行作者检查或对抗式自审，并如实标注；本卡明确要求独立审核时，仍由指定独立审核者完成。
+3. 收尾给出精确 base/candidate commit 与 tree、changed paths、focused/full 测试结果与
+   external-effect counters；这些是审核与集成门的输入，不能省。
+4. 不得声明集成完成或 live。集成卡默认 held，live 与 cutover 是另外的门。
+5. 例行进度写进模块本地文件；不要把进度当作 Root 通知。
+owned_paths: internal/auth
+write_domain: authz-core
+depends_on: (none)
+session_id: 620fdc98-afc2-4144-92c6-6f1e05607f93
+latest_design_path: /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity988530477/007/design.md
+latest_design_digest: 934747f8eb1b479f1c2cae8cf0565f59fd32208d83c41c73cf9ef2eb4f6517be
+latest_design_input_identity: f394ec92707fe17ff49e781f6bf8780db8db3ef551e5d9f848eb9c3c61eb19dc
+latest_design_decision: 
+Copyable native command (literal path+digest; TUI is not a shell):
+  /goal Read and implement the complete stage contract at /Volumes/Storage/Development/Cardex/worktrees/goal-admission-composition-20261019/.cache/go-tmp/TestGoalLaunchReusesGoalRunAdmissioncapacity988530477/001/workflows/wf1019-0440-04b2cb.stage-contract.txt; verify SHA256 4b47d4f08fca22dfedbbeb5b9fa8b3b654a6b6e07d03145250f4f2330356e163 before any write.
+  /goal status
+Interactive TUI owner types /goal. Slave writes and exit 0 are not pause. Hosted control is a separate -hosted launch.
+grok -p is a single turn and is not goal proof.
+After the TUI returns: cardex workflow goal-sync wf1019-0440-04b2cb
+goal-sync does not launch a provider; it updates stage facts.
+native_goal_launched id=t1019-0440-fb86 session=620fdc98-afc2-4144-92c6-6f1e05607f93 goal=- observation=unknown
+PASS
+ok  	cardex/cmd/cardex	26.395s

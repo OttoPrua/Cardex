@@ -12,18 +12,21 @@ func taskIsReadOnlyType(t *Task) bool {
 	return t != nil && (t.Type == typeReview || t.Type == typeProgressPull)
 }
 
+const unknownWriterScopePrefix = "_unknown-scope:"
+
 type liveWriterClaim struct {
-	taskID    string
-	dir       string
-	dirKey    string
-	repoKey   string
-	explicit  bool
-	valid     bool
-	domainID  string
-	lineage   string
-	paths     []string
-	reals     []string
-	resources []ResourceClaim
+	taskID       string
+	dir          string
+	dirKey       string
+	repoKey      string
+	explicit     bool
+	valid        bool
+	unknownScope bool
+	domainID     string
+	lineage      string
+	paths        []string
+	reals        []string
+	resources    []ResourceClaim
 }
 
 func writerDirKey(dir string) string {
@@ -186,10 +189,24 @@ func taskRepoRoot(t *Task) string {
 	return physicalDirKey(t.Dir)
 }
 
+func unknownScopeWriterTask(id string) *Task {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		id = "unreadable"
+	}
+	if !strings.HasPrefix(id, unknownWriterScopePrefix) {
+		id = unknownWriterScopePrefix + id
+	}
+	return &Task{ID: id, Type: typeSequence}
+}
+
 func writerClaimForTask(t *Task) liveWriterClaim {
 	c := liveWriterClaim{valid: true}
 	if t == nil {
 		return liveWriterClaim{}
+	}
+	if strings.HasPrefix(t.ID, unknownWriterScopePrefix) {
+		return liveWriterClaim{taskID: t.ID, unknownScope: true}
 	}
 	c.taskID = t.ID
 	c.dir = t.Dir
@@ -262,6 +279,9 @@ func writerClaimsConflict(a, b liveWriterClaim) bool {
 	if a.taskID == "" || b.taskID == "" || a.taskID == b.taskID {
 		return false
 	}
+	if a.unknownScope || b.unknownScope {
+		return true
+	}
 	if a.explicit && b.explicit {
 		if !a.valid || !b.valid {
 			return sameDirKey(a, b)
@@ -323,7 +343,7 @@ func writerConflictsWithActiveIDs(candidate *Task, active []*Task) []string {
 		}
 		otherClaim := writerClaimForTask(other)
 		block := false
-		if !otherClaim.valid && !otherClaim.explicit {
+		if otherClaim.unknownScope || (!otherClaim.valid && !otherClaim.explicit) {
 			block = true
 		} else if writerClaimsConflict(claim, otherClaim) {
 			block = true
@@ -369,19 +389,9 @@ func reconstructLiveWriterClaims(root string) []*Task {
 	if root == "" {
 		return nil
 	}
-	tasks, err := loadTasks(root)
+	tasks, broken, err := scanTasks(root)
 	if err != nil {
-		return []*Task{{
-			ID:   "_writer-claims-unreadable",
-			Type: typeSequence,
-			Dir:  root,
-			WriteDomain: &WriteDomain{
-				ID:        "unreadable",
-				Lineage:   "unreadable",
-				Component: "unreadable",
-				Paths:     []string{"../escape"},
-			},
-		}}
+		return []*Task{unknownScopeWriterTask("_writer-claims-unreadable")}
 	}
 	var live []*Task
 	seen := map[string]bool{}
@@ -394,7 +404,82 @@ func reconstructLiveWriterClaims(root string) []*Task {
 			live = append(live, t)
 		}
 	}
+	if len(broken) == 0 {
+		return live
+	}
+	ids := make([]string, 0, len(broken))
+	for id := range broken {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	wfByWriter := brokenTaskWorkflowWriters(root)
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		if claim := recoverBrokenTaskWriterClaim(root, id, wfByWriter); claim != nil {
+			live = append(live, claim)
+			continue
+		}
+		live = append(live, unknownScopeWriterTask(id))
+	}
 	return live
+}
+
+func brokenTaskWorkflowWriters(root string) map[string]*WorkflowRecord {
+	out := map[string]*WorkflowRecord{}
+	cfg, err := loadConfig(root)
+	if err != nil {
+		return out
+	}
+	wfs, _, err := scanWorkflows(root, cfg)
+	if err != nil {
+		return out
+	}
+	for _, wf := range wfs {
+		if wf == nil || !workflowClaimsActive(wf) || strings.TrimSpace(wf.WriterTaskID) == "" {
+			continue
+		}
+		out[wf.WriterTaskID] = wf
+	}
+	return out
+}
+
+// recoverBrokenTaskWriterClaim uses independent sources (workflow records,
+// attempt workspace leases) to prove a damaged task file's write scope. When
+// those sources cannot establish scope, the caller must not assume disjointness.
+func recoverBrokenTaskWriterClaim(root, taskID string, wfByWriter map[string]*WorkflowRecord) *Task {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return nil
+	}
+	if wf := wfByWriter[taskID]; wf != nil {
+		return &Task{
+			ID:          taskID,
+			Type:        typeSequence,
+			Dir:         wf.Worktree,
+			WriteDomain: copyWriteDomain(wf.WriteDomain),
+			WorkflowID:  wf.ID,
+		}
+	}
+	recs, err := listAttemptRecords(root, taskID)
+	if err != nil {
+		return nil
+	}
+	for _, rec := range recs {
+		if rec == nil {
+			continue
+		}
+		dir := strings.TrimSpace(rec.WorkspaceLeaseID)
+		if dir == "" {
+			continue
+		}
+		if attemptProducerAlive(rec) || rec.State == attemptBound || rec.PID > 0 {
+			return &Task{ID: taskID, Type: typeSequence, Dir: dir}
+		}
+	}
+	return nil
 }
 
 func mergeLiveWriterTasks(inMemory, reconstructed []*Task) []*Task {

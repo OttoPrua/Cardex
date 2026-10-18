@@ -1,6 +1,6 @@
 # Stage result: admission repairs and one composed-acceptance cycle
 
-Branch `codex/goal-admission-composition-20261019` (base `e908173ee48648bcd67038652c202e298c4b7263`). `git log -1 --stat` / `git status` captured in `commit.txt` (retained baseline remains dirty/untracked).
+Branch `codex/goal-admission-composition-20261019` (base `e908173ee48648bcd67038652c202e298c4b7263`). Commit `b5517eb8c777ad1ae83cea143623a4658d772e44`, tree `550d7de0c55c35b26ebae8e80ff5eb3bb2496665`. `git log -1 --stat` / `git status` captured in `commit.txt` (retained baseline remains dirty/untracked).
 
 ## Diff paths
 

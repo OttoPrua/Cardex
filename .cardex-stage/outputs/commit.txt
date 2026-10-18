@@ -1,12 +1,27 @@
-commit 2f25280c84ae46a90a0bcbb6627203232eb15475
+commit b5517eb8c777ad1ae83cea143623a4658d772e44
 Author: Otto <ottoprua@OttodeMac-mini-2.local>
-Date:   Mon Oct 19 04:45:54 2026 +0800
+Date:   Mon Oct 19 05:13:03 2026 +0800
 
-    Record commit identity in the stage result.
+    Reject incomplete JSON pass in owner planned-review closeout
+    
+    advancePlannedReview treated a parsed verdict=pass with missing,
+    null, or wrong-type p0/p1 as a closed pass because len(nil)==0,
+    completed the gate, and could mark the owner-review root done.
+    Require reviewVerdictIsAdmissiblePass before appendCompletedReview.
+    Add a consumer test that drives this function and postComplete.
 
- .cardex-stage/outputs/commit.txt | 42 ++++++++++++++++++++++++++++++++++++++++
- .cardex-stage/outputs/result.md  |  2 +-
- 2 files changed, 43 insertions(+), 1 deletion(-)
+ .cardex-stage/outputs/baseline-groups.log     | 180 +------
+ .cardex-stage/outputs/cardex.sha256           |   2 +-
+ .cardex-stage/outputs/compose-loop-1.log      |   9 +-
+ .cardex-stage/outputs/compose-loop-2.log      |   7 +-
+ .cardex-stage/outputs/focused-tests.log       | 653 +-------------------------
+ .cardex-stage/outputs/result.md               |  46 +-
+ cmd/cardex/goal_admission_composition_test.go | 163 +++++++
+ cmd/cardex/runner.go                          |  15 +-
+ docs/workflows.en.md                          |   2 +-
+ docs/workflows.md                             |   2 +-
+ 10 files changed, 218 insertions(+), 861 deletions(-)
+---
 On branch codex/goal-admission-composition-20261019
 Changes not staged for commit:
   (use "git add <file>..." to update what will be committed)

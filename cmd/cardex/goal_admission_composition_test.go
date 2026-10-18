@@ -115,6 +115,169 @@ func TestParseReviewVerdictAdmissiblePassJSONContract(t *testing.T) {
 	_ = dir
 }
 
+func lastStageSolReview(t *testing.T) (root string, cfg *Config, impl, sol *Task) {
+	t.Helper()
+	root = testRoot(t)
+	cfg = policyTestConfig()
+	impl = finalOwnerTask("opus", routeClassBackend, riskClassHigh)
+	impl.ID = "last-stage-sol-lineage"
+	impl.Dir = t.TempDir()
+	impl.Title = "identity protocol change"
+	impl.Status = statusHeld
+	impl.Step = len(impl.Prompts)
+	route, ok := resolveOwnerRoute(cfg, impl)
+	if !ok || !pinOwnerPrimaryRoute(impl, route) {
+		t.Fatalf("failed to pin high-risk route: %+v ok=%v", route, ok)
+	}
+	if err := saveTask(root, impl); err != nil {
+		t.Fatal(err)
+	}
+	kimi, err := ensureReviewAfterTask(root, cfg, impl, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kimi == nil || kimi.ReviewPlanStage != reviewStageKimiSecondView {
+		t.Fatalf("expected kimi second view: %+v", kimi)
+	}
+	kimiPass := "```json\n{\"verdict\":\"pass\",\"p0\":[],\"p1\":[],\"p2\":[],\"summary\":\"independent view complete\"}\n```"
+	advancePlannedReview(root, cfg, kimi, kimiPass, nil)
+	impl, err = findTaskAnywhere(root, impl.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if impl.Status != statusHeld || reviewCompleted(impl, reviewStageSolMax) ||
+		pendingRequiredReviewStage(impl) != reviewStageSolMax {
+		t.Fatalf("Kimi must leave Sol pending: %+v", impl)
+	}
+	sol, err = existingPlannedReviewChild(root, impl.ID, reviewStageSolMax)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sol == nil {
+		t.Fatal("mandatory Sol gate missing")
+	}
+	sol.AutomaticSolInvocations = 1
+	return root, cfg, impl, sol
+}
+
+func lastStageKimiReview(t *testing.T) (root string, cfg *Config, impl, review *Task) {
+	t.Helper()
+	root = testRoot(t)
+	cfg = policyTestConfig()
+	impl = newTask(root, cfg, typeSequence, "ordinary bounded backend", t.TempDir(), []string{"implement bounded backend change"}, 5)
+	impl.Model = "opus"
+	impl.RouteClass = routeClassBackend
+	impl.RiskClass = riskClassOrdinary
+	impl.ID = "last-stage-kimi-lineage"
+	for deterministicSolSample(impl.ID, 20) {
+		impl.ID += "x"
+	}
+	route, ok := resolveOwnerRoute(cfg, impl)
+	if !ok || route.Name != "opus_backend_ordinary" || !pinOwnerPrimaryRoute(impl, route) {
+		t.Fatalf("ordinary backend route was not frozen: route=%+v ok=%v", route, ok)
+	}
+	impl.Status = statusHeld
+	impl.Step = len(impl.Prompts)
+	if err := saveTask(root, impl); err != nil {
+		t.Fatal(err)
+	}
+	review, err := ensureReviewAfterTask(root, cfg, impl, nil)
+	if err != nil || review == nil {
+		t.Fatalf("Kimi adversarial review was not created: review=%+v err=%v", review, err)
+	}
+	if review.ReviewPlanStage != reviewStageKimiAdversarial {
+		t.Fatalf("expected kimi adversarial last stage: %+v", review)
+	}
+	return root, cfg, impl, review
+}
+
+func assertOwnerReviewIncompletePassHeld(t *testing.T, root, implID, pendingStage string) *Task {
+	t.Helper()
+	got, err := findTaskAnywhere(root, implID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == statusDone {
+		t.Fatalf("incomplete last-stage pass marked owner-review root done: %+v", got)
+	}
+	if got.Status != statusHeld {
+		t.Fatalf("status=%s want held", got.Status)
+	}
+	if reviewCompleted(got, pendingStage) {
+		t.Fatalf("incomplete pass completed %s: %+v", pendingStage, got)
+	}
+	if pendingRequiredReviewStage(got) != pendingStage {
+		t.Fatalf("pending=%s want %s completed=%v", pendingRequiredReviewStage(got), pendingStage, got.CompletedReviews)
+	}
+	if !strings.Contains(got.LastError, "p0/p1") {
+		t.Fatalf("LastError=%q want incomplete p0/p1", got.LastError)
+	}
+	return got
+}
+
+func TestAdvancePlannedReviewRejectsIncompleteJSONPass(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{name: "missing", raw: `{"verdict":"pass"}`},
+		{name: "null", raw: `{"verdict":"pass","p0":null,"p1":null}`},
+		{name: "wrong-type-p0", raw: `{"verdict":"pass","p0":"x","p1":[]}`},
+		{name: "wrong-type-p1", raw: `{"verdict":"pass","p0":[],"p1":1}`},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run("sol/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			root, cfg, impl, sol := lastStageSolReview(t)
+			advancePlannedReview(root, cfg, sol, "```json\n"+tc.raw+"\n```", nil)
+			assertOwnerReviewIncompletePassHeld(t, root, impl.ID, reviewStageSolMax)
+		})
+	}
+	t.Run("sol/complete-empty-arrays", func(t *testing.T) {
+		t.Parallel()
+		root, cfg, impl, sol := lastStageSolReview(t)
+		advancePlannedReview(root, cfg, sol, "```json\n{\"verdict\":\"pass\",\"p0\":[],\"p1\":[]}\n```", nil)
+		got, err := findTaskAnywhere(root, impl.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != statusDone {
+			t.Fatalf("complete empty-array last-stage pass must release the root: %+v", got)
+		}
+		if !reviewCompleted(got, reviewStageSolMax) {
+			t.Fatalf("complete pass must close the Sol gate: %+v", got)
+		}
+	})
+	t.Run("sol/postComplete-missing", func(t *testing.T) {
+		t.Parallel()
+		root, cfg, impl, sol := lastStageSolReview(t)
+		sol.Status = statusDone
+		sol.Step = len(sol.Prompts)
+		postComplete(root, cfg, sol, &claudeResult{Result: "```json\n{\"verdict\":\"pass\"}\n```"}, nil)
+		assertOwnerReviewIncompletePassHeld(t, root, impl.ID, reviewStageSolMax)
+	})
+	t.Run("kimi-last/missing", func(t *testing.T) {
+		t.Parallel()
+		root, cfg, impl, review := lastStageKimiReview(t)
+		advancePlannedReview(root, cfg, review, "```json\n{\"verdict\":\"pass\"}\n```", nil)
+		assertOwnerReviewIncompletePassHeld(t, root, impl.ID, reviewStageKimiAdversarial)
+	})
+	t.Run("kimi-last/complete-empty-arrays", func(t *testing.T) {
+		t.Parallel()
+		root, cfg, impl, review := lastStageKimiReview(t)
+		advancePlannedReview(root, cfg, review, "```json\n{\"verdict\":\"pass\",\"p0\":[],\"p1\":[]}\n```", nil)
+		got, err := findTaskAnywhere(root, impl.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != statusDone {
+			t.Fatalf("complete empty-array last-stage Kimi pass must release the root: %+v", got)
+		}
+	})
+}
+
 func captureListOutput(t *testing.T, root string) string {
 	t.Helper()
 	oldOut, oldErr := os.Stdout, os.Stderr

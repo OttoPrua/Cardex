@@ -38,7 +38,7 @@ Cardex 推荐两种工作流拓扑：
 
 `{"verdict":"pass|concerns|block","p0":["..."],"p1":["..."],"p2":["..."],"summary":"..."}`
 
-`ACCEPT` 与审核结论里的 `HELD` **不是** Cardex 机器 verdict。卡状态 `held`（`add -hold` / `cardex hold`）是调度状态，不要把它写成审核 JSON。模板规定：`verdict=pass` 可被采信当且仅当 JSON 里 **出现** `p0` 与 `p1` 且二者都是空数组。缺字段、`null` 或错类型不是可采信 pass。`summary` / `p2` 与用量统计不是新的验收闸门。`concerns` / `block` / 未知词汇仍不是 pass。
+`ACCEPT` 与审核结论里的 `HELD` **不是** Cardex 机器 verdict。卡状态 `held`（`add -hold` / `cardex hold`）是调度状态，不要把它写成审核 JSON。模板规定：`verdict=pass` 可被采信当且仅当 JSON 里 **出现** `p0` 与 `p1` 且二者都是空数组。缺字段、`null` 或错类型不是可采信 pass。`summary` / `p2` 与用量统计不是新的验收闸门。`concerns` / `block` / 未知词汇仍不是 pass。`parseReviewVerdict` 的每个验收消费者都遵守这条规则，包括 workflow accept、`-complete`、集成释放，以及 owner planned-review 闸门；末级不完整 pass 不会把实现根标为 done，也不会把 Sol 闸门记成已完成。
 
 | 机器 token | 操作语义（operator/policy；当前不会从 verdict 自动 `cardex release` 集成卡） |
 |---|---|

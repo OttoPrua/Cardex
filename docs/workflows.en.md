@@ -38,7 +38,7 @@ The parsable independent-`design-review` terminal matches `templates/design-revi
 
 `{"verdict":"pass|concerns|block","p0":["..."],"p1":["..."],"p2":["..."],"summary":"..."}`
 
-`ACCEPT` and a review-conclusion `HELD` are **not** Cardex machine verdicts. Card status `held` (`add -hold` / `cardex hold`) is a scheduling state; do not write it into the review JSON. `verdict=pass` is admissible only when the JSON **contains** `p0` and `p1` as empty arrays. Missing fields, `null`, or the wrong type are not an admissible pass. `summary` / `p2` and usage statistics are not new acceptance gates. `concerns` / `block` / unknown vocabulary remain non-pass.
+`ACCEPT` and a review-conclusion `HELD` are **not** Cardex machine verdicts. Card status `held` (`add -hold` / `cardex hold`) is a scheduling state; do not write it into the review JSON. `verdict=pass` is admissible only when the JSON **contains** `p0` and `p1` as empty arrays. Missing fields, `null`, or the wrong type are not an admissible pass. `summary` / `p2` and usage statistics are not new acceptance gates. `concerns` / `block` / unknown vocabulary remain non-pass. Every current acceptance consumer of `parseReviewVerdict` follows this rule, including workflow accept, `-complete`, integration release, and owner planned-review gates; a last-stage incomplete pass does not mark the implementation root done and does not complete a Sol gate.
 
 | Machine token | Operational meaning (operator/policy; current tick does not auto-`cardex release` an integrate card from the verdict) |
 |---|---|

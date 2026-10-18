@@ -3305,6 +3305,19 @@ func advancePlannedReview(root string, cfg *Config, review *Task, result string,
 		}, parent))
 		return
 	}
+	// templates/design-review.md: pass is closed only when JSON p0 and p1 are present empty arrays.
+	// Missing, null, or wrong-type arrays must not complete the gate or release the owner-review root.
+	// A pass that still carries present findings falls through: Kimi disagreement and Sol hold consume it.
+	if verdict.Verdict == "pass" && !reviewVerdictIsAdmissiblePass(verdict) &&
+		!(verdict.p0Present && verdict.p1Present) {
+		parent.Status = statusHeld
+		parent.LastError = "Owner review gate " + stage + " pass is missing admissible p0/p1 arrays"
+		parent.touch()
+		_ = persistTaskEvent(root, parent, evHeld, "runner:owner-review-plan", statusHeld, parent.Step, withCostTelemetry(map[string]any{
+			"reason": "incomplete_review_evidence", "review_stage": stage, "review_child": review.ID,
+		}, parent))
+		return
+	}
 	if err := appendCompletedReview(parent, stage); err != nil {
 		parent.Status = statusHeld
 		parent.LastError = err.Error()
@@ -3380,7 +3393,7 @@ func advancePlannedReview(root string, cfg *Config, review *Task, result string,
 		return
 	}
 	if stage == reviewStageSolXHigh || stage == reviewStageSolMax {
-		if verdict.Verdict != "pass" || len(verdict.P0) != 0 || len(verdict.P1) != 0 {
+		if !reviewVerdictIsAdmissiblePass(verdict) {
 			parent.Status = statusHeld
 			parent.LastError = fmt.Sprintf("%s release gate returned %s with %d P0/%d P1; held for Owner",
 				stage, verdict.Verdict, len(verdict.P0), len(verdict.P1))

@@ -1,6 +1,6 @@
 # Stage result: admission repairs and one composed-acceptance cycle
 
-Branch `codex/goal-admission-composition-20261019` (base `e908173ee48648bcd67038652c202e298c4b7263`). Commit recorded after this file is included; `git log -1 --stat` is captured beside this document.
+Branch `codex/goal-admission-composition-20261019` (base `e908173ee48648bcd67038652c202e298c4b7263`). Commit `d4d41d7cb5bfe2c33cb6826e9178c156c2008eb4`, tree `cd9c98901ca62ffaf189df1b1acaf9ad36db95ea`. `git log -1 --stat` / `git status` captured in `commit.txt` (retained baseline remains dirty/untracked).
 
 ## Diff paths
 

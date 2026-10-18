@@ -1,0 +1,42 @@
+commit d4d41d7cb5bfe2c33cb6826e9178c156c2008eb4
+Author: Otto <ottoprua@OttodeMac-mini-2.local>
+Date:   Mon Oct 19 04:45:36 2026 +0800
+
+    Repair goal admission and complete one composed-acceptance cycle.
+    
+    Require JSON p0/p1 arrays for an admissible review pass. Keep list usable when a sibling task file is corrupt, and fail closed or constrain proven scope on tick/admit/launch. Share one conflict/DAG/session/capacity rule between goal-launch and goal-run. Give fanout independent direction identities when disjoint path or resource scope is explicit.
+    
+    Drive the built CLI through design, two directions, a composed Git candidate, and one bound joint acceptance in an isolated fake-provider fixture.
+
+ .cardex-stage/outputs/baseline-groups.log     | 178 +++++
+ .cardex-stage/outputs/cardex.sha256           |   1 +
+ .cardex-stage/outputs/compose-loop-1.log      |   7 +
+ .cardex-stage/outputs/compose-loop-2.log      |   7 +
+ .cardex-stage/outputs/focused-tests.log       | 651 ++++++++++++++++++
+ .cardex-stage/outputs/result.md               |  96 +++
+ cmd/cardex/goal_admission_composition_test.go | 931 ++++++++++++++++++++++++++
+ cmd/cardex/multilane_runtime.go               | 133 +++-
+ cmd/cardex/runner.go                          |  98 ++-
+ cmd/cardex/task.go                            |  40 +-
+ cmd/cardex/workflow_acceptance.go             | 210 ++++--
+ cmd/cardex/workflow_gate.go                   |  15 +-
+ cmd/cardex/workflow_goal.go                   |  40 +-
+ cmd/cardex/workflow_test.go                   |   8 +-
+ docs/dispatch-agent.md                        |   2 +-
+ docs/getting-started.md                       |   2 +-
+ docs/workflows.en.md                          |  10 +-
+ docs/workflows.md                             |  10 +-
+ skills/cardex-dispatch/SKILL.md               |   2 +-
+ 19 files changed, 2301 insertions(+), 140 deletions(-)
+On branch codex/goal-admission-composition-20261019
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   cmd/cardex/attempt_control.go
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	cmd/cardex/tshare_cancel_closeout_test.go
+	docs/handoffs/cardex-rdw-critical-review-20261008.md
+
+no changes added to commit (use "git add" and/or "git commit -a")

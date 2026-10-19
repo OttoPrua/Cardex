@@ -263,11 +263,14 @@ type Config struct {
 	// kimi_cli_opus 是独立于 OpenCode Go 的全时段 K3 自动路由与冷却车道。
 	KimiCLIBin string `json:"kimi_cli_bin,omitempty"`
 	// KimiCLIHome 指向已登录的 Kimi Code 数据目录；空时默认 ~/.kimi-code。
-	// Cardex 会在自身 root 下建立隔离运行目录，并只把 credentials 软链接回这里。
-	KimiCLIHome   string            `json:"kimi_cli_home,omitempty"`
-	KimiCLIModel  string            `json:"kimi_cli_model,omitempty"`
-	KimiCLIEffort string            `json:"kimi_cli_effort,omitempty"`
-	KimiCLIOpus   *KimiCLIOpusRoute `json:"kimi_cli_opus,omitempty"`
+	// 这是认证/配置源，不是会话运行目录。
+	KimiCLIHome string `json:"kimi_cli_home,omitempty"`
+	// KimiCLIRuntimeHome 是隔离运行父目录。空时保持 <cardex root>/kimi-cli-home/<execute|review>。
+	// 已配置时运行目录为 <parent>/<execute|review>；父目录必须已存在，不会回落到数据根，也不会创建缺失的外置挂载。
+	KimiCLIRuntimeHome string            `json:"kimi_cli_runtime_home,omitempty"`
+	KimiCLIModel       string            `json:"kimi_cli_model,omitempty"`
+	KimiCLIEffort      string            `json:"kimi_cli_effort,omitempty"`
+	KimiCLIOpus        *KimiCLIOpusRoute `json:"kimi_cli_opus,omitempty"`
 
 	// Grok Build 原生执行器：复用 ~/.grok 的本机登录态，不读取或复制认证值。
 	// grok_build 为空/disabled 时完全保留旧 Kimi→Codex 与 Claude 限额行为。
@@ -908,6 +911,8 @@ func validateKimiCLI(cfg *Config) error {
 	if cfg == nil {
 		return nil
 	}
+	cfg.KimiCLIHome = strings.TrimSpace(cfg.KimiCLIHome)
+	cfg.KimiCLIRuntimeHome = strings.TrimSpace(cfg.KimiCLIRuntimeHome)
 	cfg.KimiCLIModel = strings.TrimSpace(cfg.KimiCLIModel)
 	cfg.KimiCLIEffort = strings.ToLower(strings.TrimSpace(cfg.KimiCLIEffort))
 	if cfg.KimiCLIEffort != "" && !validEfforts[cfg.KimiCLIEffort] {

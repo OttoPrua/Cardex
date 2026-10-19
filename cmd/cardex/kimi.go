@@ -707,6 +707,54 @@ func overrideKimiTopLevelConfig(raw string, values map[string]string) string {
 	return strings.Join(append(prefix, kept...), "\n")
 }
 
+func kimiCLIModeName(planMode bool) string {
+	if planMode {
+		return "review"
+	}
+	return "execute"
+}
+
+func kimiCLISourceHome(cfg *Config) (string, error) {
+	if cfg == nil {
+		return "", fmt.Errorf("Kimi CLI 配置为空")
+	}
+	sourceHome := strings.TrimSpace(cfg.KimiCLIHome)
+	if sourceHome != "" {
+		return sourceHome, nil
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(userHome, ".kimi-code"), nil
+}
+
+// resolveKimiCLIRuntimeHome returns the mode-specific isolated runtime home.
+// Unset kimi_cli_runtime_home keeps <cardex root>/kimi-cli-home/<execute|review>.
+// A configured parent must already exist as a directory; missing mounts fail
+// closed with no fallback to the Cardex data root and no parent creation.
+func resolveKimiCLIRuntimeHome(root string, cfg *Config, planMode bool) (string, error) {
+	if cfg == nil {
+		return "", fmt.Errorf("Kimi CLI 配置为空")
+	}
+	mode := kimiCLIModeName(planMode)
+	parent := strings.TrimSpace(cfg.KimiCLIRuntimeHome)
+	if parent == "" {
+		if strings.TrimSpace(root) == "" {
+			return "", fmt.Errorf("Kimi CLI 数据根为空")
+		}
+		return filepath.Join(root, "kimi-cli-home", mode), nil
+	}
+	info, err := os.Stat(parent)
+	if err != nil {
+		return "", fmt.Errorf("Kimi CLI 隔离运行父目录不可用 %s: %w", parent, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("Kimi CLI 隔离运行父目录不是目录: %s", parent)
+	}
+	return filepath.Join(parent, mode), nil
+}
+
 // prepareKimiCLIHome creates a mode-specific Cardex-owned runtime home so prompt mode can use
 // automatic permissions without mutating the user's global Kimi config. Review tasks use Kimi's
 // configured plan mode, while sequence tasks use execute mode. Keeping separate homes avoids a
@@ -714,16 +762,9 @@ func overrideKimiTopLevelConfig(raw string, values map[string]string) string {
 // credentials remain in the user's Kimi home and are referenced through a directory symlink; the
 // token is never copied into Cardex state.
 func prepareKimiCLIHome(root string, cfg *Config, planMode bool) (string, error) {
-	if cfg == nil {
-		return "", fmt.Errorf("Kimi CLI 配置为空")
-	}
-	sourceHome := strings.TrimSpace(cfg.KimiCLIHome)
-	if sourceHome == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		sourceHome = filepath.Join(userHome, ".kimi-code")
+	sourceHome, err := kimiCLISourceHome(cfg)
+	if err != nil {
+		return "", err
 	}
 	sourceConfig := filepath.Join(sourceHome, "config.toml")
 	raw, err := os.ReadFile(sourceConfig)
@@ -735,11 +776,13 @@ func prepareKimiCLIHome(root string, cfg *Config, planMode bool) (string, error)
 		return "", fmt.Errorf("Kimi CLI OAuth 凭据目录不可用 %s: %w", sourceCredentials, err)
 	}
 
-	mode := "execute"
-	if planMode {
-		mode = "review"
+	runtimeHome, err := resolveKimiCLIRuntimeHome(root, cfg, planMode)
+	if err != nil {
+		return "", err
 	}
-	runtimeHome := filepath.Join(root, "kimi-cli-home", mode)
+	if runtimeHome == sourceHome {
+		return "", fmt.Errorf("Kimi CLI 隔离运行目录不能与认证源目录相同: %s", runtimeHome)
+	}
 	if err := os.MkdirAll(runtimeHome, 0o700); err != nil {
 		return "", err
 	}

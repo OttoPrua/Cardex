@@ -226,9 +226,10 @@ func TestCmdRunHelpDocumentsHeldRootFailClosed(t *testing.T) {
 	_ = fs.String("root", "", "数据目录")
 	_ = fs.Bool("force", false, "忽略限额冷却强行尝试")
 	_ = fs.Bool("quiet", false, "静默模式（launchd 用）")
+	_ = fs.Bool("once", false, "对该 ID 最多一次 Cardex 派发尝试，等待结束后返回")
 	_ = fs.Parse([]string{"-h"})
 	out := buf.String()
-	for _, want := range []string{"[ID]", "cardex run -root ROOT ID", "未派发", "跳过本轮"} {
+	for _, want := range []string{"[ID]", "cardex run -root ROOT ID", "cardex run -once -root ROOT ID", "未派发", "跳过本轮", "-once"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("run --help missing %q:\n%s", want, out)
 		}

@@ -160,12 +160,15 @@ func printUsage() {
   cmd <id>                                     # 打印手动接管某任务的 claude 命令与 prompt
 
 调度与执行
-  run       [-root ROOT] [-force] [-quiet] [ID]
+  run       [-root ROOT] [-force] [-quiet] [-once] [ID]
             无 ID：排空就绪队列（tick drain），最多 max_parallel 路并行（同一工作目录的写卡串行）。
             另一实例已持同一 root 时跳过本轮（exit 0）；不要把它当成单卡启动。
             有 ID：只启动该任务，不排空其余就绪卡（cardex run -root ROOT ID）。
             同一 root 已持锁且该 ID 未派发则失败（非 0，非静默跳过），排队卡保持 queued；
             持锁结束后再 run -root ROOT ID 可启动。无 ID tick 仍会排空就绪队列。
+            -once：必须恰好一个非空 ID（cardex run -once -root ROOT ID）。对该 ID 最多一次
+            Cardex 派发尝试，等待该次尝试结束即返回；不排空队列；不改写准入/会话/历史；
+            已有 session 仍 --resume。失败/429/重排队按真实处置非 0 退出。非目标卡不派发、不改写。
   daemon                           # 前台常驻轮询（不装 launchd 时用）
   list                             # 任务看板（-json 机器可读，-all 含已归档状态）
   log <id> [-n 60]                 # 查看任务执行日志（含 Grok 只读复审 pending request_permission）
@@ -1899,34 +1902,30 @@ func cmdQuota(args []string) error {
 
 func setCmdRunUsage(fs *flag.FlagSet) {
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "用法: cardex run [-root ROOT] [-force] [-quiet] [ID]\n")
+		fmt.Fprintf(fs.Output(), "用法: cardex run [-root ROOT] [-force] [-quiet] [-once] [ID]\n")
 		fmt.Fprintln(fs.Output(), "  无 ID：排空就绪队列（tick drain）。另一实例持同一 root 时跳过本轮。")
 		fmt.Fprintln(fs.Output(), "  有 ID：只启动该任务，不排空其余就绪卡（cardex run -root ROOT ID）")
 		fmt.Fprintln(fs.Output(), "        同一 root 已持锁且该 ID 未派发则失败（非静默跳过）；持锁结束后再 run -root ROOT ID")
+		fmt.Fprintln(fs.Output(), "  -once：必须恰好一个非空 ID（cardex run -once -root ROOT ID）；对该 ID 最多一次 Cardex 派发尝试")
+		fmt.Fprintln(fs.Output(), "        等待结束后返回；不排空队列；未派发/失败/429/重排队非 0 退出；非目标卡不派发、不改写")
 		fs.PrintDefaults()
 	}
 }
 
 func cmdRun(args []string) error {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	setCmdRunUsage(fs)
-	rootFlag := fs.String("root", "", "数据目录")
-	force := fs.Bool("force", false, "忽略限额冷却强行尝试")
-	quiet := fs.Bool("quiet", false, "静默模式（launchd 用）")
-	_ = fs.Parse(args)
-	if fs.NArg() > 1 {
-		return fmt.Errorf("用法: cardex run [-root ROOT] [-force] [-quiet] [ID]")
+	opts, err := parseRunArgs(args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
 	}
-	root := resolveRoot(*rootFlag)
+	root := resolveRoot(opts.root)
 	cfg, err := loadConfig(root)
 	if err != nil {
 		return err
 	}
-	onlyID := ""
-	if fs.NArg() == 1 {
-		onlyID = strings.TrimSpace(fs.Arg(0))
-	}
-	return tickFilter(root, cfg, *force, *quiet, onlyID)
+	return tickFilterOpts(root, cfg, opts.force, opts.quiet, opts.id, opts.once)
 }
 
 func cmdDaemon(args []string) error {

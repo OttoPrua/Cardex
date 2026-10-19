@@ -91,6 +91,10 @@ backend high-risk 走 Grok→Kimi second view→mandatory Sol/max；Sonnet/Haiku
 - `cardex retry <id>`：失败/终态/限额暂停卡重新入队，**保留**执行会话与进度（下一步仍 `--resume`）。既有自动重试策略不变。
 - `cardex retry -fresh <id>`：仅当 retry 已合法且本卡 custody 已回收时开**新**执行会话（不 `--resume`）。保留工作目录、源码、完成步骤、失败历史与额度。不绕过 held/集成门/sealed/no-retry/原生 Goal 身份与 custody；LastError 文本不是许可；不改 provider/model。本卡仍有活着或去向未知的 attempt/进程时拒绝；其他卡占用同一工作区由既有调度/lease 准入串行，不在这里加总闸。
 
+### 单卡一次尝试（`run -once`）
+
+`cardex run -once -root ROOT ID` 对该 ID 最多建立一次 Cardex 派发尝试，等待该次尝试结束即返回。必须恰好一个非空 ID；缺 ID、空 ID、多个 ID 或误用成全队列都会非 0 拒绝。不排空其余就绪卡。不改写准入、会话或历史；已有 session 仍 `--resume`。目标无法准入时非 0 退出。已派发但失败/429/重排队时按真实处置非 0 退出，不把进程退出当成业务成功。非目标卡不被派发或改写；无法保证隔离的形态（例如会派生审核/交叉/fanout 子卡）会直接拒绝。普通 `cardex run` / `cardex run ID` 默认行为不变。这是 Cardex 尝试边界，不是 provider CLI 内部 HTTP 重试上限。
+
 ### 审核分流（把只读审核负载摊到第二台机器）
 
 实现在本机跑、对抗审核改到另一台 `remote_hosts` 主机上跑，平衡两侧模型额度（审核只读、可分流）：

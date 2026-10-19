@@ -37,8 +37,20 @@ func tick(root string, cfg *Config, force, quiet bool) error {
 // card. A no-ID tick that loses the lock still skips (legacy launchd overlap)
 // and, once it wins the lock, still drains every ready card.
 func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) error {
+	return tickFilterOpts(root, cfg, force, quiet, onlyID, false)
+}
+
+// tickFilterOpts is tickFilter plus opt-in once mode. once=true requires a
+// nonempty onlyID (CLI parse already enforces that). After the named ID is
+// dispatched at most once, the command waits for that attempt and returns
+// without a second scan. Global housekeeping that would mutate non-target
+// cards is skipped; follow-on spawn shapes fail closed.
+func tickFilterOpts(root string, cfg *Config, force, quiet bool, onlyID string, once bool) error {
 	killHandlerOnce.Do(installKillHandler) // 子进程自成进程组后，Ctrl-C/SIGTERM 需接管连坐
 	onlyID = strings.TrimSpace(onlyID)
+	if once && onlyID == "" {
+		return errRunOnceUsage
+	}
 	if !acquireLock(root, lockTTL(cfg)) {
 		if onlyID != "" {
 			return errRootHeldNotDispatched(onlyID)
@@ -49,8 +61,14 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 		return nil
 	}
 	defer releaseLock(root)
-	reconcileControlPlane(root)
-	retryLostManagerWakes(root)
+	if once {
+		_ = withTaskControlLock(root, onlyID, func() error {
+			return recoverTaskTransitionsLocked(root, onlyID)
+		})
+	} else {
+		reconcileControlPlane(root)
+		retryLostManagerWakes(root)
+	}
 	if onlyID != "" {
 		if _, err := findTask(root, onlyID); err != nil {
 			return err
@@ -155,7 +173,9 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 		// CG-R3 codex 复审副本孤儿清理(BD-36/BD-39 附记 2026-07-24):
 		// 崩溃/意外退出会在 tmp/codex-review-work/ 留下副本,靠 tick 对账兜底移除。同 patrolOnce 同一
 		// 循环节奏,不新增守护;判活口径 = pid 已死 + taskID 不在 activeIDs(重派新 pid 场景不误清)。
-		cleanupCodexReviewOrphans(root, activeIDs)
+		if !once {
+			cleanupCodexReviewOrphans(root, activeIDs)
+		}
 
 		blockReason := ""
 		if cd := loadCooldown(root); !force && cd.active(now) {
@@ -171,20 +191,22 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 		//  - claude 正常时其余任务走 claude；
 		//  - claude 被冷却/红线拦住时，按 fallback_order 逐个找第一个可用出路
 		//    （codex 沿用五道闸，引擎各查自己的 cooldown-<名>.json；默认链只有 codex）。
-		if len(activeIDs) < maxPar && schedulerWriteAllowed(root) && admissionAllowsScheduling(root) {
+		if len(activeIDs) < maxPar && schedulerWriteAllowed(root) && admissionAllowsScheduling(root) && !(once && launched > 0) {
 			tasks, err := loadTasks(root)
 			if err != nil {
 				if len(activeIDs) == 0 {
 					return err
 				}
 			} else {
-				reconcileCrossChains(root, tasks, activeIDs) // 崩溃对账：单腿孤儿交叉卡置 failed
-				reconcileMandatoryReviewObligations(root, cfg, tasks, activeIDs)
+				if !once {
+					reconcileCrossChains(root, tasks, activeIDs) // 崩溃对账：单腿孤儿交叉卡置 failed
+					reconcileMandatoryReviewObligations(root, cfg, tasks, activeIDs)
+				}
 				viaRunner := map[string]string{} // 任务ID → ""(claude) / "codex" / 引擎名
 				var cands []*Task
 				for _, t := range tasks {
 					if t.Status == statusCanceled {
-						if !activeIDs[t.ID] {
+						if !once && !activeIDs[t.ID] {
 							_ = archiveTask(root, t) // cancel 时执行器已不在场（如 daemon 重启过）的收尾归档
 						}
 						continue
@@ -352,6 +374,11 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 					cands = append(cands, t)
 				}
 				if next := pickNext(cfg, cands, now); next != nil {
+					if once {
+						if err := onceFollowOnWouldEscape(next); err != nil {
+							return err
+						}
+					}
 					via := viaRunner[next.ID]
 					activeIDs[next.ID] = true
 					activeRunners[via]++
@@ -387,6 +414,9 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 		if len(activeIDs) == 0 {
 			if onlyID != "" && launched == 0 {
 				return singleIDNotDispatchedError(root, onlyID, blockReason)
+			}
+			if once && launched > 0 && runErr == nil {
+				runErr = onceAttemptDisposition(root, onlyID)
 			}
 			if runErr != nil {
 				return runErr
@@ -434,8 +464,21 @@ func tickFilter(root string, cfg *Config, force, quiet bool, onlyID string) erro
 			if msg.err != nil && (onlyID != "" || terminalPersistRejected(msg.err)) {
 				runErr = msg.err
 			}
+			if once {
+				if runErr == nil {
+					runErr = onceAttemptDisposition(root, onlyID)
+				}
+				if runErr != nil {
+					return runErr
+				}
+				if !quiet {
+					fmt.Printf("本轮共处理 %d 个任务。\n", launched)
+				}
+				return nil
+			}
 		case <-time.After(rescan):
 			// 重扫超时：不动任何在跑任务，回循环顶用空闲槽位尝试派发新就绪任务，并做取消对账。
+			// -once 在已派发后只等待该次尝试，不再把重扫当成第二次派发入口。
 		}
 	}
 }

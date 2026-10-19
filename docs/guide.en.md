@@ -69,6 +69,10 @@ adjudication. The actual model comes from the card's Kimi/Grok/Codex fields and 
 
 **In-session sub-layering (sub-agents)**: `sequence` tasks whitelist the Task tool by default, so paired with user-level sub-agents (`~/.claude/agents/deep-reasoner.md` bound to opus, `fast-worker.md` bound to sonnet) an executing session can hand hard reasoning up and push mechanical labor down — routing by task across sessions and by stage within a session, two layers stacked.
 
+### One named-card attempt (`run -once`)
+
+`cardex run -once -root ROOT ID` establishes at most one Cardex dispatch attempt for that ID, waits until that attempt finishes, then returns. It requires exactly one nonempty ID; missing, empty, or multiple IDs and accidental all-queue use are rejected with a nonzero result. Other ready cards are not drained. Admission, session, and history are preserved; a present session is resumed with `--resume`. If the target cannot be admitted, the result is nonzero. If the attempt is dispatched then fails or requeues (including 429), the reported outcome is that disposition — process exit is not treated as business success. Non-target cards are neither dispatched nor mutated; shapes whose isolation cannot be guaranteed (review/cross/fanout children) fail closed. Ordinary `cardex run` / `cardex run ID` defaults are unchanged. This is the Cardex attempt boundary, not a cap on the provider CLI's internal HTTP retries.
+
 ### File-based state (`fresh_steps`) and human gating (`-hold`)
 
 Keeping project state in **files** (state.md / TASKS.md, etc.) is recommended so tasks don't depend on session memory:

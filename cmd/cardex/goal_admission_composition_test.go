@@ -695,6 +695,114 @@ func TestFanoutDirectionIdentitiesAndOverlap(t *testing.T) {
 		}
 	})
 
+	t.Run("chinese-disjoint-names", func(t *testing.T) {
+		byName := fanoutDirectionsByName(t, "认证,计费", "认证=internal/auth;计费=internal/billing")
+		a, b := byName["认证"], byName["计费"]
+		if a == nil || b == nil {
+			t.Fatalf("missing 认证/计费 directions: %v", keysOfTasks(byName))
+		}
+		assertIndependentDisjointDirections(t, a, b)
+		if a.WriteDomain.ID == "auth-tokens-lane" || b.WriteDomain.ID == "auth-tokens-lane" {
+			t.Fatalf("认证/计费 must not copy auth-tokens-lane: %+v %+v", a.WriteDomain, b.WriteDomain)
+		}
+		if a.WriteDomain.Lineage == "auth-tokens-lane-lineage" || b.WriteDomain.Lineage == "auth-tokens-lane-lineage" {
+			t.Fatalf("认证/计费 must not copy auth-tokens-lane-lineage: %+v %+v", a.WriteDomain, b.WriteDomain)
+		}
+	})
+
+	t.Run("shared-ascii-slug", func(t *testing.T) {
+		byName := fanoutDirectionsByName(t, "Auth,auth", "Auth=internal/auth;auth=internal/billing")
+		a, b := byName["Auth"], byName["auth"]
+		if a == nil || b == nil {
+			t.Fatalf("missing Auth/auth directions: %v", keysOfTasks(byName))
+		}
+		assertIndependentDisjointDirections(t, a, b)
+	})
+
+	t.Run("shared-ascii-slug-true-overlap", func(t *testing.T) {
+		byName := fanoutDirectionsByName(t, "Auth,auth", "Auth=internal/auth;auth=internal/auth")
+		a, b := byName["Auth"], byName["auth"]
+		if a == nil || b == nil {
+			t.Fatalf("missing Auth/auth directions: %v", keysOfTasks(byName))
+		}
+		if !writerClaimsConflict(writerClaimForTask(a), writerClaimForTask(b)) {
+			t.Fatal("true path overlap must still serialize when ASCII slugs match")
+		}
+	})
+
+	t.Run("identity-stable-across-order", func(t *testing.T) {
+		first := fanoutDirectionsByName(t, "认证,计费", "认证=internal/auth;计费=internal/billing")
+		second := fanoutDirectionsByName(t, "计费,认证", "计费=internal/billing;认证=internal/auth")
+		if first["认证"].WriteDomain.ID != second["认证"].WriteDomain.ID {
+			t.Fatalf("认证 id changed with fanout order: %s vs %s", first["认证"].WriteDomain.ID, second["认证"].WriteDomain.ID)
+		}
+		if first["计费"].WriteDomain.ID != second["计费"].WriteDomain.ID {
+			t.Fatalf("计费 id changed with fanout order: %s vs %s", first["计费"].WriteDomain.ID, second["计费"].WriteDomain.ID)
+		}
+	})
+
+	t.Run("omitted-chinese-retains-authority", func(t *testing.T) {
+		root, dir := workflowTestRoot(t)
+		cfg := workflowTestCfg(t, root)
+		wf := initTestWorkflow(t, root, dir)
+		design := doneDesign(t, root, cfg, wf, dir)
+		if err := cmdWorkflowFanout([]string{"-root", root, wf.ID, "-design", design.ID, "-directions", "认证,计费"}); err != nil {
+			t.Fatal(err)
+		}
+		wf, err := loadWorkflow(root, cfg, wf.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		byName := map[string]*Task{}
+		for _, id := range wf.DirectionTaskIDs {
+			tk, err := loadTask(root, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			byName[tk.SessionStage] = tk
+		}
+		a, b := byName["认证"], byName["计费"]
+		if a == nil || b == nil {
+			t.Fatalf("missing omitted-scope directions: %v", keysOfTasks(byName))
+		}
+		if a.WriteDomain == nil || b.WriteDomain == nil {
+			t.Fatal("omitted scope must copy the workflow write domain")
+		}
+		if a.WriteDomain.ID != wf.WriteDomain.ID || b.WriteDomain.ID != wf.WriteDomain.ID {
+			t.Fatalf("omitted chinese names changed domain id: %s %s want %s", a.WriteDomain.ID, b.WriteDomain.ID, wf.WriteDomain.ID)
+		}
+		if !writerClaimsConflict(writerClaimForTask(a), writerClaimForTask(b)) {
+			t.Fatal("copied domain identity must keep overlap protection")
+		}
+	})
+
+	t.Run("explicit-owner-domain-preserved", func(t *testing.T) {
+		root, dir := workflowTestRoot(t)
+		cfg := workflowTestCfg(t, root)
+		enableManualGrok(t, root, cfg, filepath.Join(t.TempDir(), "argv-owner-domain"))
+		wf := initTestWorkflow(t, root, dir)
+		if err := cmdWorkflowGoalDirection([]string{
+			"-root", root, wf.ID, "-direction", "认证",
+			"-write-domain-id", "auth-native-dep", "-write-paths", "internal/billing",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		wf, err := loadWorkflow(root, cfg, wf.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(wf.NativeGoalTaskIDs) == 0 {
+			t.Fatal("goal-direction did not admit a native task")
+		}
+		tk, err := loadTask(root, wf.NativeGoalTaskIDs[len(wf.NativeGoalTaskIDs)-1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tk.WriteDomain == nil || tk.WriteDomain.ID != "auth-native-dep" {
+			t.Fatalf("explicit owner write domain rewritten: %+v", tk.WriteDomain)
+		}
+	})
+
 	t.Run("true-overlap", func(t *testing.T) {
 		root, dir := workflowTestRoot(t)
 		cfg := workflowTestCfg(t, root)
@@ -796,6 +904,55 @@ func doneDesign(t *testing.T, root string, cfg *Config, wf *WorkflowRecord, dir 
 		t.Fatal(err)
 	}
 	return design
+}
+
+func fanoutDirectionsByName(t *testing.T, directions, pathAssign string) map[string]*Task {
+	t.Helper()
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	design := doneDesign(t, root, cfg, wf, dir)
+	args := []string{"-root", root, wf.ID, "-design", design.ID, "-directions", directions}
+	if strings.TrimSpace(pathAssign) != "" {
+		args = append(args, "-direction-write-paths", pathAssign)
+	}
+	if err := cmdWorkflowFanout(args); err != nil {
+		t.Fatal(err)
+	}
+	wf, err := loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]*Task{}
+	for _, id := range wf.DirectionTaskIDs {
+		tk, err := loadTask(root, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out[tk.SessionStage] = tk
+	}
+	return out
+}
+
+func assertIndependentDisjointDirections(t *testing.T, a, b *Task) {
+	t.Helper()
+	if a.WriteDomain == nil || b.WriteDomain == nil {
+		t.Fatal("missing write domains")
+	}
+	if a.WriteDomain.ID == b.WriteDomain.ID || a.WriteDomain.Lineage == b.WriteDomain.Lineage {
+		t.Fatalf("explicit disjoint scope must get independent identities: %+v %+v", a.WriteDomain, b.WriteDomain)
+	}
+	if writerClaimsConflict(writerClaimForTask(a), writerClaimForTask(b)) {
+		t.Fatal("explicit disjoint paths must not serialize by copied domain id")
+	}
+}
+
+func keysOfTasks(m map[string]*Task) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }
 
 func TestErroneousAcceptanceAndCoverage(t *testing.T) {
@@ -1088,7 +1245,7 @@ func runComposedCandidateLoop(t *testing.T, bin string, round int) composedLoopI
 		createdFirst: first,
 		createdAgain: again,
 	}
-	t.Logf("composed-loop round=%d alpha=%s beta=%s commit=%s tree=%s acceptance=%s first=%q again=%q",
-		round+1, ids.alpha, ids.beta, ids.commit, ids.tree, ids.acceptance, strings.TrimSpace(ids.createdFirst), strings.TrimSpace(ids.createdAgain))
+	t.Logf("composed-loop round=%d alpha=%s beta=%s commit=%s tree=%s acceptance=%s first=%q again=%q complete=%q",
+		round+1, ids.alpha, ids.beta, ids.commit, ids.tree, ids.acceptance, strings.TrimSpace(ids.createdFirst), strings.TrimSpace(ids.createdAgain), strings.TrimSpace(complete))
 	return ids
 }

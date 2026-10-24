@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"flag"
 	"fmt"
 	"os"
@@ -92,7 +93,7 @@ func cmdWorkflowFanout(args []string) error {
 					return err
 				}
 			}
-			d.ID = independentDirectionDomainID(wf, name)
+			d.ID = independentDirectionDomainID(wf, name, d)
 			d.Lineage = d.ID + "-lineage"
 			d.Component = firstNonBlank(*component, d.Component, wf.WriteDomain.Component, name)
 			specs[i].Domain = &d
@@ -934,11 +935,34 @@ func parseDirectionAssignments(raw string) (map[string]string, error) {
 	return out, nil
 }
 
-func independentDirectionDomainID(wf *WorkflowRecord, name string) string {
+// independentDirectionDomainID derives a stable write-domain ID from the
+// declared direction name plus explicit path/resource facts. An ASCII slug is
+// only a readable prefix; uniqueness does not depend on it, fanout order, or a
+// second identity store.
+func independentDirectionDomainID(wf *WorkflowRecord, name string, d WriteDomain) string {
 	base := "direction"
 	if wf != nil && validIntegrationID(wf.WriteDomain.ID) {
 		base = wf.WriteDomain.ID
 	}
+	disc := directionIdentityDiscriminator(name, d)
+	id := base + "-" + disc
+	if !validIntegrationID(id) {
+		id = "direction-" + disc
+	}
+	return id
+}
+
+func directionIdentityDiscriminator(name string, d WriteDomain) string {
+	sum := sha256.Sum256([]byte(canonicalDirectionIdentityFacts(name, d)))
+	digest := fmt.Sprintf("%x", sum[:8])
+	slug := asciiDirectionSlug(name)
+	if slug == "" {
+		return digest
+	}
+	return slug + "-" + digest
+}
+
+func asciiDirectionSlug(name string) string {
 	slug := strings.ToLower(strings.TrimSpace(name))
 	var b strings.Builder
 	for i, r := range slug {
@@ -949,15 +973,53 @@ func independentDirectionDomainID(wf *WorkflowRecord, name string) string {
 			b.WriteRune(r)
 		}
 	}
-	slug = strings.Trim(b.String(), "-")
-	if slug == "" {
-		slug = "lane"
+	return strings.Trim(b.String(), "-")
+}
+
+func canonicalDirectionIdentityFacts(name string, d WriteDomain) string {
+	var b strings.Builder
+	b.WriteString("name=")
+	b.WriteString(strings.TrimSpace(name))
+	b.WriteByte('\n')
+	seenPath := map[string]struct{}{}
+	var paths []string
+	for _, p := range d.Paths {
+		p = strings.Trim(strings.ReplaceAll(strings.TrimSpace(p), "\\", "/"), "/")
+		if p == "" {
+			continue
+		}
+		if _, ok := seenPath[p]; ok {
+			continue
+		}
+		seenPath[p] = struct{}{}
+		paths = append(paths, p)
 	}
-	id := base + "-" + slug
-	if !validIntegrationID(id) {
-		id = "direction-" + slug
+	sort.Strings(paths)
+	for _, p := range paths {
+		b.WriteString("path=")
+		b.WriteString(p)
+		b.WriteByte('\n')
 	}
-	return id
+	seenRes := map[string]struct{}{}
+	var resources []string
+	for _, r := range d.Resources {
+		key := strings.TrimSpace(r.Kind) + ":" + strings.TrimSpace(r.ID)
+		if key == ":" {
+			continue
+		}
+		if _, ok := seenRes[key]; ok {
+			continue
+		}
+		seenRes[key] = struct{}{}
+		resources = append(resources, key)
+	}
+	sort.Strings(resources)
+	for _, r := range resources {
+		b.WriteString("resource=")
+		b.WriteString(r)
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func resolveDirectionWriteDomain(dir string, wf *WorkflowRecord, spec NativeGoalDirectionSpec) (*WriteDomain, error) {
@@ -969,7 +1031,7 @@ func resolveDirectionWriteDomain(dir string, wf *WorkflowRecord, spec NativeGoal
 	}
 	d := *spec.Domain
 	if d.ID == "" || (wf != nil && d.ID == wf.WriteDomain.ID) {
-		d.ID = independentDirectionDomainID(wf, spec.Name)
+		d.ID = independentDirectionDomainID(wf, spec.Name, d)
 	}
 	if d.Lineage == "" || (wf != nil && d.Lineage == wf.WriteDomain.Lineage) {
 		d.Lineage = d.ID + "-lineage"

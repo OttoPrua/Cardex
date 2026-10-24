@@ -315,7 +315,7 @@ cardex workflow init -mode serial -module auth -goal-id auth-token-v1 \
 cardex workflow writer <id>                              # the single ordinary writer (tick may dispatch; review_after=false)
 cardex workflow writer <id> -mode manual                 # the single Goal writer (excluded from ordinary tick; independent design required)
 cardex workflow fanout <id> -design TASK -directions a,b [-direction-write-paths a=internal/auth;b=internal/billing]
-                                                         # split a finished design into direction cards; does not create acceptance. Omitted write domains copy the workflow claim. Explicit disjoint path/resource scope gets independent domain/lineage. True overlap, closed resources, and unmet depends_on still serialize or refuse. Git composition of direction diffs is manual.
+                                                         # split a finished design into direction cards; does not create acceptance. Omitted write domains copy the workflow claim. Explicit disjoint path/resource scope gets independent domain/lineage derived from the declared name plus those facts, including names that share an ASCII slug. True overlap, closed resources, and unmet depends_on still serialize or refuse. Git composition of direction diffs is manual.
 cardex workflow accept <id> [-complete]                  # one acceptance card after required directions are done; -complete only with an admissible pass bound to current coverage
 cardex workflow goal-direction <id> -direction NAME [-write-paths ...]
 cardex workflow goal-launch -task ID -manual|-hosted     # same conflict/DAG/session/custody/capacity rule as goal-run

@@ -314,7 +314,7 @@ cardex workflow init -mode serial -module auth -goal-id auth-token-v1 \
 cardex workflow writer <id>                              # 派唯一普通 writer（tick 可派发；review_after=false）
 cardex workflow writer <id> -mode manual                 # 派唯一 Goal writer（不进普通 tick；须已绑定独立设计）
 cardex workflow fanout <id> -design TASK -directions a,b [-direction-write-paths a=internal/auth;b=internal/billing]
-                                                         # 已完成设计拆成方向卡，不创建验收卡。省略写域则复制 workflow 声明的路径/资源（重叠保护仍在）。显式互不重叠的路径/资源会赋予独立 domain/lineage，避免因复制 ID 被误串行。真重叠、封闭资源和未满足 depends_on 仍串行或拒绝。
+                                                         # 已完成设计拆成方向卡，不创建验收卡。省略写域则复制 workflow 声明的路径/资源（重叠保护仍在）。显式互不重叠的路径/资源会按方向名与这些路径/资源事实赋予独立 domain/lineage，避免因复制 ID 或 ASCII slug 碰撞被误串行。真重叠、封闭资源和未满足 depends_on 仍串行或拒绝。
 cardex workflow accept <id> [-complete]                  # 必要方向都完成后创建一张验收卡；-complete 只在可采信 pass 绑定当前覆盖时把目标标为已验收
 cardex workflow goal-direction <id> -direction NAME [-write-paths ...]
 cardex workflow goal-launch -task ID -manual|-hosted     # 与 goal-run 共用同一套冲突/DAG/会话/归属/容量规则：已证明互不重叠的方向可并行；重叠写域/资源、复用会话、未知归属不可

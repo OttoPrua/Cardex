@@ -998,11 +998,14 @@ func loadReferencedMemberForClaimRelease(root, workflowID, taskID string) (*Task
 		return nil, fmt.Errorf("%w: referenced writer %s is not a canceled/terminal archive, unknown custody fail-closed",
 			errWorkflowCustody, taskID)
 	}
-	if !recordedAttemptCloseout(root, archived) {
-		return nil, fmt.Errorf("%w: referenced writer %s has no genuine original-attempt closeout, unknown custody fail-closed",
-			errWorkflowCustody, taskID)
+	if recordedAttemptCloseout(root, archived) {
+		return archived, nil
 	}
-	return archived, nil
+	if neverInvokedCanceledArchiveCloseout(root, archived) {
+		return archived, nil
+	}
+	return nil, fmt.Errorf("%w: referenced writer %s has no genuine original-attempt closeout, unknown custody fail-closed",
+		errWorkflowCustody, taskID)
 }
 
 func archivedTerminalStatus(status string) bool {
@@ -1088,6 +1091,106 @@ func recordedAttemptCloseout(root string, t *Task) bool {
 		return false
 	}
 	return rec.State == attemptExited
+}
+
+// neverInvokedCanceledArchiveCloseout is the fail-closed alternative for a
+// genuine never-invoked canceled terminal archive. Release requires original
+// committed cancellation evidence bound to this task, workflow, current
+// revision, and control epoch, with explicit JSON boolean was_running=false
+// whose event detail digest matches the journal's nonempty DetailDigest, and
+// no invocation counter, session, Goal, attempt, or live writer/lease.
+// Missing PID, directory, or attempt is not that evidence.
+func neverInvokedCanceledArchiveCloseout(root string, t *Task) bool {
+	if t == nil || strings.TrimSpace(t.ID) == "" || strings.TrimSpace(t.WorkflowID) == "" {
+		return false
+	}
+	if t.Status != statusCanceled {
+		return false
+	}
+	if t.ControlState != controlTerminal || t.effectiveControlState() != controlTerminal {
+		return false
+	}
+	if t.SchedulingEligible == nil || *t.SchedulingEligible {
+		return false
+	}
+	if t.Attempts > 0 {
+		return false
+	}
+	if t.Goal != nil || strings.TrimSpace(t.SessionID) != "" || strings.TrimSpace(t.ActiveAttemptID) != "" {
+		return false
+	}
+	if strings.TrimSpace(t.LastCommittedTransitionID) == "" {
+		return false
+	}
+	hasAttempt, err := taskHasAttemptRecord(root, t.ID)
+	if err != nil || hasAttempt {
+		return false
+	}
+	if taskHasLiveWriterProof(root, t) || workspaceLeaseHeld(t.Dir) {
+		return false
+	}
+	rec, err := loadTransition(root, t.ID, t.LastCommittedTransitionID)
+	if err != nil || rec == nil {
+		return false
+	}
+	if rec.TaskID != t.ID || rec.TransitionID != t.LastCommittedTransitionID {
+		return false
+	}
+	if rec.State != transitionCommitted || rec.EventType != evCanceled || rec.Status != statusCanceled {
+		return false
+	}
+	if rec.NewRevision != t.Revision || rec.ControlEpoch != t.ControlEpoch {
+		return false
+	}
+	if strings.TrimSpace(rec.AttemptID) != "" || strings.TrimSpace(rec.Actor) == "" {
+		return false
+	}
+	events, corrupt, err := loadTaskEvents(root, t.ID)
+	if err != nil || corrupt {
+		return false
+	}
+	var match *TaskEvent
+	for i := range events {
+		ev := &events[i]
+		if ev.TransitionID != rec.TransitionID {
+			continue
+		}
+		if match != nil {
+			return false
+		}
+		match = ev
+	}
+	if match == nil {
+		return false
+	}
+	if match.Type != evCanceled || match.Status != statusCanceled {
+		return false
+	}
+	if match.Revision != rec.NewRevision || match.Actor != rec.Actor {
+		return false
+	}
+	if strings.TrimSpace(match.AttemptID) != "" {
+		return false
+	}
+	if !explicitJSONBoolFalse(match.Detail, "was_running") {
+		return false
+	}
+	if strings.TrimSpace(rec.DetailDigest) == "" {
+		return false
+	}
+	return rec.DetailDigest == digestDetail(match.Detail)
+}
+
+func explicitJSONBoolFalse(detail map[string]any, key string) bool {
+	if len(detail) == 0 {
+		return false
+	}
+	v, ok := detail[key]
+	if !ok || v == nil {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && !b
 }
 
 // taskHasAttemptRecord reports whether this card has any attempt file.

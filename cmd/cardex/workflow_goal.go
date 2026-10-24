@@ -2134,24 +2134,39 @@ func liveGoalLaunchSlots(root string) (int, error) {
 	return n, nil
 }
 
-// occupancyDirsForTask returns this writer's current workspace and active
-// attempt lease identity. Historical attempt WorkspaceLeaseID values are not
-// occupancy keys; they can name another writer's live lease.
+// occupancyDirsForTask returns this writer's current workspace and a live
+// matching attempt lease identity. Dead ActiveAttempt WorkspaceLeaseID values
+// and foreign historical leases are not occupancy keys.
 func occupancyDirsForTask(root string, t *Task) []string {
 	if t == nil {
 		return nil
 	}
 	dirs := make([]string, 0, 2)
-	if dir := strings.TrimSpace(t.Dir); dir != "" {
+	current := strings.TrimSpace(t.Dir)
+	if current != "" {
+		dirs = append(dirs, current)
+	}
+	live, rec := liveAttempt(root, t)
+	if !live || rec == nil {
+		return dirs
+	}
+	if dir := strings.TrimSpace(rec.WorkspaceLeaseID); occupancyLeaseMatchesCurrent(current, dir) {
 		dirs = append(dirs, dir)
 	}
-	_, rec := liveAttempt(root, t)
-	if rec != nil {
-		if dir := strings.TrimSpace(rec.WorkspaceLeaseID); dir != "" {
-			dirs = append(dirs, dir)
-		}
-	}
 	return dirs
+}
+
+func occupancyLeaseMatchesCurrent(current, lease string) bool {
+	current = strings.TrimSpace(current)
+	lease = strings.TrimSpace(lease)
+	if current == "" || lease == "" {
+		return false
+	}
+	if current == lease {
+		return true
+	}
+	cc, cl := canonicalWorkspaceID(current), canonicalWorkspaceID(lease)
+	return cc != "" && cl != "" && cc == cl
 }
 
 func liveWriterOccupancyKey(taskID string, dirs []string) string {
@@ -2184,10 +2199,15 @@ func brokenTaskLiveOccupancy(root, taskID string, wfByWriter map[string]*Workflo
 	if anyTaskProcAlive(taskID) || taskProcessResidue(taskID) {
 		live = true
 	}
+	var current string
 	if wf := wfByWriter[taskID]; wf != nil {
-		addDir(wf.Worktree)
+		current = strings.TrimSpace(wf.Worktree)
+		addDir(current)
 	}
 	if claim := recoverBrokenTaskWriterClaim(root, taskID, wfByWriter); claim != nil {
+		if current == "" {
+			current = strings.TrimSpace(claim.Dir)
+		}
 		addDir(claim.Dir)
 	}
 	recs, err := listAttemptRecords(root, taskID)
@@ -2198,10 +2218,13 @@ func brokenTaskLiveOccupancy(root, taskID string, wfByWriter map[string]*Workflo
 		if rec == nil {
 			continue
 		}
-		if attemptProducerAlive(rec) {
-			live = true
+		if !attemptProducerAlive(rec) {
+			continue
 		}
-		addDir(rec.WorkspaceLeaseID)
+		live = true
+		if occupancyLeaseMatchesCurrent(current, rec.WorkspaceLeaseID) {
+			addDir(rec.WorkspaceLeaseID)
+		}
 	}
 	return dirs, live
 }

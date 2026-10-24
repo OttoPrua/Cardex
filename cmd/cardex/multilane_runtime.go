@@ -382,6 +382,15 @@ func taskHasLiveWriterProof(root string, t *Task) bool {
 	if anyTaskProcAlive(t.ID) || taskProcessResidue(t.ID) {
 		return true
 	}
+	recs, err := listAttemptRecords(root, t.ID)
+	if err != nil {
+		return false
+	}
+	for _, rec := range recs {
+		if attemptProducerAlive(rec) {
+			return true
+		}
+	}
 	return false
 }
 

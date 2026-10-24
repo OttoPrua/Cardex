@@ -2098,29 +2098,112 @@ func liveGoalLaunchSlots(root string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	seen := map[string]bool{}
 	n := 0
+	note := func(key string) {
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		n++
+	}
 	for _, tk := range tasks {
 		if tk == nil || taskIsReadOnlyType(tk) || tk.IntegrationGate != nil {
 			continue
 		}
-		live, rec := liveAttempt(root, tk)
-		if live || attemptProducerAlive(rec) || anyTaskProcAlive(tk.ID) || taskProcessResidue(tk.ID) {
-			n++
-		}
-	}
-	for id := range broken {
-		recs, lerr := listAttemptRecords(root, id)
-		if lerr != nil {
+		if !taskHasLiveWriterProof(root, tk) {
 			continue
 		}
-		for _, rec := range recs {
-			if rec != nil && (attemptProducerAlive(rec) || rec.PID > 0) {
-				n++
-				break
+		note(liveWriterOccupancyKey(tk.ID, occupancyDirsForTask(root, tk)))
+	}
+	if len(broken) == 0 {
+		return n, nil
+	}
+	wfByWriter := brokenTaskWorkflowWriters(root)
+	for id := range broken {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		dirs, live := brokenTaskLiveOccupancy(root, id, wfByWriter)
+		if !live {
+			continue
+		}
+		note(liveWriterOccupancyKey(id, dirs))
+	}
+	return n, nil
+}
+
+// occupancyDirsForTask returns this writer's current workspace and active
+// attempt lease identity. Historical attempt WorkspaceLeaseID values are not
+// occupancy keys; they can name another writer's live lease.
+func occupancyDirsForTask(root string, t *Task) []string {
+	if t == nil {
+		return nil
+	}
+	dirs := make([]string, 0, 2)
+	if dir := strings.TrimSpace(t.Dir); dir != "" {
+		dirs = append(dirs, dir)
+	}
+	_, rec := liveAttempt(root, t)
+	if rec != nil {
+		if dir := strings.TrimSpace(rec.WorkspaceLeaseID); dir != "" {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
+}
+
+func liveWriterOccupancyKey(taskID string, dirs []string) string {
+	for _, dir := range dirs {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		if workspaceLeaseHeld(dir) {
+			if id := canonicalWorkspaceID(dir); id != "" {
+				return "lease:" + id
 			}
 		}
 	}
-	return n, nil
+	return "task:" + strings.TrimSpace(taskID)
+}
+
+func brokenTaskLiveOccupancy(root, taskID string, wfByWriter map[string]*WorkflowRecord) (dirs []string, live bool) {
+	seenDir := map[string]bool{}
+	addDir := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || seenDir[dir] {
+			return
+		}
+		seenDir[dir] = true
+		dirs = append(dirs, dir)
+		if workspaceLeaseHeld(dir) {
+			live = true
+		}
+	}
+	if anyTaskProcAlive(taskID) || taskProcessResidue(taskID) {
+		live = true
+	}
+	if wf := wfByWriter[taskID]; wf != nil {
+		addDir(wf.Worktree)
+	}
+	if claim := recoverBrokenTaskWriterClaim(root, taskID, wfByWriter); claim != nil {
+		addDir(claim.Dir)
+	}
+	recs, err := listAttemptRecords(root, taskID)
+	if err != nil {
+		return dirs, live
+	}
+	for _, rec := range recs {
+		if rec == nil {
+			continue
+		}
+		if attemptProducerAlive(rec) {
+			live = true
+		}
+		addDir(rec.WorkspaceLeaseID)
+	}
+	return dirs, live
 }
 
 func countLiveRunner(root, runner string) int {

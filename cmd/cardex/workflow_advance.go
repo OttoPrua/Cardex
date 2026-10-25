@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -119,7 +120,13 @@ func consumeKnownDirectionRepair(root string, cfg *Config, wf *WorkflowRecord, n
 		res.StopReason = "action-ceiling"
 		return res, nil
 	}
-	repair, err := admitKnownDirectionRepair(root, cfg, wf, named)
+	expected, err := captureNamedRepairExpected(root, wf, named)
+	if err != nil {
+		res.StopReason = "repair-refused"
+		res.Held = true
+		return res, err
+	}
+	repair, err := admitKnownDirectionRepair(root, cfg, wf, named, expected)
 	if err != nil {
 		res.StopReason = "repair-refused"
 		res.Held = true
@@ -130,6 +137,166 @@ func consumeKnownDirectionRepair(root string, cfg *Config, wf *WorkflowRecord, n
 	res.ActionsUsed++
 	res.StopReason = "repair-created"
 	return res, nil
+}
+
+// namedRepairExpected is captured at first named-direction selection, before
+// withTaskControlLock is invoked and before its lock file is opened. Fields are
+// independent copied scalars/digests, never pointers to mutable workflow/task
+// objects and never shared slices.
+type namedRepairExpected struct {
+	TargetID         string
+	FailureIdentity  string
+	FindingsIdentity string
+	CoverageIdentity string
+}
+
+func resolveNamedDirectionMember(root string, wf *WorkflowRecord, direction string) (int, *Task) {
+	if wf == nil {
+		return -1, nil
+	}
+	direction = strings.TrimSpace(direction)
+	if direction == "" {
+		return -1, nil
+	}
+	for i, id := range wf.DirectionTaskIDs {
+		task, loadErr := loadTask(root, id)
+		if loadErr != nil || task == nil {
+			continue
+		}
+		if task.SessionStage == direction {
+			return i, task
+		}
+	}
+	return -1, nil
+}
+
+func namedRepairFactDigest(v any) string {
+	blob, err := json.Marshal(v)
+	if err != nil {
+		return sha256Hex("named-repair-fact-marshal-error")
+	}
+	return sha256Hex(string(blob))
+}
+
+func namedRepairFailureIdentity(target *Task) string {
+	if target == nil {
+		return ""
+	}
+	class := ""
+	if target.Goal != nil {
+		class = target.Goal.FailureClass
+	}
+	return namedRepairFactDigest(struct {
+		ID           string `json:"id"`
+		Status       string `json:"status"`
+		LastError    string `json:"last_error"`
+		FailureClass string `json:"failure_class"`
+	}{target.ID, target.Status, target.LastError, class})
+}
+
+func namedRepairFindingsIdentity(root string, wf *WorkflowRecord) string {
+	if wf == nil || strings.TrimSpace(wf.AcceptanceTaskID) == "" {
+		return ""
+	}
+	accID := strings.TrimSpace(wf.AcceptanceTaskID)
+	acc, err := loadTask(root, accID)
+	if err != nil || acc == nil {
+		return namedRepairFactDigest(struct {
+			Acceptance string `json:"acceptance"`
+			Missing    bool   `json:"missing"`
+		}{accID, true})
+	}
+	raw := loadTaskResultForGate(root, acc)
+	v := parseReviewVerdict(raw)
+	fact := struct {
+		Acceptance string   `json:"acceptance"`
+		Status     string   `json:"status"`
+		Verdict    string   `json:"verdict"`
+		P0         []string `json:"p0"`
+		P1         []string `json:"p1"`
+		ResultSHA  string   `json:"result_sha"`
+	}{
+		Acceptance: acc.ID,
+		Status:     acc.Status,
+		P0:         []string{},
+		P1:         []string{},
+	}
+	if v != nil {
+		fact.Verdict = v.Verdict
+		if v.P0 != nil {
+			fact.P0 = append([]string(nil), v.P0...)
+		}
+		if v.P1 != nil {
+			fact.P1 = append([]string(nil), v.P1...)
+		}
+	}
+	if acc.ReviewOutput != nil {
+		fact.ResultSHA = acc.ReviewOutput.SHA256
+	}
+	return namedRepairFactDigest(fact)
+}
+
+func namedRepairCoverageIdentity(root string, wf *WorkflowRecord) string {
+	if wf == nil {
+		return ""
+	}
+	stored := strings.TrimSpace(wf.AcceptanceCoverage)
+	live := ""
+	if fp, err := acceptanceFingerprint(root, wf); err == nil {
+		live = strings.TrimSpace(fp)
+	}
+	return namedRepairFactDigest(struct {
+		Acceptance string `json:"acceptance"`
+		Stored     string `json:"stored"`
+		Live       string `json:"live"`
+	}{strings.TrimSpace(wf.AcceptanceTaskID), stored, live})
+}
+
+func namedRepairSourceFacts(root string, wf *WorkflowRecord, target *Task) namedRepairExpected {
+	facts := namedRepairExpected{
+		FindingsIdentity: namedRepairFindingsIdentity(root, wf),
+		CoverageIdentity: namedRepairCoverageIdentity(root, wf),
+	}
+	if target != nil {
+		facts.TargetID = target.ID
+		facts.FailureIdentity = namedRepairFailureIdentity(target)
+	}
+	return facts
+}
+
+func captureNamedRepairExpected(root string, wf *WorkflowRecord, direction string) (namedRepairExpected, error) {
+	direction = strings.TrimSpace(direction)
+	if direction == "" {
+		return namedRepairExpected{}, fmt.Errorf("known-direction repair requires an explicit direction name")
+	}
+	_, target := resolveNamedDirectionMember(root, wf, direction)
+	if target == nil {
+		return namedRepairExpected{}, fmt.Errorf("unknown direction %q; will not guess a wider repair scope", direction)
+	}
+	facts := namedRepairSourceFacts(root, wf, target)
+	if strings.TrimSpace(facts.TargetID) == "" {
+		return namedRepairExpected{}, fmt.Errorf("known-direction repair requires pre-lock expected target/source")
+	}
+	return facts, nil
+}
+
+func namedRepairExpectedMatches(want, got namedRepairExpected) error {
+	if strings.TrimSpace(want.TargetID) == "" {
+		return fmt.Errorf("known-direction repair requires pre-lock expected target/source")
+	}
+	if want.TargetID != got.TargetID {
+		return fmt.Errorf("direction target was replaced; will not repair stale identity")
+	}
+	if want.FailureIdentity != got.FailureIdentity {
+		return fmt.Errorf("repair failure identity changed; will not repair stale expected")
+	}
+	if want.FindingsIdentity != got.FindingsIdentity {
+		return fmt.Errorf("repair findings identity changed; will not repair stale expected")
+	}
+	if want.CoverageIdentity != got.CoverageIdentity {
+		return fmt.Errorf("repair coverage identity changed; will not repair stale expected")
+	}
+	return nil
 }
 
 func namedDirectionIsSoleRepairableFailure(root string, wf *WorkflowRecord, named string) bool {
@@ -240,7 +407,7 @@ func workflowMembersReadyForAdvance(root string, wf *WorkflowRecord) error {
 	return nativeSessionsDistinct(members)
 }
 
-func admitKnownDirectionRepair(root string, cfg *Config, wf *WorkflowRecord, direction string) (*Task, error) {
+func admitKnownDirectionRepair(root string, cfg *Config, wf *WorkflowRecord, direction string, expected namedRepairExpected) (*Task, error) {
 	direction = strings.TrimSpace(direction)
 	if direction == "" {
 		return nil, fmt.Errorf("known-direction repair requires an explicit direction name")
@@ -248,6 +415,10 @@ func admitKnownDirectionRepair(root string, cfg *Config, wf *WorkflowRecord, dir
 	if strings.ContainsAny(direction, ",;|") || strings.Contains(direction, " ") && strings.Contains(direction, ",") {
 		return nil, fmt.Errorf("known-direction repair will not guess a wider scope")
 	}
+	if strings.TrimSpace(expected.TargetID) == "" {
+		return nil, fmt.Errorf("known-direction repair requires pre-lock expected target/source")
+	}
+	want := expected
 	var out *Task
 	err := withTaskControlLock(root, "workflow-admit:"+wf.ID, func() error {
 		if err := refreshWorkflow(root, cfg, wf); err != nil {
@@ -275,19 +446,7 @@ func admitKnownDirectionRepair(root string, cfg *Config, wf *WorkflowRecord, dir
 			}
 			return fmt.Errorf("%w: %d/%d", errWorkflowRoundsExceeded, wf.CurrentRound, wf.MaxRounds)
 		}
-		idx := -1
-		var target *Task
-		for i, id := range wf.DirectionTaskIDs {
-			task, loadErr := loadTask(root, id)
-			if loadErr != nil || task == nil {
-				continue
-			}
-			if task.SessionStage == direction {
-				idx = i
-				target = task
-				break
-			}
-		}
+		idx, target := resolveNamedDirectionMember(root, wf, direction)
 		if target == nil {
 			for _, id := range wf.NativeGoalTaskIDs {
 				task, loadErr := loadTask(root, id)
@@ -299,6 +458,10 @@ func admitKnownDirectionRepair(root string, cfg *Config, wf *WorkflowRecord, dir
 				}
 			}
 			return fmt.Errorf("unknown direction %q; will not guess a wider repair scope", direction)
+		}
+		got := namedRepairSourceFacts(root, wf, target)
+		if err := namedRepairExpectedMatches(want, got); err != nil {
+			return err
 		}
 		if target.Goal != nil && target.Goal.WriterMode == goalWriterManual {
 			return fmt.Errorf("%w: Goal repair is refused; use design-result -decision revise with a fresh independent design", errGoalDesignResult)

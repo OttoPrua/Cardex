@@ -186,7 +186,7 @@ func namedDirectionRepairableFromCurrentFindings(root string, wf *WorkflowRecord
 	if reason == "" || reason == holdReasonUnknownVocabulary || reason == holdReasonMissingOutput {
 		return false
 	}
-	if v.Verdict != "concerns" && v.Verdict != "block" && len(v.P0) == 0 && len(v.P1) == 0 {
+	if (v.Verdict != "concerns" && v.Verdict != "block") || (len(v.P0) == 0 && len(v.P1) == 0) {
 		return false
 	}
 	var found bool
@@ -306,6 +306,9 @@ func admitKnownDirectionRepair(root string, cfg *Config, wf *WorkflowRecord, dir
 		if target.Goal != nil && (target.Goal.FailureClass == goalFailPlanningUnknown || strings.Contains(strings.ToLower(target.Goal.ObservationNote), "sealed")) {
 			return fmt.Errorf("%w: native sealed producer stays held; no auto resume/successor/grant", errGoalDesignResult)
 		}
+		if err := currentNamedRepairAuthorized(root, wf, target, direction, idx); err != nil {
+			return err
+		}
 		round := wf.CurrentRound + 1
 		dir := target.Dir
 		if strings.TrimSpace(dir) == "" {
@@ -409,6 +412,52 @@ func copyFrozenPolicyLeg(leg *frozenPolicyLeg) *frozenPolicyLeg {
 	}
 	cp := *leg
 	return &cp
+}
+
+func currentAcceptanceCoverageHolds(root string, wf *WorkflowRecord) bool {
+	if wf == nil || strings.TrimSpace(wf.AcceptanceTaskID) == "" || strings.TrimSpace(wf.AcceptanceCoverage) == "" {
+		return false
+	}
+	fp, err := acceptanceFingerprint(root, wf)
+	if err != nil || fp == "" || wf.AcceptanceCoverage != fp {
+		return false
+	}
+	acc, err := loadTask(root, wf.AcceptanceTaskID)
+	if err != nil || acc == nil {
+		return false
+	}
+	return acceptanceTaskCovers(acc, wf, fp)
+}
+
+func currentNamedRepairAuthorized(root string, wf *WorkflowRecord, target *Task, direction string, idx int) error {
+	if wf == nil || target == nil || strings.TrimSpace(direction) == "" {
+		return fmt.Errorf("unknown direction %q; will not guess a wider repair scope", direction)
+	}
+	if idx < 0 || idx >= len(wf.DirectionTaskIDs) || wf.DirectionTaskIDs[idx] != target.ID {
+		return fmt.Errorf("direction %q was replaced; will not repair stale identity", direction)
+	}
+	if target.SessionStage != direction && (target.Goal == nil || target.Goal.Scope != direction) {
+		return fmt.Errorf("direction %q target identity changed", direction)
+	}
+	switch target.Status {
+	case statusQueued, statusRunning, statusLimitPaused, statusHeld:
+		return fmt.Errorf("will not repair %s in status %s", direction, target.Status)
+	}
+	failedOK := namedDirectionIsSoleRepairableFailure(root, wf, direction)
+	findingsOK := namedDirectionRepairableFromCurrentFindings(root, wf, direction) && currentAcceptanceCoverageHolds(root, wf)
+	if !failedOK && !findingsOK {
+		return fmt.Errorf("no valid current repair source for %q", direction)
+	}
+	if target.Status == statusDone && !findingsOK {
+		return fmt.Errorf("will not repair newly passed or unproven direction %s", direction)
+	}
+	if taskHasLiveWriterProof(root, target) {
+		return fmt.Errorf("direction %s still holds producer/attempt/kernel lease; will not create repair", target.ID)
+	}
+	if err := workflowCheckCardCustody(root, target); err != nil {
+		return err
+	}
+	return nil
 }
 
 func currentRepairFindingsText(root string, wf *WorkflowRecord, target *Task) string {

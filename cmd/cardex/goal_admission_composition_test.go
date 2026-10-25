@@ -1059,10 +1059,7 @@ func TestTwoDirectionComposedCandidateConsumerLoop(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds the candidate CLI")
 	}
-	bin := strings.TrimSpace(os.Getenv("CARDEX_CANDIDATE_BIN"))
-	if bin == "" {
-		bin = buildCardexCLI(t)
-	}
+	bin := stageCandidateBinOrBuild(t)
 	var seen []composedLoopIDs
 	for i := 0; i < 2; i++ {
 		ids := runComposedCandidateLoop(t, bin, i)

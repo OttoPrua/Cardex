@@ -20,7 +20,23 @@ const (
 	goalControlResume = "resume"
 	goalControlStop   = "stop"
 	goalControlStatus = "status"
+
+	hostedControlKind     = "hosted-control-v1"
+	hostedControlProtocol = 1
 )
+
+// hostedControlConfirmWait is the client wait for a matching current-request
+// ACK plus native post-state. Tests shorten it; production keeps 25s.
+var hostedControlConfirmWait = 25 * time.Second
+
+type hostedControlRequest struct {
+	Kind      string `json:"kind"`
+	ID        string `json:"id"`
+	Action    string `json:"action"`
+	TaskID    string `json:"task_id"`
+	AttemptID string `json:"attempt_id"`
+	SessionID string `json:"session_id"`
+}
 
 type goalHostStatus struct {
 	TaskID           string `json:"task_id"`
@@ -29,7 +45,10 @@ type goalHostStatus struct {
 	LastInject       string `json:"last_inject,omitempty"`
 	LastInjectAt     string `json:"last_inject_at,omitempty"`
 	LastControl      string `json:"last_control,omitempty"`
+	LastControlID    string `json:"last_control_id,omitempty"`
 	ControlConfirmed bool   `json:"control_confirmed"`
+	ControlError     string `json:"control_error,omitempty"`
+	ControlProtocol  int    `json:"control_protocol,omitempty"`
 	NativeStatus     string `json:"native_status,omitempty"`
 	FailureClass     string `json:"failure_class,omitempty"`
 	SupervisorAlive  bool   `json:"supervisor_alive"`
@@ -65,10 +84,17 @@ func writeGoalHostStatus(root, taskID, attemptID string, st goalHostStatus) erro
 		if old.InputProtocol != 0 {
 			st.InputProtocol = old.InputProtocol
 		}
+		st.ControlProtocol = old.ControlProtocol
 		if st.LastInputID == "" {
 			st.LastInputID, st.InputError = old.LastInputID, old.InputError
 			if st.LastInputKey == "" {
 				st.LastInputKey, st.LastInputPrompt = old.LastInputKey, old.LastInputPrompt
+			}
+		}
+		if st.LastControlID == "" {
+			st.LastControlID = old.LastControlID
+			if st.ControlError == "" {
+				st.ControlError = old.ControlError
 			}
 		}
 	}
@@ -164,11 +190,12 @@ func hostedControlRefuseReason(grokHome, cwd, sessionID string) error {
 		errGoalCapability, goalFailControlUnsupported)
 }
 
-func persistHostedControlUnsupported(root string, t *Task, action string) {
+func persistHostedControlUnsupported(root string, t *Task, action, requestID string) {
 	if t == nil || t.Goal == nil {
 		return
 	}
 	t.Goal.LastControl = action
+	t.Goal.LastControlID = requestID
 	t.Goal.ControlConfirmed = false
 	t.Goal.FailureClass = goalFailControlUnsupported
 	t.Goal.ObservationNote = "native permission prompt pending; hosted control cannot inject Esc/slash/CR; use formal cancel, not native pause/complete"
@@ -181,10 +208,24 @@ func persistHostedControlUnsupported(root string, t *Task, action string) {
 	_ = writeGoalHostStatus(root, t.ID, attemptID, goalHostStatus{
 		SessionID:        t.SessionID,
 		LastControl:      action,
+		LastControlID:    requestID,
 		ControlConfirmed: false,
+		ControlError:     goalFailControlUnsupported,
 		FailureClass:     goalFailControlUnsupported,
 		SupervisorAlive:  true,
 	})
+}
+
+func hostedSupervisorHasCurrentControlCapability(st goalHostStatus) bool {
+	return st.SupervisorAlive && st.ControlProtocol == hostedControlProtocol
+}
+
+func hostedControlStatusMatchesRequest(st goalHostStatus, req hostedControlRequest) bool {
+	return req.ID != "" &&
+		st.LastControlID == req.ID &&
+		st.TaskID == req.TaskID &&
+		st.AttemptID == req.AttemptID &&
+		st.SessionID == req.SessionID
 }
 
 func nativeStatusMatchesControl(action, native string) bool {
@@ -443,7 +484,12 @@ func persistHostedGoalSupervisorStart(root string, t *Task) error {
 	if t.Goal != nil {
 		attemptID = firstNonBlank(t.ActiveAttemptID, t.Goal.BoundAttemptID)
 	}
-	return writeGoalHostStatus(root, t.ID, attemptID, goalHostStatus{SessionID: t.SessionID, SupervisorAlive: true})
+	return writeGoalHostStatus(root, t.ID, attemptID, goalHostStatus{
+		SessionID:       t.SessionID,
+		SupervisorAlive: true,
+		InputProtocol:   hostedInputProtocol,
+		ControlProtocol: hostedControlProtocol,
+	})
 }
 
 // persistHostedGoalOwned re-acquires the scheduler lock before writing
@@ -549,8 +595,12 @@ func requestGoalControl(root string, cfg *Config, wf *WorkflowRecord, action str
 		grokHome = defaultGrokHome()
 	}
 	if err := hostedControlRefuseReason(grokHome, t.Dir, t.SessionID); err != nil {
-		persistHostedControlUnsupported(root, t, action)
+		persistHostedControlUnsupported(root, t, action, "")
 		return err
+	}
+	live, lerr := loadGoalHostStatus(root, t.ID, attemptID)
+	if lerr != nil || !hostedSupervisorHasCurrentControlCapability(live) {
+		return fmt.Errorf("%w: running supervisor has no current control-request capability; installing a binary does not upgrade an existing host", errGoalCapability)
 	}
 	fifo := goalHostControlPath(root, t.ID, attemptID)
 	f, err := os.OpenFile(fifo, os.O_WRONLY|syscallOpenNonblock, 0)
@@ -561,40 +611,59 @@ func requestGoalControl(root string, cfg *Config, wf *WorkflowRecord, action str
 		return fmt.Errorf("%w: control owner not live (%v)", errGoalCapability, err)
 	}
 	defer f.Close()
-	if _, err := f.Write([]byte(action + "\n")); err != nil {
+	req := hostedControlRequest{
+		Kind:      hostedControlKind,
+		ID:        newGoalSessionID(),
+		Action:    action,
+		TaskID:    t.ID,
+		AttemptID: attemptID,
+		SessionID: t.SessionID,
+	}
+	payload, err := json.Marshal(req)
+	if err != nil {
 		return err
 	}
-	deadline := time.Now().Add(25 * time.Second)
+	if _, err := f.Write(append(payload, '\n')); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(hostedControlConfirmWait)
 	for time.Now().Before(deadline) {
 		fresh, lerr := loadTask(root, t.ID)
 		if lerr == nil && fresh != nil && fresh.Goal != nil {
 			*t = *fresh
-			if t.Goal.ControlConfirmed && t.Goal.LastControl == action {
-				return nil
-			}
-			if t.Goal.FailureClass == goalFailControlUnsupported && t.Goal.LastControl == action {
-				return fmt.Errorf("%w: %s", errGoalCapability, goalFailControlUnsupported)
+			if t.Goal.LastControlID == req.ID && t.Goal.LastControl == action {
+				if t.Goal.ControlConfirmed {
+					obs, oerr := observeNativeGrokGoal(grokHome, t.Dir, t.SessionID, t.Goal.NativeGoalID)
+					if oerr == nil && nativeControlConfirmed(action, obs, t.Goal.NativeGoalID) {
+						return nil
+					}
+				}
+				if t.Goal.FailureClass == goalFailControlUnsupported {
+					return fmt.Errorf("%w: %s", errGoalCapability, goalFailControlUnsupported)
+				}
 			}
 		}
 		st, serr := loadGoalHostStatus(root, t.ID, attemptID)
-		if serr == nil && st.LastControl == action && st.ControlConfirmed {
-			return nil
-		}
-		if grokHome == "" {
-			grokHome = defaultGrokHome()
-		}
-		obs, oerr := observeNativeGrokGoal(grokHome, t.Dir, t.SessionID, t.Goal.NativeGoalID)
-		if oerr == nil && nativeControlConfirmed(action, obs, t.Goal.NativeGoalID) {
-			t.Goal.LastControl = action
-			t.Goal.ControlConfirmed = true
-			t.Goal.LastNativeStatus = obs.NativeStatus
-			t.Goal.NativeGoalID = firstNonBlank(obs.GoalID, t.Goal.NativeGoalID)
-			return nil
+		if serr == nil && hostedControlStatusMatchesRequest(st, req) {
+			if st.ControlError != "" {
+				if strings.Contains(st.ControlError, goalFailControlUnsupported) {
+					return fmt.Errorf("%w: %s", errGoalCapability, goalFailControlUnsupported)
+				}
+				return fmt.Errorf("%w: %s", errGoalCapability, st.ControlError)
+			}
+			if st.LastControl == action && st.ControlConfirmed {
+				obs, oerr := observeNativeGrokGoal(grokHome, t.Dir, t.SessionID, t.Goal.NativeGoalID)
+				if oerr == nil && nativeControlConfirmed(action, obs, t.Goal.NativeGoalID) {
+					_ = persistControlConfirmation(root, cfg, t.ID, action, req.ID, obs)
+					return nil
+				}
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if err := persistHostedControlUnconfirmed(root, cfg, t, action); err != nil && t.Goal != nil {
+	if err := persistHostedControlUnconfirmed(root, cfg, t, action, req.ID); err != nil && t.Goal != nil {
 		t.Goal.LastControl = action
+		t.Goal.LastControlID = req.ID
 		t.Goal.ControlConfirmed = false
 		t.Goal.FailureClass = goalFailPauseNotConfirmed
 	}
@@ -603,7 +672,7 @@ func requestGoalControl(root string, cfg *Config, wf *WorkflowRecord, action str
 
 // persistHostedControlUnconfirmed writes pause_not_confirmed through the owned
 // single-writer path. A former-owner saveTask after hosted admission is discarded.
-func persistHostedControlUnconfirmed(root string, cfg *Config, t *Task, action string) error {
+func persistHostedControlUnconfirmed(root string, cfg *Config, t *Task, action, requestID string) error {
 	if t == nil {
 		return fmt.Errorf("%w: missing task", errWorkflowMalformed)
 	}
@@ -617,6 +686,7 @@ func persistHostedControlUnconfirmed(root string, cfg *Config, t *Task, action s
 			return fmt.Errorf("%w: not a Goal writer", errWorkflowMalformed)
 		}
 		fresh.Goal.LastControl = action
+		fresh.Goal.LastControlID = requestID
 		fresh.Goal.ControlConfirmed = false
 		fresh.Goal.FailureClass = goalFailPauseNotConfirmed
 		fresh.Goal.ObservationNote = note
@@ -635,6 +705,7 @@ func persistHostedControlUnconfirmed(root string, cfg *Config, t *Task, action s
 		_ = writeGoalHostStatus(root, t.ID, attemptID, goalHostStatus{
 			SessionID:        t.SessionID,
 			LastControl:      action,
+			LastControlID:    requestID,
 			ControlConfirmed: false,
 			NativeStatus:     t.Goal.LastNativeStatus,
 			FailureClass:     goalFailPauseNotConfirmed,
@@ -644,13 +715,17 @@ func persistHostedControlUnconfirmed(root string, cfg *Config, t *Task, action s
 	return err
 }
 
-func persistControlConfirmation(root, taskID, action string, obs nativeGoalObservation) error {
-	return withTaskControlLock(root, taskID, func() error {
+func persistControlConfirmation(root string, cfg *Config, taskID, action, requestID string, obs nativeGoalObservation) error {
+	if cfg == nil {
+		return fmt.Errorf("%w: missing config", errWorkflowMalformed)
+	}
+	return withWorkflowSchedulerLock(root, cfg, func() error {
 		t, err := loadTask(root, taskID)
 		if err != nil || t == nil || t.Goal == nil {
 			return err
 		}
 		t.Goal.LastControl = action
+		t.Goal.LastControlID = requestID
 		t.Goal.LastControlAt = time.Now().UTC().Format(time.RFC3339Nano)
 		t.Goal.ControlConfirmed = true
 		t.Goal.FailureClass = ""
@@ -669,22 +744,22 @@ func persistControlConfirmation(root, taskID, action string, obs nativeGoalObser
 	})
 }
 
-func waitHostedControlConfirmed(root string, t *Task, grokHome, action, injected string, timeout time.Duration) bool {
+func waitHostedControlConfirmed(root string, t *Task, grokHome, action, injected, requestID string, timeout time.Duration) bool {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		confirmHostedControl(root, t, grokHome, action, injected)
+		confirmHostedControl(root, t, grokHome, action, injected, requestID)
 		if t != nil && t.Goal != nil {
 			attemptID := firstNonBlank(t.ActiveAttemptID, t.Goal.BoundAttemptID)
 			st, err := loadGoalHostStatus(root, t.ID, attemptID)
-			if err == nil && st.LastControl == action && st.ControlConfirmed {
+			if err == nil && st.LastControl == action && st.ControlConfirmed && (requestID == "" || st.LastControlID == requestID) {
 				return true
 			}
 			obs, oerr := observeNativeGrokGoal(grokHome, t.Dir, t.SessionID, t.Goal.NativeGoalID)
 			if oerr == nil && nativeControlConfirmed(action, obs, t.Goal.NativeGoalID) {
-				confirmHostedControl(root, t, grokHome, action, injected)
+				confirmHostedControl(root, t, grokHome, action, injected, requestID)
 				return true
 			}
 		}
@@ -693,7 +768,7 @@ func waitHostedControlConfirmed(root string, t *Task, grokHome, action, injected
 	return false
 }
 
-func confirmHostedControl(root string, t *Task, grokHome, action, injected string) {
+func confirmHostedControl(root string, t *Task, grokHome, action, injected, requestID string) {
 	if t == nil {
 		return
 	}
@@ -708,6 +783,7 @@ func confirmHostedControl(root string, t *Task, grokHome, action, injected strin
 		LastInject:      injected,
 		LastInjectAt:    time.Now().UTC().Format(time.RFC3339Nano),
 		LastControl:     action,
+		LastControlID:   requestID,
 		SupervisorAlive: true,
 	}
 	obs, err := observeNativeGrokGoal(grokHome, t.Dir, t.SessionID, t.Goal.NativeGoalID)
@@ -719,6 +795,9 @@ func confirmHostedControl(root string, t *Task, grokHome, action, injected strin
 		t.Goal.LastNativeStatus = obs.NativeStatus
 		t.Goal.PauseMessage = obs.PauseMessage
 		st.ControlConfirmed = nativeControlConfirmed(action, obs, t.Goal.NativeGoalID)
+		if st.ControlConfirmed {
+			st.ControlError = ""
+		}
 	}
 	if !st.ControlConfirmed && (action == goalControlPause || action == goalControlResume || action == goalControlStop) {
 		st.FailureClass = goalFailPauseNotConfirmed

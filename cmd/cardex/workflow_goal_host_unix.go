@@ -196,7 +196,12 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 	if err := persistHostedGoalSupervisorStart(root, t); err != nil {
 		return err
 	}
-	if err := writeGoalHostStatus(root, t.ID, attemptID, goalHostStatus{SessionID: t.SessionID, SupervisorAlive: true, InputProtocol: hostedInputProtocol}); err != nil {
+	if err := writeGoalHostStatus(root, t.ID, attemptID, goalHostStatus{
+		SessionID:       t.SessionID,
+		SupervisorAlive: true,
+		InputProtocol:   hostedInputProtocol,
+		ControlProtocol: hostedControlProtocol,
+	}); err != nil {
 		return err
 	}
 
@@ -263,6 +268,8 @@ func runHostedGrokGoal(root string, cfg *Config, wf *WorkflowRecord, t *Task, ct
 			LastInject:      inject,
 			LastInjectAt:    time.Now().UTC().Format(time.RFC3339Nano),
 			SupervisorAlive: true,
+			InputProtocol:   hostedInputProtocol,
+			ControlProtocol: hostedControlProtocol,
 		})
 		controlStarted = true
 		go func() {
@@ -386,6 +393,14 @@ func hostedControlLoop(root string, t *Task, grokHome string, master, ctl *os.Fi
 				var req hostedInputRequest
 				if json.Unmarshal([]byte(action), &req) == nil && req.Kind == hostedInputKind {
 					handleHostedOperatorInput(root, hostTaskID, hostAttemptID, hostSessionID, master, req)
+					continue
+				}
+				var ctl hostedControlRequest
+				if json.Unmarshal([]byte(action), &ctl) == nil && ctl.Kind == hostedControlKind {
+					confirmed := handleHostedControlRequest(root, t, grokHome, master, ctl, hostTaskID, hostAttemptID, hostSessionID)
+					if strings.EqualFold(ctl.Action, goalControlStop) && confirmed {
+						injectTerminalQuit()
+					}
 				}
 				continue
 			}
@@ -394,35 +409,7 @@ func hostedControlLoop(root string, t *Task, grokHome string, master, ctl *os.Fi
 			if err == nil && fresh != nil {
 				*t = *fresh
 			}
-			expectedGoalID := ""
-			if t.Goal != nil {
-				expectedGoalID = t.Goal.NativeGoalID
-			}
-			if action == goalControlStop {
-				obs, oerr := observeNativeGrokGoal(grokHome, t.Dir, t.SessionID, expectedGoalID)
-				if oerr == nil && nativeStopConfirmed(obs, expectedGoalID) {
-					// Already a stop-confirmable native terminal (including budget_limited/Idle).
-					// Bytes are not confirmation; native post-state is. Then quit for Wait/drain.
-					confirmHostedControl(root, t, grokHome, action, "")
-					injectTerminalQuit()
-					continue
-				}
-			}
-			if err := hostedControlRefuseReason(grokHome, t.Dir, t.SessionID); err != nil {
-				persistHostedControlUnsupported(root, t, action)
-				continue
-			}
-			line := copyableControlCommand(action)
-			if line == "" {
-				continue
-			}
-			if err := injectHostedControlForSession(master, action, line, grokHome, t.Dir, t.SessionID); err != nil {
-				if hostedControlRefuseReason(grokHome, t.Dir, t.SessionID) != nil {
-					persistHostedControlUnsupported(root, t, action)
-				}
-				continue
-			}
-			confirmed := waitHostedControlConfirmed(root, t, grokHome, action, line, 15*time.Second)
+			confirmed := applyHostedControlAction(root, t, grokHome, master, action, "")
 			if action == goalControlStop && confirmed {
 				injectTerminalQuit()
 				// Native completion is not process exit. Sending /quit bytes is
@@ -430,4 +417,58 @@ func hostedControlLoop(root string, t *Task, grokHome string, master, ctl *os.Fi
 			}
 		}
 	}
+}
+
+func handleHostedControlRequest(root string, t *Task, grokHome string, master *os.File, req hostedControlRequest, hostTaskID, hostAttemptID, hostSessionID string) bool {
+	req.Action = strings.ToLower(strings.TrimSpace(req.Action))
+	if req.ID == "" || req.TaskID != hostTaskID || req.AttemptID != hostAttemptID || req.SessionID != hostSessionID {
+		st, _ := loadGoalHostStatus(root, hostTaskID, hostAttemptID)
+		st.SessionID = hostSessionID
+		st.LastControl = req.Action
+		st.LastControlID = req.ID
+		st.ControlConfirmed = false
+		st.ControlError = "control identity mismatch"
+		st.SupervisorAlive = true
+		_ = writeGoalHostStatus(root, hostTaskID, hostAttemptID, st)
+		return false
+	}
+	fresh, err := loadTask(root, hostTaskID)
+	if err == nil && fresh != nil {
+		*t = *fresh
+	}
+	return applyHostedControlAction(root, t, grokHome, master, req.Action, req.ID)
+}
+
+func applyHostedControlAction(root string, t *Task, grokHome string, master *os.File, action, requestID string) bool {
+	if t == nil {
+		return false
+	}
+	expectedGoalID := ""
+	if t.Goal != nil {
+		expectedGoalID = t.Goal.NativeGoalID
+	}
+	if action == goalControlStop {
+		obs, oerr := observeNativeGrokGoal(grokHome, t.Dir, t.SessionID, expectedGoalID)
+		if oerr == nil && nativeStopConfirmed(obs, expectedGoalID) {
+			// Already a stop-confirmable native terminal (including budget_limited/Idle).
+			// Bytes are not confirmation; native post-state is.
+			confirmHostedControl(root, t, grokHome, action, "", requestID)
+			return true
+		}
+	}
+	if err := hostedControlRefuseReason(grokHome, t.Dir, t.SessionID); err != nil {
+		persistHostedControlUnsupported(root, t, action, requestID)
+		return false
+	}
+	line := copyableControlCommand(action)
+	if line == "" {
+		return false
+	}
+	if err := injectHostedControlForSession(master, action, line, grokHome, t.Dir, t.SessionID); err != nil {
+		if hostedControlRefuseReason(grokHome, t.Dir, t.SessionID) != nil {
+			persistHostedControlUnsupported(root, t, action, requestID)
+		}
+		return false
+	}
+	return waitHostedControlConfirmed(root, t, grokHome, action, line, requestID, 15*time.Second)
 }

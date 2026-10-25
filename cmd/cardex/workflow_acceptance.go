@@ -519,6 +519,9 @@ func memberReadyForAcceptance(root string, task *Task) error {
 	if task.Status != statusDone {
 		return fmt.Errorf("方向 %s 状态为 %s（部分完成、暂停、失败或未知），未创建验收卡，也未把目标标为已验收", task.ID, task.Status)
 	}
+	if taskHasLiveWriterProof(root, task) {
+		return fmt.Errorf("方向 %s 已标记完成但生产者/attempt/kernel lease 仍在，未创建验收卡，也未把目标标为已验收", task.ID)
+	}
 	if task.Goal == nil || task.Goal.WriterMode != goalWriterManual {
 		return nil
 	}

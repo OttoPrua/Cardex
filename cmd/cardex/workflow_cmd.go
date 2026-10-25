@@ -11,7 +11,7 @@ import (
 
 func cmdWorkflow(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("用法: cardex workflow init|list|show|writer|fanout|accept|goal-round|goal-direction|goal-launch|goal-run|goal-bootstrap-before-native-recovery|goal-sync|goal-control|goal-input|goal-observe|bind-session|design-request|design-collect|design-bind|design-result|design-repair|freeze-candidate|review|ingest-review|ingest-external-review|record-local-integration|repair|try-release-integration|mark ...\n  goal-run <id> -manual|-hosted [-budget N] [-sandbox NAME]  # -sandbox selects an existing applicable Grok profile for this invocation only\n  design-result <id> -design-receipt R -decision stop|input|successor|accept|revise [-observation ...] [-extra-round-authorization FILE]  # FILE is manager-attested one-use extra-round grant after ordinary ceiling; same-lineage successive Human grants each admit one stage; Human source/message is one-use; grant budget_tokens/hard_timeout_seconds bind the new stage; ordinary no-grant successor stays fail-closed; prior extra-round history is preserved\n  goal-bootstrap-before-native-recovery <id> -authorization FILE -manual|-hosted [-executor-capture FILE -executor-digest SHA256 -executor-call-id CALL]  # explicit single-use authorization; sidecar-missing executor JSONL is optional manager-admitted proof; ordinary goal-run stays fail-closed\n  freeze-candidate <id> -commit C -tree T [-retained-held-source]  # default refuses a live or held writer; -retained-held-source freezes a custody-released held SOURCE candidate without manufacturing done\n  ingest-external-review <id> -receipt FILE  # bind completed independent local manager review evidence; not AUTHOR_ADVERSARIAL and not a fake typeReview")
+		return fmt.Errorf("用法: cardex workflow init|list|show|writer|fanout|accept|advance|goal-round|goal-direction|goal-launch|goal-run|goal-bootstrap-before-native-recovery|goal-sync|goal-control|goal-input|goal-observe|bind-session|design-request|design-collect|design-bind|design-result|design-repair|freeze-candidate|review|ingest-review|ingest-external-review|record-local-integration|repair|try-release-integration|mark ...\n  goal-run <id> -manual|-hosted [-budget N] [-sandbox NAME]  # -sandbox selects an existing applicable Grok profile for this invocation only\n  design-result <id> -design-receipt R -decision stop|input|successor|accept|revise [-observation ...] [-extra-round-authorization FILE]  # FILE is manager-attested one-use extra-round grant after ordinary ceiling; same-lineage successive Human grants each admit one stage; Human source/message is one-use; grant budget_tokens/hard_timeout_seconds bind the new stage; ordinary no-grant successor stays fail-closed; prior extra-round history is preserved\n  goal-bootstrap-before-native-recovery <id> -authorization FILE -manual|-hosted [-executor-capture FILE -executor-digest SHA256 -executor-call-id CALL]  # explicit single-use authorization; sidecar-missing executor JSONL is optional manager-admitted proof; ordinary goal-run stays fail-closed\n  freeze-candidate <id> -commit C -tree T [-retained-held-source]  # default refuses a live or held writer; -retained-held-source freezes a custody-released held SOURCE candidate without manufacturing done\n  ingest-external-review <id> -receipt FILE  # bind completed independent local manager review evidence; not AUTHOR_ADVERSARIAL and not a fake typeReview")
 	}
 	switch args[0] {
 	case "init":
@@ -26,6 +26,8 @@ func cmdWorkflow(args []string) error {
 		return cmdWorkflowFanout(args[1:])
 	case "accept":
 		return cmdWorkflowAccept(args[1:])
+	case "advance":
+		return cmdWorkflowAdvance(args[1:])
 	case "goal-round":
 		return cmdWorkflowGoalRound(args[1:])
 	case "goal-direction":
@@ -436,6 +438,31 @@ func cmdWorkflowGoalBootstrapBeforeNativeRecovery(args []string) error {
 		return err
 	}
 	return launchBootstrapBeforeNativeRecovery(root, cfg, wf, *authorization, *hosted, executor)
+}
+
+func cmdWorkflowAdvance(args []string) error {
+	fs := flag.NewFlagSet("workflow advance", flag.ContinueOnError)
+	rootFlag := fs.String("root", "", "数据目录")
+	optIn := fs.Bool("opt-in", false, "explicit finite program-control; never inferred from max-rounds")
+	maxActions := fs.Int("max-actions", 0, "positive finite action ceiling")
+	repairDirection := fs.String("repair-direction", "", "optional known affected direction name for bounded repair")
+	if err := parseWorkflowFlags(fs, args); err != nil {
+		return err
+	}
+	root, cfg, wf, err := workflowTarget(fs, rootFlag, "cardex workflow advance <id> -opt-in -max-actions N [-repair-direction NAME]")
+	if err != nil {
+		return err
+	}
+	res, err := advanceOptInWorkflow(root, cfg, wf, workflowAdvanceOpts{
+		OptIn:           *optIn,
+		MaxActions:      *maxActions,
+		RepairDirection: *repairDirection,
+	})
+	if res != nil {
+		fmt.Printf("workflow %s advance stop=%s actions_used=%d acceptance_created=%d repair_created=%d repair_id=%s goal_accepted=%t held=%t\n",
+			wf.ID, res.StopReason, res.ActionsUsed, res.AcceptanceCreated, res.RepairCreated, orDash(res.RepairTaskID), res.GoalAccepted, res.Held)
+	}
+	return err
 }
 
 func cmdWorkflowGoalControl(args []string) error {

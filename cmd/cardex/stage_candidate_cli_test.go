@@ -28,6 +28,50 @@ func stageCandidateBin(t *testing.T) string {
 	return p
 }
 
+func stageCandidateBinOrBuild(t *testing.T) string {
+	t.Helper()
+	if p := strings.TrimSpace(os.Getenv("CARDEX_CANDIDATE_BIN")); p != "" {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("CARDEX_CANDIDATE_BIN=%s: %v", p, err)
+		}
+		return p
+	}
+	p := filepath.Join("..", "..", ".cardex-stage", "cardex")
+	if runtime.GOOS == "windows" {
+		p += ".exe"
+	}
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	out := filepath.Join(t.TempDir(), "cardex")
+	if runtime.GOOS == "windows" {
+		out += ".exe"
+	}
+	cmd := exec.Command("go", "build", "-o", out, ".")
+	if data, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build candidate: %v\n%s", err, data)
+	}
+	return out
+}
+
+func requireCandidateBin(t *testing.T) string {
+	t.Helper()
+	env := strings.TrimSpace(os.Getenv("CARDEX_CANDIDATE_BIN"))
+	if env == "" {
+		t.Fatal("affected consumer requires CARDEX_CANDIDATE_BIN bound to the exact current owned binary")
+	}
+	bin := stageCandidateBinOrBuild(t)
+	if bin != env {
+		t.Fatalf("executed %s but CARDEX_CANDIDATE_BIN=%s", bin, env)
+	}
+	sum, err := fileSHA256(bin)
+	if err != nil {
+		t.Fatalf("hash %s: %v", bin, err)
+	}
+	t.Logf("CARDEX_CANDIDATE_BIN=%s sha256=%s", bin, sum)
+	return bin
+}
+
 func TestStageCandidateCLIThreeConsumers(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX candidate CLI fixtures")

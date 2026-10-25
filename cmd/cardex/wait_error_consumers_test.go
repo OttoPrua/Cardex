@@ -671,21 +671,7 @@ func TestFrozenRouteDoesNotReinterpretStoredPinsOrAmbiguousEvidence(t *testing.T
 
 func items58CandidateBin(t *testing.T) string {
 	t.Helper()
-	if p := strings.TrimSpace(os.Getenv("CARDEX_CANDIDATE_BIN")); p != "" {
-		if _, err := os.Stat(p); err != nil {
-			t.Fatalf("CARDEX_CANDIDATE_BIN=%s: %v", p, err)
-		}
-		return p
-	}
-	out := filepath.Join(t.TempDir(), "cardex")
-	if runtime.GOOS == "windows" {
-		out += ".exe"
-	}
-	cmd := exec.Command("go", "build", "-o", out, ".")
-	if data, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build candidate: %v\n%s", err, data)
-	}
-	return out
+	return stageCandidateBinOrBuild(t)
 }
 
 func TestItems58DumpReplayRoot(t *testing.T) {

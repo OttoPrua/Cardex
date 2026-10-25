@@ -155,7 +155,7 @@ Cardex 只把 `--sandbox NAME` 转给 Grok；它不写 `sandbox.toml`、不推�
 
 `budget_limited` 不是已完成、也不是自动接受。托管 Goal 在原生 `budget_limited` / Idle 上可以确认 stop，再走真实的 Wait、输出排空和 custody 回收；只向 PTY 写入 `/goal clear` 或 `/quit` 不算释放。回收 custody 之后，由管理者用 `design-result -decision successor` 消费精确的 task / session / attempt / revision、`budget_limited` 观察、真实结果产物和已核验输入身份，并遵守轮次与 custody 限制；这不是自动接受源结果。
 
-托管 Goal 的 pause / resume / stop 在原生 permission prompt 仍待处理时不能向 PTY 注入 Esc、斜杠命令或回车：回车会选中提示的当前项（通常是允许）。此时返回 `control_unsupported` 或 `pause_not_confirmed`，请用正式 `cardex cancel` 结束该 producer。没有原子的“停掉当前 modal tool”的原生 API；未确认的控制不是 pause / complete / released。
+托管 Goal 的 pause / resume / stop 在原生 permission prompt 仍待处理时不能向 PTY 注入 Esc、斜杠命令或回车：回车会选中提示的当前项（通常是允许）。此时返回 `control_unsupported` 或 `pause_not_confirmed`，请用正式 `cardex cancel` 结束该 producer。没有原子的“停掉当前 modal tool”的原生 API；未确认的控制不是 pause / complete / released。Allow-once 之后重试同一动作会等待匹配当前 request/attempt/session/ACK 的确认和原生 post-state；磁盘上留下的 `control_unsupported` 或旧成功不能当成本次结果。安装新 CLI 不会升级仍在跑的旧 host。
 
 单次调整不会改动保存的预设：
 

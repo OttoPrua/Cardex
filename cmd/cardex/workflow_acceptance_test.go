@@ -89,6 +89,61 @@ func readyAcceptFixture(t *testing.T) (root, dir string, cfg *Config, wf *Workfl
 	return root, dir, cfg, wf, members
 }
 
+func readyDisjointAcceptFixture(t *testing.T) (root, dir string, cfg *Config, wf *WorkflowRecord, members []*Task) {
+	t.Helper()
+	root, dir = workflowTestRoot(t)
+	cfg = workflowTestCfg(t, root)
+	wf = initTestWorkflow(t, root, dir)
+	design := newTask(root, cfg, typeSequence, "design card", dir, []string{"supplied design plan"}, 1)
+	design.Status = statusDone
+	design.WorkflowID = wf.ID
+	if err := saveTask(root, design); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmdWorkflowFanout([]string{
+		"-root", root, wf.ID, "-design", design.ID, "-directions", "alpha,beta",
+		"-direction-write-paths", "alpha=internal/auth;beta=internal/billing",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wf, err := loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultPath := filepath.Join(dir, "design-result.txt")
+	if err := os.WriteFile(resultPath, []byte("design pointer body\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wf.DesignLineage = &WorkflowDesignLineage{
+		LatestValid: &WorkflowDesignNode{
+			Role:         goalDesignRole,
+			ReadOnly:     true,
+			DesignTaskID: design.ID,
+			ResultPath:   resultPath,
+			Digest:       "d9e20bfaa6b6c1f08fef8d45a7c32ca005c89609b95e1b3b089fd30076184294",
+		},
+	}
+	if err := persistWorkflow(root, cfg, wf); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range wf.DirectionTaskIDs {
+		task, err := loadTask(root, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		task.Status = statusDone
+		if err := writeTaskFile(root, task); err != nil {
+			t.Fatal(err)
+		}
+		members = append(members, task)
+	}
+	wf, err = loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root, dir, cfg, wf, members
+}
+
 func assertNewAcceptanceInputs(t *testing.T, prompt, resultPath, digest string) {
 	t.Helper()
 	for _, key := range []string{

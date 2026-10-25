@@ -245,7 +245,7 @@ func TestHostedCompleteFinalizeWithForeignSchedulerLock(t *testing.T) {
 
 func TestHostedPauseNotConfirmedOwnedPersist(t *testing.T) {
 	root, cfg, _, tk := admitHostedGoalThenRelease(t)
-	if err := persistHostedControlUnconfirmed(root, cfg, tk, goalControlStop); err != nil {
+	if err := persistHostedControlUnconfirmed(root, cfg, tk, goalControlStop, ""); err != nil {
 		t.Fatalf("owned pause_not_confirmed persist: %v", err)
 	}
 	if producerInvalidated(root, tk) || hasStaleWriteEvent(root, tk.ID, tk.ActiveAttemptID) {

@@ -2154,7 +2154,7 @@ func TestConfirmHostedStopBudgetLimitedWithoutPTY(t *testing.T) {
 		ActiveAttemptID: "att-budget",
 		Goal:            &TaskGoalBinding{NativeGoalID: gid, BoundAttemptID: "att-budget", LastNativeStatus: "budget_limited"},
 	}
-	if !waitHostedControlConfirmed(root, tk, home, goalControlStop, "/goal clear", time.Second) {
+	if !waitHostedControlConfirmed(root, tk, home, goalControlStop, "/goal clear", "", time.Second) {
 		t.Fatal("native budget_limited/Idle must confirm stop")
 	}
 	st, err := loadGoalHostStatus(root, tk.ID, "att-budget")
@@ -2179,7 +2179,7 @@ func TestConfirmHostedStopBudgetLimitedWithoutPTY(t *testing.T) {
 		ActiveAttemptID: "att-bytes",
 		Goal:            &TaskGoalBinding{NativeGoalID: gid, BoundAttemptID: "att-bytes"},
 	}
-	confirmHostedControl(root, tk2, home, goalControlStop, "/goal clear")
+	confirmHostedControl(root, tk2, home, goalControlStop, "/goal clear", "")
 	st2, err := loadGoalHostStatus(root, tk2.ID, "att-bytes")
 	if err != nil {
 		t.Fatal(err)
@@ -2202,7 +2202,7 @@ func TestConfirmHostedStopBudgetLimitedWithoutPTY(t *testing.T) {
 		ActiveAttemptID: "att-exec",
 		Goal:            &TaskGoalBinding{NativeGoalID: gid, BoundAttemptID: "att-exec"},
 	}
-	confirmHostedControl(root, tk3, home, goalControlStop, "/goal clear")
+	confirmHostedControl(root, tk3, home, goalControlStop, "/goal clear", "")
 	st3, err := loadGoalHostStatus(root, tk3.ID, "att-exec")
 	if err != nil {
 		t.Fatal(err)

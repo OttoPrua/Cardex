@@ -153,6 +153,7 @@ type TaskGoalBinding struct {
 	ControlOwner      string `json:"control_owner,omitempty"`
 	LastControl       string `json:"last_control,omitempty"`
 	LastControlAt     string `json:"last_control_at,omitempty"`
+	LastControlID     string `json:"last_control_id,omitempty"`
 	ControlConfirmed  bool   `json:"control_confirmed,omitempty"`
 	FailureClass      string `json:"failure_class,omitempty"`
 	PauseMessage      string `json:"pause_message,omitempty"`

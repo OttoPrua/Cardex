@@ -273,6 +273,198 @@ func TestHostedOperatorInputRealCLIAndControls(t *testing.T) {
 	t.Log("real CLI -> original control FIFO -> same fake PTY -> Allow once echo; full prompt and 40x120 screen observed; pause/resume/stop and clean exit pass")
 }
 
+// suppliedBinHostedHostAndClient is the reusable item-10 host+client entry
+// retained from TestHostedOperatorInputRealCLIAndControls / installer
+// TestInstalledHostedOperatorInputRealCLIAndControls (receipt SHA
+// 6c3d417ac8ac4a194a2083fcddaa4bc8bd6c9878c4e1fd909e078dfc62cb661c).
+// Host argv is `workflow goal-run <id> -hosted` on the supplied
+// CARDEX_CANDIDATE_BIN; client argv is goal-control / goal-input against
+// the same fake PTY. goal-sync is client observation and is not this entry.
+type suppliedBinHostedHostAndClient struct {
+	Bin  string
+	Root string
+	Dir  string
+	Home string
+	WF   *WorkflowRecord
+	Task *Task
+}
+
+func prepareSuppliedBinHostedHostAndClient(t *testing.T) *suppliedBinHostedHostAndClient {
+	t.Helper()
+	bin := requireCandidateBin(t)
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	home := t.TempDir()
+	t.Setenv("GROK_HOME", home)
+	cfg.GrokBuildBin = fakeOperatorPromptGrok(t)
+	cfg.GrokBuild = &GrokBuildRoute{Enabled: true, Model: "grok-4.6", Effort: "xhigh"}
+	saveGoalCfg(t, root, cfg)
+	wf := initTestWorkflow(t, root, dir)
+	tk := admitManualWriter(t, root, cfg, wf)
+	return &suppliedBinHostedHostAndClient{Bin: bin, Root: root, Dir: dir, Home: home, WF: wf, Task: tk}
+}
+
+func (e *suppliedBinHostedHostAndClient) hostArgv() []string {
+	return []string{e.Bin, "workflow", "goal-run", e.WF.ID, "-root", e.Root, "-hosted"}
+}
+
+func (e *suppliedBinHostedHostAndClient) controlArgv(action string) []string {
+	return []string{e.Bin, "workflow", "goal-control", e.WF.ID, "-root", e.Root, "-action", action}
+}
+
+func (e *suppliedBinHostedHostAndClient) inputObserveArgv() []string {
+	return []string{e.Bin, "workflow", "goal-input", e.WF.ID, "-root", e.Root, "-observe"}
+}
+
+func (e *suppliedBinHostedHostAndClient) inputKeyArgv(attempt, session, prompt, key string) []string {
+	return []string{e.Bin, "workflow", "goal-input", e.WF.ID, "-root", e.Root,
+		"-attempt", attempt, "-session", session, "-prompt", prompt, "-key", key}
+}
+
+func (e *suppliedBinHostedHostAndClient) client(t *testing.T, args []string) ([]byte, error) {
+	t.Helper()
+	if len(args) < 2 || args[0] != e.Bin {
+		t.Fatalf("client argv must start with supplied binary: %v", args)
+	}
+	cmd := exec.Command(args[0], args[1:]...)
+	cmd.Dir = e.Dir
+	cmd.Env = append(os.Environ(), "GROK_HOME="+e.Home)
+	return cmd.CombinedOutput()
+}
+
+func (e *suppliedBinHostedHostAndClient) runAgainstFakePTY(t *testing.T) {
+	t.Helper()
+	hostArgv := e.hostArgv()
+	hostCmd := exec.Command(hostArgv[0], hostArgv[1:]...)
+	hostCmd.Dir = e.Dir
+	hostCmd.Env = append(os.Environ(), "GROK_HOME="+e.Home)
+	hostCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	readOutput, writeOutput, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostCmd.Stdout = writeOutput
+	hostCmd.Stderr = writeOutput
+	outputDone := make(chan string, 1)
+	go func() {
+		var b bytes.Buffer
+		_, _ = io.Copy(&b, readOutput)
+		outputDone <- b.String()
+	}()
+	if err := hostCmd.Start(); err != nil {
+		_ = writeOutput.Close()
+		_ = readOutput.Close()
+		t.Fatalf("supplied binary host start %v: %v", hostArgv, err)
+	}
+	t.Logf("host_exec binary=%s argv=%v pid=%d", e.Bin, hostArgv, hostCmd.Process.Pid)
+	runDone := make(chan error, 1)
+	go func() { runDone <- hostCmd.Wait() }()
+	joined := false
+	defer func() {
+		if !joined && hostCmd.Process != nil {
+			_ = syscall.Kill(-hostCmd.Process.Pid, syscall.SIGTERM)
+			select {
+			case <-runDone:
+			case <-time.After(8 * time.Second):
+				t.Error("supplied-bin hosted child cleanup did not return")
+			}
+		}
+		_ = writeOutput.Close()
+		_ = readOutput.Close()
+	}()
+
+	var current *Task
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		current, _ = loadTask(e.Root, e.Task.ID)
+		if current != nil && current.SessionID != "" && nativePermissionPromptPending(grokNativeEventsPath(e.Home, e.Dir, current.SessionID)) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if current == nil || !nativePermissionPromptPending(grokNativeEventsPath(e.Home, e.Dir, current.SessionID)) {
+		t.Fatal("fake native prompt did not become pending under supplied-bin goal-run -hosted")
+	}
+	sessDir := grokGoalSessionDir(e.Home, e.Dir, current.SessionID)
+	if size, err := os.ReadFile(filepath.Join(sessDir, "screen-size")); err != nil || string(size) != "40x120" {
+		t.Fatalf("usable native screen: %q %v", size, err)
+	}
+
+	observeArgv := e.inputObserveArgv()
+	obsOut, obsErr := e.client(t, observeArgv)
+	if obsErr != nil {
+		t.Fatalf("client observe %v: %v %s", observeArgv, obsErr, obsOut)
+	}
+	var view struct {
+		Prompt        string `json:"prompt"`
+		Command       string `json:"command"`
+		InputProtocol int    `json:"input_protocol"`
+	}
+	if err := json.Unmarshal(obsOut, &view); err != nil || view.Prompt == "" || view.InputProtocol != hostedInputProtocol {
+		t.Fatalf("copyable pending identity: %+v %v %s", view, err, obsOut)
+	}
+	t.Logf("client_observe argv=%v prompt=%s", observeArgv, view.Prompt)
+
+	pauseArgv := e.controlArgv(goalControlPause)
+	if out, err := e.client(t, pauseArgv); err == nil {
+		t.Fatalf("pause unexpectedly answered pending permission: %s", out)
+	}
+
+	inputArgv := e.inputKeyArgv(current.ActiveAttemptID, current.SessionID, view.Prompt, "1")
+	inOut, inErr := e.client(t, inputArgv)
+	if inErr != nil || !strings.Contains(string(inOut), "not proof of native approval") {
+		t.Fatalf("client input %v: %v %s", inputArgv, inErr, inOut)
+	}
+	t.Logf("client_input argv=%v out=%s", inputArgv, strings.TrimSpace(string(inOut)))
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(sessDir, "allowed-once")); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if b, err := os.ReadFile(filepath.Join(sessDir, "allowed-once")); err != nil || string(b) != "explicit operator key 1" {
+		t.Fatalf("fake tool response: %q %v", b, err)
+	}
+
+	st, err := loadGoalHostStatus(e.Root, current.ID, current.ActiveAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("host_ack last_input_id=%s last_control_id=%s control_protocol=%d input_protocol=%d",
+		st.LastInputID, st.LastControlID, st.ControlProtocol, st.InputProtocol)
+
+	for _, action := range []string{goalControlPause, goalControlResume, goalControlStop} {
+		argv := e.controlArgv(action)
+		out, err := e.client(t, argv)
+		if err != nil {
+			t.Fatalf("client control %v: %v %s", argv, err, out)
+		}
+		if !strings.Contains(string(out), "control="+action) {
+			t.Fatalf("client control stdout: %s", out)
+		}
+		t.Logf("client_control argv=%v out=%s", argv, strings.TrimSpace(string(out)))
+	}
+
+	select {
+	case err := <-runDone:
+		joined = true
+		if err != nil {
+			t.Fatalf("hosted closeout: %v", err)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatal("supplied-bin fake hosted did not exit")
+	}
+	_ = writeOutput.Close()
+	output := <-outputDone
+	_ = readOutput.Close()
+	if !strings.Contains(output, "PENDING fake-local-compile: 1 Allow once; 2 Deny") || !strings.Contains(output, "LOCAL TOOL ALLOWED ONCE") {
+		t.Fatalf("hosted PTY output omitted prompt/response: %q", output)
+	}
+	t.Logf("supplied-bin host+client covered binary=%s host_argv=%v", e.Bin, hostArgv)
+}
+
 func TestHostedOperatorKeysAreExplicit(t *testing.T) {
 	for _, key := range []string{"1", "9", "enter", "escape", "tab", "up", "down", "ctrl-f"} {
 		if _, err := hostedOperatorKey(key); err != nil {
@@ -450,18 +642,7 @@ type hostedPlantedMember struct {
 
 func hostedGoalInputTestCLI(t *testing.T) string {
 	t.Helper()
-	if p := strings.TrimSpace(os.Getenv("CARDEX_CANDIDATE_BIN")); p != "" {
-		if _, err := os.Stat(p); err != nil {
-			t.Fatalf("CARDEX_CANDIDATE_BIN=%s: %v", p, err)
-		}
-		return p
-	}
-	cli := filepath.Join(t.TempDir(), "cardex")
-	build := exec.Command("go", "build", "-o", cli, ".")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build real CLI: %v %s", err, out)
-	}
-	return cli
+	return stageCandidateBinOrBuild(t)
 }
 
 func runHostedGoalInputCLI(t *testing.T, cli string, args ...string) (stdout, stderr string, code int) {

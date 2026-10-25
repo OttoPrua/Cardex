@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"flag"
 	"fmt"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -38,6 +40,8 @@ func cmdWorkflowFanout(args []string) error {
 	component := fs.String("write-domain-component", "", "这些方向写域 component")
 	writePaths := fs.String("write-paths", "", "这些方向路径，逗号分隔")
 	writeResources := fs.String("write-resources", "", "这些方向 closed resources")
+	directionPaths := fs.String("direction-write-paths", "", "按方向声明路径，name=path[,path][;name=...]")
+	directionResources := fs.String("direction-write-resources", "", "按方向声明封闭资源，name=kind:id[,kind:id][;name=...]")
 	depends := fs.String("depends-on", "", "可选额外前驱，逗号分隔")
 	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
@@ -62,12 +66,40 @@ func cmdWorkflowFanout(args []string) error {
 		}
 		domain = &d
 	}
+	pathByName, err := parseDirectionAssignments(*directionPaths)
+	if err != nil {
+		return err
+	}
+	resourceByName, err := parseDirectionAssignments(*directionResources)
+	if err != nil {
+		return err
+	}
 	specs := stagedDirectionSpecs(splitComma(*directions))
 	extra := splitComma(*depends)
 	for i := range specs {
 		specs[i].Dir = strings.TrimSpace(*dir)
-		specs[i].Domain = domain
 		specs[i].DependsOn = extra
+		name := specs[i].Name
+		if _, hasPaths := pathByName[name]; hasPaths || resourceByName[name] != "" {
+			d := WriteDomain{}
+			if wf.WriteDomain.ID != "" {
+				d = *copyWriteDomain(wf.WriteDomain)
+			}
+			if paths, ok := pathByName[name]; ok {
+				d.Paths = splitComma(paths)
+			}
+			if raw := resourceByName[name]; raw != "" {
+				if d.Resources, err = parseResourceClaims(raw); err != nil {
+					return err
+				}
+			}
+			d.ID = independentDirectionDomainID(wf, name, d)
+			d.Lineage = d.ID + "-lineage"
+			d.Component = firstNonBlank(*component, d.Component, wf.WriteDomain.Component, name)
+			specs[i].Domain = &d
+			continue
+		}
+		specs[i].Domain = domain
 	}
 	_, err = scheduleStagedDirectionSpecs(root, cfg, wf, *design, specs)
 	return err
@@ -233,15 +265,24 @@ func scheduleStagedDirectionSpecs(root string, cfg *Config, wf *WorkflowRecord, 
 			return fmt.Errorf("设计卡 %s 尚未完成（status=%s），未创建执行卡", design.ID, design.Status)
 		}
 		wf.DesignTaskID = design.ID
-		existing, err := loadTasks(root)
+		existing, broken, err := scanTasks(root)
 		if err != nil {
 			return err
+		}
+		if len(broken) > 0 {
+			return fmt.Errorf("%w: unreadable task evidence, unknown custody fail-closed", errAdmissionDenied)
 		}
 		current := make([]string, 0, len(wf.DirectionTaskIDs))
 		seen := map[string]bool{}
 		for _, id := range wf.DirectionTaskIDs {
 			t, loadErr := loadTask(root, id)
-			if loadErr != nil || t == nil || t.FixRound != wf.CurrentRound {
+			if loadErr != nil {
+				if os.IsNotExist(loadErr) {
+					continue
+				}
+				return fmt.Errorf("%w: direction %s unreadable, unknown custody fail-closed", errAdmissionDenied, id)
+			}
+			if t == nil || t.FixRound != wf.CurrentRound {
 				continue
 			}
 			if seen[t.ID] {
@@ -275,15 +316,9 @@ func scheduleStagedDirectionSpecs(root string, cfg *Config, wf *WorkflowRecord, 
 			if dir == "" {
 				dir = wf.Worktree
 			}
-			domain := spec.Domain
-			if domain == nil {
-				domain = copyWriteDomain(wf.WriteDomain)
-			} else {
-				norm, nerr := NormalizeWriteDomain(dir, *domain)
-				if nerr != nil {
-					return nerr
-				}
-				domain = copyWriteDomain(norm)
+			domain, derr := resolveDirectionWriteDomain(dir, wf, spec)
+			if derr != nil {
+				return derr
 			}
 			deps := []string{design.ID}
 			for _, id := range spec.DependsOn {
@@ -769,19 +804,17 @@ func admitNativeGoalDirection(root string, cfg *Config, wf *WorkflowRecord, spec
 		if dir == "" {
 			dir = wf.Worktree
 		}
-		domain := spec.Domain
-		if domain == nil {
-			domain = copyWriteDomain(wf.WriteDomain)
-		} else {
-			norm, nerr := NormalizeWriteDomain(dir, *domain)
-			if nerr != nil {
-				return nerr
-			}
-			domain = copyWriteDomain(norm)
+		domain, derr := resolveDirectionWriteDomain(dir, wf, spec)
+		if derr != nil {
+			return derr
 		}
-		tasks, err := loadTasks(root)
+		tasks, _, err := scanTasks(root)
 		if err != nil {
 			return fmt.Errorf("%w: 任务列表不可读，未知状态按失败关闭", errAdmissionDenied)
+		}
+		probe := &Task{ID: "admit-" + direction, Type: typeSequence, Dir: dir, WriteDomain: domain}
+		if writerConflictsWithActive(probe, mergeLiveWriterTasks(nil, reconstructLiveWriterClaims(root))) {
+			return fmt.Errorf("%w: write-domain/resource conflict with an active writer", errAdmissionDenied)
 		}
 		for _, existing := range tasks {
 			if existing != nil && existing.WorkflowID == wf.ID && existing.Goal != nil && existing.Goal.Scope == direction && existing.Goal.WriterMode == goalWriterManual {
@@ -832,37 +865,192 @@ func admitNativeGoalDirection(root string, cfg *Config, wf *WorkflowRecord, spec
 }
 
 func nativeGoalBusy(root string, cfg *Config, candidate *Task) (bool, string) {
-	tasks, err := loadTasks(root)
+	if err := goalLaunchConcurrencyBlocked(root, cfg, candidate); err != nil {
+		return true, err.Error()
+	}
+	return false, ""
+}
+
+func goalLaunchConcurrencyBlocked(root string, cfg *Config, candidate *Task) error {
+	tasks, _, err := scanTasks(root)
 	if err != nil {
-		return true, "任务列表不可读，未知状态按失败关闭"
+		return fmt.Errorf("%w: 任务列表不可读，未知状态按失败关闭", errAdmissionDenied)
+	}
+	if candidate != nil && !dagAllowsTask(root, tasks, candidate.ID) {
+		return fmt.Errorf("%w: DAG predecessor missing or not durably done", errAdmissionDenied)
 	}
 	live := mergeLiveWriterTasks(nil, reconstructLiveWriterClaims(root))
 	if writerConflictsWithActive(candidate, live) {
-		return true, "与活跃写者冲突，未启动第二个原生 Goal 会话"
+		return fmt.Errorf("%w: write-domain/resource conflict with an active writer", errAdmissionDenied)
 	}
-	running := 0
-	for _, other := range tasks {
-		if other == nil || candidate == nil || other.ID == candidate.ID || other.Goal == nil {
-			continue
-		}
-		if strings.TrimSpace(other.SessionID) != "" && other.SessionID == candidate.SessionID && other.Status != statusDone && other.Status != statusCanceled && other.Status != statusFailed {
-			return true, "同一会话已被 " + other.ID + " 认领，未成为第二个写者"
-		}
-		if other.Status == statusRunning {
-			running++
-		}
-		if other.ActiveAttemptID != "" && other.Status != statusDone && other.Status != statusCanceled && other.Status != statusFailed && !goalCustodyReleased(root, other) {
-			return true, "前次归属未知，未启动另一个原生 Goal 会话"
+	if candidate != nil {
+		sid := strings.TrimSpace(candidate.SessionID)
+		if sid != "" {
+			for _, other := range tasks {
+				if other == nil || other.ID == candidate.ID {
+					continue
+				}
+				if strings.TrimSpace(other.SessionID) == sid && other.Status != statusDone && other.Status != statusCanceled && other.Status != statusFailed {
+					return fmt.Errorf("%w: 同一会话已被 %s 认领，未成为第二个写者", errAdmissionDenied, other.ID)
+				}
+			}
 		}
 	}
 	maxPar := 1
 	if cfg != nil && cfg.MaxParallel > 0 {
 		maxPar = cfg.MaxParallel
 	}
-	if running >= maxPar {
-		return true, fmt.Sprintf("已有 %d 个运行中的原生 Goal 写者，达到 max_parallel %d，未再启动", running, maxPar)
+	slots, err := liveGoalLaunchSlots(root)
+	if err != nil {
+		return err
 	}
-	return false, ""
+	if slots >= maxPar {
+		return fmt.Errorf("%w: max_parallel %d reached", errAdmissionDenied, maxPar)
+	}
+	if grokSlots := countLiveRunner(root, grokBuildRunnerName); grokSlots >= providerParallelLimit(cfg, grokBuildRunnerName) {
+		return fmt.Errorf("%w: grok max_parallel reached", errAdmissionDenied)
+	}
+	return nil
+}
+
+func parseDirectionAssignments(raw string) (map[string]string, error) {
+	out := map[string]string{}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return out, nil
+	}
+	for _, part := range strings.Split(raw, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, val, ok := strings.Cut(part, "=")
+		name = strings.TrimSpace(name)
+		val = strings.TrimSpace(val)
+		if !ok || name == "" || val == "" {
+			return nil, fmt.Errorf("direction assignment %q needs name=value", part)
+		}
+		out[name] = val
+	}
+	return out, nil
+}
+
+// independentDirectionDomainID derives a stable write-domain ID from the
+// declared direction name plus explicit path/resource facts. An ASCII slug is
+// only a readable prefix; uniqueness does not depend on it, fanout order, or a
+// second identity store.
+func independentDirectionDomainID(wf *WorkflowRecord, name string, d WriteDomain) string {
+	base := "direction"
+	if wf != nil && validIntegrationID(wf.WriteDomain.ID) {
+		base = wf.WriteDomain.ID
+	}
+	disc := directionIdentityDiscriminator(name, d)
+	id := base + "-" + disc
+	if !validIntegrationID(id) {
+		id = "direction-" + disc
+	}
+	return id
+}
+
+func directionIdentityDiscriminator(name string, d WriteDomain) string {
+	sum := sha256.Sum256([]byte(canonicalDirectionIdentityFacts(name, d)))
+	digest := fmt.Sprintf("%x", sum[:8])
+	slug := asciiDirectionSlug(name)
+	if slug == "" {
+		return digest
+	}
+	return slug + "-" + digest
+}
+
+func asciiDirectionSlug(name string) string {
+	slug := strings.ToLower(strings.TrimSpace(name))
+	var b strings.Builder
+	for i, r := range slug {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' && i > 0:
+			b.WriteRune(r)
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func canonicalDirectionIdentityFacts(name string, d WriteDomain) string {
+	var b strings.Builder
+	b.WriteString("name=")
+	b.WriteString(strings.TrimSpace(name))
+	b.WriteByte('\n')
+	seenPath := map[string]struct{}{}
+	var paths []string
+	for _, p := range d.Paths {
+		p = strings.Trim(strings.ReplaceAll(strings.TrimSpace(p), "\\", "/"), "/")
+		if p == "" {
+			continue
+		}
+		if _, ok := seenPath[p]; ok {
+			continue
+		}
+		seenPath[p] = struct{}{}
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		b.WriteString("path=")
+		b.WriteString(p)
+		b.WriteByte('\n')
+	}
+	seenRes := map[string]struct{}{}
+	var resources []string
+	for _, r := range d.Resources {
+		key := strings.TrimSpace(r.Kind) + ":" + strings.TrimSpace(r.ID)
+		if key == ":" {
+			continue
+		}
+		if _, ok := seenRes[key]; ok {
+			continue
+		}
+		seenRes[key] = struct{}{}
+		resources = append(resources, key)
+	}
+	sort.Strings(resources)
+	for _, r := range resources {
+		b.WriteString("resource=")
+		b.WriteString(r)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func resolveDirectionWriteDomain(dir string, wf *WorkflowRecord, spec NativeGoalDirectionSpec) (*WriteDomain, error) {
+	if spec.Domain == nil {
+		if wf == nil {
+			return nil, fmt.Errorf("direction %s missing write domain", spec.Name)
+		}
+		return copyWriteDomain(wf.WriteDomain), nil
+	}
+	d := *spec.Domain
+	if d.ID == "" || (wf != nil && d.ID == wf.WriteDomain.ID) {
+		d.ID = independentDirectionDomainID(wf, spec.Name, d)
+	}
+	if d.Lineage == "" || (wf != nil && d.Lineage == wf.WriteDomain.Lineage) {
+		d.Lineage = d.ID + "-lineage"
+	}
+	if d.Component == "" {
+		if wf != nil {
+			d.Component = firstNonBlank(wf.WriteDomain.Component, spec.Name)
+		} else {
+			d.Component = spec.Name
+		}
+	}
+	if !validIntegrationID(d.Component) {
+		d.Component = d.ID
+	}
+	norm, err := NormalizeWriteDomain(dir, d)
+	if err != nil {
+		return nil, err
+	}
+	return copyWriteDomain(norm), nil
 }
 
 func launchNativeGoalDirection(root string, cfg *Config, taskID string, hosted bool, budget int64, sandboxProfile string) error {
@@ -876,8 +1064,8 @@ func launchNativeGoalDirection(root string, cfg *Config, taskID string, hosted b
 	if !grokBuildEnabled(cfg) {
 		return fmt.Errorf("%w: grok_build 未启用，未把 claude -p 当作原生 Goal", errGoalCapability)
 	}
-	if busy, why := nativeGoalBusy(root, cfg, task); busy {
-		return fmt.Errorf("%w: %s", errAdmissionDenied, why)
+	if err := goalLaunchConcurrencyBlocked(root, cfg, task); err != nil {
+		return err
 	}
 	if _, _, err := resolveManualGrokTuple(cfg, task); err != nil {
 		return err

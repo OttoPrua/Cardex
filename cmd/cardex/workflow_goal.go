@@ -1817,30 +1817,8 @@ func admitManualGoalLaunchLocked(root string, cfg *Config, wf *WorkflowRecord, t
 		restoreLaunchSandboxSelector(t, selector)
 	}
 
-	tasks, err := loadTasks(root)
-	if err != nil {
+	if err := goalLaunchConcurrencyBlocked(root, cfg, t); err != nil {
 		return err
-	}
-	if !dagAllowsTask(root, tasks, t.ID) {
-		return fmt.Errorf("%w: DAG predecessor missing or not durably done", errAdmissionDenied)
-	}
-	live := mergeLiveWriterTasks(nil, reconstructLiveWriterClaims(root))
-	if writerConflictsWithActive(t, live) {
-		return fmt.Errorf("%w: write-domain/resource conflict with an active writer", errAdmissionDenied)
-	}
-	maxPar := 1
-	if cfg != nil && cfg.MaxParallel > 0 {
-		maxPar = cfg.MaxParallel
-	}
-	slots, err := liveGoalLaunchSlots(root)
-	if err != nil {
-		return err
-	}
-	if slots >= maxPar {
-		return fmt.Errorf("%w: max_parallel %d reached", errAdmissionDenied, maxPar)
-	}
-	if grokSlots := countLiveRunner(root, grokBuildRunnerName); grokSlots >= providerParallelLimit(cfg, grokBuildRunnerName) {
-		return fmt.Errorf("%w: grok max_parallel reached", errAdmissionDenied)
 	}
 
 	if err := bindGoalSandboxEvidence(root, cfg, t); err != nil {
@@ -2116,25 +2094,143 @@ func residualActiveHeldGoal(root string, t *Task) bool {
 }
 
 func liveGoalLaunchSlots(root string) (int, error) {
-	tasks, err := loadTasks(root)
+	tasks, broken, err := scanTasks(root)
 	if err != nil {
 		return 0, err
 	}
+	seen := map[string]bool{}
 	n := 0
+	note := func(key string) {
+		if key == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		n++
+	}
 	for _, tk := range tasks {
 		if tk == nil || taskIsReadOnlyType(tk) || tk.IntegrationGate != nil {
 			continue
 		}
-		live, rec := liveAttempt(root, tk)
-		if live || attemptProducerAlive(rec) || anyTaskProcAlive(tk.ID) || taskProcessResidue(tk.ID) {
-			n++
+		if !taskHasLiveWriterProof(root, tk) {
+			continue
 		}
+		note(liveWriterOccupancyKey(tk.ID, occupancyDirsForTask(root, tk)))
+	}
+	if len(broken) == 0 {
+		return n, nil
+	}
+	wfByWriter := brokenTaskWorkflowWriters(root)
+	for id := range broken {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		dirs, live := brokenTaskLiveOccupancy(root, id, wfByWriter)
+		if !live {
+			continue
+		}
+		note(liveWriterOccupancyKey(id, dirs))
 	}
 	return n, nil
 }
 
+// occupancyDirsForTask returns this writer's current workspace and a live
+// matching attempt lease identity. Dead ActiveAttempt WorkspaceLeaseID values
+// and foreign historical leases are not occupancy keys.
+func occupancyDirsForTask(root string, t *Task) []string {
+	if t == nil {
+		return nil
+	}
+	dirs := make([]string, 0, 2)
+	current := strings.TrimSpace(t.Dir)
+	if current != "" {
+		dirs = append(dirs, current)
+	}
+	live, rec := liveAttempt(root, t)
+	if !live || rec == nil {
+		return dirs
+	}
+	if dir := strings.TrimSpace(rec.WorkspaceLeaseID); occupancyLeaseMatchesCurrent(current, dir) {
+		dirs = append(dirs, dir)
+	}
+	return dirs
+}
+
+func occupancyLeaseMatchesCurrent(current, lease string) bool {
+	current = strings.TrimSpace(current)
+	lease = strings.TrimSpace(lease)
+	if current == "" || lease == "" {
+		return false
+	}
+	if current == lease {
+		return true
+	}
+	cc, cl := canonicalWorkspaceID(current), canonicalWorkspaceID(lease)
+	return cc != "" && cl != "" && cc == cl
+}
+
+func liveWriterOccupancyKey(taskID string, dirs []string) string {
+	for _, dir := range dirs {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		if workspaceLeaseHeld(dir) {
+			if id := canonicalWorkspaceID(dir); id != "" {
+				return "lease:" + id
+			}
+		}
+	}
+	return "task:" + strings.TrimSpace(taskID)
+}
+
+func brokenTaskLiveOccupancy(root, taskID string, wfByWriter map[string]*WorkflowRecord) (dirs []string, live bool) {
+	seenDir := map[string]bool{}
+	addDir := func(dir string) {
+		dir = strings.TrimSpace(dir)
+		if dir == "" || seenDir[dir] {
+			return
+		}
+		seenDir[dir] = true
+		dirs = append(dirs, dir)
+		if workspaceLeaseHeld(dir) {
+			live = true
+		}
+	}
+	if anyTaskProcAlive(taskID) || taskProcessResidue(taskID) {
+		live = true
+	}
+	var current string
+	if wf := wfByWriter[taskID]; wf != nil {
+		current = strings.TrimSpace(wf.Worktree)
+		addDir(current)
+	}
+	if claim := recoverBrokenTaskWriterClaim(root, taskID, wfByWriter); claim != nil {
+		if current == "" {
+			current = strings.TrimSpace(claim.Dir)
+		}
+		addDir(claim.Dir)
+	}
+	recs, err := listAttemptRecords(root, taskID)
+	if err != nil {
+		return dirs, live
+	}
+	for _, rec := range recs {
+		if rec == nil {
+			continue
+		}
+		if !attemptProducerAlive(rec) {
+			continue
+		}
+		live = true
+		if occupancyLeaseMatchesCurrent(current, rec.WorkspaceLeaseID) {
+			addDir(rec.WorkspaceLeaseID)
+		}
+	}
+	return dirs, live
+}
+
 func countLiveRunner(root, runner string) int {
-	tasks, err := loadTasks(root)
+	tasks, _, err := scanTasks(root)
 	if err != nil {
 		return 1 << 20
 	}

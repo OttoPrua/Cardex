@@ -1,0 +1,6 @@
+=== RUN   TestTwoDirectionComposedCandidateConsumerLoop
+    goal_admission_composition_test.go:911: composed-loop round=1 alpha=t1019-0510-8d29 beta=t1019-0510-34c9 commit=e1b267c6d61e8198ffa44764b2fae6526c328dc5 tree=08c9c82994bdeefa21b9ac3995c1ae06efe5686e acceptance=t1019-0510-37ac first="acceptance_created=1 id=t1019-0510-37ac goal_accepted=false" again="acceptance_created=0 existing=t1019-0510-37ac goal_accepted=false"
+    goal_admission_composition_test.go:911: composed-loop round=2 alpha=t1019-0510-ba52 beta=t1019-0510-7356 commit=7433f0501ac580a986a50da135c1848aa7e7f305 tree=08c9c82994bdeefa21b9ac3995c1ae06efe5686e acceptance=t1019-0510-71a5 first="acceptance_created=1 id=t1019-0510-71a5 goal_accepted=false" again="acceptance_created=0 existing=t1019-0510-71a5 goal_accepted=false"
+--- PASS: TestTwoDirectionComposedCandidateConsumerLoop (3.62s)
+PASS
+ok  	cardex/cmd/cardex	4.827s

@@ -19,10 +19,12 @@ type IntegrationReleaseDecision struct {
 }
 
 // reviewVerdictIsAdmissiblePass encodes templates/design-review.md: `pass` is
-// only a pass when p0 and p1 are both empty. `ACCEPT`, `HELD`, and any other
-// token are not machine vocabulary at all.
+// only a pass when the JSON present p0 and p1 arrays are both empty. Missing,
+// null, or wrong-type arrays are not an admissible pass. A Go zero-value
+// struct is not presence. `ACCEPT`, `HELD`, and any other token are not
+// machine vocabulary at all.
 func reviewVerdictIsAdmissiblePass(v *reviewVerdict) bool {
-	return v != nil && v.Verdict == "pass" && len(v.P0) == 0 && len(v.P1) == 0
+	return v != nil && v.Verdict == "pass" && v.p0Present && v.p1Present && len(v.P0) == 0 && len(v.P1) == 0
 }
 
 // reviewHoldReason maps a parsed terminal to the reason integration stays
@@ -40,10 +42,13 @@ func reviewHoldReason(v *reviewVerdict, raw string) string {
 	case "block":
 		return holdReasonBlock
 	case "pass":
-		if !reviewVerdictIsAdmissiblePass(v) {
+		if reviewVerdictIsAdmissiblePass(v) {
+			return ""
+		}
+		if v.p0Present && v.p1Present {
 			return holdReasonFindingsOpen
 		}
-		return ""
+		return holdReasonIncompleteEvidence
 	default:
 		return holdReasonUnknownVocabulary
 	}

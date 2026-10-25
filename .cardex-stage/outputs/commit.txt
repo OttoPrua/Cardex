@@ -1,0 +1,22 @@
+commit 7c2cc1d61b0ee44bc41cc0303c56274b9c3d31f8
+Author: Otto <ottoprua@OttodeMac-mini-2.local>
+Date:   Mon Oct 19 05:13:24 2026 +0800
+
+    Record commit identity in the stage result
+
+ .cardex-stage/outputs/commit.txt | 27 +++++++++++++++++++++------
+ .cardex-stage/outputs/result.md  |  2 +-
+ 2 files changed, 22 insertions(+), 7 deletions(-)
+---
+On branch codex/goal-admission-composition-20261019
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   cmd/cardex/attempt_control.go
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	cmd/cardex/tshare_cancel_closeout_test.go
+	docs/handoffs/cardex-rdw-critical-review-20261008.md
+
+no changes added to commit (use "git add" and/or "git commit -a")

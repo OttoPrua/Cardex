@@ -3,13 +3,16 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -405,5 +408,445 @@ func TestHostedRejectedInterveningRequestKeepsSuccessfulDedup(t *testing.T) {
 	}
 	if hostedSameInputAlreadyDelivered(got, "2", "fp") {
 		t.Fatal("rejected key 2 must not count as delivered")
+	}
+}
+
+type hostedObserveView struct {
+	Task          string `json:"task"`
+	Root          string `json:"root"`
+	Workflow      string `json:"workflow"`
+	Attempt       string `json:"attempt"`
+	Session       string `json:"session"`
+	Prompt        string `json:"prompt"`
+	InputProtocol int    `json:"input_protocol"`
+	InputCapable  bool   `json:"input_capable"`
+	Command       string `json:"command"`
+}
+
+type hostedFIFOWatch struct {
+	mu  sync.Mutex
+	got []byte
+}
+
+func (w *hostedFIFOWatch) snapshot() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.got...)
+}
+
+func (w *hostedFIFOWatch) add(p []byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.got = append(w.got, p...)
+}
+
+type hostedPlantedMember struct {
+	task   *Task
+	watch  *hostedFIFOWatch
+	prompt string
+	fifo   *os.File
+	label  string
+}
+
+func hostedGoalInputTestCLI(t *testing.T) string {
+	t.Helper()
+	if p := strings.TrimSpace(os.Getenv("CARDEX_CANDIDATE_BIN")); p != "" {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("CARDEX_CANDIDATE_BIN=%s: %v", p, err)
+		}
+		return p
+	}
+	cli := filepath.Join(t.TempDir(), "cardex")
+	build := exec.Command("go", "build", "-o", cli, ".")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build real CLI: %v %s", err, out)
+	}
+	return cli
+}
+
+func runHostedGoalInputCLI(t *testing.T, cli string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	cmd := exec.Command(cli, args...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			code = ee.ExitCode()
+		} else {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	return outBuf.String(), errBuf.String(), code
+}
+
+func items6GreenOutDir(t *testing.T) string {
+	t.Helper()
+	dir := strings.TrimSpace(os.Getenv("ITEMS6_GREEN_OUT"))
+	if dir == "" {
+		return ""
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func items6GreenFile(t *testing.T, name, body string) {
+	t.Helper()
+	dir := items6GreenOutDir(t)
+	if dir == "" {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func items6GreenLog(t *testing.T, name, command, stdout, stderr string, code int) {
+	t.Helper()
+	if items6GreenOutDir(t) == "" {
+		return
+	}
+	items6GreenFile(t, name+".cmd", command+"\n")
+	items6GreenFile(t, name+".stdout", stdout)
+	items6GreenFile(t, name+".stderr", stderr)
+	items6GreenFile(t, name+".exit", fmt.Sprintf("%d\n", code))
+}
+
+func items6GreenBytes(t *testing.T, name string, writer, nativeB *hostedPlantedMember) {
+	t.Helper()
+	items6GreenFile(t, name, fmt.Sprintf("A=%d B=%d A_task=%s B_task=%s\n",
+		len(writer.watch.snapshot()), len(nativeB.watch.snapshot()), writer.task.ID, nativeB.task.ID))
+}
+
+func startHostedFIFOAck(t *testing.T, root string, m *hostedPlantedMember) {
+	t.Helper()
+	go func() {
+		scanner := bufio.NewScanner(m.fifo)
+		for scanner.Scan() {
+			line := append([]byte(nil), scanner.Bytes()...)
+			m.watch.add(append(line, '\n'))
+			var req hostedInputRequest
+			if json.Unmarshal(line, &req) != nil || req.ID == "" {
+				continue
+			}
+			st, err := loadGoalHostStatus(root, m.task.ID, attemptIDForHostedTask(m.task))
+			if err != nil {
+				continue
+			}
+			st.SessionID = m.task.SessionID
+			st.SupervisorAlive = true
+			st.LastInputID = req.ID
+			st.LastInputKey = req.Key
+			st.LastInputPrompt = req.Prompt
+			st.InputError = ""
+			_ = writeGoalHostStatus(root, m.task.ID, attemptIDForHostedTask(m.task), st)
+		}
+	}()
+}
+
+func plantHostedOperatorMember(t *testing.T, root string, cfg *Config, wfID, workDir, label, session, tool string, protocol int) *hostedPlantedMember {
+	t.Helper()
+	dir := filepath.Join(workDir, "member-"+label)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	tk := newTask(root, cfg, typeSequence, "hosted "+label, dir, []string{"p"}, 5)
+	tk.Status = statusRunning
+	tk.SessionID = session
+	tk.WorkflowID = wfID
+	tk.Goal = &TaskGoalBinding{
+		Hosted: true, ControlOwner: goalControlOwnerHosted, Observation: goalObsRunning,
+		HardTimeoutSec: 3600, WriterMode: goalWriterManual, GrokHome: home,
+	}
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	plantLiveAttempt(t, root, tk)
+	fresh, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh.Goal.BoundAttemptID = fresh.ActiveAttemptID
+	if err := saveTask(root, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if protocol == 0 {
+		protocol = hostedInputProtocol
+	}
+	if err := writeGoalHostStatus(root, fresh.ID, fresh.ActiveAttemptID, goalHostStatus{
+		TaskID: fresh.ID, AttemptID: fresh.ActiveAttemptID, SessionID: fresh.SessionID,
+		SupervisorAlive: true, InputProtocol: protocol,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fifoPath := goalHostControlPath(root, fresh.ID, fresh.ActiveAttemptID)
+	if err := ensureHostControlFIFO(fifoPath); err != nil {
+		t.Fatal(err)
+	}
+	fifo, err := os.OpenFile(fifoPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = fifo.Close() })
+	events := grokNativeEventsPath(home, dir, session)
+	if err := os.MkdirAll(filepath.Dir(events), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "{\"type\":\"phase_changed\",\"phase\":\"permission_prompt\"}\n{\"type\":\"permission_requested\",\"tool_name\":\"" + tool + "\"}\n"
+	if err := os.WriteFile(events, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fp, err := hostedPendingPermissionFingerprint(home, dir, session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &hostedPlantedMember{task: fresh, watch: &hostedFIFOWatch{}, prompt: fp, fifo: fifo, label: label}
+	startHostedFIFOAck(t, root, m)
+	return m
+}
+
+func waitHostedFIFOBytes(t *testing.T, w *hostedFIFOWatch, timeout time.Duration) []byte {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if b := w.snapshot(); len(b) > 0 {
+			return b
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("FIFO received no bytes")
+	return nil
+}
+
+func parseHostedObserve(t *testing.T, stdout string) hostedObserveView {
+	t.Helper()
+	var view hostedObserveView
+	if err := json.Unmarshal([]byte(stdout), &view); err != nil {
+		t.Fatalf("observe JSON: %v %s", err, stdout)
+	}
+	return view
+}
+
+func execCopiedGoalInput(t *testing.T, cli, command, key string) (argv []string, stdout, stderr string, code int) {
+	t.Helper()
+	fields := strings.Fields(command)
+	if len(fields) < 3 {
+		t.Fatalf("copyable command too short: %q", command)
+	}
+	fields[0] = cli
+	replaced := false
+	for i, f := range fields {
+		if f == "KEY" {
+			fields[i] = key
+			replaced = true
+		}
+	}
+	if !replaced {
+		t.Fatalf("copyable command missing KEY: %q", command)
+	}
+	stdout, stderr, code = runHostedGoalInputCLI(t, fields[0], fields[1:]...)
+	return fields, stdout, stderr, code
+}
+
+func assertFIFOUnchanged(t *testing.T, label string, w *hostedFIFOWatch, before []byte) {
+	t.Helper()
+	time.Sleep(40 * time.Millisecond)
+	after := w.snapshot()
+	if !bytes.Equal(after, before) {
+		t.Fatalf("%s FIFO gained bytes before=%q after=%q", label, before, after)
+	}
+}
+
+func TestHostedExactTaskSelectorCLIBindsSameMember(t *testing.T) {
+	root, dir := workflowTestRoot(t)
+	cfg := workflowTestCfg(t, root)
+	wf := initTestWorkflow(t, root, dir)
+	cli := hostedGoalInputTestCLI(t)
+
+	writer := plantHostedOperatorMember(t, root, cfg, wf.ID, dir, "writer-a", "sess-writer-a", "fake-compile-a", hostedInputProtocol)
+	nativeB := plantHostedOperatorMember(t, root, cfg, wf.ID, dir, "native-b", "sess-native-b", "fake-compile-b", hostedInputProtocol)
+	terminal := plantHostedOperatorMember(t, root, cfg, wf.ID, dir, "terminal", "sess-terminal", "fake-compile-t", hostedInputProtocol)
+	expired := plantHostedOperatorMember(t, root, cfg, wf.ID, dir, "expired", "sess-expired", "fake-compile-e", hostedInputProtocol)
+	oldhost := plantHostedOperatorMember(t, root, cfg, wf.ID, dir, "oldhost", "sess-oldhost", "fake-compile-o", 2)
+	nonmember := plantHostedOperatorMember(t, root, cfg, wf.ID, dir, "nonmember", "sess-nonmember", "fake-compile-n", hostedInputProtocol)
+	foreign := plantHostedOperatorMember(t, root, cfg, "wf-foreign-aaaa", dir, "foreign", "sess-foreign", "fake-compile-f", hostedInputProtocol)
+
+	termTask, err := loadTask(root, terminal.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	termTask.Status = statusCanceled
+	termTask.Goal.Observation = goalObsCanceled
+	if err := saveTask(root, termTask); err != nil {
+		t.Fatal(err)
+	}
+	terminal.task = termTask
+
+	expTask, err := loadTask(root, expired.task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := loadAttempt(root, expTask.ID, expTask.ActiveAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec.CreatedAt = time.Now().Add(-2 * time.Hour).Format(time.RFC3339Nano)
+	if err := writeAttempt(root, rec); err != nil {
+		t.Fatal(err)
+	}
+	expTask.Goal.HardTimeoutSec = 1
+	if err := saveTask(root, expTask); err != nil {
+		t.Fatal(err)
+	}
+	expired.task = expTask
+
+	wf.WriterTaskID = writer.task.ID
+	wf.NativeGoalTaskIDs = []string{nativeB.task.ID, terminal.task.ID, expired.task.ID, oldhost.task.ID}
+	if err := saveWorkflow(root, cfg, wf); err != nil {
+		t.Fatal(err)
+	}
+	wf, err = loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wf.WriterTaskID != writer.task.ID {
+		t.Fatalf("writer rewritten at plant: %s", wf.WriterTaskID)
+	}
+
+	watches := []*hostedPlantedMember{writer, nativeB, terminal, expired, oldhost, nonmember, foreign}
+	snapshotAll := func() map[string][]byte {
+		out := map[string][]byte{}
+		for _, m := range watches {
+			out[m.label] = m.watch.snapshot()
+		}
+		return out
+	}
+	assertAllUnchanged := func(t *testing.T, before map[string][]byte) {
+		t.Helper()
+		time.Sleep(40 * time.Millisecond)
+		for _, m := range watches {
+			if !bytes.Equal(m.watch.snapshot(), before[m.label]) {
+				t.Fatalf("%s FIFO changed during refuse: before=%q after=%q", m.label, before[m.label], m.watch.snapshot())
+			}
+		}
+	}
+
+	observeBOut, observeBErr, observeBCode := runHostedGoalInputCLI(t, cli, "workflow", "goal-input", wf.ID, "-root", root, "-task", nativeB.task.ID, "-observe")
+	items6GreenLog(t, "observe-b", strings.Join([]string{cli, "workflow", "goal-input", wf.ID, "-root", root, "-task", nativeB.task.ID, "-observe"}, " "), observeBOut, observeBErr, observeBCode)
+	if observeBCode != 0 {
+		t.Fatalf("observe -task B: exit %d stdout=%s stderr=%s", observeBCode, observeBOut, observeBErr)
+	}
+	viewB := parseHostedObserve(t, observeBOut)
+	if viewB.Task != nativeB.task.ID || viewB.Workflow != wf.ID || viewB.Root != root {
+		t.Fatalf("observe B identity: %+v", viewB)
+	}
+	if viewB.Attempt != nativeB.task.ActiveAttemptID || viewB.Session != nativeB.task.SessionID || viewB.Prompt != nativeB.prompt {
+		t.Fatalf("observe B current identity: %+v want attempt=%s session=%s prompt=%s", viewB, nativeB.task.ActiveAttemptID, nativeB.task.SessionID, nativeB.prompt)
+	}
+	if viewB.InputProtocol != hostedInputProtocol || !viewB.InputCapable {
+		t.Fatalf("observe B protocol: %+v", viewB)
+	}
+	if !strings.Contains(viewB.Command, "-task "+nativeB.task.ID) || !strings.Contains(viewB.Command, viewB.Prompt) {
+		t.Fatalf("copyable B command missing selected identity: %s", viewB.Command)
+	}
+	if strings.Contains(viewB.Command, writer.task.ID) || strings.Contains(viewB.Command, writer.task.ActiveAttemptID) || strings.Contains(viewB.Command, writer.task.SessionID) {
+		t.Fatalf("selecting B silently named A: %s", viewB.Command)
+	}
+	if viewB.Task == writer.task.ID || viewB.Attempt == writer.task.ActiveAttemptID || viewB.Session == writer.task.SessionID || viewB.Prompt == writer.prompt {
+		t.Fatalf("selecting B returned A observe JSON: %+v", viewB)
+	}
+
+	beforeBSend := snapshotAll()
+	sendBArgv, sendBOut, sendBErr, sendBCode := execCopiedGoalInput(t, cli, viewB.Command, "1")
+	items6GreenLog(t, "send-b-copied", strings.Join(sendBArgv, " "), sendBOut, sendBErr, sendBCode)
+	if sendBCode != 0 || !strings.Contains(sendBOut, "not proof of native approval") || !strings.Contains(sendBOut, "task="+nativeB.task.ID) {
+		t.Fatalf("copied B send: exit %d stdout=%s stderr=%s", sendBCode, sendBOut, sendBErr)
+	}
+	if strings.Contains(sendBOut, "task="+writer.task.ID) {
+		t.Fatalf("copied B send acknowledged A: %s", sendBOut)
+	}
+	bBytes := waitHostedFIFOBytes(t, nativeB.watch, 3*time.Second)
+	var bReq hostedInputRequest
+	if err := json.Unmarshal(bytes.TrimSpace(bBytes), &bReq); err != nil {
+		t.Fatalf("B FIFO JSON: %v %q", err, bBytes)
+	}
+	if bReq.TaskID != nativeB.task.ID || bReq.AttemptID != nativeB.task.ActiveAttemptID || bReq.SessionID != nativeB.task.SessionID || bReq.Key != "1" || bReq.Prompt != nativeB.prompt || bReq.ID == "" {
+		t.Fatalf("B FIFO request %+v", bReq)
+	}
+	items6GreenFile(t, "send-b-copied.fifo.json", string(bytes.TrimSpace(bBytes))+"\n")
+	items6GreenFile(t, "send-b-copied.request-id", bReq.ID+"\n")
+	items6GreenBytes(t, "bytes-after-b-send.txt", writer, nativeB)
+	assertFIFOUnchanged(t, "writer-a after B send", writer.watch, beforeBSend["writer-a"])
+	for _, m := range []*hostedPlantedMember{terminal, expired, oldhost, nonmember, foreign} {
+		assertFIFOUnchanged(t, m.label+" after B send", m.watch, beforeBSend[m.label])
+	}
+
+	observeDefOut, observeDefErr, observeDefCode := runHostedGoalInputCLI(t, cli, "workflow", "goal-input", wf.ID, "-root", root, "-observe")
+	items6GreenLog(t, "observe-default", strings.Join([]string{cli, "workflow", "goal-input", wf.ID, "-root", root, "-observe"}, " "), observeDefOut, observeDefErr, observeDefCode)
+	if observeDefCode != 0 {
+		t.Fatalf("default observe: exit %d stdout=%s stderr=%s", observeDefCode, observeDefOut, observeDefErr)
+	}
+	viewA := parseHostedObserve(t, observeDefOut)
+	if viewA.Task != writer.task.ID || viewA.Attempt != writer.task.ActiveAttemptID || viewA.Session != writer.task.SessionID || viewA.Prompt != writer.prompt {
+		t.Fatalf("default observe left writer A: %+v", viewA)
+	}
+	if strings.Contains(viewA.Command, "-task") || strings.Contains(viewA.Command, nativeB.task.ID) {
+		t.Fatalf("default copyable command selected a sibling: %s", viewA.Command)
+	}
+
+	beforeDefaultSend := snapshotAll()
+	sendAArgv, sendAOut, sendAErr, sendACode := execCopiedGoalInput(t, cli, viewA.Command, "1")
+	items6GreenLog(t, "send-default-copied", strings.Join(sendAArgv, " "), sendAOut, sendAErr, sendACode)
+	if sendACode != 0 || !strings.Contains(sendAOut, "not proof of native approval") || !strings.Contains(sendAOut, "task="+writer.task.ID) {
+		t.Fatalf("default copied send: exit %d stdout=%s stderr=%s", sendACode, sendAOut, sendAErr)
+	}
+	aBytes := waitHostedFIFOBytes(t, writer.watch, 3*time.Second)
+	var aReq hostedInputRequest
+	if err := json.Unmarshal(bytes.TrimSpace(aBytes), &aReq); err != nil {
+		t.Fatalf("A FIFO JSON: %v %q", err, aBytes)
+	}
+	if aReq.TaskID != writer.task.ID || aReq.Key != "1" || aReq.Prompt != writer.prompt || aReq.ID == "" {
+		t.Fatalf("A FIFO request %+v", aReq)
+	}
+	items6GreenFile(t, "send-default-copied.fifo.json", string(bytes.TrimSpace(aBytes))+"\n")
+	items6GreenFile(t, "send-default-copied.request-id", aReq.ID+"\n")
+	items6GreenBytes(t, "bytes-after-default-send.txt", writer, nativeB)
+	assertFIFOUnchanged(t, "native-b after default send", nativeB.watch, beforeDefaultSend["native-b"])
+
+	refuse := func(name string, args []string) {
+		t.Helper()
+		before := snapshotAll()
+		stdout, stderr, code := runHostedGoalInputCLI(t, cli, args...)
+		items6GreenLog(t, name, strings.Join(append([]string{cli}, args...), " "), stdout, stderr, code)
+		if code == 0 {
+			t.Fatalf("%s succeeded: %s %s", name, stdout, stderr)
+		}
+		assertAllUnchanged(t, before)
+		items6GreenBytes(t, name+".bytes", writer, nativeB)
+	}
+
+	refuse("refuse-cross-a-identity-on-b", []string{"workflow", "goal-input", wf.ID, "-root", root, "-task", nativeB.task.ID, "-attempt", writer.task.ActiveAttemptID, "-session", writer.task.SessionID, "-prompt", nativeB.prompt, "-key", "1"})
+	refuse("refuse-cross-b-identity-on-a", []string{"workflow", "goal-input", wf.ID, "-root", root, "-task", writer.task.ID, "-attempt", nativeB.task.ActiveAttemptID, "-session", nativeB.task.SessionID, "-prompt", writer.prompt, "-key", "1"})
+	refuse("refuse-foreign", []string{"workflow", "goal-input", wf.ID, "-root", root, "-task", foreign.task.ID, "-attempt", foreign.task.ActiveAttemptID, "-session", foreign.task.SessionID, "-prompt", foreign.prompt, "-key", "1"})
+	refuse("refuse-nonmember", []string{"workflow", "goal-input", wf.ID, "-root", root, "-task", nonmember.task.ID, "-attempt", nonmember.task.ActiveAttemptID, "-session", nonmember.task.SessionID, "-prompt", nonmember.prompt, "-key", "1"})
+	refuse("refuse-unknown", []string{"workflow", "goal-input", wf.ID, "-root", root, "-task", "task-does-not-exist", "-attempt", nativeB.task.ActiveAttemptID, "-session", nativeB.task.SessionID, "-prompt", nativeB.prompt, "-key", "1"})
+	refuse("refuse-terminal", []string{"workflow", "goal-input", wf.ID, "-root", root, "-task", terminal.task.ID, "-attempt", terminal.task.ActiveAttemptID, "-session", terminal.task.SessionID, "-prompt", terminal.prompt, "-key", "1"})
+	refuse("refuse-expired", []string{"workflow", "goal-input", wf.ID, "-root", root, "-task", expired.task.ID, "-attempt", expired.task.ActiveAttemptID, "-session", expired.task.SessionID, "-prompt", expired.prompt, "-key", "1"})
+	refuse("refuse-oldhost", []string{"workflow", "goal-input", wf.ID, "-root", root, "-task", oldhost.task.ID, "-attempt", oldhost.task.ActiveAttemptID, "-session", oldhost.task.SessionID, "-prompt", oldhost.prompt, "-key", "1"})
+	refuse("refuse-wrong-attempt", []string{"workflow", "goal-input", wf.ID, "-root", root, "-task", nativeB.task.ID, "-attempt", "stale-attempt", "-session", nativeB.task.SessionID, "-prompt", nativeB.prompt, "-key", "1"})
+	refuse("refuse-wrong-session", []string{"workflow", "goal-input", wf.ID, "-root", root, "-task", nativeB.task.ID, "-attempt", nativeB.task.ActiveAttemptID, "-session", "other-session", "-prompt", nativeB.prompt, "-key", "1"})
+	refuse("refuse-duplicate-b", []string{"workflow", "goal-input", wf.ID, "-root", root, "-task", nativeB.task.ID, "-attempt", nativeB.task.ActiveAttemptID, "-session", nativeB.task.SessionID, "-prompt", nativeB.prompt, "-key", "1"})
+	items6GreenBytes(t, "bytes-after-refusals.txt", writer, nativeB)
+
+	disk, err := loadWorkflow(root, cfg, wf.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disk.WriterTaskID != writer.task.ID {
+		t.Fatalf("selector rewrote WriterTaskID to %s", disk.WriterTaskID)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -143,9 +144,18 @@ func hostedSameInputAlreadyDelivered(st goalHostStatus, key, prompt string) bool
 	return key != "" && prompt != "" && st.LastInputKey == key && st.LastInputPrompt == prompt
 }
 
+func hostedGoalInputCopyableCommand(workflowID, root, taskFlag, resolvedTaskID, attempt, session, prompt string) string {
+	cmd := fmt.Sprintf("cardex workflow goal-input %s -root %s", workflowID, shellQuote(root))
+	if strings.TrimSpace(taskFlag) != "" {
+		cmd += " -task " + strings.TrimSpace(resolvedTaskID)
+	}
+	return cmd + fmt.Sprintf(" -attempt %s -session %s -prompt %s -key KEY", attempt, session, prompt)
+}
+
 func cmdWorkflowGoalInput(args []string) error {
 	fs := flag.NewFlagSet("workflow goal-input", flag.ContinueOnError)
 	rootFlag := fs.String("root", "", "Cardex root")
+	taskFlag := fs.String("task", "", "exact writer or native direction already belonging to this workflow; omitted keeps the serial writer")
 	attempt := fs.String("attempt", "", "exact current hosted attempt ID (required)")
 	session := fs.String("session", "", "exact current native session ID (required)")
 	key := fs.String("key", "", "one explicit operator key: 1..9|enter|escape|tab|up|down|ctrl-f; observe the actual prompt first")
@@ -154,7 +164,11 @@ func cmdWorkflowGoalInput(args []string) error {
 	if err := parseWorkflowFlags(fs, args); err != nil {
 		return err
 	}
-	root, _, wf, err := workflowTarget(fs, rootFlag, "cardex workflow goal-input <id> -attempt ID -session ID -key KEY")
+	root, _, wf, err := workflowTarget(fs, rootFlag, "cardex workflow goal-input <id> [-task TASK_ID] -attempt ID -session ID -key KEY")
+	if err != nil {
+		return err
+	}
+	t, err := goalSyncTarget(root, wf, *taskFlag)
 	if err != nil {
 		return err
 	}
@@ -162,18 +176,26 @@ func cmdWorkflowGoalInput(args []string) error {
 		if *key != "" || *prompt != "" {
 			return fmt.Errorf("-observe sends no input; do not combine with -key/-prompt")
 		}
-		t, err := workflowWriterTask(root, wf)
-		if err != nil {
-			return err
-		}
 		fp, err := hostedPendingPermissionFingerprint(goalChildGrokHome(t), t.Dir, t.SessionID)
 		if err != nil {
 			return err
 		}
-		st, _ := loadGoalHostStatus(root, t.ID, attemptIDForHostedTask(t))
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"task": t.ID, "attempt": attemptIDForHostedTask(t), "session": t.SessionID, "prompt": fp, "input_protocol": st.InputProtocol, "input_capable": hostedSupervisorHasCurrentInputCapability(st), "command": fmt.Sprintf("cardex workflow goal-input %s -root %s -attempt %s -session %s -prompt %s -key KEY", wf.ID, shellQuote(root), attemptIDForHostedTask(t), t.SessionID, fp), "note": "Choose KEY only from the actual visible prompt and existing authority; numbers can select remembered/always-allow options. enter/tab/up/down are refused while a permission prompt is pending. Delivery ACK is sent, not native approval or consumption. Native TUI: Enter queues until the next turn boundary; Ctrl+Enter is Send-now. This adapter does not map ctrl-enter. Installing this CLI does not upgrade a still-running older host; send is refused before FIFO bytes. Start a fresh hosted Goal for current successful-delivery protection."})
+		attemptID := attemptIDForHostedTask(t)
+		st, _ := loadGoalHostStatus(root, t.ID, attemptID)
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{
+			"task":           t.ID,
+			"root":           root,
+			"workflow":       wf.ID,
+			"attempt":        attemptID,
+			"session":        t.SessionID,
+			"prompt":         fp,
+			"input_protocol": st.InputProtocol,
+			"input_capable":  hostedSupervisorHasCurrentInputCapability(st),
+			"command":        hostedGoalInputCopyableCommand(wf.ID, root, *taskFlag, t.ID, attemptID, t.SessionID, fp),
+			"note":           "Choose KEY only from the actual visible prompt and existing authority; numbers can select remembered/always-allow options. enter/tab/up/down are refused while a permission prompt is pending. Delivery ACK is sent, not native approval or consumption. Native TUI: Enter queues until the next turn boundary; Ctrl+Enter is Send-now. This adapter does not map ctrl-enter. Installing this CLI does not upgrade a still-running older host; send is refused before FIFO bytes. Start a fresh hosted Goal for current successful-delivery protection.",
+		})
 	}
-	return requestHostedOperatorInput(root, wf.WriterTaskID, *attempt, *session, *key, *prompt)
+	return requestHostedOperatorInput(root, t.ID, *attempt, *session, *key, *prompt)
 }
 
 func goalChildGrokHome(t *Task) string {

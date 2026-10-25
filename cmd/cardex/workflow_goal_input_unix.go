@@ -31,6 +31,8 @@ func handleHostedOperatorInput(root, taskID, attemptID, sessionID string, master
 	st.LastInputID, st.InputError = req.ID, ""
 	if err != nil {
 		st.InputError = err.Error()
+	} else {
+		st.LastInputKey, st.LastInputPrompt = req.Key, req.Prompt
 	}
 	_ = writeGoalHostStatus(root, taskID, attemptID, st)
 }

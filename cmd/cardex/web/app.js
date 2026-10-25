@@ -216,12 +216,19 @@ function tierBadge(model, tier) {
 }
 
 function waitChips(t) {
-  if (!Array.isArray(t.waiting_on) || !t.waiting_on.length) return [];
-  return t.waiting_on.map((w) => metaChip(`等待 ${w.id} (${w.why})`, {
+  const chips = [];
+  if (t.wait_error_class) {
+    chips.push(metaChip(t.wait_error_reason ? `${t.wait_error_class}: ${t.wait_error_reason}` : t.wait_error_class, {
+      kind: 'wait',
+      title: t.wait_error_reason || t.wait_error_class,
+    }));
+  }
+  if (!Array.isArray(t.waiting_on) || !t.waiting_on.length) return chips;
+  return chips.concat(t.waiting_on.map((w) => metaChip(`等待 ${w.id} (${w.why})`, {
     kind: 'wait',
     mono: true,
     title: `dependency wait ${w.why}`,
-  }));
+  })));
 }
 
 function waitCalloutText(t) {

@@ -434,13 +434,18 @@ func grokBuildEnabled(cfg *Config) bool {
 }
 
 func resolveGrokBuildModel(cfg *Config, t *Task) string {
-	if model := mixedNewGrokModel(cfg, t); model != "" {
-		return model
-	}
 	if t != nil {
 		if model := concreteGrokPin(t.GrokModel); model != "" {
 			return model
 		}
+	}
+	if leg, ok := frozenCurrentGrokLeg(t); ok {
+		if model := concreteGrokPin(leg.Model); model != "" {
+			return model
+		}
+	}
+	if model := mixedNewGrokModel(cfg, t); model != "" {
+		return model
 	}
 	if cfg != nil && cfg.GrokBuild != nil {
 		if model := concreteGrokPin(cfg.GrokBuild.Model); model != "" {
@@ -451,6 +456,14 @@ func resolveGrokBuildModel(cfg *Config, t *Task) string {
 }
 
 func resolveGrokBuildEffort(cfg *Config, t *Task) string {
+	if t != nil && strings.TrimSpace(t.GrokEffort) != "" {
+		return strings.ToLower(strings.TrimSpace(t.GrokEffort))
+	}
+	if leg, ok := frozenCurrentGrokLeg(t); ok {
+		if effort := strings.ToLower(strings.TrimSpace(leg.Effort)); effort != "" {
+			return effort
+		}
+	}
 	if mixedNewGrokModel(cfg, t) != "" {
 		if spec, ok := lookupWorkClassRoute(cfg, t.WorkClass); ok && spec.Runner == grokBuildRunnerName && spec.Effort != "" {
 			return strings.ToLower(strings.TrimSpace(spec.Effort))
@@ -459,9 +472,6 @@ func resolveGrokBuildEffort(cfg *Config, t *Task) string {
 			return "xhigh"
 		}
 		return "high"
-	}
-	if t != nil && strings.TrimSpace(t.GrokEffort) != "" {
-		return strings.ToLower(strings.TrimSpace(t.GrokEffort))
 	}
 	if cfg == nil || cfg.GrokBuild == nil {
 		return ""

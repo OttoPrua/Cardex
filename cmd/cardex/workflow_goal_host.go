@@ -36,6 +36,8 @@ type goalHostStatus struct {
 	UpdatedAt        string `json:"updated_at"`
 	InputProtocol    int    `json:"input_protocol,omitempty"`
 	LastInputID      string `json:"last_input_id,omitempty"`
+	LastInputKey     string `json:"last_input_key,omitempty"`
+	LastInputPrompt  string `json:"last_input_prompt,omitempty"`
 	InputError       string `json:"input_error,omitempty"`
 }
 
@@ -58,13 +60,16 @@ func writeGoalHostStatus(root, taskID, attemptID string, st goalHostStatus) erro
 	st.TaskID = taskID
 	st.AttemptID = attemptID
 	// Control/observation updates retain the capability advertised by this
-	// supervisor. Never advertise it for an older running supervisor.
+	// supervisor. Never advertise a newer protocol for an older running host.
 	if old, err := loadGoalHostStatus(root, taskID, attemptID); err == nil && old.SessionID == st.SessionID {
-		if st.InputProtocol == 0 {
+		if old.InputProtocol != 0 {
 			st.InputProtocol = old.InputProtocol
 		}
 		if st.LastInputID == "" {
 			st.LastInputID, st.InputError = old.LastInputID, old.InputError
+			if st.LastInputKey == "" {
+				st.LastInputKey, st.LastInputPrompt = old.LastInputKey, old.LastInputPrompt
+			}
 		}
 	}
 	st.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)

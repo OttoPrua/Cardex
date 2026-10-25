@@ -170,6 +170,10 @@ type TaskBrief struct {
 	// who (predecessor id) and why ∈ {running, held, failed, unknown, missing}.
 	// Empty after predecessors recover. Display only; it never skips or cancels.
 	WaitingOn []DependencyWait `json:"waiting_on,omitempty"`
+	// WaitErrorClass/Reason are the shared list/board/digest wait/error facts
+	// projected from existing task/result/log evidence. Display only.
+	WaitErrorClass  string `json:"wait_error_class,omitempty"`
+	WaitErrorReason string `json:"wait_error_reason,omitempty"`
 }
 
 // TaskDetail 是 TaskBrief 加上单项目页才需要的重字段（prompt 摘录等）。
@@ -1728,7 +1732,7 @@ func buildSnapshot(root string, now time.Time) (*boardSnapshot, error) {
 			id += "-" + shortHash(name)
 		}
 
-		p := buildProject(cfg, ov, id, name, dirs, ts, byID, now, snap.phaseOf, snap.kindOf)
+		p := buildProject(cfg, ov, id, name, dirs, ts, byID, now, snap.phaseOf, snap.kindOf, root)
 		if name == unclassifiedProject && p.DescSource != "override" {
 			p.Desc = unclassifiedDesc + "（当前 " + p.Desc + "）"
 		}
@@ -1781,7 +1785,7 @@ const maxPhaseTasks = 40
 
 func buildProject(cfg *Config, ov *boardOverride, id, name string, dirs []string,
 	ts []*Task, byID map[string]*Task, now time.Time,
-	phaseOf map[string]string, kindOf map[string]kindMark) *Project {
+	phaseOf map[string]string, kindOf map[string]kindMark, root string) *Project {
 
 	p := &Project{ID: id, Name: name, Dirs: dirs, DescSource: "derived"}
 
@@ -1846,7 +1850,7 @@ func buildProject(cfg *Config, ov *boardOverride, id, name string, dirs []string
 	// 阶段。siblings 一律传项目全集 ts：调度器没有阶段概念，
 	// 阶段内排位没有调度意义，传阶段切片会让同一张卡在同一个响应里出现两个 finish_at。
 	for phName, pts := range phaseTasks {
-		ph := buildPhase(cfg, id, phName, pts, ts, now, pace, kindOf, byID)
+		ph := buildPhase(cfg, id, phName, pts, ts, now, pace, kindOf, byID, root)
 		if o, ok := ov.Projects[id]; ok {
 			if d, ok2 := o.Phases[phName]; ok2 && d != "" {
 				ph.Desc, ph.DescSource = d, "override"
@@ -1935,7 +1939,7 @@ func phaseSettled(status string) bool { return status == "done" || status == "ca
 // projTasks 是**整个项目**的卡，专门用于单卡排位——阶段只是展示分组，
 // 调度器不认阶段，用阶段切片算排位会得出一个与调度现实无关的名次。
 func buildPhase(cfg *Config, projID, name string, ts, projTasks []*Task, now time.Time,
-	pace *paceModel, kindOf map[string]kindMark, byID map[string]*Task) Phase {
+	pace *paceModel, kindOf map[string]kindMark, byID map[string]*Task, root string) Phase {
 
 	ph := Phase{
 		ID:         projID + "/" + name,
@@ -1976,6 +1980,7 @@ func buildPhase(cfg *Config, projID, name string, ts, projTasks []*Task, now tim
 		br.ETA = pace.estimateTask(t, projTasks, now)
 		br.applyKind(kindOf[t.ID])
 		attachDependencyWaits(&br, t, byID)
+		attachWaitErrorFact(root, &br, t)
 		ph.Tasks = append(ph.Tasks, br)
 	}
 	ph.Desc = derivedPhaseDesc(&ph)

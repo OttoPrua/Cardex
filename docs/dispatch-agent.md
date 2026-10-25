@@ -97,7 +97,7 @@ cardex add -preset development -fresh -file task.md -title "CSV 导入" -dir . -
 
 ## 结果如何跟进
 
-`run TASK_ID` 可以等待目标执行；长任务查看 `list -json`、`log TASK_ID` 和 `digest`。Grok 只读复审若停在工具许可，用 `cardex grok-permission list -root ROOT TASK` 读 pending 身份，再用 `cardex grok-permission answer -request ID -decision allow-once|reject|cancel -root ROOT TASK` 一次性应答（可附 `-session`/`-attempt`/`-tool-call`/`-digest` 校验）。常规状态变化不用频繁打扰用户；有实质结果、阻塞或需要决策时简短反馈。`done` 是调度记录，还要读日志中的实际检查与产物，才能描述功能是否可用。
+`run TASK_ID` 可以等待目标执行；长任务查看 `list`/`list -json`、看板快照、`log TASK_ID` 和 `digest`。这三个消费者共用同一套等待/错误分类（进行中、权限等待、失败、未知、`budget_limited`、账号额度；传输超时或不可用不是额度、不触发 fallback）。Grok 只读复审若停在工具许可，用 `cardex grok-permission list -root ROOT TASK` 读 pending 身份，再用 `cardex grok-permission answer -request ID -decision allow-once|reject|cancel -root ROOT TASK` 一次性应答（可附 `-session`/`-attempt`/`-tool-call`/`-digest` 校验；错 identity/重复/过期拒绝且不写授权字节）。托管 Goal 用 `workflow goal-input -observe` 绑定当前 prompt 再发 key；ACK 不是原生批准或已消费。仍在运行的 protocol-2 host 没有当前成功送达保留语义，安装新 CLI 不会升级它，发送在写 FIFO 之前拒绝；需要当前 CLI 时启动新的 hosted Goal。原生 TUI 中普通 Enter 排队到下一 turn 边界，Ctrl+Enter 是 Send-now；Cardex operator-key 适配器不映射 `ctrl-enter`，不因此放宽审批。常规状态变化不用频繁打扰用户；有实质结果、阻塞或需要决策时简短反馈。`done` 是调度记录，还要读日志中的实际检查与产物，才能描述功能是否可用。
 
 遇到限额按 Cardex 的现有冷却策略等待。认证或结果不明时，先查日志、已有工作和进程状态，再修复；不要重复派同一个 writer。失败卡用 `cardex retry ID` 重新入队并保留会话；`cardex retry -fresh ID` 仅在 retry 已合法且本卡 custody 已回收时开新会话（不 `--resume`），不绕过 held/集成门/sealed/no-retry/原生 Goal 身份，LastError 不是许可，不改 provider/model。预设是方便复用的建议，不绕过工作流门、既有 owner 路由或平台限制。
 
@@ -105,6 +105,6 @@ cardex add -preset development -fresh -file task.md -title "CSV 导入" -dir . -
 
 已有 Owner 路由配置可在同一个 `config.json` 中编辑 `work_class_routes` 与 `route_matrix`；普通安装继续沿用预设，无需额外开启 Owner 矩阵。配置片段、支持的 runner 和优先级见 [派发 skill](../skills/cardex-dispatch/SKILL.md#configurable-routing-for-new-work)。`route_matrix` 使用 high/medium/low（兼容 opus/sonnet/haiku）× frontend/backend/general，重复别名拒绝。用 `cardex route -root ROOT -complexity medium -category general` 预览；`add -model sonnet -route-class general` 和相同字段的 emitted task 使用同一解析器。显式 work-class 优先选择类别路由，显式执行器/模型/会话仍优先保留。
 
-`fallback` 缺省/null 继承原默认，`[]` 禁止自动回退，非空数组严格保留声明的顺序、不追加默认 provider。配置仅作用于新准入任务，旧完整快照保留全部执行腿与审核要求；既有已证明零活动的跨模式额度续作仍保留原 attempt 证据、冻结新准入路线。daily 的 gpt-complex 默认是 gpt-6.1-sol/high（可显式 medium），gpt-short 是 Grok 4.6/xhigh；原有风险、只读、额度和不确定状态限制继续生效。
+`fallback` 缺省/null 继承原默认，`[]` 禁止自动回退，非空数组严格保留声明的顺序、不追加默认 provider。`cardex route` 预览、准入 FrozenRoute 与实际 argv 使用同一套 runner/model/effort/permission；未使用的 fallback 腿不改写本阶段。配置仅作用于新准入任务，旧完整快照保留全部执行腿与审核要求；既有已证明零活动的跨模式额度续作仍保留原 attempt 证据、冻结新准入路线。daily 的 gpt-complex 默认是 gpt-6.1-sol/high（可显式 medium），gpt-short 是 Grok 4.6/xhigh；原有风险、只读、额度和不确定状态限制继续生效。未知/认证/拒绝/传输不是已证明额度，不能授权改道。
 
 需要 Goal 写者继承配置时，`workflow init ... -writer-engine auto -reviewer-engine grok-build -model sonnet -route-class general`，随后 `workflow writer -root ROOT -mode manual WF_ID`。也可声明 `-work-class development`。显式引擎的旧 workflow 不改路由；原生方向仅在实际 Grok 能力允许时启动，各方向使用独立会话。方向结束后仍由管理 Agent 同步所有必要方向，并用已有 `workflow accept` 统一验收；程序不自动决定下一轮目标或 Release。验收按完成标准与实际产物进行，深度与风险相称；失败保留产物、修具体问题、只复验受影响部分。

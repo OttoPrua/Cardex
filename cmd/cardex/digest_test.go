@@ -39,7 +39,7 @@ func TestDigestFiltersStableTextAndJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantArchTitle := strings.Repeat("题", 50)
-	if since != "#20 task-live done verdict=done 「live title」 files=2 +3/-1 commits=1 verify=0\n#22 task-arch held verdict=- 「"+wantArchTitle+"」 held in archive\n" {
+	if since != "#20 task-live done verdict=done 「live title」 files=2 +3/-1 commits=1 verify=0\n#22 task-arch held class=unknown verdict=- 「"+wantArchTitle+"」 held in archive\n" {
 		t.Fatalf("since/project=%q", since)
 	}
 
@@ -49,7 +49,7 @@ func TestDigestFiltersStableTextAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if last != "#21 task-mgr failed verdict=- 「manager card」 boom second\n" {
+	if last != "#21 task-mgr failed class=failure verdict=- 「manager card」 boom second\n" {
 		t.Fatalf("last/manager=%q", last)
 	}
 

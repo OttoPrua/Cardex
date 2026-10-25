@@ -234,6 +234,23 @@ func probeGrokCatalogDefault(ctx context.Context, cfg *Config) (string, error) {
 // does not probe. The selector and an empty model probe once. A later call
 // sees the stored id and does not probe again.
 func freezeGrokAttemptModel(ctx context.Context, cfg *Config, t *Task) error {
+	if t != nil {
+		if leg, ok := frozenCurrentGrokLeg(t); ok {
+			if frozen := concreteGrokPin(leg.Model); frozen != "" {
+				stored := concreteGrokPin(t.GrokModel)
+				if stored != "" && stored != frozen {
+					return fmt.Errorf("Grok attempt identity is ambiguous; refusing to resolve a new catalog model")
+				}
+				if grokManualHintApplies(t) || stored == frozen {
+					t.GrokModel = frozen
+					if effort := strings.ToLower(strings.TrimSpace(leg.Effort)); effort != "" && strings.TrimSpace(t.GrokEffort) == "" {
+						t.GrokEffort = effort
+					}
+					return nil
+				}
+			}
+		}
+	}
 	if model := mixedNewGrokModel(cfg, t); model != "" {
 		t.GrokModel, t.GrokEffort = model, resolveGrokBuildEffort(cfg, t)
 		return nil

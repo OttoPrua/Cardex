@@ -95,7 +95,7 @@ func TestProjectAPIShowsWaitThenRecovery(t *testing.T) {
 
 func TestAppJSConsumesWaitingOn(t *testing.T) {
 	code := appJSCode(t)
-	for _, needle := range []string{"waiting_on", "waitChips", "dependency wait"} {
+	for _, needle := range []string{"waiting_on", "waitChips", "dependency wait", "wait_error_class"} {
 		if !strings.Contains(code, needle) {
 			t.Fatalf("web/app.js does not consume %q", needle)
 		}

@@ -9,7 +9,11 @@ import (
 	"time"
 )
 
-const hostedInputProtocol = 2
+// hostedInputProtocol is advertised by a live supervisor that records
+// successful LastInputKey/LastInputPrompt after a PTY write. Protocol 2
+// hosts ACK LastInputID only; a newly installed CLI must not treat them
+// as compatible.
+const hostedInputProtocol = 3
 const hostedInputKind = "operator-key-v2"
 
 type hostedInputRequest struct {
@@ -83,6 +87,9 @@ func validateHostedOperatorInput(root string, t *Task, req hostedInputRequest) e
 	if _, err := hostedOperatorKey(req.Key); err != nil {
 		return err
 	}
+	if hostedPermissionModalUnsafeKey(req.Key) {
+		return fmt.Errorf("enter/navigation key would choose a permission-modal option; use an explicit numbered key or grok-permission allow-once")
+	}
 	if req.Kind != hostedInputKind || req.ID == "" || t == nil || t.Goal == nil ||
 		req.TaskID != t.ID || req.AttemptID == "" || req.AttemptID != t.ActiveAttemptID ||
 		req.AttemptID != t.Goal.BoundAttemptID || req.SessionID == "" || req.SessionID != t.SessionID {
@@ -102,14 +109,38 @@ func validateHostedOperatorInput(root string, t *Task, req hostedInputRequest) e
 	}
 	st, err := loadGoalHostStatus(root, t.ID, req.AttemptID)
 	if err != nil || st.TaskID != t.ID || st.AttemptID != req.AttemptID || st.SessionID != req.SessionID ||
-		!st.SupervisorAlive || st.InputProtocol != hostedInputProtocol {
-		return fmt.Errorf("running supervisor has no operator-input capability; installing a binary does not upgrade an existing host")
+		!hostedSupervisorHasCurrentInputCapability(st) {
+		return fmt.Errorf("running supervisor has no current operator-input capability; installing a binary does not upgrade an existing host")
 	}
 	prompt, err := hostedPendingPermissionFingerprint(goalChildGrokHome(t), t.Dir, t.SessionID)
 	if err != nil || req.Prompt == "" || prompt != req.Prompt {
 		return fmt.Errorf("pending native permission prompt changed or missing; observe again, do not replay an old choice")
 	}
+	if hostedSameInputAlreadyDelivered(st, req.Key, req.Prompt) {
+		return fmt.Errorf("duplicate same-input already delivered; not resent")
+	}
 	return nil
+}
+
+func hostedSupervisorHasCurrentInputCapability(st goalHostStatus) bool {
+	return st.SupervisorAlive && st.InputProtocol == hostedInputProtocol
+}
+
+func hostedPermissionModalUnsafeKey(key string) bool {
+	switch key {
+	case "enter", "tab", "up", "down":
+		return true
+	default:
+		return false
+	}
+}
+
+func hostedSameInputAlreadyDelivered(st goalHostStatus, key, prompt string) bool {
+	// LastInputKey/Prompt are recorded only after a successful PTY write.
+	// A later rejected request overwrites LastInputID/InputError for that
+	// request's ACK and must not clear successful delivery, so same-prompt
+	// resend stays blocked. Unknown ACK (no LastInputID match) stays distinct.
+	return key != "" && prompt != "" && st.LastInputKey == key && st.LastInputPrompt == prompt
 }
 
 func cmdWorkflowGoalInput(args []string) error {
@@ -140,7 +171,7 @@ func cmdWorkflowGoalInput(args []string) error {
 			return err
 		}
 		st, _ := loadGoalHostStatus(root, t.ID, attemptIDForHostedTask(t))
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"task": t.ID, "attempt": attemptIDForHostedTask(t), "session": t.SessionID, "prompt": fp, "input_protocol": st.InputProtocol, "command": fmt.Sprintf("cardex workflow goal-input %s -root %s -attempt %s -session %s -prompt %s -key KEY", wf.ID, shellQuote(root), attemptIDForHostedTask(t), t.SessionID, fp), "note": "Choose KEY only from the actual visible prompt and existing authority; numbers can select remembered/always-allow options too."})
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"task": t.ID, "attempt": attemptIDForHostedTask(t), "session": t.SessionID, "prompt": fp, "input_protocol": st.InputProtocol, "input_capable": hostedSupervisorHasCurrentInputCapability(st), "command": fmt.Sprintf("cardex workflow goal-input %s -root %s -attempt %s -session %s -prompt %s -key KEY", wf.ID, shellQuote(root), attemptIDForHostedTask(t), t.SessionID, fp), "note": "Choose KEY only from the actual visible prompt and existing authority; numbers can select remembered/always-allow options. enter/tab/up/down are refused while a permission prompt is pending. Delivery ACK is sent, not native approval or consumption. Native TUI: Enter queues until the next turn boundary; Ctrl+Enter is Send-now. This adapter does not map ctrl-enter. Installing this CLI does not upgrade a still-running older host; send is refused before FIFO bytes. Start a fresh hosted Goal for current successful-delivery protection."})
 	}
 	return requestHostedOperatorInput(root, wf.WriterTaskID, *attempt, *session, *key, *prompt)
 }
@@ -191,7 +222,7 @@ func requestHostedOperatorInput(root, taskID, attemptID, sessionID, key, prompt 
 				if st.InputError != "" {
 					return fmt.Errorf("operator input refused: %s", st.InputError)
 				}
-				fmt.Printf("operator key delivered task=%s attempt=%s session=%s; not proof of native approval or tool completion\n", taskID, attemptID, sessionID)
+				fmt.Printf("operator key acknowledged task=%s attempt=%s session=%s state=sent; not proof of native approval, consumption, or Goal complete\n", taskID, attemptID, sessionID)
 				return nil
 			}
 			time.Sleep(20 * time.Millisecond)

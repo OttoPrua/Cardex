@@ -10,13 +10,15 @@ import (
 )
 
 type digestEntry struct {
-	Seq       int64  `json:"seq"`
-	TaskID    string `json:"task_id"`
-	EventType string `json:"event_type"`
-	Verdict   string `json:"verdict"`
-	Title     string `json:"title"`
-	Evidence  string `json:"evidence"`
-	Req       string `json:"req,omitempty"`
+	Seq             int64  `json:"seq"`
+	TaskID          string `json:"task_id"`
+	EventType       string `json:"event_type"`
+	Verdict         string `json:"verdict"`
+	Title           string `json:"title"`
+	Evidence        string `json:"evidence"`
+	WaitErrorClass  string `json:"wait_error_class,omitempty"`
+	WaitErrorReason string `json:"wait_error_reason,omitempty"`
+	Req             string `json:"req,omitempty"`
 }
 
 func cmdDigest(args []string) error {
@@ -62,7 +64,7 @@ func cmdDigest(args []string) error {
 				continue
 			}
 		}
-		matched = append(matched, digestEntryFrom(row, task))
+		matched = append(matched, digestEntryFrom(root, row, task))
 	}
 	if *sinceFlag < 0 && *lastFlag < 0 {
 		matched = tailDigest(matched, 20)
@@ -109,7 +111,7 @@ func readDigestOutbox(root string) []managerWakeOutboxRow {
 	return rows
 }
 
-func digestEntryFrom(row managerWakeOutboxRow, task *Task) digestEntry {
+func digestEntryFrom(root string, row managerWakeOutboxRow, task *Task) digestEntry {
 	entry := digestEntry{
 		Seq:       row.Seq,
 		TaskID:    row.TaskID,
@@ -119,6 +121,8 @@ func digestEntryFrom(row managerWakeOutboxRow, task *Task) digestEntry {
 		Evidence:  "-",
 	}
 	if task == nil {
+		entry.WaitErrorClass = waitClassUnknown
+		entry.WaitErrorReason = "missing evidence; unknown"
 		return entry
 	}
 	entry.Title = clipRunes(task.Title, 50)
@@ -126,6 +130,9 @@ func digestEntryFrom(row managerWakeOutboxRow, task *Task) digestEntry {
 	if strings.TrimSpace(task.Verdict) != "" {
 		entry.Verdict = task.Verdict
 	}
+	fact := classifyWaitError(root, task)
+	entry.WaitErrorClass = fact.Class
+	entry.WaitErrorReason = fact.Reason
 	if task.Harvest != nil {
 		entry.Evidence = harvestDigestEvidence(task.Harvest)
 		return entry
@@ -149,6 +156,9 @@ func harvestDigestEvidence(h *HarvestEvidence) string {
 }
 
 func formatDigestLine(entry digestEntry) string {
+	if entry.WaitErrorClass != "" {
+		return fmt.Sprintf("#%d %s %s class=%s verdict=%s 「%s」 %s", entry.Seq, entry.TaskID, entry.EventType, entry.WaitErrorClass, entry.Verdict, entry.Title, entry.Evidence)
+	}
 	return fmt.Sprintf("#%d %s %s verdict=%s 「%s」 %s", entry.Seq, entry.TaskID, entry.EventType, entry.Verdict, entry.Title, entry.Evidence)
 }
 

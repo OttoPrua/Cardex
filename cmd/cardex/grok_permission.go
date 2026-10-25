@@ -267,6 +267,9 @@ func submitGrokPermissionAnswer(root string, want grokPermissionIdentity, decisi
 		return fmt.Errorf("Grok permission request %s is %s; a stale or duplicate answer cannot authorize it", pending.RequestID, pending.State)
 	}
 	got := pending.grokPermissionIdentity
+	if got.TaskID != want.TaskID {
+		return fmt.Errorf("Grok permission answer task mismatch")
+	}
 	if want.SessionID != "" && want.SessionID != got.SessionID {
 		return fmt.Errorf("Grok permission answer session mismatch")
 	}

@@ -142,6 +142,28 @@ func completeFrozenRoute(t *Task) bool {
 	return t != nil && t.FrozenRoute != nil && t.FrozenRoute.Name != "" && len(t.FrozenRoute.Legs) > 0
 }
 
+func frozenCurrentLeg(t *Task) (frozenPolicyLeg, bool) {
+	if !completeFrozenRoute(t) {
+		return frozenPolicyLeg{}, false
+	}
+	idx := t.OwnerRouteLeg - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(t.FrozenRoute.Legs) {
+		return frozenPolicyLeg{}, false
+	}
+	return t.FrozenRoute.Legs[idx], true
+}
+
+func frozenCurrentGrokLeg(t *Task) (frozenPolicyLeg, bool) {
+	leg, ok := frozenCurrentLeg(t)
+	if !ok || strings.TrimSpace(leg.Runner) != grokBuildRunnerName {
+		return frozenPolicyLeg{}, false
+	}
+	return leg, true
+}
+
 func frozenRouteReadback(t *Task) (ownerRoute, bool) {
 	if !completeFrozenRoute(t) {
 		return ownerRoute{}, false

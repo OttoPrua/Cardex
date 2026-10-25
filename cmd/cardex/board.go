@@ -488,7 +488,7 @@ func (s *boardServer) buildColumns(cfg *Config, kindOf map[string]kindMark, pace
 			ts, col.Truncated = ts[:doneColumnCap], true
 		}
 		for _, t := range ts {
-			col.Tasks = append(col.Tasks, toDetail(cfg, kindOf[t.ID], t, pace, siblings, now, lite, byID))
+			col.Tasks = append(col.Tasks, toDetail(cfg, kindOf[t.ID], t, pace, siblings, now, lite, byID, s.root))
 		}
 		cols = append(cols, col)
 	}
@@ -518,12 +518,13 @@ func (s *boardServer) buildLanes(snap *boardSnapshot, proj *Project, pace *paceM
 const promptExcerptLen = 600
 
 func toDetail(cfg *Config, km kindMark, t *Task, pace *paceModel, siblings []*Task,
-	now time.Time, lite bool, byID map[string]*Task) TaskDetail {
+	now time.Time, lite bool, byID map[string]*Task, root string) TaskDetail {
 
 	br := toBrief(cfg, t, now)
 	br.ETA = pace.estimateTask(t, siblings, now)
 	br.applyKind(km)
 	attachDependencyWaits(&br, t, byID)
+	attachWaitErrorFact(root, &br, t)
 	d := TaskDetail{
 		TaskBrief:    br,
 		Dir:          t.Dir,

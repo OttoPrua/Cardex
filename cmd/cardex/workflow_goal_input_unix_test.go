@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -275,9 +276,134 @@ func TestHostedOperatorKeysAreExplicit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, key := range []string{"", "0", "10", "ctrl-o", "always-approve", "/goal resume", "1\n"} {
+	for _, key := range []string{"", "0", "10", "ctrl-o", "ctrl-enter", "always-approve", "/goal resume", "1\n"} {
 		if _, err := hostedOperatorKey(key); err == nil {
 			t.Fatalf("accepted %q", key)
 		}
+	}
+}
+
+func TestHostedOldProtocol2HostRefusesSuccessfulDeliveryOperation(t *testing.T) {
+	root := testRoot(t)
+	dir := t.TempDir()
+	cfg := testCfg()
+	tk := newTask(root, cfg, typeSequence, "old protocol2 host", dir, []string{"p"}, 5)
+	tk.Status = statusRunning
+	tk.SessionID = "sess-old-p2"
+	tk.FrozenRoute = &frozenOwnerRoute{Name: "pinned", Legs: []frozenPolicyLeg{{
+		Runner: grokBuildRunnerName, Model: "grok-4.6", Effort: "xhigh", Stage: "primary",
+	}}}
+	beforePin, err := json.Marshal(tk.FrozenRoute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk.Goal = &TaskGoalBinding{
+		Hosted: true, ControlOwner: goalControlOwnerHosted, Observation: goalObsRunning,
+		HardTimeoutSec: 3600, WriterMode: goalWriterManual,
+	}
+	if err := saveTask(root, tk); err != nil {
+		t.Fatal(err)
+	}
+	plantLiveAttempt(t, root, tk)
+	fresh, err := loadTask(root, tk.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh.Goal.BoundAttemptID = fresh.ActiveAttemptID
+	if err := saveTask(root, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeGoalHostStatus(root, fresh.ID, fresh.ActiveAttemptID, goalHostStatus{
+		SessionID: fresh.SessionID, SupervisorAlive: true, InputProtocol: 2,
+		LastInputID: "old-protocol2-ack",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	fifo := goalHostControlPath(root, fresh.ID, fresh.ActiveAttemptID)
+	if err := ensureHostControlFIFO(fifo); err != nil {
+		t.Fatal(err)
+	}
+	drain, err := os.OpenFile(fifo, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer drain.Close()
+
+	err = requestHostedOperatorInput(root, fresh.ID, fresh.ActiveAttemptID, fresh.SessionID, "1", "fp")
+	if err == nil || !strings.Contains(err.Error(), "does not upgrade an existing host") {
+		t.Fatalf("old protocol2 host must refuse current send: %v", err)
+	}
+
+	if err := syscall.SetNonblock(int(drain.Fd()), true); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 256)
+	n, _ := drain.Read(buf)
+	if n > 0 {
+		t.Fatalf("old protocol2 host received FIFO bytes: %q", buf[:n])
+	}
+
+	st, err := loadGoalHostStatus(root, fresh.ID, fresh.ActiveAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.InputProtocol != 2 || st.LastInputKey != "" || st.LastInputPrompt != "" {
+		t.Fatalf("old host status mutated: %+v", st)
+	}
+	if err := writeGoalHostStatus(root, fresh.ID, fresh.ActiveAttemptID, goalHostStatus{
+		SessionID: fresh.SessionID, SupervisorAlive: true, InputProtocol: hostedInputProtocol,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	afterWrite, err := loadGoalHostStatus(root, fresh.ID, fresh.ActiveAttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if afterWrite.InputProtocol != 2 {
+		t.Fatalf("new CLI advertised current protocol onto old running host: %+v", afterWrite)
+	}
+
+	afterTask, err := loadTask(root, fresh.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterPin, err := json.Marshal(afterTask.FrozenRoute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(beforePin) != string(afterPin) {
+		t.Fatalf("old FrozenRoute mutated before=%s after=%s", beforePin, afterPin)
+	}
+}
+
+func TestHostedRejectedInterveningRequestKeepsSuccessfulDedup(t *testing.T) {
+	root := testRoot(t)
+	taskID, attemptID, sessionID := "t-dedup", "att-1", "sess-1"
+	if err := writeGoalHostStatus(root, taskID, attemptID, goalHostStatus{
+		TaskID: taskID, AttemptID: attemptID, SessionID: sessionID,
+		SupervisorAlive: true, InputProtocol: hostedInputProtocol,
+		LastInputID: "success-id", LastInputKey: "1", LastInputPrompt: "fp",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handleHostedOperatorInput(root, taskID, attemptID, sessionID, nil, hostedInputRequest{
+		Kind: hostedInputKind, ID: "reject-id", TaskID: taskID, AttemptID: attemptID,
+		SessionID: sessionID, Key: "2", Prompt: "fp",
+	})
+	got, err := loadGoalHostStatus(root, taskID, attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LastInputID != "reject-id" || got.InputError == "" {
+		t.Fatalf("rejected request must ACK with InputError: %+v", got)
+	}
+	if got.LastInputKey != "1" || got.LastInputPrompt != "fp" {
+		t.Fatalf("successful key/prompt cleared on rejection: %+v", got)
+	}
+	if !hostedSameInputAlreadyDelivered(got, "1", "fp") {
+		t.Fatal("rejected intervening request allowed same-prompt resend")
+	}
+	if hostedSameInputAlreadyDelivered(got, "2", "fp") {
+		t.Fatal("rejected key 2 must not count as delivered")
 	}
 }

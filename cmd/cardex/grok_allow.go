@@ -68,6 +68,9 @@ func grokBuildProductArgs(cfg *Config, t *Task, model, effort, promptPath string
 		return nil, false, policy, fmt.Errorf("Grok invoke requires a task")
 	}
 	writeCapable := grokBuildWriteCapable(t)
+	if leg, ok := frozenCurrentLeg(t); ok && leg.ReadOnly {
+		writeCapable = false
+	}
 	sandbox, permission := resolvedGrokBuildReadOnlySandbox(cfg), "plan"
 	if writeCapable {
 		sandbox, permission = "workspace", "auto"

@@ -1959,7 +1959,15 @@ func cmdList(args []string) error {
 	if *asJSON {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
-		return enc.Encode(tasks)
+		views := make([]listTaskView, 0, len(tasks))
+		for _, t := range tasks {
+			if t == nil {
+				continue
+			}
+			fact := classifyWaitError(root, t)
+			views = append(views, listTaskView{Task: t, WaitErrorClass: fact.Class, WaitErrorReason: fact.Reason})
+		}
+		return enc.Encode(views)
 	}
 
 	now := time.Now()
@@ -1993,13 +2001,26 @@ func cmdList(args []string) error {
 		}
 		for _, t := range group {
 			note := "-"
+			fact := classifyWaitError(root, t)
+			factNote := formatWaitErrorNote(fact)
 			switch t.Status {
 			case statusLimitPaused:
 				note = fmt.Sprintf("%s 续跑（%s）", fmtClock(t.ResumeAtEpoch), fmtIn(t.ResumeAtEpoch, now))
+				if factNote != "" {
+					note = factNote + " / " + note
+				}
 			case statusQueued:
 				note = queuedTextNote(t, byID, now)
 			case statusFailed:
-				note = truncate(t.LastError, 40)
+				if factNote != "" {
+					note = truncate(factNote, 72)
+				} else {
+					note = truncate(t.LastError, 40)
+				}
+			case statusRunning, statusHeld, statusCanceled:
+				if factNote != "" {
+					note = truncate(factNote, 72)
+				}
 			case statusDone:
 				note = fmt.Sprintf("%d turns $%.2f", t.TurnsUsed, t.CostUSD)
 			}

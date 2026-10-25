@@ -2257,6 +2257,9 @@ func resolveManualGrokTuple(cfg *Config, t *Task) (sandbox, permission string, e
 		return "", "", fmt.Errorf("%w: permission-mode %q", errGoalUnsupportedTuple, perm)
 	}
 	writeCapable := grokBuildWriteCapable(t)
+	if leg, ok := frozenCurrentLeg(t); ok && leg.ReadOnly {
+		writeCapable = false
+	}
 	sandbox, permission = resolvedGrokBuildReadOnlySandbox(cfg), "plan"
 	if sel := goalLaunchSandboxSelector(t); sel != "" {
 		if !writeCapable {

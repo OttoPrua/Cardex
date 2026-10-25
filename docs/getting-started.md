@@ -129,9 +129,13 @@ Cursor 的预设不填 `effort`（档位编码在模型 ID 中）；agy 预设�
 cardex add -preset routine -dry-run -title "认识项目" -dir . "阅读项目，说明入口、运行命令和一个可改进点；不要修改文件。"
 cardex add -preset routine -title "认识项目" -dir . "阅读项目，说明入口、运行命令和一个可改进点；不要修改文件。"
 cardex list
+cardex list -json
 cardex run TASK_ID
 cardex log TASK_ID
+cardex digest
 ```
+
+`list`（含 `-json`）、看板快照与 `digest` 共用同一套等待/错误分类：进行中、权限等待、失败、未知、原生 `budget_limited`、账号额度；传输超时或 provider 不可用不是额度耗尽，也不会触发 fallback。Grok 只读审核的当前工具请求用 `cardex grok-permission list|answer` 按精确 identity 一次性 allow-once；托管 Goal 用 `cardex workflow goal-input -observe` 再发送当前 key，ACK 不等于原生批准或已消费。仍在运行的 protocol-2 host 只 ACK LastInputID、不保留成功送达的 LastInputKey/LastInputPrompt；安装新 CLI 不会升级它，`goal-input` 在写 FIFO 之前拒绝。需要当前成功送达语义时启动新的 hosted Goal。原生 TUI：Enter 排队到下一 turn 边界，Ctrl+Enter 是 Send-now；消费可以发生在 Goal complete 之后。Cardex operator-key 适配器不映射 `ctrl-enter`。
 
 将 `TASK_ID` 换成 `add` 返回的实际 ID。参数应放在 prompt 或任务 ID 前，例如 `cardex run -root PATH TASK_ID`。`-dry-run` 不创建任务也不调用模型；`run TASK_ID` 才执行这张卡。已有后台调度时，入队卡可能自动启动，只想准备可用 `add -hold`。
 

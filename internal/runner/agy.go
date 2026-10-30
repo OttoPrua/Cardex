@@ -11,7 +11,8 @@ import (
 )
 
 // AGY adapts the Antigravity CLI. v1's command name is agy.
-// Write-capable runs use --mode accept-edits, not --dangerously-skip-permissions.
+// Write-capable runs use --mode accept-edits plus --dangerously-skip-permissions.
+// accept-edits without that flag is the interactive shape v1 marks as needing a person.
 // Empty config effort is the v1 default "high"; a thinking model omits --effort.
 type AGY struct{}
 
@@ -24,6 +25,10 @@ func (AGY) WritablePaths() []string                    { return nil }
 func (AGY) Drive(context.Context, io.ReadWriter) error { return nil }
 
 func (AGY) Build(spec LaunchSpec) ([]string, []string, error) {
+	body, err := promptArg(spec.PromptPath)
+	if err != nil {
+		return nil, nil, err
+	}
 	mode := "accept-edits"
 	args := []string{"agy", "--output-format", "json", "--mode", mode, "--model", spec.Model}
 	if !strings.Contains(strings.ToLower(spec.Model), "thinking") {
@@ -32,7 +37,7 @@ func (AGY) Build(spec LaunchSpec) ([]string, []string, error) {
 	if mode != "plan" {
 		args = append(args, "--disable-slash-commands")
 	}
-	args = append(args, "--print", spec.PromptPath)
+	args = append(args, "--dangerously-skip-permissions", "--print", body)
 	return args, []string{"NO_COLOR=1"}, nil
 }
 

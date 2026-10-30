@@ -19,9 +19,13 @@ import (
 // Grok adapts the grok-build CLI. GoalMode selects the PTY /goal driver;
 // LaunchSpec cannot carry requires, so the host sets this field.
 // Prompt is the goal text Drive writes after the literal /goal.
+// SessionDir is the grok session directory that holds goal/state.json and
+// updates.jsonl. Completion and budget_limited are read from those files.
+// The PTY ReadWriter does not carry them: goal-mode Build is an interactive TUI.
 type Grok struct {
-	GoalMode bool
-	Prompt   string
+	GoalMode   bool
+	Prompt     string
+	SessionDir string
 }
 
 var _ Runner = Grok{}
@@ -41,6 +45,19 @@ func (Grok) Capabilities() []string { return []string{"goal_mode"} }
 func (g Grok) NeedsPTY() bool { return g.GoalMode }
 
 func (Grok) WritablePaths() []string { return userPath(".grok") }
+
+// promptArg is the prompt file's text. Cursor, Kimi, and AGY pass it on argv.
+// Headless grok keeps the path on --prompt-file. An empty path is an empty prompt.
+func promptArg(path string) (string, error) {
+	if strings.TrimSpace(path) == "" {
+		return "", nil
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
 
 // Build returns v1's write-capable argv. Headless matches grokBuildProductArgs
 // without --reasoning-effort (LaunchSpec has no effort). Goal mode matches
@@ -106,9 +123,9 @@ func grokPrivilegeWidening(args []string) bool {
 	return false
 }
 
-// Drive writes the literal /goal and the prompt, then reads rw until a
-// terminal, EOF, or ctx cancel. The four terminals are distinct errors
-// (completion is nil).
+// Drive writes the literal /goal and the prompt. Quota and crash are read from
+// the PTY bytes. Completion and budget_limited come from SessionDir, because
+// goal-mode Build does not emit session JSON on the PTY.
 func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 	if !g.GoalMode {
 		return nil
@@ -123,65 +140,63 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 	if _, err := io.WriteString(rw, line+"\r"); err != nil {
 		return err
 	}
-	buf, err := readGoalOutput(ctx, rw)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
+	tmp := make([]byte, 32*1024)
+	var got []byte
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if term, ok := ReadGrokGoalSession(g.SessionDir); ok {
+			return term
+		}
+		n, err := readGoalChunk(ctx, rw, tmp)
+		if n > 0 {
+			got = append(got, tmp[:n]...)
+			if term, ok := grokDriveTerminal(got); ok {
+				return term
+			}
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return err
+		}
 	}
-	if term, ok := grokDriveTerminal(buf); ok {
+	if term, ok := grokDriveTerminal(got); ok {
 		return term
-	}
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
 	}
 	return errGrokNoTerminal
 }
 
-func readGoalOutput(ctx context.Context, r io.Reader) ([]byte, error) {
-	var buf []byte
-	tmp := make([]byte, 32*1024)
-	for {
-		if err := ctx.Err(); err != nil {
-			return buf, err
-		}
-		type got struct {
-			n   int
-			err error
-		}
-		ch := make(chan got, 1)
-		go func() {
-			n, err := r.Read(tmp)
-			ch <- got{n, err}
-		}()
-		select {
-		case <-ctx.Done():
-			return buf, ctx.Err()
-		case res := <-ch:
-			if res.n > 0 {
-				buf = append(buf, tmp[:res.n]...)
-				if _, ok := grokDriveTerminal(buf); ok {
-					return buf, nil
-				}
-			}
-			if res.err != nil {
-				return buf, res.err
-			}
-		}
+func readGoalChunk(ctx context.Context, r io.Reader, buf []byte) (int, error) {
+	type got struct {
+		n   int
+		err error
+	}
+	ch := make(chan got, 1)
+	go func() {
+		n, err := r.Read(buf)
+		ch <- got{n, err}
+	}()
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case res := <-ch:
+		return res.n, res.err
 	}
 }
 
+// grokDriveTerminal reads PTY / process-output facts only: an explicit error
+// record (quota) or a process error line (crash). Session JSON on this stream
+// is not completion or budget_limited.
 func grokDriveTerminal(output []byte) (error, bool) {
-	if grokBudgetLimited(output) {
-		return ErrGrokBudgetLimited, true
-	}
 	text := errorScan(output)
 	if grokQuotaRe.MatchString(text) {
 		return ErrGrokQuotaHit, true
 	}
 	if crashSignalRe.MatchString(text) {
 		return ErrGrokCrash, true
-	}
-	if grokAchieved(output) {
-		return nil, true
 	}
 	return nil, false
 }
@@ -265,15 +280,20 @@ func classifyScanned(output []byte, quota *regexp.Regexp, before func(string) mo
 	}
 }
 
-// errorScan is v1's limit/error scan: JSON events contribute only error
-// fields; assistant prose is ignored; non-JSON lines count in full.
+// errorScan collects explicit error-record fields and non-JSON process lines.
+// Assistant/body JSON is ignored. A JSON record that has not parsed yet is held
+// and is not scanned as raw error text.
 func errorScan(output []byte) string {
 	var parts []string
-	sc := bufio.NewScanner(bytes.NewReader(output))
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	rest := output
+	for len(rest) > 0 {
+		line, next, _ := cutScanLine(rest)
+		rest = next
+		line = strings.TrimSpace(line)
 		if line == "" {
+			continue
+		}
+		if heldJSONRecord(line) {
 			continue
 		}
 		var obj map[string]any
@@ -284,6 +304,26 @@ func errorScan(output []byte) string {
 		parts = append(parts, line)
 	}
 	return strings.Join(parts, "\n")
+}
+
+func cutScanLine(rest []byte) (line string, next []byte, last bool) {
+	if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+		return string(rest[:i]), rest[i+1:], false
+	}
+	return string(rest), nil, true
+}
+
+// heldJSONRecord is an unfinished or invalid JSON value. It is not an error fact.
+func heldJSONRecord(line string) bool {
+	if line == "" {
+		return false
+	}
+	switch line[0] {
+	case '{', '[':
+		return !json.Valid([]byte(line))
+	default:
+		return false
+	}
 }
 
 func errorFields(obj map[string]any) []string {
@@ -320,23 +360,6 @@ func stringValue(v any) (string, bool) {
 	return s, ok
 }
 
-func goalFacts(output []byte) (status, verdict string) {
-	sc := bufio.NewScanner(bytes.NewReader(output))
-	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" || line[0] != '{' {
-			continue
-		}
-		var v any
-		if json.Unmarshal([]byte(line), &v) != nil {
-			continue
-		}
-		walkGoal(v, &status, &verdict)
-	}
-	return status, verdict
-}
-
 func walkGoal(v any, status, verdict *string) {
 	obj, ok := v.(map[string]any)
 	if !ok {
@@ -359,19 +382,140 @@ func walkGoal(v any, status, verdict *string) {
 }
 
 func grokBudgetLimited(output []byte) bool {
-	status, _ := goalFacts(output)
-	if strings.EqualFold(strings.TrimSpace(status), "budget_limited") {
-		return true
-	}
-	return strings.Contains(strings.ToLower(string(output)), "budget_limited")
+	status, _ := explicitGoalStatus(output)
+	return strings.EqualFold(strings.TrimSpace(status), "budget_limited")
 }
 
-func grokAchieved(output []byte) bool {
-	if grokBudgetLimited(output) {
+// explicitGoalStatus reads status and verdict only from a complete JSON record
+// that carries those fields. Body text and unfinished records do not.
+func explicitGoalStatus(output []byte) (status, verdict string) {
+	rest := output
+	for len(rest) > 0 {
+		line, next, _ := cutScanLine(rest)
+		rest = next
+		line = strings.TrimSpace(line)
+		if line == "" || heldJSONRecord(line) || line[0] != '{' {
+			continue
+		}
+		var v any
+		if json.Unmarshal([]byte(line), &v) != nil {
+			continue
+		}
+		walkGoal(v, &status, &verdict)
+	}
+	return status, verdict
+}
+
+// ReadGrokGoalSession reports a goal terminal from v1's session channel:
+// goal/state.json agreed with the last goal_updated line in updates.jsonl.
+// Completion is a nil error. A session/update line that is not in these files
+// is not a terminal. dir empty means the host has not supplied the session.
+func ReadGrokGoalSession(dir string) (error, bool) {
+	if strings.TrimSpace(dir) == "" {
+		return nil, false
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "goal", "state.json"))
+	if err != nil {
+		return nil, false
+	}
+	var st struct {
+		GoalID                string `json:"goal_id"`
+		Status                string `json:"status"`
+		LastClassifierVerdict string `json:"last_classifier_verdict"`
+	}
+	if json.Unmarshal(raw, &st) != nil || strings.TrimSpace(st.GoalID) == "" {
+		return nil, false
+	}
+	finalStatus, finalVerdict, sessionID, ok := finalGoalUpdate(filepath.Join(dir, "updates.jsonl"), st.GoalID)
+	if !ok || !strings.EqualFold(strings.TrimSpace(finalStatus), strings.TrimSpace(st.Status)) {
+		return nil, false
+	}
+	stateVerdict := strings.TrimSpace(st.LastClassifierVerdict)
+	if stateVerdict != "" && finalVerdict != "" && !strings.EqualFold(stateVerdict, finalVerdict) {
+		return nil, false
+	}
+	if !summaryAgrees(filepath.Join(dir, "summary.json"), sessionID) {
+		return nil, false
+	}
+	switch strings.ToLower(strings.TrimSpace(st.Status)) {
+	case "budget_limited":
+		return ErrGrokBudgetLimited, true
+	case "complete":
+		if strings.EqualFold(stateVerdict, "achieved") && strings.EqualFold(finalVerdict, "achieved") {
+			return nil, true
+		}
+		return nil, false
+	default:
+		return nil, false
+	}
+}
+
+func finalGoalUpdate(path, goalID string) (status, verdict, sessionID string, ok bool) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", "", "", false
+	}
+	rest := raw
+	matched := false
+	for len(rest) > 0 {
+		line, next, _ := cutScanLine(rest)
+		rest = next
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if heldJSONRecord(line) {
+			return "", "", "", false
+		}
+		var rec struct {
+			Params struct {
+				SessionID string `json:"sessionId"`
+				Update    struct {
+					SessionUpdate         string `json:"sessionUpdate"`
+					GoalID                string `json:"goal_id"`
+					Status                string `json:"status"`
+					LastClassifierVerdict string `json:"last_classifier_verdict"`
+				} `json:"update"`
+			} `json:"params"`
+		}
+		if json.Unmarshal([]byte(line), &rec) != nil {
+			return "", "", "", false
+		}
+		if rec.Params.Update.SessionUpdate != "goal_updated" {
+			continue
+		}
+		if strings.TrimSpace(rec.Params.Update.GoalID) != goalID {
+			continue
+		}
+		matched = true
+		sessionID = rec.Params.SessionID
+		status = rec.Params.Update.Status
+		verdict = rec.Params.Update.LastClassifierVerdict
+	}
+	return status, verdict, sessionID, matched
+}
+
+func summaryAgrees(path, sessionID string) bool {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return true
+		}
 		return false
 	}
-	status, verdict := goalFacts(output)
-	return strings.EqualFold(strings.TrimSpace(status), "complete") && strings.EqualFold(strings.TrimSpace(verdict), "achieved")
+	var sum struct {
+		Info struct {
+			ID string `json:"id"`
+		} `json:"info"`
+	}
+	if json.Unmarshal(raw, &sum) != nil {
+		return false
+	}
+	id := strings.TrimSpace(sum.Info.ID)
+	if id == "" || sessionID == "" {
+		return false
+	}
+	return id == sessionID
 }
 
 func parseUsageAliases(output []byte, source string, aliases map[string]string) model.Usage {

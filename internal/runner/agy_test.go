@@ -9,9 +9,10 @@ import (
 )
 
 func TestAGYBuildSnapshot(t *testing.T) {
+	path := writePromptFile(t, snapshotPrompt)
 	cmd, env, err := (runner.AGY{}).Build(runner.LaunchSpec{
 		Model:      "claude-opus-4-6",
-		PromptPath: "/work/prompt.md",
+		PromptPath: path,
 		WorkDir:    "/work/tree",
 	})
 	if err != nil {
@@ -24,7 +25,8 @@ func TestAGYBuildSnapshot(t *testing.T) {
 		"--model", "claude-opus-4-6",
 		"--effort", "high",
 		"--disable-slash-commands",
-		"--print", "/work/prompt.md",
+		"--dangerously-skip-permissions",
+		"--print", snapshotPrompt,
 	}
 	if !slices.Equal(cmd, want) {
 		t.Fatalf("argv\n got %q\nwant %q", cmd, want)
@@ -32,10 +34,10 @@ func TestAGYBuildSnapshot(t *testing.T) {
 	if !slices.Equal(env, []string{"NO_COLOR=1"}) {
 		t.Fatalf("env %q", env)
 	}
-	assertNoArg(t, cmd, "--dangerously-skip-permissions", "--cwd")
+	assertNoArg(t, cmd, "--cwd")
 	thinking, _, err := (runner.AGY{}).Build(runner.LaunchSpec{
 		Model:      "claude-opus-4-6-thinking",
-		PromptPath: "/work/prompt.md",
+		PromptPath: path,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -46,12 +48,13 @@ func TestAGYBuildSnapshot(t *testing.T) {
 		"--mode", "accept-edits",
 		"--model", "claude-opus-4-6-thinking",
 		"--disable-slash-commands",
-		"--print", "/work/prompt.md",
+		"--dangerously-skip-permissions",
+		"--print", snapshotPrompt,
 	}
 	if !slices.Equal(thinking, wantThinking) {
 		t.Fatalf("thinking argv\n got %q\nwant %q", thinking, wantThinking)
 	}
-	assertNoArg(t, thinking, "--effort", "--dangerously-skip-permissions")
+	assertNoArg(t, thinking, "--effort")
 	if (runner.AGY{}).NeedsPTY() || (runner.AGY{}).Name() != "agy" || len((runner.AGY{}).Capabilities()) != 0 {
 		t.Fatalf("meta pty=%v name=%s caps=%q", (runner.AGY{}).NeedsPTY(), (runner.AGY{}).Name(), (runner.AGY{}).Capabilities())
 	}

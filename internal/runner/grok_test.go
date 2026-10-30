@@ -3,9 +3,11 @@ package runner_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +18,8 @@ import (
 	"cardex/internal/model"
 	"cardex/internal/runner"
 )
+
+const snapshotPrompt = "ship the card"
 
 var (
 	_ runner.Runner = runner.Grok{}
@@ -31,6 +35,15 @@ func readFixture(t *testing.T, name string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+func writePromptFile(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "prompt.md")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func assertNoArg(t *testing.T, args []string, banned ...string) {
@@ -204,8 +217,15 @@ func TestGrokClassifyAndUsage(t *testing.T) {
 func TestGrokDriveTerminals(t *testing.T) {
 	const prompt = "finish the card\n"
 	const written = "/goal finish the card\r"
-	complete, w1 := driveGrok(t, prompt, "grok_goal_complete.jsonl")
-	budget, w2 := driveGrok(t, prompt, "grok_goal_budget_limited.jsonl")
+	// Completion and budget_limited are v1 session files (workflow_goal.go
+	// observeNativeGrokGoal / writeGrokGoalFixture), not PTY bytes.
+	// Quota is v1 process stdout: grok_test.go fake grok-build error event.
+	// Crash is v1 process error text: failure_class_test.go "signal: killed".
+	completeDir := installSessionFixture(t, "grok_goal_complete.jsonl")
+	budgetDir := installSessionFixture(t, "grok_goal_budget_limited.jsonl")
+	notDir := installSessionFixture(t, "grok_goal_not_achieved.jsonl")
+	complete, w1 := driveSession(t, prompt, completeDir, nil)
+	budget, w2 := driveSession(t, prompt, budgetDir, nil)
 	quota, w3 := driveGrok(t, prompt, "grok_goal_quota.jsonl")
 	crash, w4 := driveGrok(t, prompt, "grok_goal_crash.txt")
 	for _, w := range [][]byte{w1, w2, w3, w4} {
@@ -239,7 +259,17 @@ func TestGrokDriveTerminals(t *testing.T) {
 		t.Fatal("classify crash")
 	}
 
-	notAchieved, wn := driveGrok(t, prompt, "grok_goal_not_achieved.jsonl")
+	if term, ok := runner.ReadGrokGoalSession(completeDir); !ok || term != nil {
+		t.Fatalf("reader complete ok=%v err=%v", ok, term)
+	}
+	if term, ok := runner.ReadGrokGoalSession(budgetDir); !ok || !errors.Is(term, runner.ErrGrokBudgetLimited) {
+		t.Fatalf("reader budget ok=%v err=%v", ok, term)
+	}
+	if _, ok := runner.ReadGrokGoalSession(notDir); ok {
+		t.Fatal("reader not_achieved")
+	}
+
+	notAchieved, wn := driveSession(t, prompt, notDir, nil)
 	if string(wn) != written {
 		t.Fatalf("wrote %q", wn)
 	}
@@ -248,6 +278,16 @@ func TestGrokDriveTerminals(t *testing.T) {
 	}
 	if g.Classify(0, readFixture(t, "grok_goal_not_achieved.jsonl")) != "" {
 		t.Fatal("classify not_achieved")
+	}
+
+	for _, name := range []string{"grok_goal_complete.jsonl", "grok_goal_budget_limited.jsonl"} {
+		err, wrote := driveGrok(t, prompt, name)
+		if string(wrote) != written {
+			t.Fatalf("pty %s wrote %q", name, wrote)
+		}
+		if err == nil || errors.Is(err, runner.ErrGrokBudgetLimited) {
+			t.Fatalf("session json on pty %s counted as completion or budget_limited: %v", name, err)
+		}
 	}
 
 	empty := &scriptRW{src: bytes.NewReader(nil)}
@@ -271,6 +311,16 @@ func TestGrokDriveTerminals(t *testing.T) {
 	ordinary := &scriptRW{src: bytes.NewReader(readFixture(t, "grok_goal_crash.txt"))}
 	if err := (runner.Grok{}).Drive(context.Background(), ordinary); err != nil || ordinary.wrote.Len() != 0 {
 		t.Fatalf("ordinary drive %v wrote %q", err, ordinary.wrote.Bytes())
+	}
+
+	note, err := os.ReadFile(filepath.Join("..", "..", "docs", "v2", "lane-notes", "R2-B.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sentence := range []string{"Grok.SessionDir", "updates.jsonl", "不读取 ~/.kimi-code"} {
+		if !strings.Contains(string(note), sentence) {
+			t.Fatalf("\u63a5\u53e3\u8bf7\u6c42 missing %s", sentence)
+		}
 	}
 }
 
@@ -298,4 +348,241 @@ func TestAdapterSourcesDoNotExec(t *testing.T) {
 			t.Fatalf("%s calls exec.Command", name)
 		}
 	}
+}
+
+func driveSession(t *testing.T, prompt, dir string, pty []byte) (error, []byte) {
+	t.Helper()
+	rw := &scriptRW{src: bytes.NewReader(pty)}
+	g := runner.Grok{GoalMode: true, Prompt: prompt, SessionDir: dir}
+	err := g.Drive(context.Background(), rw)
+	return err, rw.wrote.Bytes()
+}
+
+func installSessionFixture(t *testing.T, fixture string) string {
+	t.Helper()
+	raw := readFixture(t, fixture)
+	var rec struct {
+		Params struct {
+			SessionID string `json:"sessionId"`
+			Update    struct {
+				GoalID                string `json:"goal_id"`
+				Status                string `json:"status"`
+				LastClassifierVerdict string `json:"last_classifier_verdict"`
+			} `json:"update"`
+		} `json:"params"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(raw), &rec); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "goal"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state, err := json.Marshal(map[string]string{
+		"goal_id":                 rec.Params.Update.GoalID,
+		"status":                  rec.Params.Update.Status,
+		"phase":                   "idle",
+		"last_classifier_verdict": rec.Params.Update.LastClassifierVerdict,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "goal", "state.json"), append(state, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	summary, err := json.Marshal(map[string]any{
+		"info": map[string]string{"id": rec.Params.SessionID, "cwd": "/work/tree"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "summary.json"), append(summary, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	updates := raw
+	if len(updates) == 0 || updates[len(updates)-1] != '\n' {
+		updates = append(updates, '\n')
+	}
+	if err := os.WriteFile(filepath.Join(dir, "updates.jsonl"), updates, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestPromptFileBody(t *testing.T) {
+	body := "hello world\n第二行 中文\n"
+	path := writePromptFile(t, body)
+	spec := runner.LaunchSpec{Model: "m", PromptPath: path, WorkDir: t.TempDir()}
+	type slot struct {
+		name string
+		cmd  []string
+		flag string
+	}
+	cursor, _, err := (runner.Cursor{}).Build(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kimiHome := t.TempDir()
+	kimi, _, err := (runner.Kimi{ConfigHome: kimiHome}).Build(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agy, _, err := (runner.AGY{}).Build(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []slot{
+		{"cursor", cursor, ""},
+		{"kimi", kimi, "--prompt"},
+		{"agy", agy, "--print"},
+	}
+	for _, tc := range got {
+		arg := tc.cmd[len(tc.cmd)-1]
+		if tc.flag != "" {
+			arg = ""
+			for i, a := range tc.cmd {
+				if a == tc.flag && i+1 < len(tc.cmd) {
+					arg = tc.cmd[i+1]
+				}
+			}
+		}
+		if arg != body {
+			t.Fatalf("%s argv slot %q want body %q", tc.name, arg, body)
+		}
+		if arg == path || slices.Contains(tc.cmd, path) {
+			t.Fatalf("%s argv contains the prompt path %q", tc.name, path)
+		}
+	}
+	grok, _, err := (runner.Grok{}).Build(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fileArg := ""
+	for i, a := range grok {
+		if a == "--prompt-file" && i+1 < len(grok) {
+			fileArg = grok[i+1]
+		}
+	}
+	if fileArg != path {
+		t.Fatalf("grok --prompt-file %q want path %q", fileArg, path)
+	}
+	if slices.Contains(grok, body) {
+		t.Fatal("headless grok argv contains the prompt body")
+	}
+}
+
+func TestKimiAutoPermissionConfig(t *testing.T) {
+	home := t.TempDir()
+	path := writePromptFile(t, "hello world\n第二行 中文\n")
+	_, env, err := (runner.Kimi{ConfigHome: home}).Build(runner.LaunchSpec{
+		Model: "kimi-k2", PromptPath: path, WorkDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(env, []string{"KIMI_CODE_NO_AUTO_UPDATE=1", "KIMI_CODE_HOME=" + home}) {
+		t.Fatalf("env %q", env)
+	}
+	cfg, err := os.ReadFile(filepath.Join(home, "config.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(cfg)
+	if !strings.Contains(text, "default_permission_mode = \"auto\"") || !strings.Contains(text, "default_plan_mode = false") {
+		t.Fatalf("config %q", text)
+	}
+	real, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{filepath.Join(real, ".kimi-code"), filepath.Join(real, ".cardex")} {
+		if home == forbidden || strings.HasPrefix(home, forbidden+string(os.PathSeparator)) {
+			t.Fatalf("config home is the real CLI home %s", forbidden)
+		}
+	}
+	if _, err := os.ReadFile(filepath.Join(home, "config.toml")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClassifyIgnoresBodyEchoAndPartial(t *testing.T) {
+	adapters := []struct {
+		name string
+		cl   runner.Runner
+	}{
+		{"grok", runner.Grok{}},
+		{"cursor", runner.Cursor{}},
+		{"kimi", runner.Kimi{}},
+		{"agy", runner.AGY{}},
+	}
+	rows := []struct {
+		name string
+		out  string
+	}{
+		{"text", "{\"type\":\"text\",\"data\":\"解释 budget_limited\"}"},
+		{"echo", "解释 budget_limited\n"},
+		{"partial", "{\"type\":\"text\",\"data\":\"rate limit"},
+		{"text-rate", "{\"type\":\"text\",\"data\":\"rate limit\"}"},
+	}
+	for _, ad := range adapters {
+		for _, row := range rows {
+			got := ad.cl.Classify(0, []byte(row.out))
+			if got == model.ErrorBudgetLimited || got == model.ErrorQuotaHit {
+				t.Fatalf("%s %s class %q", ad.name, row.name, got)
+			}
+		}
+	}
+	prompt := "finish the card\n"
+	text := &chunkRW{chunks: [][]byte{
+		[]byte(`{"type":"text","data":"rate limit`),
+		[]byte(`"}`),
+	}}
+	g := runner.Grok{GoalMode: true, Prompt: prompt}
+	if err := g.Drive(context.Background(), text); err == nil || errors.Is(err, runner.ErrGrokBudgetLimited) || errors.Is(err, runner.ErrGrokQuotaHit) {
+		t.Fatalf("chunked text %v", err)
+	}
+	if text.reads < 2 {
+		t.Fatalf("chunked text reads %d", text.reads)
+	}
+	echo := &scriptRW{src: bytes.NewReader([]byte("解释 budget_limited\n"))}
+	if err := g.Drive(context.Background(), echo); err == nil || errors.Is(err, runner.ErrGrokBudgetLimited) || errors.Is(err, runner.ErrGrokQuotaHit) {
+		t.Fatalf("echo drive %v", err)
+	}
+	body := &scriptRW{src: bytes.NewReader([]byte("{\"type\":\"text\",\"data\":\"解释 budget_limited\"}\n"))}
+	if err := g.Drive(context.Background(), body); err == nil || errors.Is(err, runner.ErrGrokBudgetLimited) || errors.Is(err, runner.ErrGrokQuotaHit) {
+		t.Fatalf("body drive %v", err)
+	}
+	quota := &chunkRW{chunks: [][]byte{
+		[]byte(`{"type":"error","message":"HTTP 429: usage limit`),
+		[]byte(` reached"}`),
+	}}
+	if err := g.Drive(context.Background(), quota); !errors.Is(err, runner.ErrGrokQuotaHit) {
+		t.Fatalf("chunked error record %v", err)
+	}
+	if quota.reads < 2 {
+		t.Fatalf("quota fired on the partial record after %d reads", quota.reads)
+	}
+	if g.Classify(0, []byte("{\"type\":\"error\",\"message\":\"HTTP 429: usage limit reached\"}")) != model.ErrorQuotaHit {
+		t.Fatal("explicit error record")
+	}
+	if g.Classify(0, readFixture(t, "grok_goal_budget_limited.jsonl")) != model.ErrorBudgetLimited {
+		t.Fatal("explicit budget record")
+	}
+}
+
+type chunkRW struct {
+	wrote  bytes.Buffer
+	chunks [][]byte
+	reads  int
+}
+
+func (c *chunkRW) Write(p []byte) (int, error) { return c.wrote.Write(p) }
+
+func (c *chunkRW) Read(p []byte) (int, error) {
+	if c.reads >= len(c.chunks) {
+		return 0, io.EOF
+	}
+	n := copy(p, c.chunks[c.reads])
+	c.reads++
+	return n, nil
 }

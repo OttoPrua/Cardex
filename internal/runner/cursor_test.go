@@ -11,9 +11,10 @@ import (
 )
 
 func TestCursorBuildSnapshot(t *testing.T) {
+	path := writePromptFile(t, snapshotPrompt)
 	cmd, env, err := (runner.Cursor{}).Build(runner.LaunchSpec{
 		Model:      "composer-2",
-		PromptPath: "/work/prompt.md",
+		PromptPath: path,
 		WorkDir:    "/work/tree",
 	})
 	if err != nil {
@@ -23,7 +24,7 @@ func TestCursorBuildSnapshot(t *testing.T) {
 		"cursor-agent",
 		"--print", "--trust", "--output-format", "stream-json",
 		"--model", "composer-2", "--workspace", "/work/tree", "--sandbox", "enabled",
-		"/work/prompt.md",
+		snapshotPrompt,
 	}
 	if !slices.Equal(cmd, want) {
 		t.Fatalf("argv\n got %q\nwant %q", cmd, want)

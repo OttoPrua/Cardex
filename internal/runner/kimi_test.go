@@ -12,9 +12,11 @@ import (
 )
 
 func TestKimiBuildSnapshot(t *testing.T) {
-	cmd, env, err := (runner.Kimi{}).Build(runner.LaunchSpec{
+	home := t.TempDir()
+	path := writePromptFile(t, snapshotPrompt)
+	cmd, env, err := (runner.Kimi{ConfigHome: home}).Build(runner.LaunchSpec{
 		Model:      "kimi-k2",
-		PromptPath: "/work/prompt.md",
+		PromptPath: path,
 		WorkDir:    "/work/tree",
 	})
 	if err != nil {
@@ -23,18 +25,18 @@ func TestKimiBuildSnapshot(t *testing.T) {
 	want := []string{
 		"kimi",
 		"--model", "kimi-k2",
-		"--prompt", "/work/prompt.md",
+		"--prompt", snapshotPrompt,
 		"--output-format", "stream-json",
 	}
 	if !slices.Equal(cmd, want) {
 		t.Fatalf("argv\n got %q\nwant %q", cmd, want)
 	}
-	if !slices.Equal(env, []string{"KIMI_CODE_NO_AUTO_UPDATE=1"}) {
+	if !slices.Equal(env, []string{"KIMI_CODE_NO_AUTO_UPDATE=1", "KIMI_CODE_HOME=" + home}) {
 		t.Fatalf("env %q", env)
 	}
 	assertNoArg(t, cmd, "--auto", "--yolo", "--plan", "--session")
 	for _, item := range env {
-		if strings.HasPrefix(item, "KIMI_CODE_HOME=") || strings.HasPrefix(item, "KIMI_MODEL_THINKING_EFFORT=") {
+		if strings.HasPrefix(item, "KIMI_MODEL_THINKING_EFFORT=") {
 			t.Fatalf("env %q", env)
 		}
 	}

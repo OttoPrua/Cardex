@@ -174,6 +174,97 @@ func TestProjectObjectiveCardRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCardAddSoftInputs(t *testing.T) {
+	cases := []struct {
+		name  string
+		extra []string
+		want  func(t *testing.T, card model.Card)
+	}{
+		{
+			name:  "missing title",
+			extra: nil,
+			want: func(t *testing.T, card model.Card) {
+				if card.Status != model.CardNeedsInput {
+					t.Fatalf("status %s", card.Status)
+				}
+				if card.Title == "" {
+					t.Fatal("missing placeholder title")
+				}
+			},
+		},
+		{
+			name:  "tier t2",
+			extra: []string{"--title", "Tier card", "--tier", "t2"},
+			want: func(t *testing.T, card model.Card) {
+				if card.Tier != model.TierT2 {
+					t.Fatalf("tier %s", card.Tier)
+				}
+			},
+		},
+		{
+			name:  "empty kind",
+			extra: []string{"--title", "Kind card", "--kind", ""},
+			want: func(t *testing.T, card model.Card) {
+				if card.Kind != model.KindDev {
+					t.Fatalf("kind %s", card.Kind)
+				}
+			},
+		},
+		{
+			name:  "empty claim",
+			extra: []string{"--title", "Claim card", "--claim", ""},
+			want: func(t *testing.T, card model.Card) {
+				if len(card.Claims) != 0 {
+					t.Fatalf("claims %+v", card.Claims)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			repo := t.TempDir()
+			var out, errb bytes.Buffer
+			code := Main([]string{"--home", home, "project", "add", "--id", "p1", "--repo", repo, "--test-cmd", "go test ./...", "--design-dir", "docs/design/"}, &out, &errb)
+			if code != 0 {
+				t.Fatalf("project %d %s", code, errb.String())
+			}
+			out.Reset()
+			errb.Reset()
+			code = Main([]string{"--home", home, "objective", "add", "--id", "o1", "--project", "p1", "--title", "Ship it", "--acceptance", "go test ./..."}, &out, &errb)
+			if code != 0 {
+				t.Fatalf("objective %d %s", code, errb.String())
+			}
+			out.Reset()
+			errb.Reset()
+			args := []string{"--home", home, "card", "add", "--objective", "o1"}
+			args = append(args, tc.extra...)
+			code = Main(args, &out, &errb)
+			if code != 0 {
+				t.Fatalf("add %d %s", code, errb.String())
+			}
+			if strings.Contains(errb.String(), "claim path required") {
+				t.Fatalf("stderr %s", errb.String())
+			}
+			out.Reset()
+			errb.Reset()
+			code = Main([]string{"--home", home, "card", "list", "--json"}, &out, &errb)
+			if code != 0 {
+				t.Fatalf("list %d %s", code, errb.String())
+			}
+			var cards []model.Card
+			if err := json.Unmarshal(out.Bytes(), &cards); err != nil {
+				t.Fatal(err)
+			}
+			if len(cards) != 1 || cards[0].Objective != "o1" {
+				t.Fatalf("list %s", out.String())
+			}
+			tc.want(t, cards[0])
+			t.Logf("exit 0 status=%s tier=%s kind=%s claims=%d title=%q", cards[0].Status, cards[0].Tier, cards[0].Kind, len(cards[0].Claims), cards[0].Title)
+		})
+	}
+}
+
 func TestServeLoopsUntilStopped(t *testing.T) {
 	if code := runServe(t.Context(), t.TempDir(), "127.0.0.1:8787", io.Discard, io.Discard); code == 0 {
 		t.Fatal("accepted port 8787")

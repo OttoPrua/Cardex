@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +21,13 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("CARDEX_STORE_FIRST_OPEN") == "1" {
+		if err := runFirstOpenChild(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
 	if os.Getenv("CARDEX_STORE_CHILD") == "1" {
 		if err := runChild(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -51,6 +59,39 @@ func runChild() error {
 		}
 	}
 	return nil
+}
+
+func runFirstOpenChild() error {
+	ready := os.Getenv("CARDEX_STORE_READY")
+	gate := os.Getenv("CARDEX_STORE_GATE")
+	id := os.Getenv("CARDEX_STORE_PROJECT")
+	if err := os.WriteFile(ready, []byte("ready"), 0o644); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(gate); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("gate timeout")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	db, err := Open(os.Getenv("CARDEX_STORE_DB"))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	p := model.Project{
+		ID:             id,
+		RepoPath:       "/repo/" + id,
+		WorktreeRoot:   "/wt/" + id,
+		TestCmd:        "go test ./...",
+		DesignDir:      "docs/design/",
+		ForbiddenPaths: []string{},
+	}
+	return db.CreateProject(context.Background(), &p)
 }
 
 func TestOpenWALAndVersion(t *testing.T) {
@@ -509,6 +550,85 @@ func TestConcurrentWriters(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(listed) != 60 {
+		t.Fatalf("listed %d", len(listed))
+	}
+}
+
+func TestConcurrentFirstOpen(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cardex.db")
+	readyDir := filepath.Join(dir, "ready")
+	if err := os.MkdirAll(readyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gate := filepath.Join(dir, "gate")
+	const n = 6
+	cmds := make([]*exec.Cmd, n)
+	bufs := make([]*bytes.Buffer, n)
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("first-%d", i)
+		buf := &bytes.Buffer{}
+		cmd := exec.Command(os.Args[0], "-test.run=^$")
+		cmd.Env = append(os.Environ(),
+			"CARDEX_STORE_FIRST_OPEN=1",
+			"CARDEX_STORE_DB="+path,
+			"CARDEX_STORE_PROJECT="+id,
+			"CARDEX_STORE_READY="+filepath.Join(readyDir, id),
+			"CARDEX_STORE_GATE="+gate,
+		)
+		cmd.Stdout = buf
+		cmd.Stderr = buf
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		cmds[i] = cmd
+		bufs[i] = buf
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		entries, err := os.ReadDir(readyDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) >= n {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("children not ready")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := os.Stat(path); err == nil {
+		t.Fatal("database opened before the gate")
+	}
+	if err := os.WriteFile(gate, []byte("go"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i, cmd := range cmds {
+		if err := cmd.Wait(); err != nil {
+			t.Fatalf("child %d: %v\n%s", i, err, bufs[i].String())
+		}
+		if strings.Contains(bufs[i].String(), "already exists") {
+			t.Fatalf("child %d: %s", i, bufs[i].String())
+		}
+	}
+	db := openAt(t, path)
+	ctx := context.Background()
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("first-%d", i)
+		got, err := db.GetProject(ctx, id)
+		if err != nil {
+			t.Fatalf("missing %s: %v", id, err)
+		}
+		if got.RepoPath != "/repo/"+id {
+			t.Fatalf("project %+v", got)
+		}
+	}
+	listed, err := db.ListProjects(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != n {
 		t.Fatalf("listed %d", len(listed))
 	}
 }

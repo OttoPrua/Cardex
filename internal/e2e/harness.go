@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -86,6 +87,13 @@ func (h *Harness) initRepo() error {
 			return err
 		}
 	}
+	ident := []string{"-c", "user.name=cardex-fixture", "-c", "user.email=fixture@cardex.invalid", "-c", "commit.gpgsign=false"}
+	if err := git(append(ident, "add", "--", "go.mod", "answer.go", "answer_test.go", "test.sh")...); err != nil {
+		return err
+	}
+	if err := git(append(ident, "commit", "-m", "fixture")...); err != nil {
+		return err
+	}
 	h.Repo = dir
 	return nil
 }
@@ -93,7 +101,7 @@ func (h *Harness) initRepo() error {
 // RegisterFakeChannel records a channel with family, tier, and a remaining window.
 func (h *Harness) RegisterFakeChannel(family string, tier model.Tier, window RemainingWindow) (model.Channel, error) {
 	ch := model.Channel{
-		Runner:      model.RunnerGrok,
+		Runner:      model.RunnerFake,
 		Family:      family,
 		Tier:        tier,
 		Health:      model.HealthOK,
@@ -122,30 +130,40 @@ func (h *Harness) TickUntil(cond func() bool, timeout time.Duration) error {
 	if cond() {
 		return nil
 	}
-	deadline := time.Now().Add(timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	timedOut := func() error {
+		return fmt.Errorf("timeout after %s", timeout)
+	}
 	for {
-		if !time.Now().Before(deadline) {
-			return fmt.Errorf("timeout after %s", timeout)
+		if cond() {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return timedOut()
 		}
 		if h.Sched != nil {
-			_ = h.Sched.Tick(context.Background())
+			err := h.Sched.Tick(ctx)
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				if cond() {
+					return nil
+				}
+				return timedOut()
+			}
 		}
 		if cond() {
 			return nil
 		}
-		remain := time.Until(deadline)
-		if remain <= 0 {
-			return fmt.Errorf("timeout after %s", timeout)
-		}
-		step := 5 * time.Millisecond
-		if remain < step {
-			time.Sleep(remain)
+		timer := time.NewTimer(5 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
 			if cond() {
 				return nil
 			}
-			return fmt.Errorf("timeout after %s", timeout)
+			return timedOut()
+		case <-timer.C:
 		}
-		time.Sleep(step)
 	}
 }
 

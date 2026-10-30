@@ -150,6 +150,7 @@ const (
 	RunnerKimi     RunnerName = "kimi"     // kimi 执行器。
 	RunnerAGY      RunnerName = "agy"      // agy 执行器。
 	RunnerOpenCode RunnerName = "opencode" // opencode 执行器。
+	RunnerFake     RunnerName = "fake"     // e2e 测试执行器，不是 §3 生产执行器。
 )
 
 // QuestionKind is why a human decision was requested. Design §3.
@@ -281,8 +282,8 @@ func (s CardStatus) Valid() bool { return oneOf(s, AllCardStatuses()) }
 // Valid reports whether h is a channel health value.
 func (h Health) Valid() bool { return oneOf(h, AllHealth()) }
 
-// Valid reports whether r is a known runner name.
-func (r RunnerName) Valid() bool { return oneOf(r, AllRunners()) }
+// Valid reports whether r is a §3 production runner or the harness-only fake runner.
+func (r RunnerName) Valid() bool { return r == RunnerFake || oneOf(r, AllRunners()) }
 
 // Valid reports whether k is a question kind.
 func (k QuestionKind) Valid() bool { return oneOf(k, AllQuestionKinds()) }

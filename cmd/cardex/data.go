@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
 
 	"cardex/internal/model"
 )
@@ -289,14 +290,25 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *objective == "" || *title == "" {
-		fmt.Fprintln(stderr, "--objective and --title are required")
+	if *objective == "" {
+		fmt.Fprintln(stderr, "--objective is required")
 		return 2
 	}
+	kindVal := model.CardKind(*kind)
+	if kindVal == "" {
+		kindVal = model.KindDev
+	}
+	tierVal := normalizeTier(*tier)
+	statusVal := model.CardStatus(*status)
+	titleVal := *title
+	if titleVal == "" {
+		titleVal = "(needs input)"
+		statusVal = model.CardNeedsInput
+	}
 	c := model.Card{
-		ID: *id, Objective: *objective, Node: *node, Kind: model.CardKind(*kind),
-		Title: *title, Body: *body, Tier: model.Tier(*tier), Requires: requires,
-		Deps: deps, Acceptance: acceptance, Base: *base, Status: model.CardStatus(*status),
+		ID: *id, Objective: *objective, Node: *node, Kind: kindVal,
+		Title: titleVal, Body: *body, Tier: tierVal, Requires: requires,
+		Deps: deps, Acceptance: acceptance, Base: *base, Status: statusVal,
 	}
 	if c.ID == "" {
 		gen, err := newID("c")
@@ -308,6 +320,9 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	}
 	for _, raw := range claims {
 		path, symbol, _ := stringsCut(raw, "=")
+		if path == "" {
+			continue
+		}
 		c.Claims = append(c.Claims, model.Claim{Card: c.ID, Path: path, Symbol: symbol})
 	}
 	db, err := openStore(home)
@@ -375,6 +390,19 @@ func emit(stdout io.Writer, asJSON bool, v any, line string) int {
 	}
 	fmt.Fprintln(stdout, line)
 	return 0
+}
+
+func normalizeTier(raw string) model.Tier {
+	switch strings.ToLower(raw) {
+	case "t1":
+		return model.TierT1
+	case "t2":
+		return model.TierT2
+	case "t3":
+		return model.TierT3
+	default:
+		return model.Tier(raw)
+	}
 }
 
 func stringsCut(s, sep string) (string, string, bool) {

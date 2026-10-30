@@ -1,10 +1,13 @@
 package host_test
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
@@ -181,13 +184,13 @@ func TestPTYDriveReceivesTerminalBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := runner.FakeDriveCapture()
-	if string(got) != string(logb) {
-		t.Fatalf("Drive saw %q\nlog    %q", got, logb)
-	}
 	for _, marker := range markers {
-		if !outputHasLine(string(got), marker) {
-			t.Fatalf("Drive missed %q in %q", marker, got)
+		if !outputHasLine(string(logb), marker) {
+			t.Fatalf("log missed %q in %q", marker, logb)
 		}
+	}
+	if !outputHasLine(string(got), "prompt") || !outputHasLine(string(got), "completion") {
+		t.Fatalf("Drive missed the terminal prefix %q", got)
 	}
 }
 
@@ -217,44 +220,70 @@ func TestPTYDriveErrorIsApplied(t *testing.T) {
 	}
 }
 
-func TestDurationMissingOrUnparseableIsRecorded(t *testing.T) {
+func TestDurationMissingOrUnparseableDoesNotStart(t *testing.T) {
 	cases := []struct {
+		name   string
 		file   string
+		remove bool
 		reason string
 	}{
-		{file: "", reason: "missing"},
-		{file: "not-a-duration", reason: "unparseable"},
-		{file: "0s", reason: "unparseable"},
+		{name: "missing", remove: true, reason: "missing"},
+		{name: "empty", file: "", reason: "missing"},
+		{name: "blank", file: "   ", reason: "missing"},
+		{name: "text", file: "not-a-duration", reason: "unparseable"},
+		{name: "zero", file: "0s", reason: "unparseable"},
+		{name: "negative", file: "-1s", reason: "unparseable"},
+		{name: "unitless", file: "0", reason: "unparseable"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.reason+"/"+tc.file, func(t *testing.T) {
-			home, id, _ := seedAttempt(t, 1, func(string) any {
+		t.Run(tc.name, func(t *testing.T) {
+			home, id, _ := seedAttempt(t, 9, func(string) any {
 				return map[string]any{
 					"attempts": map[string]any{
-						"0": map[string]any{"sleep": "200ms", "output": "slept\ntokens=4\n"},
+						"0": map[string]any{"sleep": "30s", "output": "slept\ntokens=4\n"},
 					},
 				}
 			})
-			if tc.file != "" {
-				writeDuration(t, home, id, tc.file)
+			path := filepath.Join(home, "attempts", id, "hard-duration")
+			if tc.remove {
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(path, []byte(tc.file), 0o644); err != nil {
+				t.Fatal(err)
 			}
+			start := time.Now()
 			if err := host.Run(context.Background(), home, id); err != nil {
 				t.Fatal(err)
 			}
-			logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
-			if err != nil || !strings.Contains(string(logb), "slept") {
-				t.Fatalf("run did not finish: %v %s", err, logb)
+			if time.Since(start) > 2*time.Second {
+				t.Fatalf("executor started: %s", time.Since(start))
+			}
+			if _, err := os.Stat(filepath.Join(home, "attempts", id, "output.log")); !os.IsNotExist(err) {
+				t.Fatalf("executor output: %v", err)
 			}
 			attempt, events := loadAttempt(t, home, id)
-			if attempt.Exit == nil || *attempt.Exit != 0 || attempt.Usage.Tokens != 4 || attempt.Usage.Source != "fake" {
-				t.Fatalf("attempt exit %#v usage %+v", attempt.Exit, attempt.Usage)
+			if attempt.Exit != nil || attempt.EndedAt.IsZero() || !strings.Contains(attempt.ErrorExcerpt, tc.reason) {
+				t.Fatalf("attempt exit %#v ended %v excerpt %q", attempt.Exit, attempt.EndedAt, attempt.ErrorExcerpt)
 			}
-			if attempt.ErrorClass == model.ErrorTimeout {
-				t.Fatal("bad duration armed a timer")
+			if _, ok := eventType(events, "host_start"); ok {
+				t.Fatal("host started the executor")
 			}
-			ev, ok := eventType(events, "budget_duration")
+			ev, ok := eventType(events, "needs_review")
 			if !ok || !strings.Contains(string(ev.Data), tc.reason) {
-				t.Fatalf("event %#v want %s", ev, tc.reason)
+				t.Fatalf("review event %#v", ev)
+			}
+			db, err := store.Open(filepath.Join(home, "cardex.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			card, err := db.GetCard(context.Background(), "c1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if card.Status != model.CardNeedsInput || !strings.Contains(card.WaitReason, tc.reason) {
+				t.Fatalf("card status %q reason %q", card.Status, card.WaitReason)
 			}
 		})
 	}
@@ -270,6 +299,9 @@ func TestUnresolvedEngineProfileDoesNotStartClaude(t *testing.T) {
 		{name: "custom-engine", config: `{"engines":{}}`, reason: "unknown"},
 		{name: "bad", config: `{"engines":{"bad":"nope"}}`, reason: "unparseable"},
 		{name: "bad", config: `{`, reason: "unparseable"},
+		{name: "custom", config: `{"engines":{"custom":{}}}`, reason: "unparseable"},
+		{name: "custom", config: `{"engines":{"custom":{"not_a_real_field":"x"}}}`, reason: "unparseable"},
+		{name: "custom", config: `{"engines":{"custom":{"base_url":" ","auth_env":" ","auth_value":"","auth_file":" ","models":{"opus":" "}}}}`, reason: "unparseable"},
 	}
 	origPath := os.Getenv("PATH")
 	for i, tc := range cases {
@@ -322,34 +354,286 @@ func TestUnresolvedEngineProfileDoesNotStartClaude(t *testing.T) {
 	}
 }
 
-func TestReconcileDeadHostWithLiveChild(t *testing.T) {
-	home, _, _ := seedAttempt(t, 1, func(string) any {
-		return map[string]any{"attempts": map[string]any{"0": map[string]any{"output": "x"}}}
+func groupAlive(pgid int) bool {
+	if pgid <= 1 {
+		return false
+	}
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func TestDescendantClosingStdioCannotOutliveDeadline(t *testing.T) {
+	var marker string
+	home, id, work := seedAttempt(t, 1, func(work string) any {
+		marker = filepath.Join(work, "late.txt")
+		return map[string]any{
+			"attempts": map[string]any{
+				"0": map[string]any{
+					"sleep":             "80ms",
+					"grandchild_marker": marker,
+					"grandchild_after":  "20s",
+					"grandchild_detach": true,
+					"output":            "parent-done\n",
+				},
+			},
+		}
 	})
-	child := exec.Command("/bin/sleep", "30")
-	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := child.Start(); err != nil {
+	writeDuration(t, home, id, "500ms")
+	start := time.Now()
+	if err := host.Run(context.Background(), home, id); err != nil {
 		t.Fatal(err)
 	}
-	pgid := child.Process.Pid
+	if time.Since(start) > 6*time.Second {
+		t.Fatalf("host waited %s after the descendant closed stdio", time.Since(start))
+	}
+	raw, err := os.ReadFile(filepath.Join(work, "grandchild.pid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for alive(pid) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if alive(pid) {
+		t.Fatalf("grandchild %d still alive after the deadline", pid)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("grandchild marker: %v", err)
+	}
+	attempt, _ := loadAttempt(t, home, id)
+	if attempt.ErrorClass != model.ErrorTimeout || !strings.Contains(attempt.ErrorExcerpt, "hard-limit timeout") {
+		t.Fatalf("class %q excerpt %q", attempt.ErrorClass, attempt.ErrorExcerpt)
+	}
+}
+
+func TestDriveReturnStillDrainsLog(t *testing.T) {
+	cases := []struct {
+		name    string
+		output  string
+		tail    string
+		excerpt string
+	}{
+		{name: "completion", output: "prompt\ncompletion\n", tail: "AFTER-DRIVE-completion\n"},
+		{name: "budget_limited", output: "budget_limited\n", tail: "AFTER-DRIVE-budget\n"},
+		{name: "error", output: "drive_error: lost the prompt\n", tail: "AFTER-DRIVE-error\n", excerpt: "lost the prompt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home, id, _ := seedAttempt(t, 1, func(string) any {
+				return map[string]any{
+					"needs_pty": true,
+					"attempts": map[string]any{
+						"0": map[string]any{
+							"output":     tc.output,
+							"tail_after": "400ms",
+							"tail":       tc.tail,
+						},
+					},
+				}
+			})
+			start := time.Now()
+			if err := host.Run(context.Background(), home, id); err != nil {
+				t.Fatal(err)
+			}
+			if time.Since(start) > 6*time.Second {
+				t.Fatalf("host did not finish after Drive returned: %s", time.Since(start))
+			}
+			logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(logb), strings.TrimSpace(tc.tail)) {
+				t.Fatalf("log missing output produced after Drive returned: %s", logb)
+			}
+			if strings.Contains(string(runner.FakeDriveCapture()), strings.TrimSpace(tc.tail)) {
+				t.Fatal("Drive kept reading after the terminal")
+			}
+			attempt, _ := loadAttempt(t, home, id)
+			if attempt.EndedAt.IsZero() {
+				t.Fatal("attempt was not written back")
+			}
+			if tc.excerpt != "" && !strings.Contains(attempt.ErrorExcerpt, tc.excerpt) {
+				t.Fatalf("excerpt %q", attempt.ErrorExcerpt)
+			}
+		})
+	}
+}
+
+func TestDriveBlockUnblockedByDeadlineOrCancel(t *testing.T) {
+	big := "AFTER-DRIVE-BLOCK\n" + strings.Repeat("x", 256*1024) + "\n"
+	t.Run("deadline", func(t *testing.T) {
+		home, id, _ := seedAttempt(t, 1, func(string) any {
+			return map[string]any{
+				"needs_pty": true,
+				"attempts": map[string]any{
+					"0": map[string]any{
+						"output":     "drive_return\n",
+						"tail_after": "50ms",
+						"tail":       big,
+						"hold":       "30s",
+					},
+				},
+			}
+		})
+		writeDuration(t, home, id, "500ms")
+		start := time.Now()
+		errc := make(chan error, 1)
+		go func() { errc <- host.Run(context.Background(), home, id) }()
+		select {
+		case err := <-errc:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(6 * time.Second):
+			t.Fatal("deadline did not unblock capture")
+		}
+		if time.Since(start) > 6*time.Second {
+			t.Fatalf("took %s", time.Since(start))
+		}
+		logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
+		if err != nil || !strings.Contains(string(logb), "AFTER-DRIVE-BLOCK") {
+			t.Fatalf("log %q %v", logb, err)
+		}
+		attempt, _ := loadAttempt(t, home, id)
+		if attempt.ErrorClass != model.ErrorTimeout || attempt.EndedAt.IsZero() {
+			t.Fatalf("class %q ended %v", attempt.ErrorClass, attempt.EndedAt)
+		}
+	})
+	t.Run("cancel", func(t *testing.T) {
+		home, id, _ := seedAttempt(t, 1, func(string) any {
+			return map[string]any{
+				"needs_pty": true,
+				"attempts": map[string]any{
+					"0": map[string]any{
+						"output":     "drive_return\n",
+						"tail_after": "50ms",
+						"tail":       big,
+						"hold":       "30s",
+					},
+				},
+			}
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		errc := make(chan error, 1)
+		go func() { errc <- host.Run(ctx, home, id) }()
+		time.Sleep(300 * time.Millisecond)
+		cancel()
+		select {
+		case <-errc:
+		case <-time.After(6 * time.Second):
+			t.Fatal("cancel did not unblock capture")
+		}
+	})
+}
+
+func TestUsableEngineProfileInjectsBaseURL(t *testing.T) {
+	bin := t.TempDir()
+	stub := "#!/bin/sh\nprintf 'BASE=%s\\n' \"$ANTHROPIC_BASE_URL\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	home, id, _ := seedPrepared(t, t.TempDir(), model.RunnerClaude, "custom", 1, nil)
+	cfg := `{"engines":{"custom":{"base_url":"https://example.test/v1","auth_value":"token-value"}}}`
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Run(context.Background(), home, id); err != nil {
+		t.Fatal(err)
+	}
+	logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logb), "BASE=https://example.test/v1") {
+		t.Fatalf("log %s", logb)
+	}
+	_, events := loadAttempt(t, home, id)
+	if _, ok := eventType(events, "needs_review"); ok {
+		t.Fatal("usable profile was sent to review")
+	}
+}
+
+func TestReconcileReapsOrphanAfterHardDuration(t *testing.T) {
+	const limit = 4 * time.Second
+	home, id, _ := seedAttempt(t, 1, func(string) any {
+		return map[string]any{
+			"attempts": map[string]any{
+				"0": map[string]any{"sleep": "30s", "output": "should-not-finish\n"},
+			},
+		}
+	})
+	writeDuration(t, home, id, limit.String())
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe)
+	cmd.Env = append(os.Environ(),
+		"CARDEX_HOST_REEXEC=1",
+		"CARDEX_REEXEC_HOME="+home,
+		"CARDEX_REEXEC_ATTEMPT="+id,
+	)
+	var logs bytes.Buffer
+	cmd.Stdout = &logs
+	cmd.Stderr = &logs
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	hostPID := cmd.Process.Pid
+	var pgid int
+	waited := false
 	t.Cleanup(func() {
-		_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		_ = child.Wait()
+		if pgid > 1 && groupAlive(pgid) {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+		if !waited && cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
 	})
-	hostProc := exec.Command("/bin/sh", "-c", "exit 0")
-	if err := hostProc.Start(); err != nil {
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, err := os.ReadFile(filepath.Join(home, "attempts", id, "executor.pgid"))
+		if err == nil {
+			n, conv := strconv.Atoi(strings.TrimSpace(string(raw)))
+			if conv == nil && n > 1 && groupAlive(n) {
+				pgid = n
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if pgid <= 1 || !groupAlive(pgid) {
+		t.Fatalf("executor group did not start: %s", logs.String())
+	}
+	if err := syscall.Kill(hostPID, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
-	hostPID := hostProc.Process.Pid
-	if err := hostProc.Wait(); err != nil {
-		t.Fatal(err)
-	}
+	_ = cmd.Wait()
+	waited = true
 	if alive(hostPID) {
-		t.Fatal("exited host pid still alive")
+		t.Fatal("host still alive")
 	}
-	if !alive(pgid) {
-		t.Fatal("child was not a live process")
+	if !groupAlive(pgid) {
+		t.Fatal("killing the host killed the executor group")
 	}
+
+	sleeper := exec.Command("/bin/sleep", "30")
+	sleeper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := sleeper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	livePGID := sleeper.Process.Pid
+	t.Cleanup(func() {
+		_ = syscall.Kill(-livePGID, syscall.SIGKILL)
+		_ = sleeper.Wait()
+	})
 	db, err := store.Open(filepath.Join(home, "cardex.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -358,71 +642,75 @@ func TestReconcileDeadHostWithLiveChild(t *testing.T) {
 	ctx := context.Background()
 	live := model.Attempt{
 		ID: "live", Card: "c1", Route: model.Route{Channel: "ch1", Model: "fake"},
-		PID: os.Getpid(), Worktree: filepath.Join(home, "work"),
+		PID: os.Getpid(), StartedAt: time.Now().Add(-time.Hour).UTC(),
+		Worktree: filepath.Join(home, "work"),
 	}
 	if err := db.CreateAttempt(ctx, &live); err != nil {
 		t.Fatal(err)
 	}
-	orphan := model.Attempt{
-		ID: "orphan", Card: "c1", Route: model.Route{Channel: "ch1", Model: "fake"},
-		PID: hostPID, Worktree: filepath.Join(home, "work"),
-	}
-	if err := db.CreateAttempt(ctx, &orphan); err != nil {
+	liveDir := filepath.Join(home, "attempts", "live")
+	if err := os.MkdirAll(liveDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(home, "attempts", "orphan")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(liveDir, "executor.pgid"), []byte(strconv.Itoa(livePGID)+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "executor.pgid"), []byte(strconv.Itoa(pgid)+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(liveDir, "hard-duration"), []byte("1ms"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	before, err := db.GetAttempt(ctx, "live")
+	beforeLive, err := db.GetAttempt(ctx, "live")
 	if err != nil {
 		t.Fatal(err)
 	}
+	orphan, err := db.GetAttempt(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if orphan.PID != hostPID {
+		t.Fatalf("host pid %d stored %d", hostPID, orphan.PID)
+	}
+	if !time.Now().Before(orphan.StartedAt.Add(limit)) {
+		t.Fatalf("deadline already passed: started %s", orphan.StartedAt)
+	}
 	if err := host.Reconcile(ctx, home); err != nil {
 		t.Fatal(err)
+	}
+	got, err := db.GetAttempt(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.EndedAt.IsZero() || !groupAlive(pgid) {
+		t.Fatalf("reconcile ended a group still inside its duration %#v alive %v", got, groupAlive(pgid))
 	}
 	gotLive, err := db.GetAttempt(ctx, "live")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !host.LiveHost(gotLive) || gotLive.PID != before.PID || !gotLive.EndedAt.IsZero() || gotLive.Exit != nil {
-		t.Fatalf("live host changed %#v", gotLive)
+	if !reflect.DeepEqual(gotLive, beforeLive) || !groupAlive(livePGID) {
+		t.Fatalf("live host changed %#v sleeper %v", gotLive, groupAlive(livePGID))
 	}
-	got, err := db.GetAttempt(ctx, "orphan")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got.EndedAt.IsZero() || got.Exit != nil || !alive(pgid) {
-		t.Fatalf("live child marked ended %#v alive %v", got, alive(pgid))
+	wait := time.Until(orphan.StartedAt.Add(limit)) + 200*time.Millisecond
+	if wait > 0 {
+		time.Sleep(wait)
 	}
 	if err := host.Reconcile(ctx, home); err != nil {
 		t.Fatal(err)
 	}
-	again, err := db.GetAttempt(ctx, "orphan")
+	if groupAlive(pgid) {
+		t.Fatal("reconcile left the orphan group alive")
+	}
+	ended, err := db.GetAttempt(ctx, id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !again.EndedAt.IsZero() {
-		t.Fatal("second reconcile ended a live child")
+	if ended.EndedAt.IsZero() || host.LiveHost(ended) {
+		t.Fatalf("attempt stored while the group lived or not at all %#v", ended)
 	}
-	if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
-		t.Fatal(err)
-	}
-	_ = child.Wait()
-	if alive(pgid) {
-		t.Fatal("child still alive after cleanup")
-	}
-	if err := host.Reconcile(ctx, home); err != nil {
-		t.Fatal(err)
-	}
-	ended, err := db.GetAttempt(ctx, "orphan")
+	againLive, err := db.GetAttempt(ctx, "live")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ended.EndedAt.IsZero() || host.LiveHost(ended) || ended.PID != hostPID {
-		t.Fatalf("ended orphan %#v", ended)
+	if !reflect.DeepEqual(againLive, beforeLive) || !groupAlive(livePGID) {
+		t.Fatalf("live host changed after reap %#v", againLive)
 	}
 }

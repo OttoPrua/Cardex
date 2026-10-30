@@ -186,6 +186,9 @@ func TestS24(t *testing.T) {
 	if err := h.DB.CreateAttempt(ctx, &attempt); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(h.Home, "attempts", id, "hard-duration"), []byte("30s"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := host.Run(ctx, h.Home, id); err != nil {
 		t.Fatal(err)
 	}

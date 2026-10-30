@@ -45,22 +45,34 @@ func ClassifyOutput(text string) model.ErrorClass {
 	}
 }
 
-// ClassifyAttempt classifies from a structured terminal error, an explicit
-// diagnostic line, or leaves the class empty. Exit 0 still counts when the
-// terminal state is explicit. Words inside the task body are not a source.
+// ClassifyAttempt classifies from structured terminal events and explicit
+// sandbox diagnostics. Exit 0 still counts when the terminal state is explicit.
+// An earlier error that does not map to a class does not hide a later terminal.
+// Ordinary task body, including a standalone "error:" line, is not a source.
 func ClassifyAttempt(exit int, output []byte) model.ErrorClass {
-	if msg, ok := structuredDiagnostic(output); ok {
-		if cls := ClassifyOutput(msg); cls != "" {
-			return cls
+	_ = exit
+	objs := jsonObjects(output)
+	if len(objs) == 0 {
+		if msg, ok := structuredDiagnostic(output); ok {
+			if cls := ClassifyOutput(msg); cls != "" {
+				return cls
+			}
+		}
+	} else {
+		for _, obj := range objs {
+			msg, ok := diagnosticObject(obj)
+			if !ok {
+				continue
+			}
+			if cls := ClassifyOutput(msg); cls != "" {
+				return cls
+			}
 		}
 	}
 	if diag := explicitDiagnostics(output); diag != "" {
 		if cls := ClassifyOutput(diag); cls != "" {
 			return cls
 		}
-	}
-	if exit != 0 {
-		return ""
 	}
 	return ""
 }
@@ -139,7 +151,9 @@ func explicitDiagnostics(output []byte) string {
 	var b strings.Builder
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "error:") || strings.HasPrefix(line, "outside write denied:") {
+		// Sandbox denials are a diagnostic source. A body line that merely
+		// starts with "error:" is not.
+		if strings.HasPrefix(line, "outside write denied:") {
 			b.WriteString(line)
 			b.WriteByte('\n')
 		}

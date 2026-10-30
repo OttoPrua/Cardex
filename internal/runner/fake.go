@@ -47,6 +47,10 @@ type scriptAttempt struct {
 	OutsideWrite     string            `json:"outside_write"`
 	GrandchildMarker string            `json:"grandchild_marker"`
 	GrandchildAfter  string            `json:"grandchild_after"`
+	GrandchildDetach bool              `json:"grandchild_detach"`
+	TailAfter        string            `json:"tail_after"`
+	Tail             string            `json:"tail"`
+	Hold             string            `json:"hold"`
 	Env              map[string]string `json:"env"`
 }
 
@@ -159,6 +163,10 @@ func (Fake) Drive(ctx context.Context, rw io.ReadWriter) error {
 					driveErr = errors.New(msg)
 				}
 			}
+			if driveTerminalReached(buf.Bytes()) {
+				rememberDrive(buf.Bytes())
+				return driveErr
+			}
 		}
 		if err != nil {
 			rememberDrive(buf.Bytes())
@@ -181,6 +189,23 @@ func driveErrorLine(b []byte) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// driveTerminalReached reports a recognized completion, budget_limited, or
+// error terminal. Drive returns at that point even if the executor keeps
+// writing.
+func driveTerminalReached(b []byte) bool {
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		switch string(line) {
+		case "completion", "budget_limited", "drive_return":
+			return true
+		}
+		if bytes.HasPrefix(line, []byte("drive_error:")) || bytes.HasPrefix(line, []byte("drive_return:")) {
+			return true
+		}
+	}
+	return false
 }
 
 // Classify maps structured errors and explicit diagnostics onto §5 classes.
@@ -312,16 +337,16 @@ func (f Fake) run(ctx context.Context, spec LaunchSpec, child bool) (RunResult, 
 		out.WriteString(truncatedEventStream())
 	}
 	if step.QuotaHit != nil {
-		fmt.Fprintf(&out, "error: quota hit, reset at %s\n", step.QuotaHit.Reset)
+		writeDiagnostic(&out, fmt.Sprintf("quota hit, reset at %s", step.QuotaHit.Reset))
 	}
 	if step.AuthFailure {
-		out.WriteString("error: authentication failed\n")
+		writeDiagnostic(&out, "authentication failed")
 	}
 	if step.PermissionDenied {
-		out.WriteString("error: permission denied: operation rejected\n")
+		writeDiagnostic(&out, "permission denied: operation rejected")
 	}
 	if step.Refusal {
-		out.WriteString("error: refusal: the model refused the request\n")
+		writeDiagnostic(&out, "refusal: the model refused the request")
 	}
 	if step.Output != "" {
 		out.WriteString(step.Output)
@@ -345,7 +370,38 @@ func (f Fake) run(ctx context.Context, spec LaunchSpec, child bool) (RunResult, 
 	if step.ExitCode != nil {
 		code = *step.ExitCode
 	}
-	return RunResult{ExitCode: code, Output: out.Bytes()}, nil
+	result := RunResult{ExitCode: code, Output: out.Bytes()}
+	if step.TailAfter != "" {
+		d, err := time.ParseDuration(step.TailAfter)
+		if err != nil {
+			return RunResult{}, fmt.Errorf("fake tail_after: %w", err)
+		}
+		result.TailAfter = d
+		result.Tail = []byte(step.Tail)
+	} else if step.Tail != "" {
+		result.Tail = []byte(step.Tail)
+	}
+	if step.Hold != "" {
+		d, err := time.ParseDuration(step.Hold)
+		if err != nil {
+			return RunResult{}, fmt.Errorf("fake hold: %w", err)
+		}
+		result.Hold = d
+	}
+	return result, nil
+}
+
+func writeDiagnostic(out *bytes.Buffer, message string) {
+	fmt.Fprintf(out, "error: %s\n", message)
+	encoded, err := json.Marshal(map[string]any{
+		"type":  "error",
+		"error": map[string]string{"message": message},
+	})
+	if err != nil {
+		return
+	}
+	out.Write(encoded)
+	out.WriteByte('\n')
 }
 
 func truncatedEventStream() string {

@@ -1,7 +1,9 @@
 package runner
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 
@@ -36,21 +38,24 @@ func (Claude) WritablePaths() []string {
 // passes the profile JSON through Script.
 func (Claude) Build(spec LaunchSpec) ([]string, []string, error) {
 	args := []string{"claude", "-p", "--output-format", "json", "--dangerously-skip-permissions"}
-	profile, ok := ParseEngineProfile(spec.Script)
 	modelName := spec.Model
-	if ok {
-		modelName = MapEngineModel(profile, spec.Model)
-	}
-	if modelName != "" {
-		args = append(args, "--model", modelName)
-	}
 	var env []string
-	var err error
-	if ok {
+	// An empty script means no profile was selected. A selected document that
+	// is not usable must not fall through to the default channel.
+	if len(bytes.TrimSpace(spec.Script)) > 0 {
+		profile, ok := ParseEngineProfile(spec.Script)
+		if !ok {
+			return nil, nil, errors.New("engines profile is not usable")
+		}
+		modelName = MapEngineModel(profile, spec.Model)
+		var err error
 		env, err = ApplyEngineEnv(os.Environ(), profile)
 		if err != nil {
 			return nil, nil, err
 		}
+	}
+	if modelName != "" {
+		args = append(args, "--model", modelName)
 	}
 	return args, env, nil
 }

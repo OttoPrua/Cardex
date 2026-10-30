@@ -71,6 +71,74 @@ func TestRealUsageIgnoresFakeMarker(t *testing.T) {
 	}
 }
 
+func TestEngineProfileValidity(t *testing.T) {
+	bad := []string{
+		`{}`,
+		`{"not_a_real_field":"x"}`,
+		`{"base_url":" ","auth_env":" ","auth_value":"","auth_file":" ","models":{"opus":" "}}`,
+	}
+	for _, raw := range bad {
+		if _, ok := runner.ParseEngineProfile([]byte(raw)); ok {
+			t.Fatalf("parsed %s", raw)
+		}
+		argv, env, err := runner.Claude{}.Build(runner.LaunchSpec{Script: []byte(raw), Model: "sonnet"})
+		if err == nil {
+			t.Fatalf("fell through %s argv %v env %v", raw, argv, env)
+		}
+	}
+	raw := []byte(`{"base_url":"https://example.test/v1","auth_value":"token-value"}`)
+	if _, ok := runner.ParseEngineProfile(raw); !ok {
+		t.Fatal("usable profile rejected")
+	}
+	_, env, err := runner.Claude{}.Build(runner.LaunchSpec{Script: raw, Model: "sonnet"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(env, "\n"), "ANTHROPIC_BASE_URL=https://example.test/v1") {
+		t.Fatalf("env %v", env)
+	}
+	argv, env, err := runner.Claude{}.Build(runner.LaunchSpec{Model: "sonnet"})
+	if err != nil || len(env) != 0 || !strings.Contains(strings.Join(argv, " "), "claude") {
+		t.Fatalf("no profile argv %v env %v err %v", argv, env, err)
+	}
+}
+
+func TestClassifyBodyLineAndLaterTerminal(t *testing.T) {
+	body := "review passed\nerror: 401 Unauthorized\nall checks green\n"
+	adapters := []runner.Runner{runner.Fake{}, runner.Claude{}, runner.Codex{}, runner.OpenCode{}}
+	cases := []struct {
+		name   string
+		output string
+		want   model.ErrorClass
+	}{
+		{name: "body-line", output: body, want: ""},
+		{
+			name:   "turn-failed-after-noise",
+			output: "{\"type\":\"error\",\"error\":{\"message\":\"tool blew up\"}}\n" + body + "{\"type\":\"turn.failed\",\"error\":{\"message\":\"quota exhausted\"}}\n",
+			want:   model.ErrorQuotaHit,
+		},
+		{
+			name:   "budget-after-noise",
+			output: "{\"type\":\"error\",\"error\":{\"message\":\"not a classified failure\"}}\n" + body + "{\"type\":\"budget_limited\"}\n",
+			want:   model.ErrorBudgetLimited,
+		},
+		{
+			name:   "success-result",
+			output: "{\"type\":\"result\",\"is_error\":false,\"result\":\"error: 401 Unauthorized quota exhausted budget_limited\"}\n",
+			want:   "",
+		},
+	}
+	for _, tc := range cases {
+		for _, r := range adapters {
+			for _, exit := range []int{0, 7} {
+				if got := r.Classify(exit, []byte(tc.output)); got != tc.want {
+					t.Fatalf("%s %s exit %d => %q want %q", r.Name(), tc.name, exit, got, tc.want)
+				}
+			}
+		}
+	}
+}
+
 func TestClassifyIgnoresTaskBodyQuotes(t *testing.T) {
 	body := "code review\nThe handler returns 401 Unauthorized when the token is missing.\nThe docs mention quota exhausted and a refusal example.\n"
 	adapters := []runner.Runner{runner.Fake{}, runner.Claude{}, runner.Codex{}, runner.OpenCode{}}
@@ -103,9 +171,9 @@ func TestClassifyIgnoresTaskBodyQuotes(t *testing.T) {
 			want:   model.ErrorRefusal,
 		},
 		{
-			name:   "explicit-line-exit-0",
-			output: body + "error: authentication failed\n",
-			want:   model.ErrorAuthFailed,
+			name:   "body-error-line",
+			output: body + "error: 401 Unauthorized\n",
+			want:   "",
 		},
 		{
 			name:   "budget-terminal",

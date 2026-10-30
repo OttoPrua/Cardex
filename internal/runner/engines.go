@@ -206,7 +206,9 @@ func modelAlias(model string) string {
 	return ""
 }
 
-// ParseEngineProfile decodes a profile document. An empty buffer is not a profile.
+// ParseEngineProfile decodes a profile document. An empty buffer, an empty
+// object, an object of only unknown fields, and an object whose known fields
+// are blank are not profiles. A usable endpoint, auth source, or model map is.
 func ParseEngineProfile(raw []byte) (EngineProfile, bool) {
 	if len(bytesTrim(raw)) == 0 {
 		return EngineProfile{}, false
@@ -215,10 +217,22 @@ func ParseEngineProfile(raw []byte) (EngineProfile, bool) {
 	if json.Unmarshal(raw, &p) != nil {
 		return EngineProfile{}, false
 	}
-	if strings.TrimSpace(p.BaseURL) == "" && p.AuthEnv == "" && p.AuthValue == "" && p.AuthFile == "" && len(p.Models) == 0 {
+	if !profileUsable(p) {
 		return EngineProfile{}, false
 	}
 	return p, true
+}
+
+func profileUsable(p EngineProfile) bool {
+	if strings.TrimSpace(p.BaseURL) != "" || strings.TrimSpace(p.AuthEnv) != "" || strings.TrimSpace(p.AuthValue) != "" || strings.TrimSpace(p.AuthFile) != "" {
+		return true
+	}
+	for _, model := range p.Models {
+		if strings.TrimSpace(model) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func bytesTrim(raw []byte) []byte {

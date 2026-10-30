@@ -29,10 +29,17 @@ func reconcile(ctx context.Context, home string) error {
 		if !LiveHost(a) || processAlive(a.PID) {
 			continue
 		}
-		// A dead host is not a finished executor. The process group recorded
-		// at start has to be gone before the attempt is reported ended.
+		// A dead host is not a finished executor. A group still inside its
+		// hard duration stays recorded as running. Once that duration has
+		// passed, reap the group and store the attempt only after it is gone.
 		if pgid := readExecutorGroup(home, a.ID); processGroupAlive(pgid) {
-			continue
+			if !deadlineReached(home, a.StartedAt, a.ID, now) {
+				continue
+			}
+			killGroup(pgid)
+			if !waitGroupGone(pgid, 3*time.Second) {
+				continue
+			}
 		}
 		a.EndedAt = now
 		if a.ErrorExcerpt == "" {

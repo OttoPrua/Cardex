@@ -79,9 +79,9 @@ func processGroupAlive(pgid int) bool {
 }
 
 // armGroup starts the per-attempt deadline as soon as the executor exists.
-// Stop cancels the timer without killing. The killed channel closes after the
-// group has been signalled. Parent exit must not call stop while descendants
-// can still hold the output pipe.
+// Stop cancels the timer without killing, and only after the process group
+// is gone. The killed channel closes after the group has been signalled.
+// Closing or redirecting the output pipe must not call stop.
 func armGroup(ctx context.Context, pgid int, limit time.Duration, release func()) (stop func(), killed <-chan struct{}, fired *atomic.Bool) {
 	flag := &atomic.Bool{}
 	noop := func() {}
@@ -116,25 +116,62 @@ func armGroup(ctx context.Context, pgid int, limit time.Duration, release func()
 	return stop, ch, flag
 }
 
-func waitCopy(copied <-chan struct{}, stop func(), killed <-chan struct{}) {
+// waitCopy drains the capture goroutine, then keeps the deadline armed until
+// pgid is gone. A closed pipe is not the end of the process group.
+func waitCopy(copied <-chan struct{}, stop func(), killed <-chan struct{}, pgid int) {
 	if stop == nil {
 		stop = func() {}
 	}
-	if copied == nil {
-		stop()
-		return
+	if copied != nil {
+		if killed == nil {
+			<-copied
+		} else {
+			select {
+			case <-copied:
+			case <-killed:
+				<-copied
+			}
+		}
 	}
-	if killed == nil {
-		<-copied
-		stop()
-		return
+	if pgid > 1 {
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		for processGroupAlive(pgid) {
+			select {
+			case <-killed:
+			case <-ticker.C:
+			}
+		}
 	}
-	select {
-	case <-copied:
-		stop()
-	case <-killed:
-		<-copied
+	stop()
+}
+
+// waitGroupGone reports whether pgid is gone before bound elapses.
+func waitGroupGone(pgid int, bound time.Duration) bool {
+	if pgid <= 1 || !processGroupAlive(pgid) {
+		return true
 	}
+	deadline := time.Now().Add(bound)
+	for processGroupAlive(pgid) {
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return true
+}
+
+// deadlineReached reports that this attempt's own hard duration has elapsed
+// since it started. A missing or unusable file has not elapsed.
+func deadlineReached(home string, started time.Time, attemptID string, now time.Time) bool {
+	if started.IsZero() {
+		return false
+	}
+	limit, reason := attemptDeadline(filepath.Join(home, "attempts", attemptID))
+	if reason != "" || limit <= 0 {
+		return false
+	}
+	return !now.Before(started.Add(limit))
 }
 
 func killGroup(pid int) {

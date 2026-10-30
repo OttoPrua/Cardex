@@ -51,6 +51,18 @@ func fakeChildMain() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	if res.TailAfter > 0 {
+		time.Sleep(res.TailAfter)
+	}
+	if len(res.Tail) > 0 {
+		if _, err := os.Stdout.Write(res.Tail); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	if res.Hold > 0 {
+		time.Sleep(res.Hold)
+	}
 	return res.ExitCode
 }
 
@@ -85,12 +97,32 @@ func childPrelude(out *bytes.Buffer, spec LaunchSpec, step scriptAttempt) error 
 	}
 	sec := strconv.FormatFloat(d.Seconds(), 'f', 3, 64)
 	cmd := exec.Command("/bin/sh", "-c", `sleep "$1"; echo late > "$2"`, "sh", sec, step.GrandchildMarker)
-	// Keep the host's output pipe open after this process exits. Go would
-	// otherwise point a nil Stdout at DevNull, and the pipe would close early.
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var devNull *os.File
+	if step.GrandchildDetach {
+		// Close or redirect the descendant's stdio so the parent's output
+		// pipe ends while the process group is still alive.
+		f, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+		if err != nil {
+			return err
+		}
+		devNull = f
+		cmd.Stdin = f
+		cmd.Stdout = f
+		cmd.Stderr = f
+	} else {
+		// Keep the host's output pipe open after this process exits. Go would
+		// otherwise point a nil Stdout at DevNull, and the pipe would close early.
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
 	if err := cmd.Start(); err != nil {
+		if devNull != nil {
+			_ = devNull.Close()
+		}
 		return err
+	}
+	if devNull != nil {
+		_ = devNull.Close()
 	}
 	return os.WriteFile(filepath.Join(spec.WorkDir, "grandchild.pid"), []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
 }

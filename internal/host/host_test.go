@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,6 +21,19 @@ import (
 	"cardex/internal/store"
 	"cardex/internal/workspace"
 )
+
+func TestMain(m *testing.M) {
+	if os.Getenv("CARDEX_HOST_REEXEC") == "1" {
+		home := os.Getenv("CARDEX_REEXEC_HOME")
+		id := os.Getenv("CARDEX_REEXEC_ATTEMPT")
+		if err := host.Run(context.Background(), home, id); err != nil {
+			fmt.Fprintf(os.Stderr, "host reexec: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 type recordingManager struct {
 	calls int
@@ -79,6 +93,9 @@ func seedPrepared(t *testing.T, home string, rn model.RunnerName, profile string
 	}
 	dir := filepath.Join(home, "attempts", id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hard-duration"), []byte("30s"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if build != nil {
@@ -328,27 +345,41 @@ func TestHardTokensDoNotArmTimer(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "config.json"), decoy, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(filepath.Join(home, "attempts", id, "hard-duration")); err != nil {
+		t.Fatal(err)
+	}
 	start := time.Now()
 	if err := host.Run(context.Background(), home, id); err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(start) > 10*time.Second {
-		t.Fatalf("took %s", time.Since(start))
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("missing duration started the executor: %s", time.Since(start))
 	}
-	logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
-	if err != nil || !strings.Contains(string(logb), "slept") {
-		t.Fatalf("sleep did not finish: %v %s", err, logb)
+	if _, err := os.Stat(filepath.Join(home, "attempts", id, "output.log")); !os.IsNotExist(err) {
+		t.Fatalf("executor output: %v", err)
 	}
 	attempt, events := loadAttempt(t, home, id)
-	if attempt.Exit == nil || *attempt.Exit != 0 || attempt.Usage.Tokens != 3 {
-		t.Fatalf("exit %#v usage %+v", attempt.Exit, attempt.Usage)
+	if attempt.Exit != nil || attempt.ErrorClass == model.ErrorTimeout || !strings.Contains(attempt.ErrorExcerpt, "missing") {
+		t.Fatalf("attempt exit %#v class %q excerpt %q", attempt.Exit, attempt.ErrorClass, attempt.ErrorExcerpt)
 	}
-	ev, ok := eventType(events, "budget_duration")
+	if _, ok := eventType(events, "host_start"); ok {
+		t.Fatal("host started without a duration")
+	}
+	ev, ok := eventType(events, "needs_review")
 	if !ok || !strings.Contains(string(ev.Data), "missing") {
-		t.Fatalf("missing duration event %#v", ev)
+		t.Fatalf("review event %#v", ev)
 	}
-	if attempt.ErrorClass == model.ErrorTimeout {
-		t.Fatal("token count armed the timer")
+	db, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	card, err := db.GetCard(context.Background(), "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Status != model.CardNeedsInput {
+		t.Fatalf("card status %q", card.Status)
 	}
 }
 

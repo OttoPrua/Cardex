@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -105,14 +106,8 @@ func run(ctx context.Context, home, attemptID string) error {
 	logPath := filepath.Join(attemptDir, "output.log")
 	limit, durationReason := attemptDeadline(attemptDir)
 	if durationReason != "" {
-		kind := "missing"
-		if strings.HasPrefix(durationReason, "unparseable") {
-			kind = "unparseable"
-		}
-		appendEvent(ctx, db, attempt.ID, "budget_duration", map[string]string{
-			"reason": kind,
-			"detail": durationReason,
-		})
+		// A missing, empty, or non-positive limit must not start the executor.
+		return handoffReview(ctx, db, &attempt, &card, durationReason)
 	}
 
 	attempt.PID = os.Getpid()
@@ -209,22 +204,36 @@ func run(ctx context.Context, home, attemptID string) error {
 		pr, pw := io.Pipe()
 		var buf bytes.Buffer
 		copied = make(chan struct{})
+		var closeConsumer sync.Once
+		closeRead := func() {
+			closeConsumer.Do(func() { _ = pr.Close() })
+		}
 		go func() {
 			defer close(copied)
 			defer pw.Close()
 			tmp := make([]byte, 32*1024)
+			forward := true
 			for {
 				n, rerr := session.Master.Read(tmp)
 				if n > 0 {
 					_, _ = buf.Write(tmp[:n])
-					_, _ = pw.Write(tmp[:n])
+					if forward {
+						if _, werr := pw.Write(tmp[:n]); werr != nil {
+							// Drive stopped reading. Keep draining the master
+							// into the attempt log.
+							forward = false
+						}
+					}
 				}
 				if rerr != nil {
 					return
 				}
 			}
 		}()
-		release := func() { _ = session.Master.Close() }
+		release := func() {
+			_ = session.Master.Close()
+			closeRead()
+		}
 		var stop func()
 		var killed <-chan struct{}
 		stop, killed, fired = armGroup(ctx, pid, limit, release)
@@ -232,8 +241,10 @@ func run(ctx context.Context, home, attemptID string) error {
 			io.Reader
 			io.Writer
 		}{pr, session.Master})
+		// Drive has returned. Unblock the capture writer and keep draining.
+		closeRead()
 		waitErr = session.Cmd.Wait()
-		waitCopy(copied, stop, killed)
+		waitCopy(copied, stop, killed, pid)
 		_ = session.Master.Close()
 		output = append([]byte(nil), buf.Bytes()...)
 	} else {
@@ -262,14 +273,14 @@ func run(ctx context.Context, home, attemptID string) error {
 		var killed <-chan struct{}
 		stop, killed, fired = armGroup(ctx, pid, limit, release)
 		waitErr = wrapped.Wait()
-		waitCopy(copied, stop, killed)
+		waitCopy(copied, stop, killed, pid)
 		if logRead != nil {
 			_ = logRead.Close()
 		}
 		output = append([]byte(nil), pipeBuf.Bytes()...)
 	}
 	timedOut := fired != nil && fired.Load()
-	if driveErr != nil && timedOut && errors.Is(driveErr, context.Canceled) {
+	if driveErr != nil && timedOut && (errors.Is(driveErr, context.Canceled) || errors.Is(driveErr, io.ErrClosedPipe) || errors.Is(driveErr, os.ErrClosed)) {
 		driveErr = nil
 	}
 	if err := os.WriteFile(logPath, output, 0o644); err != nil {
@@ -401,7 +412,13 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 			}
 		}
 		if attempt.ErrorClass == "" {
-			attempt.ErrorClass = r.Classify(code, []byte("error: "+driveErr.Error()))
+			raw, merr := json.Marshal(map[string]any{
+				"type":  "error",
+				"error": map[string]string{"message": driveErr.Error()},
+			})
+			if merr == nil {
+				attempt.ErrorClass = r.Classify(code, raw)
+			}
 		}
 	}
 	if attempt.ErrorExcerpt == "" && prior != nil {

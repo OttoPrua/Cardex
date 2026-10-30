@@ -47,15 +47,12 @@ func resolveEngineProfile(cfg fileConfig, name string) ([]byte, string) {
 		if len(trimmed) == 0 || trimmed[0] != '{' {
 			return nil, fmt.Sprintf("engines profile %q unparseable", name)
 		}
-		var profile runner.EngineProfile
-		if err := json.Unmarshal(trimmed, &profile); err != nil {
-			return nil, fmt.Sprintf("engines profile %q unparseable: %v", name, err)
+		// Same usability rule as runner.ParseEngineProfile. An empty object,
+		// unknown fields, or blank known fields are not a profile.
+		if _, ok := runner.ParseEngineProfile(trimmed); !ok {
+			return nil, fmt.Sprintf("engines profile %q unparseable", name)
 		}
-		out, err := json.Marshal(profile)
-		if err != nil {
-			return nil, fmt.Sprintf("engines profile %q unparseable: %v", name, err)
-		}
-		return out, ""
+		return append([]byte(nil), trimmed...), ""
 	}
 	if profile, ok := runner.EnginePreset(name); ok {
 		out, err := json.Marshal(profile)

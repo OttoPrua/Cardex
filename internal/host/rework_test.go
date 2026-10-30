@@ -465,24 +465,71 @@ func TestDriveReturnStillDrainsLog(t *testing.T) {
 
 func TestDriveBlockUnblockedByDeadlineOrCancel(t *testing.T) {
 	big := "AFTER-DRIVE-BLOCK\n" + strings.Repeat("x", 256*1024) + "\n"
-	t.Run("deadline", func(t *testing.T) {
-		home, id, _ := seedAttempt(t, 1, func(string) any {
-			return map[string]any{
-				"needs_pty": true,
-				"attempts": map[string]any{
-					"0": map[string]any{
-						"output":     "drive_return\n",
-						"tail_after": "50ms",
-						"tail":       big,
-						"hold":       "30s",
-					},
+	script := func(string) any {
+		return map[string]any{
+			"needs_pty": true,
+			"attempts": map[string]any{
+				"0": map[string]any{
+					"output":     "drive_return\n",
+					"tail_after": "50ms",
+					"tail":       big,
+					"hold":       "30s",
 				},
+			},
+		}
+	}
+	// waitBlocked fails if host.Run returns before the executor group is alive
+	// and still held after Drive has returned.
+	waitBlocked := func(t *testing.T, home, id string, errc <-chan error, settle time.Duration) int {
+		t.Helper()
+		var pgid int
+		deadline := time.Now().Add(6 * time.Second)
+		for time.Now().Before(deadline) {
+			select {
+			case err := <-errc:
+				t.Fatalf("host returned before the executor was running: %v", err)
+			default:
 			}
-		})
-		writeDuration(t, home, id, "500ms")
+			raw, err := os.ReadFile(filepath.Join(home, "attempts", id, "executor.pgid"))
+			if err == nil {
+				n, conv := strconv.Atoi(strings.TrimSpace(string(raw)))
+				if conv == nil && n > 1 && groupAlive(n) {
+					pgid = n
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if pgid <= 1 {
+			t.Fatal("executor did not start")
+		}
+		select {
+		case err := <-errc:
+			t.Fatalf("host returned before the capture was blocked: %v", err)
+		case <-time.After(settle):
+		}
+		if !groupAlive(pgid) {
+			t.Fatal("executor exited before the capture was released")
+		}
+		return pgid
+	}
+	waitGone := func(t *testing.T, pgid int) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for groupAlive(pgid) && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		if groupAlive(pgid) {
+			t.Fatalf("executor group %d still alive", pgid)
+		}
+	}
+	t.Run("deadline", func(t *testing.T) {
+		home, id, _ := seedAttempt(t, 1, script)
+		writeDuration(t, home, id, "2s")
 		start := time.Now()
 		errc := make(chan error, 1)
 		go func() { errc <- host.Run(context.Background(), home, id) }()
+		pgid := waitBlocked(t, home, id, errc, 300*time.Millisecond)
 		select {
 		case err := <-errc:
 			if err != nil {
@@ -491,9 +538,10 @@ func TestDriveBlockUnblockedByDeadlineOrCancel(t *testing.T) {
 		case <-time.After(6 * time.Second):
 			t.Fatal("deadline did not unblock capture")
 		}
-		if time.Since(start) > 6*time.Second {
-			t.Fatalf("took %s", time.Since(start))
+		if time.Since(start) < 1500*time.Millisecond {
+			t.Fatalf("returned in %s, before the hard duration", time.Since(start))
 		}
+		waitGone(t, pgid)
 		logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
 		if err != nil || !strings.Contains(string(logb), "AFTER-DRIVE-BLOCK") {
 			t.Fatalf("log %q %v", logb, err)
@@ -504,29 +552,22 @@ func TestDriveBlockUnblockedByDeadlineOrCancel(t *testing.T) {
 		}
 	})
 	t.Run("cancel", func(t *testing.T) {
-		home, id, _ := seedAttempt(t, 1, func(string) any {
-			return map[string]any{
-				"needs_pty": true,
-				"attempts": map[string]any{
-					"0": map[string]any{
-						"output":     "drive_return\n",
-						"tail_after": "50ms",
-						"tail":       big,
-						"hold":       "30s",
-					},
-				},
-			}
-		})
+		home, id, _ := seedAttempt(t, 1, script)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		errc := make(chan error, 1)
 		go func() { errc <- host.Run(ctx, home, id) }()
-		time.Sleep(300 * time.Millisecond)
+		pgid := waitBlocked(t, home, id, errc, 400*time.Millisecond)
 		cancel()
 		select {
 		case <-errc:
 		case <-time.After(6 * time.Second):
 			t.Fatal("cancel did not unblock capture")
+		}
+		waitGone(t, pgid)
+		logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
+		if err != nil || !strings.Contains(string(logb), "AFTER-DRIVE-BLOCK") {
+			t.Fatalf("log %q %v", logb, err)
 		}
 	})
 }

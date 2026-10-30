@@ -13,10 +13,10 @@ LaunchSpec 缺 goal_mode/requires：用 Grok.GoalMode；Drive 无 prompt 参数�
 N2：AGY 嵌套错误 {"error":{"message":"quota exceeded"}} 与多行 JSON 的 usage 仍未按 v1 完整文档提取，不在本次 findings。
 
 ## 修复记录
-接收 prompt 正文的参数必须是文件内容，不能是路径 → internal/runner/grok.go:52、cursor.go:34、kimi.go:45、agy.go:40 → TestPromptFileBody
-goal 的完成和 budget_limited 只从会话文件读取，PTY Read 阻塞时轮询、EOF 后再查，PTY 上的 session/update JSON 不算这两种终态 → internal/runner/grok.go:175、grok.go:205、grok.go:215、grok.go:435 → TestGrokDriveTerminals、TestGrokDriveSessionAfterReadStarts
-正文、输入回显和未收完整的记录不是失败事实，只认完整的终态记录或错误记录 → internal/runner/grok.go:308、grok.go:339、grok.go:406（cursor.go:52、kimi.go:70、agy.go:44 经 classifyScanned） → TestClassifyIgnoresBodyEchoAndPartial
-沙箱内的写运行必须自动放行，不能停在等人审批的参数上 → internal/runner/agy.go:40、kimi.go:48、kimi.go:66 → TestAGYBuildSnapshot、TestKimiAutoPermissionConfig
+接收 prompt 正文的参数必须是文件内容，不能是路径 → internal/runner/grok.go:77、cursor.go:34、kimi.go:45、agy.go:40 → TestPromptFileBody
+goal 的完成和 budget_limited 只从会话文件读取，PTY Read 阻塞时轮询、EOF 后再查，PTY 上的 session/update JSON 不算这两种终态 → internal/runner/grok.go:180、grok.go:194、grok.go:221、grok.go:433 → TestGrokDriveTerminals、TestGrokDriveSessionAfterReadStarts
+正文、输入回显和未收完整的记录不是失败事实，只认完整的终态记录或错误记录 → internal/runner/grok.go:310、grok.go:317、grok.go:344（cursor.go:52、kimi.go:112、agy.go:44 经 classifyScanned） → TestBodyEchoNestedAreNotFacts
+沙箱内的写运行必须自动放行，不能停在等人审批的参数上 → internal/runner/agy.go:40、kimi.go:39、kimi.go:62 → TestAGYBuildSnapshot、TestKimiAutoPermissionConfig
 终态只认该模式实际提供的通道：完成和 budget_limited 只认会话文件，额度不把无头 error JSON 当交互样本，崩溃只认宿主 WaitStatus，PTY 正文 signal: killed 不算 → internal/runner/grok.go:55、grok.go:161 → TestGrokQuotaAndCrashChannels、TestGrokDriveSessionAfterReadStarts
 正文、任务回显和嵌套业务字段不是终态或错误类，goal status 只读 goal_updated 的 params.update.status → internal/runner/grok.go:161、grok.go:310、grok.go:331、grok.go:398（cursor.go:52、kimi.go:112、agy.go:44 经 classifyScanned） → TestBodyEchoNestedAreNotFacts
 自动权限只覆盖顶层 default_permission_mode 与 default_plan_mode，保留宿主已写入的其余 config.toml → internal/runner/kimi.go:62、kimi.go:77 → TestKimiAutoPermissionConfig

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 func taskIsReadOnlyType(t *Task) bool {
@@ -394,7 +395,36 @@ func taskHasLiveWriterProof(root string, t *Task) bool {
 	return false
 }
 
+// liveWriterPassView is the writer-authority snapshot for one tick admission
+// pass. Tick rebuilds it at the start of each candidate collection so dispatch
+// and harvest see updates on the next drain iteration. It is not launch-time
+// custody proof: taskHasLiveWriterProof stays a per-candidate check.
+type liveWriterPassView struct {
+	claims []*Task
+}
+
+func loadLiveWriterPassView(root string, inMemory []*Task) liveWriterPassView {
+	return liveWriterPassView{
+		claims: mergeLiveWriterTasks(inMemory, reconstructLiveWriterClaims(root)),
+	}
+}
+
+func (v liveWriterPassView) conflicts(t *Task) bool {
+	return writerConflictsWithActive(t, v.claims)
+}
+
+func (v liveWriterPassView) conflictIDs(t *Task) []string {
+	return writerConflictsWithActiveIDs(t, v.claims)
+}
+
+// liveWriterClaimScanHook is a test-only observer for reconstructLiveWriterClaims.
+// Production leaves it nil. Tests store a root-filtered callback.
+var liveWriterClaimScanHook atomic.Pointer[func(string)]
+
 func reconstructLiveWriterClaims(root string) []*Task {
+	if hook := liveWriterClaimScanHook.Load(); hook != nil {
+		(*hook)(root)
+	}
 	if root == "" {
 		return nil
 	}

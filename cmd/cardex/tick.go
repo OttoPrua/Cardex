@@ -18,6 +18,9 @@ var errRunIDNotDispatched = errors.New("run id not dispatched")
 // tickRunTask is the drain launch seam. Tests replace it; production calls runTaskVia.
 var tickRunTask = runTaskVia
 
+// Test-only injection point for declarations changing during candidate filtering.
+var tickCandidateFilterHook func(*Task)
+
 // tick 是调度的最小单元：抢锁 → 排空队列（drain）。
 // 每轮循环在冷却/红线允许的前提下，把就绪任务派发到并行槽位（最多 max_parallel 个），
 // 全部跑完或没有可派发任务时才返回。同一工作目录的写卡串行，
@@ -204,6 +207,10 @@ func tickFilterOpts(root string, cfg *Config, force, quiet bool, onlyID string, 
 				}
 				viaRunner := map[string]string{} // 任务ID → ""(claude) / "codex" / 引擎名
 				var cands []*Task
+				// One live-writer snapshot per admission pass. Repeating
+				// reconstructLiveWriterClaims inside the candidate loop scanned
+				// every task JSON once per candidate while holding the root lock.
+				liveWriters := loadLiveWriterPassView(root, activeWriters)
 				for _, t := range tasks {
 					if t.Status == statusCanceled {
 						if !once && !activeIDs[t.ID] {
@@ -221,21 +228,23 @@ func tickFilterOpts(root string, cfg *Config, force, quiet bool, onlyID string, 
 						laneMetrics.AddWaits(1)
 						continue
 					}
+					if tickCandidateFilterHook != nil {
+						tickCandidateFilterHook(t)
+					}
 					if !integrationGateAllows(root, cfg, t) {
 						// A workflow integration card that was released and then lost its
 						// evidence must not run just because it is still queued on disk.
 						laneMetrics.AddWaits(1)
 						continue
 					}
-					liveWriters := mergeLiveWriterTasks(activeWriters, reconstructLiveWriterClaims(root))
 					if taskHasLiveWriterProof(root, t) {
 						laneMetrics.AddConflicts(1)
 						emitWriterDeferral(root, t, "live_writer_proof", nil)
 						continue
 					}
-					if writerConflictsWithActive(t, liveWriters) {
+					if liveWriters.conflicts(t) {
 						laneMetrics.AddConflicts(1)
-						emitWriterDeferral(root, t, "write_conflict", writerConflictsWithActiveIDs(t, liveWriters))
+						emitWriterDeferral(root, t, "write_conflict", liveWriters.conflictIDs(t))
 						continue
 					}
 					if automaticProviderReplayBlocked(root, cfg, t) {
@@ -372,6 +381,20 @@ func tickFilterOpts(root string, cfg *Config, force, quiet bool, onlyID string, 
 						continue
 					}
 					cands = append(cands, t)
+				}
+				// Refresh once after candidate collection: declarations may have changed
+				// while routing candidates. Filter rather than spinning on a stale pick.
+				if len(cands) > 0 {
+					freshWriters := loadLiveWriterPassView(root, activeWriters)
+					eligible := cands[:0]
+					for _, candidate := range cands {
+						if freshWriters.conflicts(candidate) {
+							emitWriterDeferral(root, candidate, "write_conflict", freshWriters.conflictIDs(candidate))
+							continue
+						}
+						eligible = append(eligible, candidate)
+					}
+					cands = eligible
 				}
 				if next := pickNext(cfg, cands, now); next != nil {
 					if once {

@@ -1,6 +1,15 @@
 package e2e
 
-import "testing"
+import (
+	"context"
+	"testing"
+	"time"
+
+	"cardex/internal/classify"
+	"cardex/internal/model"
+	"cardex/internal/quota"
+	"cardex/internal/route"
+)
 
 func TestS01(t *testing.T) {
 	// 单卡闭环，经过复核和合并。
@@ -84,12 +93,98 @@ func TestS16(t *testing.T) {
 
 func TestS17(t *testing.T) {
 	// 同层同源按 Pace 排序，低于红线的渠道被排除，显式指定不受红线限制。
-	t.Skip("R2-D")
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	led := quota.New()
+	led.SetClock(func() time.Time { return now })
+	mk := func(id, modelName string, used int64, redline float64) model.Channel {
+		t.Helper()
+		ch := model.Channel{
+			ID: id, Runner: model.RunnerGrok, SourceGroup: "same", Family: "fam",
+			Models: []string{modelName}, Concurrency: 2, Health: model.HealthOK, Redline: redline,
+			QuotaWindows: []model.QuotaWindow{{
+				Name: "5h", ResetRule: "rolling", LimitTokens: 100, ResetAt: now,
+			}},
+		}
+		led.Configure(ch)
+		if err := led.Record(context.Background(), id, model.Usage{Tokens: used, Source: "meter"}, now.Add(-time.Minute), now.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		return ch
+	}
+	fast := mk("fast", "fast-m", 20, 0)
+	slow := mk("slow", "slow-m", 50, 0)
+	low := mk("low", "low-m", 90, 0.2)
+	channels := []model.Channel{slow, low, fast}
+	pos := []model.Positioning{
+		{Model: "fast-m", Family: "fam", Tiers: []model.Tier{model.TierT2}, Preference: 1},
+		{Model: "slow-m", Family: "fam", Tiers: []model.Tier{model.TierT2}, Preference: 1},
+		{Model: "low-m", Family: "fam", Tiers: []model.Tier{model.TierT2}, Preference: 1},
+	}
+	card := model.Card{Kind: model.KindDev, Tier: model.TierT2}
+	rt, reason, err := route.Select(context.Background(), route.Request{
+		Card: card, Channels: channels, Positioning: pos, Quota: led, Now: now,
+	})
+	if err != nil || rt.Channel != fast.ID {
+		t.Fatalf("pace route %+v err %v", rt, err)
+	}
+	if len(reason.Candidates) != 2 || reason.Candidates[0].Channel != fast.ID || reason.Candidates[1].Channel != slow.ID {
+		t.Fatalf("pace candidates %+v", reason.Candidates)
+	}
+	if len(reason.Filtered) != 1 || reason.Filtered[0].Channel != low.ID || reason.Filtered[0].Reason != route.ReasonRedline {
+		t.Fatalf("redline %+v", reason.Filtered)
+	}
+	if len(reason.Scores) != 2 || reason.Scores[0].Score <= reason.Scores[1].Score {
+		t.Fatalf("scores %+v", reason.Scores)
+	}
+	card.Channel = low.ID
+	rt, reason, err = route.Select(context.Background(), route.Request{
+		Card: card, Channels: channels, Positioning: pos, Quota: led, Now: now,
+	})
+	if err != nil || rt.Channel != low.ID || rt.Model != "low-m" {
+		t.Fatalf("pin %+v err %v", rt, err)
+	}
+	if len(reason.Filtered) != 0 {
+		t.Fatalf("pin applied redline %+v", reason.Filtered)
+	}
 }
 
 func TestS18(t *testing.T) {
 	// 分级成功写入 tier；分级超时退回规则。
-	t.Skip("R2-D")
+	ctx := context.Background()
+	card := model.Card{Kind: model.KindDev, Body: "classify this body"}
+	res, err := classify.Classify(ctx, card, classify.Options{
+		Channel: "classifier",
+		Call: func(callCtx context.Context, channelID, prompt string) (string, error) {
+			if channelID != "classifier" || prompt == "" {
+				t.Fatalf("call %s %q", channelID, prompt)
+			}
+			if _, ok := callCtx.Deadline(); !ok {
+				t.Fatal("no deadline")
+			}
+			return "TIER: T1\nREASON: small change\n", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	card.Tier = res.Tier
+	if card.Tier != model.TierT1 || res.Source != classify.SourceModel {
+		t.Fatalf("success %+v tier %s", res, card.Tier)
+	}
+	timed := model.Card{Kind: model.KindDev, Body: "a different body"}
+	res, err = classify.Classify(ctx, timed, classify.Options{
+		Channel: "classifier",
+		Call: func(context.Context, string, string) (string, error) {
+			return "", context.DeadlineExceeded
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	timed.Tier = res.Tier
+	if timed.Tier != model.TierT2 || res.Source != classify.SourceRule {
+		t.Fatalf("timeout %+v tier %s", res, timed.Tier)
+	}
 }
 
 func TestS19(t *testing.T) {

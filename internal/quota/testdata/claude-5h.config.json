@@ -1,0 +1,20 @@
+{
+  "channels": [
+    {
+      "id": "claude-primary",
+      "runner": "claude",
+      "source_group": "claude-sub",
+      "family": "anthropic",
+      "models": ["claude-opus"],
+      "concurrency": 2,
+      "quota_windows": [
+        {
+          "name": "5h",
+          "reset_rule": "rolling",
+          "limit_tokens": 100000
+        }
+      ],
+      "redline": 0.2
+    }
+  ]
+}

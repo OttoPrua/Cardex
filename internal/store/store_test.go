@@ -171,13 +171,17 @@ func TestRoundTripAndEnums(t *testing.T) {
 	}
 
 	node := model.DesignNode{
-		ID:            "n1",
-		Objective:     "o1",
-		Parent:        "",
-		Layer:         model.LayerModule,
-		DocPath:       "docs/design/o1/n1.md",
-		OpenQuestions: []string{"q"},
-		Status:        model.NodeFreezable,
+		ID:        "n1",
+		Objective: "o1",
+		Parent:    "",
+		Layer:     model.LayerModule,
+		DocPath:   "docs/design/o1/n1.md",
+		OpenQuestions: model.OpenQuestionList{{
+			ID: "oq1", Text: "q", Type: model.OQFact, Status: model.OQOpen,
+			Asks: 1, Answer: "yes", Evidence: "a.go:1", Confidence: "高",
+			Commit: "abc", CitedPaths: []string{"a.go"},
+		}},
+		Status: model.NodeFreezable,
 	}
 	if err := db.CreateNode(ctx, &node); err != nil {
 		t.Fatal(err)

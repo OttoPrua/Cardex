@@ -174,6 +174,51 @@ func AllCardKinds() []CardKind {
 	}
 }
 
+// DefaultTier is the §6.3 kind default. Dev falls back to T2 when classification does not run.
+func DefaultTier(k CardKind) Tier {
+	switch k {
+	case KindDesign, KindPlan, KindSkeleton, KindReview, KindReplan:
+		return TierT3
+	case KindSpike, KindDev, KindRepair, KindRebase, KindRanking:
+		return TierT2
+	case KindResearch, KindNormalize, KindBacklog:
+		return TierT1
+	default:
+		return TierT2
+	}
+}
+
+// OpenQuestionType is the §6.6 label on a design-node open question.
+type OpenQuestionType string
+
+const (
+	OQFact       OpenQuestionType = "fact"       // 查一下就知道。
+	OQExperiment OpenQuestionType = "experiment" // 做了才知道。
+	OQDecision   OpenQuestionType = "decision"   // 需要权衡。无标签的旧条目用这个。
+	OQOtto       OpenQuestionType = "otto"       // 需要 Otto 决定。
+)
+
+// OpenQuestionStatus is the lifecycle of a design-node open question.
+type OpenQuestionStatus string
+
+const (
+	OQOpen        OpenQuestionStatus = "open"        // 尚未派研究。
+	OQResearching OpenQuestionStatus = "researching" // 研究卡正在查。
+	OQAnswered    OpenQuestionStatus = "answered"    // 已有结论。
+	OQStale       OpenQuestionStatus = "stale"       // 引用路径在 commit 之后有改动。
+	OQUnanswered  OpenQuestionStatus = "unanswered"  // 研究卡没有作答。
+)
+
+// AllOpenQuestionTypes returns fact, experiment, decision, and otto.
+func AllOpenQuestionTypes() []OpenQuestionType {
+	return []OpenQuestionType{OQFact, OQExperiment, OQDecision, OQOtto}
+}
+
+// AllOpenQuestionStatuses returns every open-question status.
+func AllOpenQuestionStatuses() []OpenQuestionStatus {
+	return []OpenQuestionStatus{OQOpen, OQResearching, OQAnswered, OQStale, OQUnanswered}
+}
+
 // AllTiers returns the assignable tiers. Empty is valid and is not included.
 func AllTiers() []Tier { return []Tier{TierT1, TierT2, TierT3} }
 
@@ -287,3 +332,9 @@ func (r RunnerName) Valid() bool { return r == RunnerFake || oneOf(r, AllRunners
 
 // Valid reports whether k is a question kind.
 func (k QuestionKind) Valid() bool { return oneOf(k, AllQuestionKinds()) }
+
+// Valid reports whether t is fact, experiment, decision, or otto.
+func (t OpenQuestionType) Valid() bool { return oneOf(t, AllOpenQuestionTypes()) }
+
+// Valid reports whether s is an open-question status.
+func (s OpenQuestionStatus) Valid() bool { return oneOf(s, AllOpenQuestionStatuses()) }

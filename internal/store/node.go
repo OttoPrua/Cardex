@@ -22,7 +22,11 @@ func prepareNode(n *model.DesignNode) error {
 	if !n.Status.Valid() {
 		return invalid("node status", n.Status)
 	}
-	n.OpenQuestions = normStrings(n.OpenQuestions)
+	qs, err := model.NormalizeOpenQuestions(n.OpenQuestions)
+	if err != nil {
+		return err
+	}
+	n.OpenQuestions = qs
 	return nil
 }
 
@@ -51,7 +55,11 @@ func (s *Store) UpdateNode(ctx context.Context, n *model.DesignNode) error {
 	if !n.Layer.Valid() || !n.Status.Valid() {
 		return fmt.Errorf("invalid node enum")
 	}
-	n.OpenQuestions = normStrings(n.OpenQuestions)
+	qs, err := model.NormalizeOpenQuestions(n.OpenQuestions)
+	if err != nil {
+		return err
+	}
+	n.OpenQuestions = qs
 	raw, err := mustJSON(n.OpenQuestions)
 	if err != nil {
 		return err
@@ -96,10 +104,14 @@ func scanNode(sc scanner) (model.DesignNode, error) {
 	if err := sc.Scan(&n.ID, &n.Objective, &n.Parent, &layer, &n.DocPath, &questions, &status); err != nil {
 		return n, err
 	}
+	var err error
 	if err := parseJSON(questions, &n.OpenQuestions); err != nil {
 		return n, err
 	}
-	n.OpenQuestions = normStrings(n.OpenQuestions)
+	n.OpenQuestions, err = model.NormalizeOpenQuestions(n.OpenQuestions)
+	if err != nil {
+		return n, err
+	}
 	n.Layer = model.Layer(layer)
 	n.Status = model.NodeStatus(status)
 	return n, nil

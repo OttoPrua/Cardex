@@ -76,6 +76,52 @@ func TestClosedSetsAccepted(t *testing.T) {
 			t.Fatalf("question kind %q", k)
 		}
 	}
+	for _, tpe := range AllOpenQuestionTypes() {
+		if !tpe.Valid() {
+			t.Fatalf("open question type %q", tpe)
+		}
+	}
+	if OpenQuestionType("held").Valid() {
+		t.Fatal("held is not an open question type")
+	}
+	for _, st := range AllOpenQuestionStatuses() {
+		if !st.Valid() {
+			t.Fatalf("open question status %q", st)
+		}
+	}
+	if OpenQuestionStatus("held").Valid() {
+		t.Fatal("held is not an open question status")
+	}
+}
+
+func TestDefaultTiers(t *testing.T) {
+	want := map[CardKind]Tier{
+		KindDesign:    TierT3,
+		KindResearch:  TierT1,
+		KindSpike:     TierT2,
+		KindPlan:      TierT3,
+		KindSkeleton:  TierT3,
+		KindDev:       TierT2,
+		KindReview:    TierT3,
+		KindRepair:    TierT2,
+		KindRebase:    TierT2,
+		KindReplan:    TierT3,
+		KindNormalize: TierT1,
+		KindRanking:   TierT2,
+		KindBacklog:   TierT1,
+	}
+	if len(want) != len(AllCardKinds()) {
+		t.Fatalf("default tier table %d kinds, AllCardKinds %d", len(want), len(AllCardKinds()))
+	}
+	for _, k := range AllCardKinds() {
+		got, ok := want[k]
+		if !ok {
+			t.Fatalf("no default tier for %s", k)
+		}
+		if DefaultTier(k) != got {
+			t.Fatalf("%s default tier %s, want %s", k, DefaultTier(k), got)
+		}
+	}
 }
 
 func TestSection3Fields(t *testing.T) {
@@ -88,6 +134,7 @@ func TestSection3Fields(t *testing.T) {
 		{Acceptance{}, []string{"commands", "checklist"}},
 		{Budget{}, []string{"soft_tokens", "hard_tokens"}},
 		{DesignNode{}, []string{"id", "objective", "parent", "layer", "doc_path", "open_questions", "status"}},
+		{OpenQuestion{}, []string{"id", "text", "type", "status", "asks", "answer", "evidence", "confidence", "commit", "cited_paths"}},
 		{Card{}, []string{"id", "objective", "node", "kind", "title", "body", "tier", "requires", "claims", "deps", "acceptance", "base", "status", "rework_count", "legacy"}},
 		{Claim{}, []string{"path", "symbol"}},
 		{Attempt{}, []string{"id", "card", "route", "route_reason", "worktree", "branch", "base_commit", "head_commit", "pid", "started_at", "ended_at", "exit", "usage", "outcome", "error_class", "error_excerpt"}},

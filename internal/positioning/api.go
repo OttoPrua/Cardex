@@ -8,7 +8,7 @@ import (
 	"cardex/internal/model"
 )
 
-// ErrNotImplemented is returned until R2-D fills this package in.
+// ErrNotImplemented is returned by Stub. Home is the positioning store.
 var ErrNotImplemented = errors.New("not implemented")
 
 // Proposal is a not-yet-approved positioning table.

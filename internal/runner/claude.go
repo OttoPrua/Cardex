@@ -21,7 +21,7 @@ func (Claude) NeedsPTY() bool { return false }
 func (Claude) Drive(context.Context, io.ReadWriter) error { return nil }
 
 func (Claude) Classify(exit int, output []byte) model.ErrorClass {
-	return ClassifyOutput(string(output))
+	return ClassifyAttempt(exit, output)
 }
 
 func (Claude) ParseUsage(output []byte) model.Usage { return ParseOutputUsage(output) }

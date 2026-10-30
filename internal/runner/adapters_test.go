@@ -57,7 +57,7 @@ func TestBuildSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	codexLine := strings.Join(codex, " ")
-	for _, needle := range []string{"codex exec", "--sandbox workspace-write", "-C /work", "-m gpt"} {
+	for _, needle := range []string{"codex exec", "--sandbox workspace-write", "--json", "-C /work", "-m gpt"} {
 		if !strings.Contains(codexLine, needle) {
 			t.Fatalf("codex argv %q missing %s", codexLine, needle)
 		}
@@ -190,16 +190,20 @@ func TestClassifyV1Samples(t *testing.T) {
 		if got := runner.ClassifyOutput(tc.text); got != tc.want {
 			t.Fatalf("ClassifyOutput %q => %q want %q", tc.text, got, tc.want)
 		}
+		body := "successful review quotes the diagnostic as prose:\n" + tc.text + "\n"
 		for _, r := range adapters {
-			if got := r.Classify(1, []byte(tc.text)); got != tc.want {
-				t.Fatalf("%s %q => %q want %q", r.Name(), tc.text, got, tc.want)
+			if got := r.Classify(0, []byte(body)); got != "" {
+				t.Fatalf("%s classified prose %q => %q", r.Name(), tc.text, got)
+			}
+			if got := r.Classify(1, []byte(body)); got != "" {
+				t.Fatalf("%s classified failing prose %q => %q", r.Name(), tc.text, got)
 			}
 		}
 	}
 }
 
 func TestParseUsageShapes(t *testing.T) {
-	fake := runner.ParseOutputUsage([]byte("noise\ntokens=17\n"))
+	fake := runner.Fake{}.ParseUsage([]byte("noise\ntokens=17\n"))
 	if fake.Tokens != 17 || fake.Source != "fake" || fake.Confidence != 1 {
 		t.Fatalf("fake usage %+v", fake)
 	}

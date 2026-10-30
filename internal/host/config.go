@@ -1,21 +1,20 @@
 package host
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"cardex/internal/runner"
 )
 
 type fileConfig struct {
-	Host struct {
-		HardDuration string `json:"hard_duration"`
-	} `json:"host"`
-	Engines map[string]runner.EngineProfile `json:"engines"`
+	Engines map[string]json.RawMessage `json:"engines"`
 	invalid bool
+	loaded  bool
 }
 
 func loadConfig(home string) fileConfig {
@@ -28,32 +27,45 @@ func loadConfig(home string) fileConfig {
 		cfg.invalid = true
 		return cfg
 	}
+	cfg.loaded = true
 	return cfg
 }
 
-// hardLimit is a wall-clock limit from config.json. Token budgets are not durations.
-func hardLimit(cfg fileConfig) time.Duration {
-	text := strings.TrimSpace(cfg.Host.HardDuration)
-	if text == "" {
-		return 0
+// resolveEngineProfile returns the profile JSON for a non-empty engines name.
+// A missing file, an unknown name, and a value that is not a profile object
+// produce different reasons. A preset still resolves when the file has no entry.
+func resolveEngineProfile(cfg fileConfig, name string) ([]byte, string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, ""
 	}
-	d, err := time.ParseDuration(text)
-	if err != nil || d <= 0 {
-		return 0
+	if cfg.invalid {
+		return nil, fmt.Sprintf("engines profile %q unparseable: config.json", name)
 	}
-	return d
-}
-
-func profileJSON(cfg fileConfig, name string) ([]byte, bool) {
-	if cfg.Engines != nil {
-		if p, ok := cfg.Engines[name]; ok {
-			raw, err := json.Marshal(p)
-			return raw, err == nil
+	if raw, ok := cfg.Engines[name]; ok {
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) == 0 || trimmed[0] != '{' {
+			return nil, fmt.Sprintf("engines profile %q unparseable", name)
 		}
+		var profile runner.EngineProfile
+		if err := json.Unmarshal(trimmed, &profile); err != nil {
+			return nil, fmt.Sprintf("engines profile %q unparseable: %v", name, err)
+		}
+		out, err := json.Marshal(profile)
+		if err != nil {
+			return nil, fmt.Sprintf("engines profile %q unparseable: %v", name, err)
+		}
+		return out, ""
 	}
-	if p, ok := runner.EnginePreset(name); ok {
-		raw, err := json.Marshal(p)
-		return raw, err == nil
+	if profile, ok := runner.EnginePreset(name); ok {
+		out, err := json.Marshal(profile)
+		if err != nil {
+			return nil, fmt.Sprintf("engines profile %q unparseable: %v", name, err)
+		}
+		return out, ""
 	}
-	return nil, false
+	if cfg.loaded && cfg.Engines != nil {
+		return nil, fmt.Sprintf("engines profile %q unknown", name)
+	}
+	return nil, fmt.Sprintf("engines profile %q missing", name)
 }

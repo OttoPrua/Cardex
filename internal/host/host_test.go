@@ -269,7 +269,7 @@ func TestRunKillsProcessGroup(t *testing.T) {
 			},
 		}
 	})
-	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"host":{"hard_duration":"5s"}}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "attempts", id, "hard-duration"), []byte("400ms"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
@@ -277,7 +277,7 @@ func TestRunKillsProcessGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	elapsed := time.Since(start)
-	if elapsed > 20*time.Second {
+	if elapsed > 8*time.Second {
 		t.Fatalf("host waited %s", elapsed)
 	}
 	raw, err := os.ReadFile(filepath.Join(work, "grandchild.pid"))
@@ -306,8 +306,11 @@ func TestRunKillsProcessGroup(t *testing.T) {
 	if attempt.Exit == nil || *attempt.Exit == 0 {
 		t.Fatalf("exit %#v", attempt.Exit)
 	}
-	if attempt.Outcome != "" || attempt.EndedAt.IsZero() {
-		t.Fatalf("attempt ended %v outcome %q", attempt.EndedAt, attempt.Outcome)
+	if attempt.Outcome != "" || attempt.EndedAt.IsZero() || attempt.ErrorClass != model.ErrorTimeout {
+		t.Fatalf("attempt ended %v outcome %q class %q", attempt.EndedAt, attempt.Outcome, attempt.ErrorClass)
+	}
+	if !strings.Contains(attempt.ErrorExcerpt, "hard-limit timeout") {
+		t.Fatalf("excerpt %q", attempt.ErrorExcerpt)
 	}
 }
 
@@ -319,7 +322,10 @@ func TestHardTokensDoNotArmTimer(t *testing.T) {
 			},
 		}
 	})
-	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"host":{"hard_duration":"not-a-duration"}}`), 0o644); err != nil {
+	// A one-millisecond global host key must not arm the timer. The name is
+	// split so this file does not become a deadline source.
+	decoy := []byte(`{"host":{"` + "hard_" + "duration" + `":"1ms"}}`)
+	if err := os.WriteFile(filepath.Join(home, "config.json"), decoy, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
@@ -337,8 +343,12 @@ func TestHardTokensDoNotArmTimer(t *testing.T) {
 	if attempt.Exit == nil || *attempt.Exit != 0 || attempt.Usage.Tokens != 3 {
 		t.Fatalf("exit %#v usage %+v", attempt.Exit, attempt.Usage)
 	}
-	if _, ok := eventType(events, "host_config"); !ok {
-		t.Fatal("invalid hard_duration produced no warning")
+	ev, ok := eventType(events, "budget_duration")
+	if !ok || !strings.Contains(string(ev.Data), "missing") {
+		t.Fatalf("missing duration event %#v", ev)
+	}
+	if attempt.ErrorClass == model.ErrorTimeout {
+		t.Fatal("token count armed the timer")
 	}
 }
 

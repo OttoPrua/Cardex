@@ -21,7 +21,7 @@ func (OpenCode) NeedsPTY() bool { return false }
 func (OpenCode) Drive(context.Context, io.ReadWriter) error { return nil }
 
 func (OpenCode) Classify(exit int, output []byte) model.ErrorClass {
-	return ClassifyOutput(string(output))
+	return ClassifyAttempt(exit, output)
 }
 
 func (OpenCode) ParseUsage(output []byte) model.Usage { return ParseOutputUsage(output) }

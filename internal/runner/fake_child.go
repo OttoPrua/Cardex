@@ -85,6 +85,10 @@ func childPrelude(out *bytes.Buffer, spec LaunchSpec, step scriptAttempt) error 
 	}
 	sec := strconv.FormatFloat(d.Seconds(), 'f', 3, 64)
 	cmd := exec.Command("/bin/sh", "-c", `sleep "$1"; echo late > "$2"`, "sh", sec, step.GrandchildMarker)
+	// Keep the host's output pipe open after this process exits. Go would
+	// otherwise point a nil Stdout at DevNull, and the pipe would close early.
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -112,22 +114,88 @@ func scriptEnv(raw []byte, index int) []string {
 
 var fakeDriveCount atomic.Uint64
 
+var (
+	fakeDriveMu   sync.Mutex
+	fakeDriveLast []byte
+)
+
 // FakeDriveCount is how many times Fake.Drive has been entered in this process.
 func FakeDriveCount() uint64 { return fakeDriveCount.Load() }
 
-// Drive marks that the host attached a PTY. It does not read the master.
-func (Fake) Drive(context.Context, io.ReadWriter) error {
+// FakeDriveCapture is the bytes the last Fake.Drive read from its stream.
+func FakeDriveCapture() []byte {
+	fakeDriveMu.Lock()
+	defer fakeDriveMu.Unlock()
+	return append([]byte(nil), fakeDriveLast...)
+}
+
+func rememberDrive(b []byte) {
+	fakeDriveMu.Lock()
+	fakeDriveLast = append([]byte(nil), b...)
+	fakeDriveMu.Unlock()
+}
+
+// Drive reads the executor stream until EOF. A line beginning with
+// "drive_error:" is returned to the host. Prompt, completion, and
+// budget_limited lines stay in FakeDriveCapture.
+func (Fake) Drive(ctx context.Context, rw io.ReadWriter) error {
 	fakeDriveCount.Add(1)
-	return nil
+	var buf bytes.Buffer
+	tmp := make([]byte, 4096)
+	var driveErr error
+	for {
+		if err := ctx.Err(); err != nil {
+			rememberDrive(buf.Bytes())
+			if driveErr != nil {
+				return driveErr
+			}
+			return err
+		}
+		n, err := rw.Read(tmp)
+		if n > 0 {
+			buf.Write(tmp[:n])
+			if driveErr == nil {
+				if msg, ok := driveErrorLine(buf.Bytes()); ok {
+					driveErr = errors.New(msg)
+				}
+			}
+		}
+		if err != nil {
+			rememberDrive(buf.Bytes())
+			if driveErr != nil {
+				return driveErr
+			}
+			if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+				return nil
+			}
+			return err
+		}
+	}
 }
 
-// Classify maps scripted error text onto the §5 error classes.
+func driveErrorLine(b []byte) (string, bool) {
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if bytes.HasPrefix(line, []byte("drive_error:")) {
+			return string(line), true
+		}
+	}
+	return "", false
+}
+
+// Classify maps structured errors and explicit diagnostics onto §5 classes.
 func (Fake) Classify(exit int, output []byte) model.ErrorClass {
-	return ClassifyOutput(string(output))
+	return ClassifyAttempt(exit, output)
 }
 
-// ParseUsage reads a "tokens=N" marker from the output.
-func (Fake) ParseUsage(output []byte) model.Usage { return ParseOutputUsage(output) }
+// ParseUsage honors a tokens=N marker. Real usage documents are not relabeled
+// as fake when that marker is absent.
+func (Fake) ParseUsage(output []byte) model.Usage {
+	if u, ok := parseFakeTokens(output); ok {
+		return u
+	}
+	return ParseOutputUsage(output)
+}
 
 // NeedsPTYFor reports the script's needs_pty flag. NeedsPTY stays false.
 func (Fake) NeedsPTYFor(spec LaunchSpec) bool {

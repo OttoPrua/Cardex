@@ -11,11 +11,9 @@ import (
 
 var fakeUsagePattern = regexp.MustCompile(`tokens=(\d+)`)
 
-// ParseOutputUsage reads v1 usage shapes. Unparseable output is empty usage.
+// ParseOutputUsage reads claude, codex, and opencode usage documents.
+// A tokens=N marker is the fake runner's own signal and is ignored here.
 func ParseOutputUsage(output []byte) model.Usage {
-	if u, ok := parseFakeTokens(output); ok {
-		return u
-	}
 	var (
 		best   model.Usage
 		claude int64

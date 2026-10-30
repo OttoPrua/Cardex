@@ -29,6 +29,11 @@ func reconcile(ctx context.Context, home string) error {
 		if !LiveHost(a) || processAlive(a.PID) {
 			continue
 		}
+		// A dead host is not a finished executor. The process group recorded
+		// at start has to be gone before the attempt is reported ended.
+		if pgid := readExecutorGroup(home, a.ID); processGroupAlive(pgid) {
+			continue
+		}
 		a.EndedAt = now
 		if a.ErrorExcerpt == "" {
 			a.ErrorExcerpt = "host process exited before recording a result"

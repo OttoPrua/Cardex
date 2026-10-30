@@ -20,7 +20,7 @@ func (Codex) NeedsPTY() bool { return false }
 func (Codex) Drive(context.Context, io.ReadWriter) error { return nil }
 
 func (Codex) Classify(exit int, output []byte) model.ErrorClass {
-	return ClassifyOutput(string(output))
+	return ClassifyAttempt(exit, output)
 }
 
 func (Codex) ParseUsage(output []byte) model.Usage { return ParseOutputUsage(output) }
@@ -32,7 +32,7 @@ func (Codex) WritablePaths() []string {
 
 // Build returns the v1 non-interactive codex exec argv for a write run.
 func (Codex) Build(spec LaunchSpec) ([]string, []string, error) {
-	args := []string{"codex", "exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--color", "never"}
+	args := []string{"codex", "exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--color", "never", "--json"}
 	if spec.WorkDir != "" {
 		args = append(args, "-C", spec.WorkDir)
 	}

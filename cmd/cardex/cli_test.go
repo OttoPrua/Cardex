@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"cardex/internal/model"
-	"cardex/internal/store"
 )
 
 func TestHelpListsCommands(t *testing.T) {
@@ -50,6 +49,7 @@ func TestUnimplementedLanes(t *testing.T) {
 		{[]string{"positioning", "approve", "p"}, "R4-C"},
 		{[]string{"scorecard"}, "R4-C"},
 		{[]string{"schedule", "run", "weekly"}, "R3-C"},
+		{[]string{"host", "attempt-1"}, "R2-A"},
 	}
 	for _, tc := range cases {
 		var out bytes.Buffer
@@ -60,80 +60,6 @@ func TestUnimplementedLanes(t *testing.T) {
 		if out.String() != want {
 			t.Fatalf("%v got %q", tc.args, out.String())
 		}
-	}
-}
-
-func TestHostCommandRunsFake(t *testing.T) {
-	home := t.TempDir()
-	work := filepath.Join(home, "work")
-	if err := os.MkdirAll(work, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	db, err := store.Open(filepath.Join(home, "cardex.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	ch := model.Channel{ID: "ch1", Runner: model.RunnerFake, Health: model.HealthOK, Tier: model.TierT2, Family: "fake"}
-	if err := db.CreateChannel(ctx, &ch); err != nil {
-		t.Fatal(err)
-	}
-	card := model.Card{ID: "c1", Kind: model.KindDev, Status: model.CardReady, Title: "t", Objective: "o", Node: "n"}
-	if err := db.CreateCard(ctx, &card); err != nil {
-		t.Fatal(err)
-	}
-	id := "a-cli"
-	dir := filepath.Join(home, "attempts", id)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	script := []byte(`{"attempts":{"0":{"output":"cli-marker\ntokens=11\n"}}}`)
-	if err := os.WriteFile(filepath.Join(dir, "script.json"), script, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	prompt := filepath.Join(home, "prompt.md")
-	if err := os.WriteFile(prompt, []byte("prompt"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	attempt := model.Attempt{
-		ID: id, Card: "c1", Index: 0,
-		Route: model.Route{Channel: "ch1", Model: "fake"}, Worktree: work, PromptPath: prompt,
-	}
-	if err := db.CreateAttempt(ctx, &attempt); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	var out, errb bytes.Buffer
-	if code := Main([]string{"--home", home, "host", id}, &out, &errb); code != 0 {
-		t.Fatalf("code %d %s", code, errb.String())
-	}
-	logb, err := os.ReadFile(filepath.Join(dir, "output.log"))
-	if err != nil || !strings.Contains(string(logb), "cli-marker") {
-		t.Fatalf("log %q err %v", logb, err)
-	}
-	db, err = store.Open(filepath.Join(home, "cardex.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	got, err := db.GetAttempt(ctx, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Exit == nil || *got.Exit != 0 || got.EndedAt.IsZero() || got.Usage.Tokens != 11 || got.Usage.Source != "fake" {
-		t.Fatalf("attempt exit %#v ended %v usage %+v", got.Exit, got.EndedAt, got.Usage)
-	}
-}
-
-func TestHostRequiresAttemptID(t *testing.T) {
-	var out, errb bytes.Buffer
-	if code := Main([]string{"host"}, &out, &errb); code != 2 {
-		t.Fatalf("code %d out %q err %q", code, out.String(), errb.String())
-	}
-	if strings.Contains(out.String(), "未实现") || strings.Contains(errb.String(), "未实现") {
-		t.Fatalf("still unimplemented: out %q err %q", out.String(), errb.String())
 	}
 }
 

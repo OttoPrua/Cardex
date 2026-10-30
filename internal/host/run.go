@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -64,12 +63,6 @@ func run(ctx context.Context, home, attemptID string) error {
 	}
 
 	cfg := loadConfig(home)
-	if cfg.invalid {
-		appendEvent(ctx, db, attempt.ID, "host_config", map[string]string{"message": "config.json ignored"})
-	} else if strings.TrimSpace(cfg.Host.HardDuration) != "" && hardLimit(cfg) == 0 {
-		appendEvent(ctx, db, attempt.ID, "host_config", map[string]string{"message": "host.hard_duration ignored"})
-	}
-
 	spec := runner.LaunchSpec{
 		AttemptID:    attempt.ID,
 		AttemptIndex: attempt.Index,
@@ -81,10 +74,14 @@ func run(ctx context.Context, home, attemptID string) error {
 	if st, err := os.Stat(scriptPath); err == nil && !st.IsDir() {
 		spec.ScriptPath = scriptPath
 	}
-	if channel.Runner == model.RunnerClaude && channel.EngineProfile != "" {
-		if raw, ok := profileJSON(cfg, channel.EngineProfile); ok {
-			spec.Script = raw
+	if channel.Runner == model.RunnerClaude && strings.TrimSpace(channel.EngineProfile) != "" {
+		raw, reason := resolveEngineProfile(cfg, channel.EngineProfile)
+		if reason != "" {
+			return handoffReview(ctx, db, &attempt, &card, reason)
 		}
+		spec.Script = raw
+	} else if cfg.invalid {
+		appendEvent(ctx, db, attempt.ID, "host_config", map[string]string{"message": "config.json ignored"})
 	}
 	argv, env, err := r.Build(spec)
 	if err != nil {
@@ -106,6 +103,17 @@ func run(ctx context.Context, home, attemptID string) error {
 		return err
 	}
 	logPath := filepath.Join(attemptDir, "output.log")
+	limit, durationReason := attemptDeadline(attemptDir)
+	if durationReason != "" {
+		kind := "missing"
+		if strings.HasPrefix(durationReason, "unparseable") {
+			kind = "unparseable"
+		}
+		appendEvent(ctx, db, attempt.ID, "budget_duration", map[string]string{
+			"reason": kind,
+			"detail": durationReason,
+		})
+	}
 
 	attempt.PID = os.Getpid()
 	if attempt.StartedAt.IsZero() {
@@ -179,65 +187,96 @@ func run(ctx context.Context, home, attemptID string) error {
 	})
 
 	var (
-		waitErr error
-		output  []byte
-		pid     int
+		waitErr  error
+		output   []byte
+		driveErr error
+		pid      int
+		fired    interface{ Load() bool }
 	)
-	limit := hardLimit(cfg)
 	if needPTY {
 		session, err := pty.Start(wrapped)
 		if err != nil {
 			return failStart(ctx, db, &attempt, err)
 		}
 		pid = session.Cmd.Process.Pid
+		if err := persistExecutorGroup(attemptDir, pid); err != nil {
+			killGroup(pid)
+			_ = session.Cmd.Wait()
+			_ = session.Master.Close()
+			return failStart(ctx, db, &attempt, err)
+		}
+		appendEvent(ctx, db, attempt.ID, "executor_pgid", map[string]any{"pgid": pid})
+		pr, pw := io.Pipe()
 		var buf bytes.Buffer
-		copied := make(chan struct{})
+		copied = make(chan struct{})
 		go func() {
 			defer close(copied)
-			_, _ = io.Copy(&buf, session.Master)
+			defer pw.Close()
+			tmp := make([]byte, 32*1024)
+			for {
+				n, rerr := session.Master.Read(tmp)
+				if n > 0 {
+					_, _ = buf.Write(tmp[:n])
+					_, _ = pw.Write(tmp[:n])
+				}
+				if rerr != nil {
+					return
+				}
+			}
 		}()
-		_ = r.Drive(ctx, session.Master)
-		stop := watchKill(ctx, pid, limit)
+		release := func() { _ = session.Master.Close() }
+		var stop func()
+		var killed <-chan struct{}
+		stop, killed, fired = armGroup(ctx, pid, limit, release)
+		driveErr = r.Drive(ctx, struct {
+			io.Reader
+			io.Writer
+		}{pr, session.Master})
 		waitErr = session.Cmd.Wait()
-		stop()
-		select {
-		case <-copied:
-		case <-time.After(3 * time.Second):
-			_ = session.Master.Close()
-			<-copied
-		}
+		waitCopy(copied, stop, killed)
 		_ = session.Master.Close()
-		output = buf.Bytes()
-		if err := os.WriteFile(logPath, output, 0o644); err != nil {
-			_ = finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, err)
-			return err
-		}
+		output = append([]byte(nil), buf.Bytes()...)
 	} else {
 		if err := wrapped.Start(); err != nil {
 			closePipe(logWrite, logRead)
 			return failStart(ctx, db, &attempt, err)
 		}
 		pid = wrapped.Process.Pid
+		if err := persistExecutorGroup(attemptDir, pid); err != nil {
+			killGroup(pid)
+			_ = wrapped.Wait()
+			closePipe(logWrite, logRead)
+			return failStart(ctx, db, &attempt, err)
+		}
+		appendEvent(ctx, db, attempt.ID, "executor_pgid", map[string]any{"pgid": pid})
 		if logWrite != nil {
 			_ = logWrite.Close()
 			logWrite = nil
 		}
-		stop := watchKill(ctx, pid, limit)
-		waitErr = wrapped.Wait()
-		stop()
-		if copied != nil {
-			<-copied
+		release := func() {
+			if logRead != nil {
+				_ = logRead.Close()
+			}
 		}
+		var stop func()
+		var killed <-chan struct{}
+		stop, killed, fired = armGroup(ctx, pid, limit, release)
+		waitErr = wrapped.Wait()
+		waitCopy(copied, stop, killed)
 		if logRead != nil {
 			_ = logRead.Close()
 		}
 		output = append([]byte(nil), pipeBuf.Bytes()...)
-		if err := os.WriteFile(logPath, output, 0o644); err != nil {
-			_ = finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, err)
-			return err
-		}
 	}
-	return finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, nil)
+	timedOut := fired != nil && fired.Load()
+	if driveErr != nil && timedOut && errors.Is(driveErr, context.Canceled) {
+		driveErr = nil
+	}
+	if err := os.WriteFile(logPath, output, 0o644); err != nil {
+		_ = finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, err, driveErr, timedOut)
+		return err
+	}
+	return finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, nil, driveErr, timedOut)
 }
 
 func commandFor(argv, extra []string) (*exec.Cmd, error) {
@@ -323,12 +362,48 @@ func mergeEnv(base, extra []string) []string {
 	return out
 }
 
-func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card model.Card, output []byte, code int, r runner.Runner, prior error) error {
+func handoffReview(ctx context.Context, db *store.Store, attempt *model.Attempt, card *model.Card, reason string) error {
+	attempt.EndedAt = time.Now().UTC()
+	attempt.ErrorExcerpt = trimExcerpt(reason)
+	card.Status = model.CardNeedsInput
+	card.WaitReason = trimExcerpt(reason)
+	if err := db.UpdateCard(ctx, card); err != nil {
+		return err
+	}
+	if err := db.UpdateAttempt(ctx, attempt); err != nil {
+		return err
+	}
+	appendEvent(ctx, db, attempt.ID, "needs_review", map[string]string{"reason": reason})
+	return nil
+}
+
+func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card model.Card, output []byte, code int, r runner.Runner, prior, driveErr error, timedOut bool) error {
 	attempt.Exit = &code
 	attempt.EndedAt = time.Now().UTC()
 	attempt.Usage = r.ParseUsage(output)
 	attempt.ErrorClass = r.Classify(code, output)
 	attempt.ErrorExcerpt = excerpt(output, attempt.ErrorClass)
+	if timedOut {
+		attempt.ErrorClass = model.ErrorTimeout
+		if attempt.ErrorExcerpt == "" {
+			attempt.ErrorExcerpt = "hard-limit timeout"
+		} else if !strings.Contains(attempt.ErrorExcerpt, "hard-limit timeout") {
+			attempt.ErrorExcerpt = trimExcerpt("hard-limit timeout: " + attempt.ErrorExcerpt)
+		}
+	}
+	if driveErr != nil && !errors.Is(driveErr, context.Canceled) {
+		msg := trimExcerpt(driveErr.Error())
+		if msg != "" && !strings.Contains(attempt.ErrorExcerpt, msg) {
+			if attempt.ErrorExcerpt == "" {
+				attempt.ErrorExcerpt = msg
+			} else {
+				attempt.ErrorExcerpt = trimExcerpt(attempt.ErrorExcerpt + "\n" + msg)
+			}
+		}
+		if attempt.ErrorClass == "" {
+			attempt.ErrorClass = r.Classify(code, []byte("error: "+driveErr.Error()))
+		}
+	}
 	if attempt.ErrorExcerpt == "" && prior != nil {
 		attempt.ErrorExcerpt = trimExcerpt(prior.Error())
 	}
@@ -339,12 +414,19 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 	if err := db.UpdateAttempt(ctx, attempt); err != nil {
 		return err
 	}
-	appendEvent(ctx, db, attempt.ID, "host_finish", map[string]any{
+	finishEvent := map[string]any{
 		"exit":        code,
 		"tokens":      attempt.Usage.Tokens,
 		"source":      attempt.Usage.Source,
 		"error_class": attempt.ErrorClass,
-	})
+	}
+	if timedOut {
+		finishEvent["stop"] = "hard_limit_timeout"
+	}
+	if driveErr != nil && !errors.Is(driveErr, context.Canceled) {
+		finishEvent["drive_error"] = driveErr.Error()
+	}
+	appendEvent(ctx, db, attempt.ID, "host_finish", finishEvent)
 	if commitErr != nil {
 		appendEvent(ctx, db, attempt.ID, "workspace_commit", map[string]string{"error": commitErr.Error()})
 	} else {
@@ -396,41 +478,4 @@ func exitCode(err error) int {
 		}
 	}
 	return 1
-}
-
-func watchKill(ctx context.Context, pid int, limit time.Duration) func() {
-	if pid <= 1 {
-		return func() {}
-	}
-	cancellable := ctx != nil && ctx.Done() != nil
-	if limit <= 0 && !cancellable {
-		return func() {}
-	}
-	done := make(chan struct{})
-	var once sync.Once
-	stop := func() { once.Do(func() { close(done) }) }
-	go func() {
-		var timer <-chan time.Time
-		if limit > 0 {
-			t := time.NewTimer(limit)
-			defer t.Stop()
-			timer = t.C
-		}
-		select {
-		case <-done:
-		case <-timer:
-			killGroup(pid)
-		case <-ctx.Done():
-			killGroup(pid)
-		}
-	}()
-	return stop
-}
-
-func killGroup(pid int) {
-	if pid <= 1 {
-		return
-	}
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	_ = syscall.Kill(pid, syscall.SIGKILL)
 }

@@ -1,6 +1,8 @@
 package runner
 
 import (
+	"bytes"
+	"encoding/json"
 	"regexp"
 	"strings"
 
@@ -18,9 +20,10 @@ var (
 	transportClassRe  = regexp.MustCompile(`(?i)proxyconnect|proxy unreachable|i/o timeout|dial tcp|no such host|connection reset|connection refused|enotfound|provider unavailable|model unavailable|transport_failed`)
 )
 
-// ClassifyOutput maps executor text onto the v2 error classes.
-// Text that v1 would call input_too_long, executor_crash, in_flight, unknown,
-// or cancellation returns the empty class.
+// ClassifyOutput maps one explicit diagnostic string onto the v2 error classes.
+// It is not a transcript scanner. Callers pass a structured error field or an
+// explicit diagnostic line. Text that v1 would call input_too_long,
+// executor_crash, in_flight, unknown, or cancellation returns the empty class.
 func ClassifyOutput(text string) model.ErrorClass {
 	switch {
 	case authClassRe.MatchString(text):
@@ -40,4 +43,129 @@ func ClassifyOutput(text string) model.ErrorClass {
 	default:
 		return ""
 	}
+}
+
+// ClassifyAttempt classifies from a structured terminal error, an explicit
+// diagnostic line, or leaves the class empty. Exit 0 still counts when the
+// terminal state is explicit. Words inside the task body are not a source.
+func ClassifyAttempt(exit int, output []byte) model.ErrorClass {
+	if msg, ok := structuredDiagnostic(output); ok {
+		if cls := ClassifyOutput(msg); cls != "" {
+			return cls
+		}
+	}
+	if diag := explicitDiagnostics(output); diag != "" {
+		if cls := ClassifyOutput(diag); cls != "" {
+			return cls
+		}
+	}
+	if exit != 0 {
+		return ""
+	}
+	return ""
+}
+
+func structuredDiagnostic(output []byte) (string, bool) {
+	if msg, ok := diagnosticFromObjects(jsonObjects(output)); ok {
+		return msg, true
+	}
+	trimmed := bytes.TrimSpace(output)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return "", false
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(trimmed, &obj) != nil {
+		return "", false
+	}
+	return diagnosticObject(obj)
+}
+
+func jsonObjects(output []byte) []map[string]json.RawMessage {
+	var out []map[string]json.RawMessage
+	for _, line := range bytes.Split(output, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || line[0] != '{' {
+			continue
+		}
+		var obj map[string]json.RawMessage
+		if json.Unmarshal(line, &obj) != nil {
+			continue
+		}
+		out = append(out, obj)
+	}
+	return out
+}
+
+func diagnosticFromObjects(objs []map[string]json.RawMessage) (string, bool) {
+	for _, obj := range objs {
+		if msg, ok := diagnosticObject(obj); ok {
+			return msg, true
+		}
+	}
+	return "", false
+}
+
+func diagnosticObject(obj map[string]json.RawMessage) (string, bool) {
+	switch jsonString(obj["type"]) {
+	case "result":
+		if !jsonBool(obj["is_error"]) {
+			return "", false
+		}
+		msg := strings.TrimSpace(strings.Trim(jsonString(obj["subtype"])+": "+jsonString(obj["result"]), ": "))
+		if msg == "" {
+			msg = "result error"
+		}
+		return msg, true
+	case "turn.failed":
+		msg := nestedMessage(obj["error"])
+		if msg == "" {
+			msg = "turn.failed"
+		}
+		return msg, true
+	case "error":
+		msg := nestedMessage(obj["error"])
+		if msg == "" {
+			msg = "error"
+		}
+		return msg, true
+	case "budget_limited":
+		return "budget_limited", true
+	default:
+		return "", false
+	}
+}
+
+func explicitDiagnostics(output []byte) string {
+	var b strings.Builder
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "error:") || strings.HasPrefix(line, "outside write denied:") {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+func jsonBool(raw json.RawMessage) bool {
+	var v bool
+	return json.Unmarshal(raw, &v) == nil && v
+}
+
+func nestedMessage(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal(raw, &obj) != nil {
+		return ""
+	}
+	if msg := jsonString(obj["message"]); msg != "" {
+		return msg
+	}
+	return jsonString(obj["name"])
 }

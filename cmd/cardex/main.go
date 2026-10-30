@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"cardex/internal/board"
-	"cardex/internal/host"
 	"cardex/internal/sched"
 	"cardex/internal/store"
 )
@@ -90,7 +89,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	case "doctor":
 		return unimplemented(stdout, "R4-B")
 	case "host":
-		return cmdHost(home, rest[1:], stderr)
+		return unimplemented(stdout, "R2-A")
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s", rest[0], usage)
 		return 2
@@ -128,23 +127,6 @@ func splitGlobal(args []string) (home string, asJSON bool, rest []string, err er
 		}
 	}
 	return home, asJSON, rest, nil
-}
-
-func cmdHost(home string, args []string, stderr io.Writer) int {
-	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
-		fmt.Fprintln(stderr, "host requires an attempt id")
-		return 2
-	}
-	home, err := resolveHome(home)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 2
-	}
-	if err := host.Run(context.Background(), home, args[0]); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	return 0
 }
 
 func unimplemented(stdout io.Writer, lane string) int {

@@ -190,23 +190,23 @@ func (h *Home) Approve(ctx context.Context, proposalID string) error {
 }
 
 func (h *Home) publish(ctx context.Context, entries []model.Positioning) error {
-	var err error
+	var txErr error
 	delay := time.Millisecond
 	for i := 0; i < 40; i++ {
-		err = h.db.WithTx(ctx, func(ctx context.Context) error {
+		txErr = h.db.WithTx(ctx, func(ctx context.Context) error {
 			return h.publishOnce(ctx, entries)
 		})
-		if err == nil || !publishConflict(err) {
-			return err
+		if txErr == nil || !publishConflict(txErr) {
+			return txErr
 		}
-		if err = sleepCtx(ctx, delay); err != nil {
-			return err
+		if waitErr := sleepCtx(ctx, delay); waitErr != nil {
+			return waitErr
 		}
 		if delay < 50*time.Millisecond {
 			delay *= 2
 		}
 	}
-	return err
+	return txErr
 }
 
 func (h *Home) publishOnce(ctx context.Context, entries []model.Positioning) error {

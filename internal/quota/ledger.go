@@ -186,7 +186,7 @@ func (l *Ledger) Record(ctx context.Context, channelID string, usage model.Usage
 	return nil
 }
 
-// ObserveLimit hard-blocks the channel until reset. It moves only the window whose current end is that reset, and only when exactly one window matches.
+// ObserveLimit hard-blocks the channel until reset. One valid window moves to that reset even when its current end differs. Several windows move one only when its current end is that reset and no other window ends there.
 func (l *Ledger) ObserveLimit(ctx context.Context, channelID string, reset time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -200,19 +200,25 @@ func (l *Ledger) ObserveLimit(ctx context.Context, channelID string, reset time.
 	reset = reset.UTC()
 	st.blockUntil = reset
 	now := l.now().UTC()
+	valid := -1
+	validN := 0
 	matched := -1
+	matchN := 0
 	for i, w := range st.windows {
 		_, end, ok := w.bounds(now)
-		if !ok || !end.Equal(reset) {
+		if !ok {
 			continue
 		}
-		if matched >= 0 {
-			matched = -1
-			break
+		valid = i
+		validN++
+		if end.Equal(reset) {
+			matched = i
+			matchN++
 		}
-		matched = i
 	}
-	if matched >= 0 {
+	if validN == 1 {
+		st.windows[valid].Anchor = reset
+	} else if matchN == 1 {
 		st.windows[matched].Anchor = reset
 	}
 	return nil

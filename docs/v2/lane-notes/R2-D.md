@@ -25,3 +25,5 @@ store 没有与定位行无关的表版本。空表版本暂存在 Current 不�
 本层过滤后没有可用候选才向上借一级 → internal/route/select.go:40,84 → TestBorrowOnlyAfterTierIsUnusable
 一次撞线只校正对得上的窗口 → internal/quota/ledger.go:190 → TestObserveLimitKeepsOtherWindows
 请求上限参与剩余比例，一次记录计一次 → internal/quota/ledger.go:52,83,250；internal/route/select.go:305,322,350 → TestRequestCapRemainingRatio
+发布没提交成功时不得当成批准，nil 等待不能盖掉事务错误 → internal/positioning/home.go:185,188,202,209 → TestApprovePersistentLockConflict
+能确定唯一窗口时用观测重置校正，不必先等于旧预测 → internal/quota/ledger.go:219,221 → TestObserveLimitCorrectsDeterminedWindow, TestSelectRecoversAfterMisalignedReset

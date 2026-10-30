@@ -568,6 +568,46 @@ func TestBorrowOnlyAfterTierIsUnusable(t *testing.T) {
 	}
 }
 
+func TestSelectRecoversAfterMisalignedReset(t *testing.T) {
+	now := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
+	predicted := time.Date(2026, 10, 30, 15, 0, 0, 0, time.UTC)
+	observed := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	led, clock, channels, pos := build(t, now, []spec{
+		{id: "hot", modelName: "hot-m", family: "f", window: "5h", rule: "rolling", limit: 100, used: 99, anchor: predicted},
+		{id: "spare", modelName: "spare-m", family: "f", window: "5h", rule: "rolling", limit: 100, used: 10, anchor: predicted},
+	})
+	if err := led.ObserveLimit(context.Background(), "hot", observed); err != nil {
+		t.Fatal(err)
+	}
+	card := model.Card{Kind: model.KindDev, Tier: model.TierT2}
+	rt, reason, err := call(t, now, led, channels, pos, card, nil)
+	if err != nil || rt.Channel != "spare" {
+		t.Fatalf("before reset route %+v err %v filtered %+v", rt, err, reason.Filtered)
+	}
+	if got, ok := oneReason(reason, "hot"); !ok || got != ReasonBlocked {
+		t.Fatalf("before reset hot %+v", reason.Filtered)
+	}
+	*clock = observed.Add(-time.Second)
+	rt, reason, err = call(t, observed.Add(-time.Second), led, channels, pos, card, nil)
+	if err != nil || rt.Channel != "spare" {
+		t.Fatalf("early lift route %+v err %v", rt, err)
+	}
+	if got, ok := oneReason(reason, "hot"); !ok || got != ReasonBlocked {
+		t.Fatalf("early lift hot %+v", reason.Filtered)
+	}
+	*clock = observed
+	rt, reason, err = call(t, observed, led, channels, pos, card, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := oneReason(reason, "hot"); ok && got == ReasonCutoff {
+		t.Fatalf("stale 99/100 still cut off %+v", reason.Filtered)
+	}
+	if !containsChannel(reason, "hot") {
+		t.Fatalf("hot dropped after observed reset route %+v reason %+v", rt, reason)
+	}
+}
+
 type spec struct {
 	id, modelName, family, source, window, rule string
 	tier                                        model.Tier

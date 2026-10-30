@@ -284,6 +284,108 @@ func TestObserveLimitKeepsOtherWindows(t *testing.T) {
 	}
 }
 
+func TestObserveLimitCorrectsDeterminedWindow(t *testing.T) {
+	now := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
+	predicted := time.Date(2026, 10, 30, 15, 0, 0, 0, time.UTC)
+	observed := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	weekEnd := now.Add(7 * 24 * time.Hour)
+	dailyAnchor := time.Date(2026, 10, 30, 15, 0, 0, 0, time.UTC)
+	fixed5hAnchor := time.Date(2026, 10, 30, 0, 0, 0, 0, time.UTC)
+	type want struct {
+		used, limit int64
+		ratio       float64
+		reset       time.Time
+	}
+	cases := []struct {
+		name    string
+		wins    []model.QuotaWindow
+		used    int64
+		observe time.Time
+		after   want
+	}{
+		{
+			name:    "rolling 5h predicted 15:00 observed 12:00",
+			wins:    []model.QuotaWindow{{Name: "5h", ResetRule: "rolling", ResetAt: predicted, LimitTokens: 100}},
+			used:    99,
+			observe: observed,
+			after:   want{used: 0, limit: 100, ratio: 1, reset: observed.Add(5 * time.Hour)},
+		},
+		{
+			name:    "fixed daily predicted 15:00 observed 12:00",
+			wins:    []model.QuotaWindow{{Name: "daily", ResetRule: "fixed", ResetAt: dailyAnchor, LimitTokens: 80}},
+			used:    40,
+			observe: observed,
+			after:   want{used: 0, limit: 80, ratio: 1, reset: observed.Add(24 * time.Hour)},
+		},
+		{
+			name:    "fixed 5h predicted 15:00 observed 12:00",
+			wins:    []model.QuotaWindow{{Name: "5h", ResetRule: "fixed", ResetAt: fixed5hAnchor, LimitTokens: 100}},
+			used:    99,
+			observe: observed,
+			after:   want{used: 0, limit: 100, ratio: 1, reset: observed.Add(5 * time.Hour)},
+		},
+		{
+			name: "several windows observation matches none, weekly kept",
+			wins: []model.QuotaWindow{
+				{Name: "5h", ResetRule: "rolling", ResetAt: predicted, LimitTokens: 1000},
+				{Name: "weekly", ResetRule: "rolling", ResetAt: weekEnd, LimitTokens: 100},
+			},
+			used:    40,
+			observe: observed,
+			after:   want{used: 40, limit: 100, ratio: 0.6, reset: weekEnd},
+		},
+		{
+			name: "several windows observation matches none, 5h kept",
+			wins: []model.QuotaWindow{
+				{Name: "5h", ResetRule: "rolling", ResetAt: predicted, LimitTokens: 50},
+				{Name: "weekly", ResetRule: "rolling", ResetAt: weekEnd, LimitTokens: 1000},
+			},
+			used:    40,
+			observe: observed,
+			after:   want{used: 40, limit: 50, ratio: 0.2, reset: predicted},
+		},
+		{
+			name: "several windows observation matches only the 5h end",
+			wins: []model.QuotaWindow{
+				{Name: "5h", ResetRule: "rolling", ResetAt: predicted, LimitTokens: 1000},
+				{Name: "weekly", ResetRule: "rolling", ResetAt: weekEnd, LimitTokens: 100},
+			},
+			used:    40,
+			observe: predicted,
+			after:   want{used: 40, limit: 100, ratio: 0.6, reset: weekEnd},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l, clock := clocked(now)
+			l.Configure(model.Channel{ID: "c", QuotaWindows: tc.wins})
+			record(t, l, "c", tc.used, 1, now.Add(-time.Minute), now)
+			if err := l.ObserveLimit(context.Background(), "c", tc.observe); err != nil {
+				t.Fatal(err)
+			}
+			for _, at := range []time.Time{now, tc.observe.Add(-time.Second)} {
+				*clock = at
+				est := mustRemaining(t, l, "c")
+				if !est.Blocked || !est.Reset.Equal(tc.observe) {
+					t.Fatalf("before observed reset at %s: %+v", at.Format(time.RFC3339), est)
+				}
+			}
+			*clock = tc.observe
+			est := mustRemaining(t, l, "c")
+			if est.Blocked || est.Unknown || est.UsedTokens != tc.after.used || est.LimitTokens != tc.after.limit || !est.Reset.Equal(tc.after.reset) {
+				t.Fatalf("after observed reset %+v", est)
+			}
+			if est.UsedTokens == 99 || est.Reset.Equal(predicted) && tc.after.reset != predicted {
+				t.Fatalf("stale usage survived %+v", est)
+			}
+			wantRatio := float64(tc.after.limit-tc.after.used) / float64(tc.after.limit)
+			if est.Ratio < wantRatio-1e-9 || est.Ratio > wantRatio+1e-9 || (tc.used == 99 && est.Ratio <= 0.02) {
+				t.Fatalf("ratio %v want %v estimate %+v", est.Ratio, wantRatio, est)
+			}
+		})
+	}
+}
+
 func clocked(now time.Time) (*Ledger, *time.Time) {
 	current := now
 	l := New()

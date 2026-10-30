@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"result":"CURSOR_OK","session_id":"cursor-session","duration_ms":321,"usage":{"inputTokens":10,"outputTokens":4,"cacheReadTokens":3,"cacheWriteTokens":2}}

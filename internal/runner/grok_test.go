@@ -635,9 +635,12 @@ func TestGrokQuotaAndCrashChannels(t *testing.T) {
 		if !ok || !errors.Is(err, runner.ErrGrokCrash) {
 			t.Fatalf("signaled exit %v ok=%v", err, ok)
 		}
-		err, ok = runner.ConsumeGrokProcessExit(runner.GrokProcessExit{Signaled: true, Signal: 15})
+		err, ok = runner.ConsumeGrokProcessExit(runner.GrokProcessExit{Signaled: true, Signal: 11})
 		if !ok || !errors.Is(err, runner.ErrGrokCrash) {
-			t.Fatalf("SIGTERM %v ok=%v", err, ok)
+			t.Fatalf("SIGSEGV %v ok=%v", err, ok)
+		}
+		if _, ok := runner.ConsumeGrokProcessExit(runner.GrokProcessExit{Signaled: true, Signal: 15}); ok {
+			t.Fatal("SIGTERM is not a v1 crash signal")
 		}
 		if _, ok := runner.ConsumeGrokProcessExit(runner.GrokProcessExit{}); ok {
 			t.Fatal("clean exit")

@@ -49,12 +49,19 @@ type GrokProcessExit struct {
 	Signal   int
 }
 
-// ConsumeGrokProcessExit reports a crash only when the child was signaled.
+// ConsumeGrokProcessExit reports a crash when WaitStatus was signaled with one
+// of the signals whose Go names are v1's crash strings: quit, aborted, killed,
+// bus error, segmentation fault. Other signals, including SIGTERM, are not.
 func ConsumeGrokProcessExit(exit GrokProcessExit) (error, bool) {
-	if exit.Signaled && exit.Signal != 0 {
-		return ErrGrokCrash, true
+	if !exit.Signaled {
+		return nil, false
 	}
-	return nil, false
+	switch exit.Signal {
+	case 3, 6, 9, 10, 11:
+		return ErrGrokCrash, true
+	default:
+		return nil, false
+	}
 }
 
 func (Grok) Name() string { return string(model.RunnerGrok) }

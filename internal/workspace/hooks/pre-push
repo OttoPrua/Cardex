@@ -1,0 +1,4 @@
+#!/bin/sh
+# Cardex reject-all pre-push hook. Design §13. Shipped with Cardex, not written into the user project.
+echo "cardex: push is blocked" >&2
+exit 1

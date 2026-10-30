@@ -23,6 +23,8 @@ import (
 // SessionDir is the grok session directory that holds goal/state.json and
 // updates.jsonl. Completion and budget_limited are read from those files.
 // The PTY ReadWriter does not carry them: goal-mode Build is an interactive TUI.
+// Quota has no checked-in interactive transcript. Crash is GrokProcessExit,
+// supplied by the host after Wait; Drive cannot see it.
 type Grok struct {
 	GoalMode   bool
 	Prompt     string
@@ -38,6 +40,22 @@ var (
 	ErrGrokCrash         = errors.New("grok goal crash")
 	errGrokNoTerminal    = errors.New("grok goal: no terminal")
 )
+
+// GrokProcessExit is the host process-exit fact. Signaled and Signal come from
+// WaitStatus after Wait (v1 grok.go process). A PTY line "signal: killed" is
+// not this fact. Drive's ReadWriter cannot carry it.
+type GrokProcessExit struct {
+	Signaled bool
+	Signal   int
+}
+
+// ConsumeGrokProcessExit reports a crash only when the child was signaled.
+func ConsumeGrokProcessExit(exit GrokProcessExit) (error, bool) {
+	if exit.Signaled && exit.Signal != 0 {
+		return ErrGrokCrash, true
+	}
+	return nil, false
+}
 
 func (Grok) Name() string { return string(model.RunnerGrok) }
 
@@ -128,10 +146,11 @@ func grokPrivilegeWidening(args []string) bool {
 // Read is blocked. v1's hosted goal loop uses this same 100ms interval.
 const grokGoalObserveEvery = 100 * time.Millisecond
 
-// Drive writes the literal /goal and the prompt. Quota and crash are read from
-// the PTY bytes. Completion and budget_limited come from SessionDir, because
-// goal-mode Build does not emit session JSON on the PTY. The session is polled
-// while Read is blocked and checked again after EOF.
+// Drive writes the literal /goal and the prompt. Completion and budget_limited
+// come from SessionDir, because goal-mode Build does not emit session JSON on
+// the PTY. The session is polled while Read is blocked and checked again after
+// EOF. PTY bytes are the TUI echo and body. They are not quota or crash: v1
+// has no interactive quota transcript, and crash is ConsumeGrokProcessExit.
 func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 	if !g.GoalMode {
 		return nil
@@ -147,7 +166,6 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 		return err
 	}
 	tmp := make([]byte, 32*1024)
-	var got []byte
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -155,15 +173,9 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 		if term, ok := ReadGrokGoalSession(g.SessionDir); ok {
 			return term
 		}
-		n, err, term, termOK := readGoalChunk(ctx, rw, tmp, g.SessionDir)
+		_, err, term, termOK := readGoalChunk(ctx, rw, tmp, g.SessionDir)
 		if termOK {
 			return term
-		}
-		if n > 0 {
-			got = append(got, tmp[:n]...)
-			if term, ok := grokDriveTerminal(got); ok {
-				return term
-			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -173,9 +185,6 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 		}
 	}
 	if term, ok := ReadGrokGoalSession(g.SessionDir); ok {
-		return term
-	}
-	if term, ok := grokDriveTerminal(got); ok {
 		return term
 	}
 	return errGrokNoTerminal
@@ -209,20 +218,6 @@ func readGoalChunk(ctx context.Context, r io.Reader, buf []byte, sessionDir stri
 	}
 }
 
-// grokDriveTerminal reads PTY / process-output facts only: an explicit error
-// record (quota) or a process error line (crash). Session JSON on this stream
-// is not completion or budget_limited.
-func grokDriveTerminal(output []byte) (error, bool) {
-	text := errorScan(output)
-	if grokQuotaRe.MatchString(text) {
-		return ErrGrokQuotaHit, true
-	}
-	if crashSignalRe.MatchString(text) {
-		return ErrGrokCrash, true
-	}
-	return nil, false
-}
-
 func (Grok) Classify(_ int, output []byte) model.ErrorClass {
 	if grokBudgetLimited(output) {
 		return model.ErrorBudgetLimited
@@ -242,13 +237,13 @@ func (Grok) ParseUsage(output []byte) model.Usage {
 // Regexes copied from v1 cmd/cardex (failure_class.go, runner.go, engines.go,
 // grok.go, cursor.go, kimi.go, routing_policy.go). Quota is matched before
 // the generic failure regexes, matching v1 isLimitHit running before
-// classifyFailure. "no such file or directory" is not a crash signal here:
-// v1's P0 note is that the phrase appears in ordinary transcripts.
+// classifyFailure. Crash is not a scanned phrase: "signal: killed" is v1's
+// ExitError text, and ordinary transcripts contain lookalike words.
+// ConsumeGrokProcessExit takes the host WaitStatus fact instead.
 var (
 	authClassRe       = regexp.MustCompile(`(?i)(?:\bhttp(?:/\d(?:\.\d)?)?\s+(?:status\s+)?401\b|\bhttp\s+status\s*[:=]\s*401\b|\bstatus(?:\s+code)?\s*[:=]\s*401\b|\b401\s*(?::|-)?\s*unauthorized\b|\bunauthorized\s*\(\s*401\s*\))|invalid api key|invalid or expired credentials|authentication failed|oauth token (?:has )?(?:expired|invalid|revoked)|please (?:re-?)?login|please log in again|reason\s*=\s*no auth context|请重新登录|token expired`)
 	permissionClassRe = regexp.MustCompile(`(?i)403 forbidden|permission denied|access denied by (?:policy|admin|organization)|not authorized to (?:perform|access)|operation not permitted by (?:policy|admin)|blocked by (?:policy|admin|organization)`)
 	timeoutClassRe    = regexp.MustCompile(`(?i)步骤超时[（(]|远程步骤超时[（(]|远端步骤超时[（(]|context deadline exceeded|deadline exceeded \(`)
-	crashSignalRe     = regexp.MustCompile(`(?i)signal: killed|signal: aborted|signal: segmentation fault|signal: quit|signal: bus error|executable file not found|找不到可执行文件`)
 	transportRe       = regexp.MustCompile(`(?i)connection (?:reset|refused|closed|error)|error sending request|i/o timeout|stream disconnect|no such host|network is unreachable|temporary failure in name resolution|disconnected before`)
 	limitRe           = regexp.MustCompile(`(?i)usage limit|limit reached|out of extra usage|hit your (?:\w+ )?limit|limit will reset|out of usage credits|out of credits|/usage-credits|session limit`)
 	engineQuotaRe     = regexp.MustCompile(`(?i)quota (?:exceeded|exhausted)|insufficient quota|exceeded your .{0,24}quota|额度不足|额度已用完|配额不足|配额已用尽|余额不足|欠费`)
@@ -303,8 +298,8 @@ func classifyScanned(output []byte, quota *regexp.Regexp, before func(string) mo
 }
 
 // errorScan collects explicit error-record fields and non-JSON process lines.
-// Assistant/body JSON is ignored. A JSON record that has not parsed yet is held
-// and is not scanned as raw error text.
+// Goal-command echo, assistant/body JSON, and an unfinished record are not
+// error facts. Nested business fields are not walked.
 func errorScan(output []byte) string {
 	var parts []string
 	rest := output
@@ -312,10 +307,7 @@ func errorScan(output []byte) string {
 		line, next, _ := cutScanLine(rest)
 		rest = next
 		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if heldJSONRecord(line) {
+		if line == "" || goalEchoLine(line) || heldJSONRecord(line) {
 			continue
 		}
 		var obj map[string]any
@@ -326,6 +318,12 @@ func errorScan(output []byte) string {
 		parts = append(parts, line)
 	}
 	return strings.Join(parts, "\n")
+}
+
+// goalEchoLine is the /goal command the driver writes, echoed by the TUI.
+func goalEchoLine(line string) bool {
+	s := strings.TrimSpace(line)
+	return s == "/goal" || strings.HasPrefix(s, "/goal ")
 }
 
 func cutScanLine(rest []byte) (line string, next []byte, last bool) {
@@ -382,36 +380,18 @@ func stringValue(v any) (string, bool) {
 	return s, ok
 }
 
-func walkGoal(v any, status, verdict *string) {
-	obj, ok := v.(map[string]any)
-	if !ok {
-		if list, ok := v.([]any); ok {
-			for _, item := range list {
-				walkGoal(item, status, verdict)
-			}
-		}
-		return
-	}
-	if s, ok := stringValue(obj["status"]); ok {
-		*status = s
-	}
-	if s, ok := stringValue(obj["last_classifier_verdict"]); ok {
-		*verdict = s
-	}
-	for _, item := range obj {
-		walkGoal(item, status, verdict)
-	}
-}
-
 func grokBudgetLimited(output []byte) bool {
-	status, _ := explicitGoalStatus(output)
-	return strings.EqualFold(strings.TrimSpace(status), "budget_limited")
+	status, ok := goalUpdatedStatus(output)
+	return ok && strings.EqualFold(strings.TrimSpace(status), "budget_limited")
 }
 
-// explicitGoalStatus reads status and verdict only from a complete JSON record
-// that carries those fields. Body text and unfinished records do not.
-func explicitGoalStatus(output []byte) (status, verdict string) {
+// goalUpdatedStatus reads status only from a complete session update whose
+// sessionUpdate is goal_updated, at params.update.status. An arbitrary or
+// nested status field is not that position. An unfinished record is not read.
+func goalUpdatedStatus(output []byte) (string, bool) {
 	rest := output
+	var status string
+	found := false
 	for len(rest) > 0 {
 		line, next, _ := cutScanLine(rest)
 		rest = next
@@ -419,13 +399,24 @@ func explicitGoalStatus(output []byte) (status, verdict string) {
 		if line == "" || heldJSONRecord(line) || line[0] != '{' {
 			continue
 		}
-		var v any
-		if json.Unmarshal([]byte(line), &v) != nil {
+		var rec struct {
+			Params struct {
+				Update struct {
+					SessionUpdate string `json:"sessionUpdate"`
+					Status        string `json:"status"`
+				} `json:"update"`
+			} `json:"params"`
+		}
+		if json.Unmarshal([]byte(line), &rec) != nil {
 			continue
 		}
-		walkGoal(v, &status, &verdict)
+		if rec.Params.Update.SessionUpdate != "goal_updated" {
+			continue
+		}
+		found = true
+		status = rec.Params.Update.Status
 	}
-	return status, verdict
+	return status, found
 }
 
 // ReadGrokGoalSession reports a goal terminal from v1's session channel:

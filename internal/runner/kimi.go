@@ -63,8 +63,50 @@ func writeKimiAutoConfig(home string) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return err
 	}
-	const cfg = "default_permission_mode = \"auto\"\ndefault_plan_mode = false\n"
-	return os.WriteFile(filepath.Join(home, "config.toml"), []byte(cfg), 0o600)
+	path := filepath.Join(home, "config.toml")
+	raw, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	// v1 overrideKimiTopLevelConfig: drop only these two top-level keys and
+	// prepend them. Table bodies, including provider tables, stay as written.
+	rendered := overlayKimiPermissionConfig(string(raw))
+	return os.WriteFile(path, []byte(rendered), 0o600)
+}
+
+func overlayKimiPermissionConfig(raw string) string {
+	values := map[string]string{
+		"default_permission_mode": `"auto"`,
+		"default_plan_mode":       "false",
+	}
+	lines := strings.Split(raw, "\n")
+	inTable := false
+	kept := make([]string, 0, len(lines)+len(values))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			inTable = true
+		}
+		if !inTable {
+			drop := false
+			for key := range values {
+				if strings.HasPrefix(trimmed, key+" ") || strings.HasPrefix(trimmed, key+"=") {
+					drop = true
+					break
+				}
+			}
+			if drop {
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	prefix := []string{
+		`default_permission_mode = "auto"`,
+		"default_plan_mode = false",
+		"",
+	}
+	return strings.Join(append(prefix, kept...), "\n")
 }
 
 func (Kimi) Classify(_ int, output []byte) model.ErrorClass {

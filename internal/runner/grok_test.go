@@ -609,24 +609,16 @@ func TestGrokQuotaAndCrashChannels(t *testing.T) {
 	}
 
 	t.Run("b2_quota_interactive_sample", func(t *testing.T) {
-		// No checked-in interactive TUI quota transcript. The headless line
-		// above is fakeGrokBuild stdout, not goal-mode PTY output.
-		err, wrote := driveGrok(t, "finish the card\n", "grok_goal_quota.jsonl")
+		dir := t.TempDir()
+		err, wrote := driveSession(t, "finish the card\n", dir, readFixture(t, "grok_goal_quota_stderr.txt"))
 		if string(wrote) != "/goal finish the card\r" {
 			t.Fatalf("wrote %q", wrote)
 		}
-		if errors.Is(err, runner.ErrGrokQuotaHit) {
-			t.Fatal("headless error JSON on the PTY is not interactive quota")
+		if !errors.Is(err, runner.ErrGrokQuotaHit) {
+			t.Fatalf("interactive quota %v", err)
 		}
-		if got := (runner.Grok{}).Classify(0, []byte(headless)); got != model.ErrorQuotaHit {
-			t.Fatalf("headless error record class %q", got)
-		}
-		note, err := os.ReadFile(filepath.Join("..", "..", "docs", "v2", "lane-notes", "R2-B.md"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(note), "没有可核对的交互") {
-			t.Fatal("lane note must say there is no checkable interactive quota sample")
+		if _, ok := runner.ReadGrokGoalSession(dir); ok {
+			t.Fatal("empty session is not the quota terminal")
 		}
 	})
 
@@ -670,6 +662,132 @@ func TestGrokQuotaAndCrashChannels(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestGrokInteractiveQuota is the B2 channel. The sample is the whole-line
+// pre-stream/stderr diagnostic v1 names grokTerminalQuotaDiagnostic and
+// grokBuildLimitScanText keeps as a non-JSON line. Drive returns that as
+// ErrGrokQuotaHit. The session read does not invent a quota status.
+// Completion, budget_limited, and the exit-fact crash stay on their channels.
+// The headless error record and "signal: killed" on the PTY are not terminals.
+func TestGrokInteractiveQuota(t *testing.T) {
+	const prompt = "finish the card\n"
+	const written = "/goal finish the card\r"
+	const headless = `{"type":"error","message":"HTTP 429: usage limit reached"}`
+	sample := readFixture(t, "grok_goal_quota_stderr.txt")
+	if string(sample) != "quota exceeded\n" {
+		t.Fatalf("sample %q", sample)
+	}
+	if bytes.Contains(sample, []byte(`{"type":"error"`)) || string(sample) == headless+"\n" {
+		t.Fatal("interactive sample is the headless error record")
+	}
+	v1 := "/Volumes/Storage/Development/Cardex/repo/cmd/cardex"
+	recovery, err := os.ReadFile(filepath.Join(v1, "grok_terminal_recovery_test.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(recovery), `grokTerminalQuotaDiagnostic       = "quota exceeded"`) {
+		t.Fatal("v1 interactive quota diagnostic missing")
+	}
+	scanSrc, err := os.ReadFile(filepath.Join(v1, "grok.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(scanSrc), "stderr / pre-stream CLI failures") {
+		t.Fatal("v1 non-JSON stderr scan missing")
+	}
+
+	dir := t.TempDir()
+	if _, ok := runner.ReadGrokGoalSession(dir); ok {
+		t.Fatal("empty session before drive")
+	}
+	got, wrote := driveSession(t, prompt, dir, sample)
+	if string(wrote) != written {
+		t.Fatalf("wrote %q", wrote)
+	}
+	if !errors.Is(got, runner.ErrGrokQuotaHit) || got == nil || errors.Is(got, runner.ErrGrokBudgetLimited) || errors.Is(got, runner.ErrGrokCrash) {
+		t.Fatalf("interactive quota %v", got)
+	}
+	if _, ok := runner.ReadGrokGoalSession(dir); ok {
+		t.Fatal("empty session after drive invented a quota status")
+	}
+
+	chunked := &chunkRW{chunks: [][]byte{[]byte("quota exc"), []byte("eeded\n")}}
+	err = runner.Grok{GoalMode: true, Prompt: prompt, SessionDir: t.TempDir()}.Drive(context.Background(), chunked)
+	if chunked.reads != 2 {
+		t.Fatalf("prefix fired early: reads %d", chunked.reads)
+	}
+	if !errors.Is(err, runner.ErrGrokQuotaHit) {
+		t.Fatalf("chunked interactive quota %v", err)
+	}
+	prefix := &scriptRW{src: bytes.NewReader([]byte("quota exc"))}
+	err = runner.Grok{GoalMode: true, Prompt: prompt, SessionDir: t.TempDir()}.Drive(context.Background(), prefix)
+	if err == nil || errors.Is(err, runner.ErrGrokQuotaHit) || errors.Is(err, runner.ErrGrokBudgetLimited) || errors.Is(err, runner.ErrGrokCrash) {
+		t.Fatalf("quota prefix terminal %v", err)
+	}
+
+	completeDir := installSessionFixture(t, "grok_goal_complete.jsonl")
+	complete, wroteComplete := driveSession(t, prompt, completeDir, sample)
+	if string(wroteComplete) != written {
+		t.Fatalf("complete wrote %q", wroteComplete)
+	}
+	if complete != nil || errors.Is(complete, runner.ErrGrokQuotaHit) || errors.Is(complete, runner.ErrGrokBudgetLimited) || errors.Is(complete, runner.ErrGrokCrash) {
+		t.Fatalf("completion %v", complete)
+	}
+	if term, ok := runner.ReadGrokGoalSession(completeDir); !ok || term != nil {
+		t.Fatalf("reader complete ok=%v err=%v", ok, term)
+	}
+
+	budgetDir := installSessionFixture(t, "grok_goal_budget_limited.jsonl")
+	budget, wroteBudget := driveSession(t, prompt, budgetDir, sample)
+	if string(wroteBudget) != written {
+		t.Fatalf("budget wrote %q", wroteBudget)
+	}
+	if !errors.Is(budget, runner.ErrGrokBudgetLimited) || budget == nil || errors.Is(budget, runner.ErrGrokQuotaHit) || errors.Is(budget, runner.ErrGrokCrash) {
+		t.Fatalf("budget_limited %v", budget)
+	}
+	if term, ok := runner.ReadGrokGoalSession(budgetDir); !ok || !errors.Is(term, runner.ErrGrokBudgetLimited) || errors.Is(term, runner.ErrGrokQuotaHit) {
+		t.Fatalf("reader budget ok=%v err=%v", ok, term)
+	}
+
+	for _, sig := range []int{3, 6, 9, 10, 11} {
+		crash, ok := runner.ConsumeGrokProcessExit(runner.GrokProcessExit{Signaled: true, Signal: sig})
+		if !ok || !errors.Is(crash, runner.ErrGrokCrash) || errors.Is(crash, runner.ErrGrokQuotaHit) || errors.Is(crash, runner.ErrGrokBudgetLimited) {
+			t.Fatalf("signal %d %v ok=%v", sig, crash, ok)
+		}
+	}
+	for _, exit := range []runner.GrokProcessExit{
+		{Signaled: true, Signal: 15},
+		{Signaled: true, Signal: 1},
+		{Signal: 9},
+		{},
+	} {
+		if _, ok := runner.ConsumeGrokProcessExit(exit); ok {
+			t.Fatalf("not a crash fact %+v", exit)
+		}
+	}
+
+	headlessPty, _ := driveGrok(t, prompt, "grok_goal_quota.jsonl")
+	if headlessPty == nil || errors.Is(headlessPty, runner.ErrGrokQuotaHit) || errors.Is(headlessPty, runner.ErrGrokBudgetLimited) || errors.Is(headlessPty, runner.ErrGrokCrash) {
+		t.Fatalf("headless JSON on the PTY %v", headlessPty)
+	}
+	killedPty, _ := driveGrok(t, prompt, "grok_goal_crash.txt")
+	if killedPty == nil || errors.Is(killedPty, runner.ErrGrokQuotaHit) || errors.Is(killedPty, runner.ErrGrokBudgetLimited) || errors.Is(killedPty, runner.ErrGrokCrash) {
+		t.Fatalf("signal: killed on the PTY %v", killedPty)
+	}
+	g := runner.Grok{GoalMode: true}
+	if g.Classify(0, readFixture(t, "grok_goal_quota.jsonl")) != model.ErrorQuotaHit {
+		t.Fatal("headless record is still the classify quota channel")
+	}
+	if g.Classify(0, []byte(headless)) != model.ErrorQuotaHit {
+		t.Fatal("headless record without newline")
+	}
+	if g.Classify(0, sample) != model.ErrorQuotaHit {
+		t.Fatal("classify interactive sample")
+	}
+	if got := g.Classify(0, readFixture(t, "grok_goal_crash.txt")); got != "" {
+		t.Fatalf("classify signal: killed %q", got)
+	}
 }
 
 func TestKimiAutoPermissionConfig(t *testing.T) {
@@ -753,11 +871,13 @@ func TestBodyEchoNestedAreNotFacts(t *testing.T) {
 	adapters := []struct {
 		name string
 		cl   runner.Runner
+		grok bool
 	}{
-		{"grok", runner.Grok{}},
-		{"cursor", runner.Cursor{}},
-		{"kimi", runner.Kimi{}},
-		{"agy", runner.AGY{}},
+		{"grok-goal", runner.Grok{GoalMode: true}, true},
+		{"grok", runner.Grok{}, true},
+		{"cursor", runner.Cursor{}, false},
+		{"kimi", runner.Kimi{}, false},
+		{"agy", runner.AGY{}, false},
 	}
 	type row struct {
 		name   string
@@ -767,6 +887,10 @@ func TestBodyEchoNestedAreNotFacts(t *testing.T) {
 		others model.ErrorClass
 	}
 	rows := []row{
+		{name: "b3_body_explain_usage_limit", out: "这里只解释 usage limit\n"},
+		{name: "b3_body_explain_usage_limit_chunked", chunks: []string{"这里只解释 usage lim", "it\n"}},
+		{name: "b3_echo_explain_usage_limit", out: "/goal 解释\nusage limit\n"},
+		{name: "b3_echo_explain_usage_limit_chunked", chunks: []string{"/goal 解释\n", "usage limit\n"}},
 		{name: "b3_echo_goal_rate_limit", out: "/goal 解释 rate limit\n"},
 		{name: "b3_echo_goal_rate_limit_chunked", chunks: []string{"/goal 解释 rate lim", "it\n"}},
 		{name: "b3_body_signal_killed", out: "ordinary body containing signal: killed\n"},
@@ -787,7 +911,7 @@ func TestBodyEchoNestedAreNotFacts(t *testing.T) {
 		for _, row := range rows {
 			t.Run(ad.name+"/"+row.name, func(t *testing.T) {
 				want := row.others
-				if ad.name == "grok" {
+				if ad.grok {
 					want = row.grok
 				}
 				// AGY already classifies one truncated JSON document as
@@ -838,6 +962,63 @@ func TestBodyEchoNestedAreNotFacts(t *testing.T) {
 				t.Fatalf("pty terminal %v", err)
 			}
 		})
+	}
+	findings := []string{"这里只解释 usage limit\n", "/goal 解释\nusage limit\n"}
+	for _, ad := range adapters {
+		for _, full := range findings {
+			t.Run(ad.name+"/prefixes/"+full, func(t *testing.T) {
+				for i := range len(full) {
+					got := ad.cl.Classify(0, []byte(full[:i]))
+					if got == model.ErrorQuotaHit || got == model.ErrorBudgetLimited {
+						t.Fatalf("prefix %d class %q", i, got)
+					}
+				}
+				if got := ad.cl.Classify(0, []byte(full)); got == model.ErrorQuotaHit || got == model.ErrorBudgetLimited {
+					t.Fatalf("full class %q", got)
+				}
+			})
+		}
+	}
+	for _, ad := range adapters {
+		for _, file := range []string{"cursor_quota.txt", "kimi_quota.jsonl", "agy_quota.json", "grok_goal_quota.jsonl"} {
+			t.Run(ad.name+"/keep/"+file, func(t *testing.T) {
+				if got := ad.cl.Classify(0, readFixture(t, file)); got != model.ErrorQuotaHit {
+					t.Fatalf("class %q", got)
+				}
+			})
+		}
+		t.Run(ad.name+"/keep/grok_auth", func(t *testing.T) {
+			if got := ad.cl.Classify(0, readFixture(t, "grok_auth.txt")); got != model.ErrorAuthFailed {
+				t.Fatalf("class %q", got)
+			}
+		})
+		t.Run(ad.name+"/keep/grok_limit_like", func(t *testing.T) {
+			if got := ad.cl.Classify(0, readFixture(t, "grok_limit_like.txt")); got == model.ErrorQuotaHit {
+				t.Fatal("limit-like is quota")
+			}
+		})
+		t.Run(ad.name+"/keep/hard_after_echo", func(t *testing.T) {
+			for _, line := range []string{"/goal 解释\nquota exceeded\n", "/goal 解释\nHTTP 429: usage limit reached\n"} {
+				if got := ad.cl.Classify(0, []byte(line)); got != model.ErrorQuotaHit {
+					t.Fatalf("%q class %q", line, got)
+				}
+			}
+		})
+	}
+	goal := runner.Grok{GoalMode: true}
+	if got := goal.Classify(0, readFixture(t, "grok_goal_budget_limited.jsonl")); got != model.ErrorBudgetLimited {
+		t.Fatalf("budget class %q", got)
+	}
+	if got := goal.Classify(0, []byte(goalBudget+"\n")); got == model.ErrorQuotaHit {
+		t.Fatal("budget_limited classified as quota")
+	}
+	for _, ad := range adapters {
+		if ad.grok {
+			continue
+		}
+		if got := ad.cl.Classify(0, []byte(goalBudget+"\n")); got == model.ErrorQuotaHit || got == model.ErrorBudgetLimited {
+			t.Fatalf("%s goal status %q", ad.name, got)
+		}
 	}
 }
 

@@ -23,8 +23,9 @@ import (
 // SessionDir is the grok session directory that holds goal/state.json and
 // updates.jsonl. Completion and budget_limited are read from those files.
 // The PTY ReadWriter does not carry them: goal-mode Build is an interactive TUI.
-// Quota has no checked-in interactive transcript. Crash is GrokProcessExit,
-// supplied by the host after Wait; Drive cannot see it.
+// Interactive quota is a whole-line pre-stream/stderr diagnostic on that PTY
+// (v1 grokBuildLimitScanText's non-JSON line), not a streaming-json error record.
+// Crash is GrokProcessExit, supplied by the host after Wait; Drive cannot see it.
 type Grok struct {
 	GoalMode   bool
 	Prompt     string
@@ -156,8 +157,9 @@ const grokGoalObserveEvery = 100 * time.Millisecond
 // Drive writes the literal /goal and the prompt. Completion and budget_limited
 // come from SessionDir, because goal-mode Build does not emit session JSON on
 // the PTY. The session is polled while Read is blocked and checked again after
-// EOF. PTY bytes are the TUI echo and body. They are not quota or crash: v1
-// has no interactive quota transcript, and crash is ConsumeGrokProcessExit.
+// EOF. A whole-line pre-stream/stderr quota diagnostic on the PTY is
+// ErrGrokQuotaHit. Body, a /goal echo, a streaming-json error record, and
+// "signal: killed" are not. Crash is ConsumeGrokProcessExit.
 func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 	if !g.GoalMode {
 		return nil
@@ -173,6 +175,7 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 		return err
 	}
 	tmp := make([]byte, 32*1024)
+	var pty []byte
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -180,9 +183,15 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 		if term, ok := ReadGrokGoalSession(g.SessionDir); ok {
 			return term
 		}
-		_, err, term, termOK := readGoalChunk(ctx, rw, tmp, g.SessionDir)
+		n, err, term, termOK := readGoalChunk(ctx, rw, tmp, g.SessionDir)
 		if termOK {
 			return term
+		}
+		if n > 0 {
+			pty = append(pty, tmp[:n]...)
+			if interactiveQuota(pty) {
+				return ErrGrokQuotaHit
+			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -193,6 +202,9 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 	}
 	if term, ok := ReadGrokGoalSession(g.SessionDir); ok {
 		return term
+	}
+	if interactiveQuota(pty) {
+		return ErrGrokQuotaHit
 	}
 	return errGrokNoTerminal
 }
@@ -258,6 +270,11 @@ var (
 	cursorQuotaRe     = regexp.MustCompile(`(?i)(?:^|[^0-9])429(?:[^0-9]|$)|too many requests|rate limit|usage limit|quota (?:exceeded|exhausted)|insufficient (?:quota|credits)|out of (?:credits|usage)|额度(?:不足|已用完)|配额(?:不足|已用尽)|限额(?:不足|已用尽)`)
 	cursorPolicyRe    = regexp.MustCompile(`(?i)actionrequired(?:error)?:.*review data policy|acknowledge .*data retention policy|review data policy`)
 	kimiQuotaRe       = regexp.MustCompile(`(?i)(?:^|[^0-9])429(?:[^0-9]|$)|too many requests|rate limit|quota (?:exceeded|exhausted)|insufficient (?:quota|credits)|usage limit|额度(?:不足|已用完)|配额(?:不足|已用尽)|限额(?:不足|已用尽)`)
+	// plainQuotaLine is v1 policyPlainQuotaDiagnosticRe: a whole-line presemantic
+	// quota diagnostic. A sentence that merely contains the words is not a line.
+	plainQuotaLine     = regexp.MustCompile(`(?i)^(?:error:\s*)?(?:(?:http(?:/\d(?:\.\d)?)?\s+)?429(?::\s*(?:too many requests|rate limit(?:ed)?|usage limit(?: reached)?|quota (?:exceeded|exhausted)))?|too many requests|rate limit|usage limit|quota (?:exceeded|exhausted)|insufficient (?:quota|credits)|out of (?:credits|usage)|额度(?:不足|已用完)|配额(?:不足|已用尽)|限额(?:不足|已用尽))$`)
+	plainTransportLine = regexp.MustCompile(`(?i)^(?:error:\s*)?connection (?:reset by peer|refused|closed)$`)
+	plainTimeoutLine   = regexp.MustCompile(`(?i)^(?:(?:步骤超时|远程步骤超时|远端步骤超时)[（(][^)）]*[)）]|context deadline exceeded|deadline exceeded \()$`)
 )
 
 // acceptedBootstrapBeforeProviderRefusal is the exact PTY line v1 records.
@@ -304,27 +321,136 @@ func classifyScanned(output []byte, quota *regexp.Regexp, before func(string) mo
 	}
 }
 
-// errorScan collects explicit error-record fields and non-JSON process lines.
-// Goal-command echo, assistant/body JSON, and an unfinished record are not
-// error facts. Nested business fields are not walked.
+// errorScan collects explicit error-record fields and whole-line presemantic
+// diagnostics. Body, a wrapped /goal echo, assistant JSON, and an unfinished
+// record are not error facts. Nested business fields are not walked.
 func errorScan(output []byte) string {
+	text, _ := scanOutput(output)
+	return text
+}
+
+// interactiveQuota is the goal-mode quota channel: a whole-line pre-stream or
+// stderr diagnostic on the PTY. A streaming-json error record is the headless
+// channel and is not this fact.
+func interactiveQuota(output []byte) bool {
+	_, quota := scanOutput(output)
+	return quota
+}
+
+func scanOutput(output []byte) (text string, quotaPlain bool) {
 	var parts []string
+	echo := false
 	rest := output
 	for len(rest) > 0 {
-		line, next, _ := cutScanLine(rest)
-		rest = next
-		line = strings.TrimSpace(line)
-		if line == "" || goalEchoLine(line) || heldJSONRecord(line) {
+		raw := rest
+		complete := false
+		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+			raw = rest[:i]
+			rest = rest[i+1:]
+			complete = true
+		} else {
+			rest = nil
+		}
+		line := strings.TrimSpace(strings.TrimRight(string(raw), "\r"))
+		if line == "" {
+			if complete {
+				echo = false
+			}
+			continue
+		}
+		if goalEchoLine(line) {
+			if complete {
+				echo = true
+			}
+			continue
+		}
+		if heldJSONRecord(line) {
 			continue
 		}
 		var obj map[string]any
-		if json.Unmarshal([]byte(line), &obj) == nil && len(obj) > 0 {
+		if line[0] == '{' && json.Unmarshal([]byte(line), &obj) == nil && len(obj) > 0 {
 			parts = append(parts, errorFields(obj)...)
+			echo = false
 			continue
 		}
+		if !complete && !plainDiagnostic(line) {
+			continue
+		}
+		if echo && !hardDiagnostic(line) {
+			continue
+		}
+		if !plainDiagnostic(line) {
+			if complete {
+				echo = false
+			}
+			continue
+		}
+		echo = false
 		parts = append(parts, line)
+		if plainQuotaLine.MatchString(line) {
+			quotaPlain = true
+		}
 	}
-	return strings.Join(parts, "\n")
+	return strings.Join(parts, "\n"), quotaPlain
+}
+
+func plainDiagnostic(line string) bool {
+	switch {
+	case plainQuotaLine.MatchString(line), plainTransportLine.MatchString(line), plainTimeoutLine.MatchString(line):
+		return true
+	case line == acceptedBootstrapBeforeProviderRefusal:
+		return true
+	case labeledDiagnostic(line, authClassRe), labeledDiagnostic(line, permissionClassRe), labeledDiagnostic(line, cursorPolicyRe):
+		return true
+	default:
+		return false
+	}
+}
+
+// hardDiagnostic is a plain diagnostic that is not the bare keyword a wrapped
+// /goal echo leaves on the next line.
+func hardDiagnostic(line string) bool {
+	return plainDiagnostic(line) && !softEchoWord(line)
+}
+
+func softEchoWord(line string) bool {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "usage limit", "rate limit", "too many requests":
+		return true
+	default:
+		return false
+	}
+}
+
+func labeledDiagnostic(line string, re *regexp.Regexp) bool {
+	loc := re.FindStringIndex(line)
+	if loc == nil || !allowedLabelPrefix(line[:loc[0]]) || hasCJK(line[loc[1]:]) {
+		return false
+	}
+	return true
+}
+
+func allowedLabelPrefix(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return true
+	}
+	s = strings.TrimSpace(strings.TrimRight(s, ":"))
+	switch strings.ToLower(s) {
+	case "error", "grok_build_process_error", "codex_error", "remote_codex_error":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasCJK(s string) bool {
+	for _, r := range s {
+		if r >= 0x4e00 && r <= 0x9fff {
+			return true
+		}
+	}
+	return false
 }
 
 // goalEchoLine is the /goal command the driver writes, echoed by the TUI.

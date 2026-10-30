@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"io"
+	"os"
 
 	"cardex/internal/model"
 )
@@ -42,6 +43,15 @@ func (OpenCode) Build(spec LaunchSpec) ([]string, []string, error) {
 	}
 	if spec.WorkDir != "" {
 		args = append(args, "--dir", spec.WorkDir)
+	}
+	// v1 passes the prompt text as the positional message. opencode run does
+	// not read that message from stdin.
+	if spec.PromptPath != "" {
+		body, err := os.ReadFile(spec.PromptPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		args = append(args, string(body))
 	}
 	return args, nil, nil
 }

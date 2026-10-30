@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -47,9 +48,13 @@ func (m *recordingManager) BlockPush(context.Context, string) error { return err
 
 func seedAttempt(t *testing.T, hardTokens int64, build func(work string) any) (home, id, work string) {
 	t.Helper()
-	home = t.TempDir()
-	id = "a1"
-	work = filepath.Join(home, "work")
+	return seedPrepared(t, t.TempDir(), model.RunnerFake, "", hardTokens, build)
+}
+
+func seedPrepared(t *testing.T, home string, rn model.RunnerName, profile string, hardTokens int64, build func(work string) any) (string, string, string) {
+	t.Helper()
+	id := "a1"
+	work := filepath.Join(home, "work")
 	if err := os.MkdirAll(work, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +64,8 @@ func seedAttempt(t *testing.T, hardTokens int64, build func(work string) any) (h
 	}
 	ctx := context.Background()
 	ch := model.Channel{
-		ID: "ch1", Runner: model.RunnerFake, Health: model.HealthOK, Tier: model.TierT2,
-		Family: "fake", Models: []string{"fake"},
+		ID: "ch1", Runner: rn, Health: model.HealthOK, Tier: model.TierT2,
+		Family: "fake", Models: []string{"fake"}, EngineProfile: profile,
 	}
 	if err := db.CreateChannel(ctx, &ch); err != nil {
 		t.Fatal(err)
@@ -72,16 +77,18 @@ func seedAttempt(t *testing.T, hardTokens int64, build func(work string) any) (h
 	if err := db.CreateCard(ctx, &card); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := json.Marshal(build(work))
-	if err != nil {
-		t.Fatal(err)
-	}
 	dir := filepath.Join(home, "attempts", id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "script.json"), raw, 0o644); err != nil {
-		t.Fatal(err)
+	if build != nil {
+		raw, err := json.Marshal(build(work))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "script.json"), raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	prompt := filepath.Join(home, "prompt.md")
 	if err := os.WriteFile(prompt, []byte("prompt body\n"), 0o644); err != nil {
@@ -451,4 +458,105 @@ func TestReconcileLiveAndDead(t *testing.T) {
 			t.Fatal("live host recorded host_lost")
 		}
 	}
+}
+
+func TestRunStripsLeftoverEngineEnv(t *testing.T) {
+	binDir := t.TempDir()
+	stub := filepath.Join(binDir, "claude")
+	body := "#!/bin/sh\nprintf 'BASE=%s\\n' \"$ANTHROPIC_BASE_URL\"\nprintf 'AUTH=%s\\n' \"$ANTHROPIC_AUTH_TOKEN\"\nprintf 'KEY=%s\\n' \"$ANTHROPIC_API_KEY\"\nprintf 'OPUS=%s\\n' \"$ANTHROPIC_DEFAULT_OPUS_MODEL\"\n"
+	if err := os.WriteFile(stub, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "leftover-token")
+	t.Setenv("ANTHROPIC_BASE_URL", "https://leftover.example")
+	t.Setenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "leftover-opus")
+	t.Setenv("KIMI_API_KEY", "secret-kimi-value")
+
+	home, id, _ := seedPrepared(t, t.TempDir(), model.RunnerClaude, "kimi", 1, nil)
+	if err := host.Run(context.Background(), home, id); err != nil {
+		t.Fatal(err)
+	}
+	logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(logb)
+	for _, needle := range []string{
+		"BASE=https://api.kimi.com/coding/",
+		"KEY=secret-kimi-value",
+		"OPUS=k3",
+		"AUTH=\n",
+	} {
+		if !strings.Contains(log, needle) {
+			t.Fatalf("child env missing %q\n%s", needle, log)
+		}
+	}
+	for _, leaked := range []string{"leftover-token", "leftover.example", "leftover-opus"} {
+		if strings.Contains(log, leaked) {
+			t.Fatalf("stripped key returned: %s\n%s", leaked, log)
+		}
+	}
+}
+
+func TestRunDeniesAttemptDirWrite(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is macOS only")
+	}
+	home := homeOutsideTMP(t)
+	var target string
+	_, id, work := seedPrepared(t, home, model.RunnerFake, "", 1, func(string) any {
+		target = filepath.Join(home, "attempts", "a1", "pwned")
+		return map[string]any{
+			"attempts": map[string]any{
+				"0": map[string]any{
+					"outside_write": target,
+					"write_files":   []map[string]string{{"path": "inside.txt", "content": "inside"}},
+					"output":        "STDOUT-MARKER-r2a\n",
+					"stderr":        "STDERR-MARKER-r2a\n",
+				},
+			},
+		}
+	})
+	if err := host.Run(context.Background(), home, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("attempt dir create: %v", err)
+	}
+	inside, err := os.ReadFile(filepath.Join(work, "inside.txt"))
+	if err != nil || string(inside) != "inside" {
+		t.Fatalf("worktree write %q %v", inside, err)
+	}
+	logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(logb)
+	if !strings.Contains(log, "STDOUT-MARKER-r2a") || !strings.Contains(log, "STDERR-MARKER-r2a") {
+		t.Fatalf("streams missing: %s", log)
+	}
+	if !strings.Contains(strings.ToLower(log), "operation not permitted") {
+		t.Fatalf("denial missing: %s", log)
+	}
+}
+
+func homeOutsideTMP(t *testing.T) string {
+	t.Helper()
+	base := "/tmp"
+	tmpReal, _ := filepath.EvalSymlinks(os.TempDir())
+	baseReal, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		baseReal = base
+	}
+	sep := string(os.PathSeparator)
+	if baseReal == tmpReal || strings.HasPrefix(baseReal, tmpReal+sep) || strings.HasPrefix(tmpReal, baseReal+sep) {
+		base = "/var/tmp"
+	}
+	dir, err := os.MkdirTemp(base, "cardex-home-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }

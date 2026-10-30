@@ -63,7 +63,12 @@ func TestBuildSnapshots(t *testing.T) {
 		}
 	}
 
-	opencode, _, err := runner.OpenCode{}.Build(runner.LaunchSpec{WorkDir: "/work", Model: "m1"})
+	promptPath := filepath.Join(t.TempDir(), "prompt.md")
+	promptText := "ship the card"
+	if err := os.WriteFile(promptPath, []byte(promptText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opencode, _, err := runner.OpenCode{}.Build(runner.LaunchSpec{WorkDir: "/work", Model: "m1", PromptPath: promptPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +77,12 @@ func TestBuildSnapshots(t *testing.T) {
 		if !strings.Contains(openLine, needle) {
 			t.Fatalf("opencode argv %q missing %s", openLine, needle)
 		}
+	}
+	if opencode[len(opencode)-1] != promptText {
+		t.Fatalf("prompt text not positional: %q", opencode)
+	}
+	if _, _, err := (runner.OpenCode{}).Build(runner.LaunchSpec{PromptPath: filepath.Join(t.TempDir(), "missing.md")}); err == nil {
+		t.Fatal("missing prompt file was ignored")
 	}
 }
 

@@ -120,12 +120,11 @@ func run(ctx context.Context, home, attemptID string) error {
 		return failStart(ctx, db, &attempt, err)
 	}
 	cmd.Dir = attempt.Worktree
-	var logFile *os.File
-	defer func() {
-		if logFile != nil {
-			_ = logFile.Close()
-		}
-	}()
+	// The child writes both streams to a pipe. The host copies that into
+	// output.log, so the attempt directory stays outside the sandbox write list.
+	var logRead, logWrite *os.File
+	var pipeBuf bytes.Buffer
+	var copied chan struct{}
 	if !needPTY {
 		if attempt.PromptPath != "" {
 			prompt, err := os.Open(attempt.PromptPath)
@@ -135,17 +134,26 @@ func run(ctx context.Context, home, attemptID string) error {
 			defer prompt.Close()
 			cmd.Stdin = prompt
 		}
-		logFile, err = os.Create(logPath)
+		logRead, logWrite, err = os.Pipe()
 		if err != nil {
 			return failStart(ctx, db, &attempt, err)
 		}
-		cmd.Stdout = logFile
-		cmd.Stderr = logFile
+		cmd.Stdout = logWrite
+		cmd.Stderr = logWrite
+		copied = make(chan struct{})
+		go func() {
+			defer close(copied)
+			_, _ = io.Copy(&pipeBuf, logRead)
+		}()
 	}
 
-	writable := append([]string{attempt.Worktree, attemptDir}, r.WritablePaths()...)
+	writable := append([]string{attempt.Worktree}, r.WritablePaths()...)
 	wrapped, err := sandbox.Wrap(cmd, writable)
 	if err != nil {
+		closePipe(logWrite, logRead)
+		if copied != nil {
+			<-copied
+		}
 		return failStart(ctx, db, &attempt, err)
 	}
 	for _, ev := range sandbox.Consume(wrapped) {
@@ -206,29 +214,39 @@ func run(ctx context.Context, home, attemptID string) error {
 		}
 	} else {
 		if err := wrapped.Start(); err != nil {
+			closePipe(logWrite, logRead)
 			return failStart(ctx, db, &attempt, err)
 		}
 		pid = wrapped.Process.Pid
+		if logWrite != nil {
+			_ = logWrite.Close()
+			logWrite = nil
+		}
 		stop := watchKill(ctx, pid, limit)
 		waitErr = wrapped.Wait()
 		stop()
-		if logFile != nil {
-			_ = logFile.Sync()
-			_ = logFile.Close()
-			logFile = nil
+		if copied != nil {
+			<-copied
 		}
-		var readErr error
-		output, readErr = os.ReadFile(logPath)
-		if readErr != nil {
-			_ = finish(ctx, db, &attempt, card, nil, exitCode(waitErr), r, readErr)
-			return readErr
+		if logRead != nil {
+			_ = logRead.Close()
+		}
+		output = append([]byte(nil), pipeBuf.Bytes()...)
+		if err := os.WriteFile(logPath, output, 0o644); err != nil {
+			_ = finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, err)
+			return err
 		}
 	}
 	return finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, nil)
 }
 
 func commandFor(argv, extra []string) (*exec.Cmd, error) {
+	// ApplyEngineEnv already removed another profile's managed keys. Merging
+	// that list back onto os.Environ() would put those keys back.
 	env := mergeEnv(os.Environ(), extra)
+	if completeEngineEnv(extra) {
+		env = mergeEnv(extra, nil)
+	}
 	cmd := &exec.Cmd{}
 	if argv[0] == "fake" {
 		exe, err := os.Executable()
@@ -250,6 +268,34 @@ func commandFor(argv, extra []string) (*exec.Cmd, error) {
 	}
 	cmd.Env = env
 	return cmd, nil
+}
+
+// completeEngineEnv reports that extra is a full engines environment, not a
+// handful of extra variables. It carries PATH and the injected base URL.
+func completeEngineEnv(env []string) bool {
+	path, base := false, false
+	for _, kv := range env {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "PATH":
+			path = true
+		case "ANTHROPIC_BASE_URL":
+			base = true
+		}
+	}
+	return path && base
+}
+
+func closePipe(write, read *os.File) {
+	if write != nil {
+		_ = write.Close()
+	}
+	if read != nil {
+		_ = read.Close()
+	}
 }
 
 func mergeEnv(base, extra []string) []string {

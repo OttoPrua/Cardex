@@ -178,12 +178,12 @@ func TestCardAddSoftInputs(t *testing.T) {
 	cases := []struct {
 		name  string
 		extra []string
-		want  func(t *testing.T, card model.Card)
+		want  func(t *testing.T, card model.Card, raw string)
 	}{
 		{
 			name:  "missing title",
 			extra: nil,
-			want: func(t *testing.T, card model.Card) {
+			want: func(t *testing.T, card model.Card, _ string) {
 				if card.Status != model.CardNeedsInput {
 					t.Fatalf("status %s", card.Status)
 				}
@@ -193,29 +193,119 @@ func TestCardAddSoftInputs(t *testing.T) {
 			},
 		},
 		{
+			name:  "tier t1",
+			extra: []string{"--title", "Tier one", "--tier", "t1"},
+			want: func(t *testing.T, card model.Card, _ string) {
+				if card.Tier != model.TierT1 || card.Status != model.CardReady {
+					t.Fatalf("tier %s status %s", card.Tier, card.Status)
+				}
+			},
+		},
+		{
 			name:  "tier t2",
 			extra: []string{"--title", "Tier card", "--tier", "t2"},
-			want: func(t *testing.T, card model.Card) {
-				if card.Tier != model.TierT2 {
-					t.Fatalf("tier %s", card.Tier)
+			want: func(t *testing.T, card model.Card, _ string) {
+				if card.Tier != model.TierT2 || card.Status != model.CardReady {
+					t.Fatalf("tier %s status %s", card.Tier, card.Status)
+				}
+			},
+		},
+		{
+			name:  "tier t3",
+			extra: []string{"--title", "Tier three", "--tier", "t3"},
+			want: func(t *testing.T, card model.Card, _ string) {
+				if card.Tier != model.TierT3 || card.Status != model.CardReady {
+					t.Fatalf("tier %s status %s", card.Tier, card.Status)
 				}
 			},
 		},
 		{
 			name:  "empty kind",
 			extra: []string{"--title", "Kind card", "--kind", ""},
-			want: func(t *testing.T, card model.Card) {
-				if card.Kind != model.KindDev {
-					t.Fatalf("kind %s", card.Kind)
+			want: func(t *testing.T, card model.Card, _ string) {
+				if card.Kind != model.KindDev || card.Status != model.CardReady {
+					t.Fatalf("kind %s status %s", card.Kind, card.Status)
+				}
+			},
+		},
+		{
+			name:  "kind DEV",
+			extra: []string{"--title", "Dev card", "--kind", "DEV"},
+			want: func(t *testing.T, card model.Card, _ string) {
+				if card.Kind != model.KindDev || card.Status != model.CardReady {
+					t.Fatalf("kind %s status %s", card.Kind, card.Status)
+				}
+				if card.Title != "Dev card" {
+					t.Fatalf("title %q", card.Title)
+				}
+			},
+		},
+		{
+			name:  "empty status",
+			extra: []string{"--title", "Empty status", "--status", ""},
+			want: func(t *testing.T, card model.Card, _ string) {
+				if card.Status != model.CardReady {
+					t.Fatalf("status %s", card.Status)
+				}
+				if card.Title != "Empty status" {
+					t.Fatalf("title %q", card.Title)
+				}
+			},
+		},
+		{
+			name:  "status READY",
+			extra: []string{"--title", "Ready card", "--status", "READY"},
+			want: func(t *testing.T, card model.Card, _ string) {
+				if card.Status != model.CardReady {
+					t.Fatalf("status %s", card.Status)
 				}
 			},
 		},
 		{
 			name:  "empty claim",
 			extra: []string{"--title", "Claim card", "--claim", ""},
-			want: func(t *testing.T, card model.Card) {
+			want: func(t *testing.T, card model.Card, _ string) {
 				if len(card.Claims) != 0 {
 					t.Fatalf("claims %+v", card.Claims)
+				}
+				if card.Status != model.CardReady {
+					t.Fatalf("status %s", card.Status)
+				}
+			},
+		},
+		{
+			name:  "tier T4",
+			extra: []string{"--title", "Bad tier", "--tier", "T4"},
+			want: func(t *testing.T, card model.Card, raw string) {
+				assertNeedsInput(t, card, "Bad tier")
+				if card.Tier != model.TierNone {
+					t.Fatalf("tier %q", card.Tier)
+				}
+				if !strings.Contains(raw, "T4") || !strings.Contains(card.WaitReason, "T4") {
+					t.Fatalf("json %s wait %q", raw, card.WaitReason)
+				}
+			},
+		},
+		{
+			name:  "unknown kind",
+			extra: []string{"--title", "Odd kind", "--kind", "WIDGET"},
+			want: func(t *testing.T, card model.Card, raw string) {
+				assertNeedsInput(t, card, "Odd kind")
+				if card.Kind != model.KindDev {
+					t.Fatalf("kind %s", card.Kind)
+				}
+				if !strings.Contains(raw, "WIDGET") || !strings.Contains(card.WaitReason, "WIDGET") {
+					t.Fatalf("json %s wait %q", raw, card.WaitReason)
+				}
+			},
+		},
+		{
+			name:  "unknown status",
+			extra: []string{"--title", "Odd status", "--status", "BOGUS"},
+			want: func(t *testing.T, card model.Card, raw string) {
+				assertNeedsInput(t, card, "Odd status")
+				if !strings.Contains(raw, "BOGUS") || !strings.Contains(card.WaitReason, "BOGUS") {
+					t.Fatalf("json %s wait %q", raw, card.WaitReason)
 				}
 			},
 		},
@@ -259,9 +349,22 @@ func TestCardAddSoftInputs(t *testing.T) {
 			if len(cards) != 1 || cards[0].Objective != "o1" {
 				t.Fatalf("list %s", out.String())
 			}
-			tc.want(t, cards[0])
-			t.Logf("exit 0 status=%s tier=%s kind=%s claims=%d title=%q", cards[0].Status, cards[0].Tier, cards[0].Kind, len(cards[0].Claims), cards[0].Title)
+			tc.want(t, cards[0], out.String())
+			t.Logf("exit 0 status=%s tier=%s kind=%s claims=%d title=%q wait=%q", cards[0].Status, cards[0].Tier, cards[0].Kind, len(cards[0].Claims), cards[0].Title, cards[0].WaitReason)
 		})
+	}
+}
+
+func assertNeedsInput(t *testing.T, card model.Card, title string) {
+	t.Helper()
+	if !card.Kind.Valid() || !card.Tier.Valid() || !card.Status.Valid() {
+		t.Fatalf("illegal kind=%s tier=%q status=%s", card.Kind, card.Tier, card.Status)
+	}
+	if card.Status != model.CardNeedsInput {
+		t.Fatalf("status %s", card.Status)
+	}
+	if card.Title != title {
+		t.Fatalf("title %q", card.Title)
 	}
 }
 

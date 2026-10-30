@@ -294,21 +294,33 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, "--objective is required")
 		return 2
 	}
-	kindVal := model.CardKind(*kind)
-	if kindVal == "" {
-		kindVal = model.KindDev
-	}
-	tierVal := normalizeTier(*tier)
-	statusVal := model.CardStatus(*status)
+	kindVal, kindOK := normalizeKind(*kind)
+	tierVal, tierOK := normalizeTier(*tier)
+	statusVal, statusOK := normalizeStatus(*status)
 	titleVal := *title
+	var reasons []string
 	if titleVal == "" {
 		titleVal = "(needs input)"
+		statusVal = model.CardNeedsInput
+		reasons = append(reasons, "missing title")
+	}
+	if !kindOK {
+		reasons = append(reasons, "kind "+*kind)
+		statusVal = model.CardNeedsInput
+	}
+	if !tierOK {
+		reasons = append(reasons, "tier "+*tier)
+		statusVal = model.CardNeedsInput
+	}
+	if !statusOK {
+		reasons = append(reasons, "status "+*status)
 		statusVal = model.CardNeedsInput
 	}
 	c := model.Card{
 		ID: *id, Objective: *objective, Node: *node, Kind: kindVal,
 		Title: titleVal, Body: *body, Tier: tierVal, Requires: requires,
 		Deps: deps, Acceptance: acceptance, Base: *base, Status: statusVal,
+		WaitReason: strings.Join(reasons, "; "),
 	}
 	if c.ID == "" {
 		gen, err := newID("c")
@@ -392,17 +404,45 @@ func emit(stdout io.Writer, asJSON bool, v any, line string) int {
 	return 0
 }
 
-func normalizeTier(raw string) model.Tier {
-	switch strings.ToLower(raw) {
-	case "t1":
-		return model.TierT1
-	case "t2":
-		return model.TierT2
-	case "t3":
-		return model.TierT3
-	default:
-		return model.Tier(raw)
+func normalizeKind(raw string) (model.CardKind, bool) {
+	if raw == "" {
+		return model.KindDev, true
 	}
+	folded := strings.ToLower(raw)
+	for _, k := range model.AllCardKinds() {
+		if string(k) == folded {
+			return k, true
+		}
+	}
+	return model.KindDev, false
+}
+
+func normalizeTier(raw string) (model.Tier, bool) {
+	switch strings.ToLower(raw) {
+	case "":
+		return model.TierNone, true
+	case "t1":
+		return model.TierT1, true
+	case "t2":
+		return model.TierT2, true
+	case "t3":
+		return model.TierT3, true
+	default:
+		return model.TierNone, false
+	}
+}
+
+func normalizeStatus(raw string) (model.CardStatus, bool) {
+	if raw == "" {
+		return model.CardReady, true
+	}
+	folded := strings.ToLower(raw)
+	for _, s := range model.AllCardStatuses() {
+		if strings.ToLower(string(s)) == folded {
+			return s, true
+		}
+	}
+	return model.CardNeedsInput, false
 }
 
 func stringsCut(s, sep string) (string, string, bool) {

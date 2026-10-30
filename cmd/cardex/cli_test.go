@@ -355,6 +355,305 @@ func TestCardAddSoftInputs(t *testing.T) {
 	}
 }
 
+func TestObjectiveAddSoftInputs(t *testing.T) {
+	t.Run("missing project", func(t *testing.T) {
+		home := t.TempDir()
+		var out, errb bytes.Buffer
+		code := Main([]string{"--home", home, "objective", "add", "--title", "Ship"}, &out, &errb)
+		if code != 2 {
+			t.Fatalf("exit %d %s", code, errb.String())
+		}
+		out.Reset()
+		errb.Reset()
+		if code := Main([]string{"--home", home, "objective", "list", "--json"}, &out, &errb); code != 0 {
+			t.Fatalf("list %d %s", code, errb.String())
+		}
+		var items []model.Objective
+		if err := json.Unmarshal(out.Bytes(), &items); err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 0 {
+			t.Fatalf("list %s", out.String())
+		}
+	})
+	t.Run("unknown flag", func(t *testing.T) {
+		home := t.TempDir()
+		repo := t.TempDir()
+		var out, errb bytes.Buffer
+		code := Main([]string{"--home", home, "project", "add", "--id", "p1", "--repo", repo}, &out, &errb)
+		if code != 0 {
+			t.Fatalf("project %d %s", code, errb.String())
+		}
+		out.Reset()
+		errb.Reset()
+		code = Main([]string{"--home", home, "objective", "add", "--project", "p1", "--title", "Ship", "--not-a-flag", "x"}, &out, &errb)
+		if code != 2 {
+			t.Fatalf("exit %d %s", code, errb.String())
+		}
+		out.Reset()
+		errb.Reset()
+		if code := Main([]string{"--home", home, "objective", "list", "--json"}, &out, &errb); code != 0 {
+			t.Fatalf("list %d %s", code, errb.String())
+		}
+		var items []model.Objective
+		if err := json.Unmarshal(out.Bytes(), &items); err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 0 {
+			t.Fatalf("list %s", out.String())
+		}
+	})
+	t.Run("unknown verb", func(t *testing.T) {
+		home := t.TempDir()
+		var out, errb bytes.Buffer
+		if code := Main([]string{"--home", home, "objective", "explode"}, &out, &errb); code != 2 {
+			t.Fatalf("exit %d %s", code, errb.String())
+		}
+	})
+
+	cases := []struct {
+		name  string
+		extra []string
+		want  func(t *testing.T, obj model.Objective, questions []model.Question)
+	}{
+		{
+			name: "missing title",
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				if obj.Title == "" {
+					t.Fatal("missing placeholder title")
+				}
+				if obj.Mode != model.ModeAuto || obj.FreezeMode != model.FreezeSafe || obj.Status != model.ObjectivePaused {
+					t.Fatalf("mode %s freeze %s status %s", obj.Mode, obj.FreezeMode, obj.Status)
+				}
+				assertObjectiveQuestion(t, obj, questions, "missing title")
+			},
+		},
+		{
+			name:  "mode AUTO",
+			extra: []string{"--title", "Mode auto", "--mode", "AUTO"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Mode auto", model.ModeAuto, model.FreezeSafe, model.ObjectiveActive)
+			},
+		},
+		{
+			name:  "mode empty",
+			extra: []string{"--title", "Mode empty", "--mode", ""},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Mode empty", model.ModeAuto, model.FreezeSafe, model.ObjectiveActive)
+			},
+		},
+		{
+			name:  "mode MANUAL",
+			extra: []string{"--title", "Mode manual", "--mode", "MANUAL"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Mode manual", model.ModeManual, model.FreezeSafe, model.ObjectiveActive)
+			},
+		},
+		{
+			name:  "mode manual",
+			extra: []string{"--title", "Mode manual lower", "--mode", "manual"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Mode manual lower", model.ModeManual, model.FreezeSafe, model.ObjectiveActive)
+			},
+		},
+		{
+			name:  "freeze-mode SAFE",
+			extra: []string{"--title", "Freeze safe", "--freeze-mode", "SAFE"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Freeze safe", model.ModeAuto, model.FreezeSafe, model.ObjectiveActive)
+			},
+		},
+		{
+			name:  "freeze-mode empty",
+			extra: []string{"--title", "Freeze empty", "--freeze-mode", ""},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Freeze empty", model.ModeAuto, model.FreezeSafe, model.ObjectiveActive)
+			},
+		},
+		{
+			name:  "freeze-mode FAST",
+			extra: []string{"--title", "Freeze fast", "--freeze-mode", "FAST"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Freeze fast", model.ModeAuto, model.FreezeFast, model.ObjectiveActive)
+			},
+		},
+		{
+			name:  "freeze-mode fast",
+			extra: []string{"--title", "Freeze fast lower", "--freeze-mode", "fast"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Freeze fast lower", model.ModeAuto, model.FreezeFast, model.ObjectiveActive)
+			},
+		},
+		{
+			name:  "status ACTIVE",
+			extra: []string{"--title", "Status active", "--status", "ACTIVE"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Status active", model.ModeAuto, model.FreezeSafe, model.ObjectiveActive)
+			},
+		},
+		{
+			name:  "status empty",
+			extra: []string{"--title", "Status empty", "--status", ""},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Status empty", model.ModeAuto, model.FreezeSafe, model.ObjectiveActive)
+			},
+		},
+		{
+			name:  "status PAUSED",
+			extra: []string{"--title", "Status paused", "--status", "PAUSED"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Status paused", model.ModeAuto, model.FreezeSafe, model.ObjectivePaused)
+			},
+		},
+		{
+			name:  "status DONE_CANDIDATE",
+			extra: []string{"--title", "Status candidate", "--status", "DONE_CANDIDATE"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Status candidate", model.ModeAuto, model.FreezeSafe, model.ObjectiveDoneCandidate)
+			},
+		},
+		{
+			name:  "status DONE",
+			extra: []string{"--title", "Status done", "--status", "DONE"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Status done", model.ModeAuto, model.FreezeSafe, model.ObjectiveDone)
+			},
+		},
+		{
+			name:  "status CANCELED",
+			extra: []string{"--title", "Status canceled", "--status", "CANCELED"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				assertCanonicalObjective(t, obj, questions, "Status canceled", model.ModeAuto, model.FreezeSafe, model.ObjectiveCanceled)
+			},
+		},
+		{
+			name:  "unrecognized mode",
+			extra: []string{"--title", "Bad mode", "--mode", "NOPE"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				if obj.Title != "Bad mode" || obj.Mode != model.ModeAuto || obj.FreezeMode != model.FreezeSafe {
+					t.Fatalf("title %q mode %s freeze %s", obj.Title, obj.Mode, obj.FreezeMode)
+				}
+				assertObjectiveQuestion(t, obj, questions, "NOPE")
+				if !strings.Contains(questions[0].Text, "unrecognized mode") {
+					t.Fatalf("question %q", questions[0].Text)
+				}
+			},
+		},
+		{
+			name:  "unrecognized freeze-mode",
+			extra: []string{"--title", "Bad freeze", "--freeze-mode", "LOOSE"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				if obj.Title != "Bad freeze" || obj.Mode != model.ModeAuto || obj.FreezeMode != model.FreezeSafe {
+					t.Fatalf("title %q mode %s freeze %s", obj.Title, obj.Mode, obj.FreezeMode)
+				}
+				assertObjectiveQuestion(t, obj, questions, "LOOSE")
+				if !strings.Contains(questions[0].Text, "unrecognized freeze-mode") {
+					t.Fatalf("question %q", questions[0].Text)
+				}
+			},
+		},
+		{
+			name:  "unrecognized status",
+			extra: []string{"--title", "Bad status", "--status", "BOGUS"},
+			want: func(t *testing.T, obj model.Objective, questions []model.Question) {
+				if obj.Title != "Bad status" || obj.Mode != model.ModeAuto || obj.FreezeMode != model.FreezeSafe {
+					t.Fatalf("title %q mode %s freeze %s", obj.Title, obj.Mode, obj.FreezeMode)
+				}
+				assertObjectiveQuestion(t, obj, questions, "BOGUS")
+				if !strings.Contains(questions[0].Text, "unrecognized status") {
+					t.Fatalf("question %q", questions[0].Text)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			repo := t.TempDir()
+			var out, errb bytes.Buffer
+			code := Main([]string{"--home", home, "project", "add", "--id", "p1", "--repo", repo}, &out, &errb)
+			if code != 0 {
+				t.Fatalf("project %d %s", code, errb.String())
+			}
+			out.Reset()
+			errb.Reset()
+			args := []string{"--home", home, "objective", "add", "--id", "o1", "--project", "p1"}
+			args = append(args, tc.extra...)
+			code = Main(args, &out, &errb)
+			if code != 0 {
+				t.Fatalf("add %d %s", code, errb.String())
+			}
+			out.Reset()
+			errb.Reset()
+			code = Main([]string{"--home", home, "objective", "list", "--json"}, &out, &errb)
+			if code != 0 {
+				t.Fatalf("list %d %s", code, errb.String())
+			}
+			var objectives []model.Objective
+			if err := json.Unmarshal(out.Bytes(), &objectives); err != nil {
+				t.Fatal(err)
+			}
+			if len(objectives) != 1 || objectives[0].ID != "o1" || objectives[0].Project != "p1" {
+				t.Fatalf("list %s", out.String())
+			}
+			out.Reset()
+			errb.Reset()
+			code = Main([]string{"--home", home, "objective", "show", "--json", "o1"}, &out, &errb)
+			if code != 0 {
+				t.Fatalf("show %d %s", code, errb.String())
+			}
+			var shown model.Objective
+			if err := json.Unmarshal(out.Bytes(), &shown); err != nil {
+				t.Fatal(err)
+			}
+			if shown.Title != objectives[0].Title || shown.Mode != objectives[0].Mode || shown.FreezeMode != objectives[0].FreezeMode || shown.Status != objectives[0].Status {
+				t.Fatalf("show %+v list %+v", shown, objectives[0])
+			}
+			db, err := openStore(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			questions, err := db.ListQuestions(context.Background(), "o1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.want(t, objectives[0], questions)
+			t.Logf("exit 0 mode=%s freeze=%s status=%s title=%q questions=%d", objectives[0].Mode, objectives[0].FreezeMode, objectives[0].Status, objectives[0].Title, len(questions))
+		})
+	}
+}
+
+func assertCanonicalObjective(t *testing.T, obj model.Objective, questions []model.Question, title string, mode model.ObjectiveMode, freeze model.FreezeMode, status model.ObjectiveStatus) {
+	t.Helper()
+	if !obj.Mode.Valid() || !obj.FreezeMode.Valid() || !obj.Status.Valid() {
+		t.Fatalf("invalid mode=%s freeze=%s status=%s", obj.Mode, obj.FreezeMode, obj.Status)
+	}
+	if obj.Title != title || obj.Mode != mode || obj.FreezeMode != freeze || obj.Status != status {
+		t.Fatalf("title %q mode %s freeze %s status %s", obj.Title, obj.Mode, obj.FreezeMode, obj.Status)
+	}
+	if len(questions) != 0 {
+		t.Fatalf("questions %+v", questions)
+	}
+}
+
+func assertObjectiveQuestion(t *testing.T, obj model.Objective, questions []model.Question, token string) {
+	t.Helper()
+	if !obj.Mode.Valid() || !obj.FreezeMode.Valid() || !obj.Status.Valid() {
+		t.Fatalf("invalid mode=%s freeze=%s status=%s", obj.Mode, obj.FreezeMode, obj.Status)
+	}
+	if obj.Status != model.ObjectivePaused {
+		t.Fatalf("status %s", obj.Status)
+	}
+	if len(questions) != 1 {
+		t.Fatalf("questions %+v", questions)
+	}
+	q := questions[0]
+	if q.Kind != model.QuestionCustom || q.Objective != obj.ID || q.Text == "" || !strings.Contains(q.Text, token) {
+		t.Fatalf("question %+v", q)
+	}
+}
+
 func assertNeedsInput(t *testing.T, card model.Card, title string) {
 	t.Helper()
 	if !card.Kind.Valid() || !card.Tier.Valid() || !card.Status.Valid() {

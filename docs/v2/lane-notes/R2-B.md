@@ -1,7 +1,7 @@
 # R2-B
 
 ## 做了什么
-四个适配器实现 runner.Runner，Name 为 grok、cursor、kimi、agy。Build 移植 v1 写能力且沙箱内自动放行的 argv：grok 无头为 streaming-json、--sandbox workspace、--permission-mode auto、--prompt-file（值为路径）；cursor-agent 为 --print --trust --sandbox enabled，位置参数是 prompt 文件正文；kimi 为 --model --prompt（正文）stream-json，并写隔离 config.toml（default_permission_mode=auto，default_plan_mode=false），环境变量带 KIMI_CODE_NO_AUTO_UPDATE=1 与 KIMI_CODE_HOME；agy 为 --mode accept-edits、--dangerously-skip-permissions、json、--print（正文），非 thinking 模型带 --effort high。普通 grok NeedsPTY 为 false。要求 goal_mode 时 grok NeedsPTY 为 true，Drive 写入字面量 /goal 与 prompt。完成和 budget_limited 从 Grok.SessionDir 的 goal/state.json 与 updates.jsonl 读取；撞额度和崩溃从 PTY 上的明确错误记录或进程错误文本识别。Classify 与 ParseUsage 用 v1 样例映射到现有 ErrorClass 和 Usage。Capabilities 只有 grok 声明 goal_mode。WritablePaths 为 ~/.grok、~/.cursor、~/.kimi-code。
+四个适配器实现 runner.Runner，Name 为 grok、cursor、kimi、agy。Build 移植 v1 写能力且沙箱内自动放行的 argv：grok 无头为 streaming-json、--sandbox workspace、--permission-mode auto、--prompt-file（值为路径）；cursor-agent 为 --print --trust --sandbox enabled，位置参数是 prompt 文件正文；kimi 为 --model --prompt（正文）stream-json，并写隔离 config.toml（default_permission_mode=auto，default_plan_mode=false），环境变量带 KIMI_CODE_NO_AUTO_UPDATE=1 与 KIMI_CODE_HOME；agy 为 --mode accept-edits、--dangerously-skip-permissions、json、--print（正文），非 thinking 模型带 --effort high。普通 grok NeedsPTY 为 false。要求 goal_mode 时 grok NeedsPTY 为 true，Drive 写入字面量 /goal 与 prompt。完成和 budget_limited 从 Grok.SessionDir 的 goal/state.json 与 updates.jsonl 读取：PTY Read 阻塞时按 100ms 轮询该目录，进程 EOF 后再读一次。撞额度和崩溃从 PTY 上的明确错误记录或进程错误文本识别。Classify 与 ParseUsage 用 v1 样例映射到现有 ErrorClass 和 Usage。Capabilities 只有 grok 声明 goal_mode。WritablePaths 为 ~/.grok、~/.cursor、~/.kimi-code。
 
 ## 没做什么，以及原因
 未运行真实 CLI，未实现 PTY，未改 Runner、LaunchSpec、model，未移植 workflow、准入、路由、额度冷却和鉴权探测。LaunchSpec 表达不了的只读 plan、ACP、resume 未移植。不声明 web：--disable-web-search 不是证据。agy 的 WritablePaths 为空，v1 未给 antigravity 命名 CLI home（~/.gemini 属于已退役的 Gemini）。不把凭据从真实 CLI home 拷进 Kimi 隔离目录，因为那一步要读 ~/.kimi-code。v1 没有另写缓存路径，不猜测。
@@ -13,7 +13,7 @@ LaunchSpec 缺 goal_mode/requires：用 Grok.GoalMode；Drive 无 prompt 参数�
 无。
 
 ## 修复记录
-接收 prompt 正文的参数必须是文件内容，不能是路径 → internal/runner/grok.go:51、cursor.go:34、kimi.go:45、agy.go:40 → TestPromptFileBody
-goal 的完成和 budget_limited 只从会话文件读取，PTY 上的 session/update JSON 不算这两种终态 → internal/runner/grok.go:149、grok.go:193、grok.go:413 → TestGrokDriveTerminals
-正文、输入回显和未收完整的记录不是失败事实，只认完整的终态记录或错误记录 → internal/runner/grok.go:286、grok.go:317、grok.go:384（cursor.go:52、kimi.go:70、agy.go:44 经 classifyScanned） → TestClassifyIgnoresBodyEchoAndPartial
+接收 prompt 正文的参数必须是文件内容，不能是路径 → internal/runner/grok.go:52、cursor.go:34、kimi.go:45、agy.go:40 → TestPromptFileBody
+goal 的完成和 budget_limited 只从会话文件读取，PTY Read 阻塞时轮询、EOF 后再查，PTY 上的 session/update JSON 不算这两种终态 → internal/runner/grok.go:175、grok.go:205、grok.go:215、grok.go:435 → TestGrokDriveTerminals、TestGrokDriveSessionAfterReadStarts
+正文、输入回显和未收完整的记录不是失败事实，只认完整的终态记录或错误记录 → internal/runner/grok.go:308、grok.go:339、grok.go:406（cursor.go:52、kimi.go:70、agy.go:44 经 classifyScanned） → TestClassifyIgnoresBodyEchoAndPartial
 沙箱内的写运行必须自动放行，不能停在等人审批的参数上 → internal/runner/agy.go:40、kimi.go:48、kimi.go:66 → TestAGYBuildSnapshot、TestKimiAutoPermissionConfig

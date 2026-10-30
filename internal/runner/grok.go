@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"cardex/internal/model"
 )
@@ -123,9 +124,14 @@ func grokPrivilegeWidening(args []string) bool {
 	return false
 }
 
+// grokGoalObserveEvery is how often Drive re-reads the session while a PTY
+// Read is blocked. v1's hosted goal loop uses this same 100ms interval.
+const grokGoalObserveEvery = 100 * time.Millisecond
+
 // Drive writes the literal /goal and the prompt. Quota and crash are read from
 // the PTY bytes. Completion and budget_limited come from SessionDir, because
-// goal-mode Build does not emit session JSON on the PTY.
+// goal-mode Build does not emit session JSON on the PTY. The session is polled
+// while Read is blocked and checked again after EOF.
 func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 	if !g.GoalMode {
 		return nil
@@ -149,7 +155,10 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 		if term, ok := ReadGrokGoalSession(g.SessionDir); ok {
 			return term
 		}
-		n, err := readGoalChunk(ctx, rw, tmp)
+		n, err, term, termOK := readGoalChunk(ctx, rw, tmp, g.SessionDir)
+		if termOK {
+			return term
+		}
 		if n > 0 {
 			got = append(got, tmp[:n]...)
 			if term, ok := grokDriveTerminal(got); ok {
@@ -163,13 +172,18 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 			return err
 		}
 	}
+	if term, ok := ReadGrokGoalSession(g.SessionDir); ok {
+		return term
+	}
 	if term, ok := grokDriveTerminal(got); ok {
 		return term
 	}
 	return errGrokNoTerminal
 }
 
-func readGoalChunk(ctx context.Context, r io.Reader, buf []byte) (int, error) {
+// readGoalChunk waits for one Read. While that Read is blocked it polls the
+// session and, on a terminal, returns termOK without waiting for Read.
+func readGoalChunk(ctx context.Context, r io.Reader, buf []byte, sessionDir string) (int, error, error, bool) {
 	type got struct {
 		n   int
 		err error
@@ -179,11 +193,19 @@ func readGoalChunk(ctx context.Context, r io.Reader, buf []byte) (int, error) {
 		n, err := r.Read(buf)
 		ch <- got{n, err}
 	}()
-	select {
-	case <-ctx.Done():
-		return 0, ctx.Err()
-	case res := <-ch:
-		return res.n, res.err
+	tick := time.NewTicker(grokGoalObserveEvery)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err(), nil, false
+		case res := <-ch:
+			return res.n, res.err, nil, false
+		case <-tick.C:
+			if term, ok := ReadGrokGoalSession(sessionDir); ok {
+				return 0, nil, term, true
+			}
+		}
 	}
 }
 

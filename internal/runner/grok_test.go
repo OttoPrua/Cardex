@@ -13,7 +13,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"cardex/internal/model"
 	"cardex/internal/runner"
@@ -360,6 +362,13 @@ func driveSession(t *testing.T, prompt, dir string, pty []byte) (error, []byte) 
 
 func installSessionFixture(t *testing.T, fixture string) string {
 	t.Helper()
+	dir := t.TempDir()
+	writeSessionFixture(t, dir, fixture)
+	return dir
+}
+
+func writeSessionFixture(t *testing.T, dir, fixture string) {
+	t.Helper()
 	raw := readFixture(t, fixture)
 	var rec struct {
 		Params struct {
@@ -374,7 +383,6 @@ func installSessionFixture(t *testing.T, fixture string) string {
 	if err := json.Unmarshal(bytes.TrimSpace(raw), &rec); err != nil {
 		t.Fatal(err)
 	}
-	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "goal"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +414,105 @@ func installSessionFixture(t *testing.T, fixture string) string {
 	if err := os.WriteFile(filepath.Join(dir, "updates.jsonl"), updates, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return dir
+}
+
+// holdRW signals when Read is entered, then blocks until release is closed.
+// Closing release makes Read return EOF. Leaving it open keeps Read blocked.
+type holdRW struct {
+	started      chan struct{}
+	release      chan struct{}
+	readReturned chan struct{}
+	once         sync.Once
+	wrote        bytes.Buffer
+}
+
+func (h *holdRW) Write(p []byte) (int, error) { return h.wrote.Write(p) }
+
+func (h *holdRW) Read([]byte) (int, error) {
+	h.once.Do(func() { close(h.started) })
+	<-h.release
+	close(h.readReturned)
+	return 0, io.EOF
+}
+
+func TestGrokDriveSessionAfterReadStarts(t *testing.T) {
+	cases := []struct {
+		name    string
+		fixture string
+		want    error
+	}{
+		{name: "complete", fixture: "grok_goal_complete.jsonl"},
+		{name: "budget_limited", fixture: "grok_goal_budget_limited.jsonl", want: runner.ErrGrokBudgetLimited},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/while_read_blocked", func(t *testing.T) {
+			driveSessionAfterRead(t, tc.fixture, tc.want, false)
+		})
+		t.Run(tc.name+"/recheck_after_eof", func(t *testing.T) {
+			driveSessionAfterRead(t, tc.fixture, tc.want, true)
+		})
+	}
+}
+
+func driveSessionAfterRead(t *testing.T, fixture string, want error, eof bool) {
+	t.Helper()
+	dir := t.TempDir()
+	h := &holdRW{
+		started:      make(chan struct{}),
+		release:      make(chan struct{}),
+		readReturned: make(chan struct{}),
+	}
+	errc := make(chan error, 1)
+	go func() {
+		errc <- runner.Grok{
+			GoalMode:   true,
+			Prompt:     "finish the card",
+			SessionDir: dir,
+		}.Drive(context.Background(), h)
+	}()
+	select {
+	case <-h.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read did not start")
+	}
+	writeSessionFixture(t, dir, fixture)
+	if eof {
+		close(h.release)
+	}
+	select {
+	case err := <-errc:
+		if want == nil {
+			if err != nil {
+				t.Fatalf("Drive err %v", err)
+			}
+		} else if !errors.Is(err, want) {
+			t.Fatalf("Drive err %v want %v", err, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Drive did not observe the session")
+	}
+	if h.wrote.String() != "/goal finish the card\r" {
+		t.Fatalf("wrote %q", h.wrote.String())
+	}
+	if eof {
+		select {
+		case <-h.readReturned:
+		default:
+			t.Fatal("Drive returned before Read EOF")
+		}
+		return
+	}
+	select {
+	case <-h.readReturned:
+		t.Fatal("Read returned; session was not observed while Read was blocked")
+	default:
+	}
+	close(h.release)
+	select {
+	case <-h.readReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Read did not finish after release")
+	}
 }
 
 func TestPromptFileBody(t *testing.T) {

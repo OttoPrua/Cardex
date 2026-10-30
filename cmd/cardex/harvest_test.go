@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -472,6 +473,127 @@ func TestRunTaskGrokHarvestOffKeepsUnknownOutcomeHold(t *testing.T) {
 	}
 	if got.Verdict != "" || got.Harvest != nil {
 		t.Fatalf("off mode must not store harvest: %+v %q", got.Harvest, got.Verdict)
+	}
+}
+
+func grokHarvestUnknownTerminalFailedToolPayload() string {
+	call := `{"content":[],"kind":"tool","locations":[],"rawInput":{},"status":"pending","title":"read","toolCallId":"call-1","toolName":"read_file","type":"tool_call"}`
+	mid := `{"content":[],"locations":[],"rawOutput":null,"status":null,"toolCallId":"call-1","type":"tool_call_update"}`
+	fail := `{"content":[],"locations":[],"rawOutput":{},"status":"failed","toolCallId":"call-1","type":"tool_call_update"}`
+	end := strings.Replace(grok105PublicEnd, "end_turn", grokDiagnosticCanary, 1)
+	return call + "\n" + mid + "\n" + fail + "\n" + end
+}
+
+func TestUnknownHarvestSilenceKeepsLegacyHold(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		via, reason string
+		keep        bool
+	}{
+		{grokBuildRunnerName, harvestReasonNoOutput, true},
+		{grokBuildRunnerName, harvestReasonNoOutputAfterRetry, true},
+		{grokBuildRunnerName, harvestReasonUnverifiedOutput, false},
+		{grokBuildRunnerName, harvestReasonVerifyPassed, false},
+		{"codex", harvestReasonNoOutput, false},
+		{"codex", harvestReasonNoOutputAfterRetry, false},
+		{kimiCLIRunnerName, harvestReasonNoOutput, false},
+		{"opencode", harvestReasonNoOutputAfterRetry, false},
+	}
+	for _, tc := range cases {
+		if got := unknownHarvestSilenceKeepsLegacyHold(tc.via, tc.reason); got != tc.keep {
+			t.Fatalf("%s %s = %v, want %v", tc.via, tc.reason, got, tc.keep)
+		}
+	}
+}
+
+func TestRunTaskGrokHarvestOnUnknownTerminalEmptyWorktreeKeepsHold(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		maxAttempts int
+		wantVerdict string
+		wantReason  string
+	}{
+		{name: "max-attempts-1", maxAttempts: 1, wantVerdict: harvestVerdictAttention, wantReason: harvestReasonNoOutputAfterRetry},
+		{name: "max-attempts-3", maxAttempts: 3, wantVerdict: harvestVerdictRetry, wantReason: harvestReasonNoOutput},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := testRoot(t)
+			bin, calls := fakeGrokBuildCounted(t, grokHarvestUnknownTerminalFailedToolPayload(), "", 0)
+			cfg := policyTestConfig()
+			cfg.GrokBuildBin = bin
+			cfg.MaxAttempts = tc.maxAttempts
+			cfg.HarvestMode = harvestModeOn
+			isolateGrokLifecycleHome(t, cfg)
+			useHarvestScript(t, harvestScript{status: ""}, nil)
+			task := newTask(root, cfg, typeSequence, "harvest unknown terminal silence", t.TempDir(), []string{"implement"}, 1)
+			task.PreferRunner = grokBuildRunnerName
+			task.RunnerExplicit = true
+			task.GrokModel = "grok-4.6"
+			task.GrokEffort = "xhigh"
+			task.ReviewAfter = false
+			task.MaxAttempts = tc.maxAttempts
+			if err := saveTask(root, task); err != nil {
+				t.Fatal(err)
+			}
+			if err := runTaskVia(context.Background(), root, cfg, task, grokBuildRunnerName); err != nil {
+				t.Fatal(err)
+			}
+			got, err := loadTask(root, task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != statusHeld || !strings.Contains(got.LastError, "Grok terminal unknown outcome held") {
+				t.Fatalf("status %s last %q", got.Status, got.LastError)
+			}
+			if strings.Contains(got.LastError, "harvest ") || strings.Contains(got.LastError, "harvest retry") {
+				t.Fatalf("harvest overlay replaced Grok hold: %q", got.LastError)
+			}
+			if got.Attempts != 0 {
+				t.Fatalf("attempts incremented into replay: %d", got.Attempts)
+			}
+			if n := countProductCalls(t, calls); n != 1 {
+				t.Fatalf("provider calls=%d", n)
+			}
+			if got.Verdict != tc.wantVerdict || got.Harvest == nil || got.Harvest.Reason != tc.wantReason {
+				t.Fatalf("harvest evidence %+v verdict %q", got.Harvest, got.Verdict)
+			}
+			if got.LastRouteAttempt == nil || got.LastRouteAttempt.GrokDiagnostics == nil {
+				t.Fatal("missing grok diagnostics")
+			}
+			d := got.LastRouteAttempt.GrokDiagnostics
+			if d.TerminalDefect != "abnormal_stop_reason" || d.StopReason != "unknown" {
+				t.Fatalf("diagnostics %+v", d)
+			}
+			if got.LastRouteAttempt.FailureKind != string(fallbackInvalidTerminal) || got.LastRouteAttempt.ToolEvents == 0 {
+				t.Fatalf("route attempt %+v", got.LastRouteAttempt)
+			}
+			raw, err := json.Marshal(d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(got.LastError, grokDiagnosticCanary) || strings.Contains(string(raw), grokDiagnosticCanary) {
+				t.Fatalf("private stop reason leaked: last=%q diag=%s", got.LastError, raw)
+			}
+			events, _, err := loadTaskEvents(root, got.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			held := 0
+			for _, event := range events {
+				if event.Type == evRetry {
+					t.Fatalf("harvest retry event: %+v", event)
+				}
+				if event.Type == evHeld {
+					held++
+					if event.Detail["harvest_verdict"] != tc.wantVerdict || event.Detail["harvest_reason"] != tc.wantReason {
+						t.Fatalf("held event lost harvest annotation: %+v", event.Detail)
+					}
+				}
+			}
+			if held == 0 {
+				t.Fatal("missing held event")
+			}
+		})
 	}
 }
 

@@ -631,9 +631,9 @@ func writeHarvestPatch(root string, t *Task, changed []string) (string, string) 
 }
 
 // prepareUnknownHarvest runs harvest at an unknown-outcome hold.
-// continueLegacy is true for mode off, a live/residual process, and dry-run
-// (after the verdict is stored). Mode on returns continueLegacy false: either
-// errHarvestAcceptSuccess or the error from the hold/retry persist.
+// continueLegacy is true for mode off, a live/residual process, dry-run
+// (after the verdict is stored), and Grok harvest silence. Mode on still
+// applies done (verify-pass) and needs_review (retained worktree changes).
 func prepareUnknownHarvest(root string, cfg *Config, t *Task, via string, res **claudeResult, runErr error, now time.Time) (continueLegacy bool, err error) {
 	if harvestMode(cfg) == harvestModeOff || t == nil {
 		return true, nil
@@ -648,7 +648,7 @@ func prepareUnknownHarvest(root string, cfg *Config, t *Task, via string, res **
 	ev, verdict, reason := harvestAttempt(root, cfg, t, via, result, runErr)
 	t.Verdict = verdict
 	t.Harvest = ev
-	if harvestMode(cfg) == harvestModeDryRun {
+	if harvestMode(cfg) == harvestModeDryRun || unknownHarvestSilenceKeepsLegacyHold(via, reason) {
 		return true, nil
 	}
 	switch verdict {
@@ -660,6 +660,17 @@ func prepareUnknownHarvest(root string, cfg *Config, t *Task, via string, res **
 	default:
 		return false, harvestHold(root, t, verdict, reason)
 	}
+}
+
+// unknownHarvestSilenceKeepsLegacyHold keeps the caller's original unknown
+// hold when Grok harvest judged git-visible silence. Harvest evidence stays
+// on the task; persistGrokTerminalUnknownHold still writes LastError.
+// Codex/Kimi/OpenCode unknown-hold sites still apply harvest retry/attention.
+func unknownHarvestSilenceKeepsLegacyHold(via, reason string) bool {
+	if via != grokBuildRunnerName {
+		return false
+	}
+	return reason == harvestReasonNoOutput || reason == harvestReasonNoOutputAfterRetry
 }
 
 func applyHarvestSuccessResult(t *Task, res **claudeResult) {
@@ -772,7 +783,7 @@ var errHarvestContinueLoop = errors.New("harvest continue loop")
 
 // dispatchUnknownHarvest is the runner hold-site hook.
 // handled is false when the caller must keep the legacy hold (mode off,
-// live process, or dry-run after the verdict was stored on the task).
+// live process, dry-run after the verdict was stored, or Grok harvest silence).
 // handled is true when mode on already persisted a hold/retry, or when err is
 // errHarvestContinueLoop / nil after the success path finished the step.
 func dispatchUnknownHarvest(ctx context.Context, root string, cfg *Config, t *Task, via string, res **claudeResult, runErr error, now time.Time, prompt string, lg *os.File, useCodex, remote, useGemini, useOpenCode, useKimiCLI, useGrokBuild, useCursor bool, engineName string) (handled bool, err error) {

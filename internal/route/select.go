@@ -37,52 +37,14 @@ func Select(ctx context.Context, req Request) (model.Route, model.RouteReason, e
 		}, nil
 	}
 
-	cands, filtered := collect(ctx, req, tier)
-	if len(cands) == 0 {
+	kept, filtered := rankTier(ctx, req, tier, now)
+	if len(kept) == 0 {
 		if next, ok := upOne(tier); ok {
-			more, extra := collect(ctx, req, next)
+			more, extra := rankTier(ctx, req, next, now)
 			filtered = append(filtered, extra...)
-			cands = more
+			kept = more
 		}
 	}
-
-	type ranked struct {
-		cand
-		demoted bool
-		pace    float64
-	}
-	kept := make([]ranked, 0, len(cands))
-	for _, c := range cands {
-		if reason := rejectReason(c, req, now); reason != "" {
-			filtered = append(filtered, model.FilteredCandidate{Channel: c.ch.ID, Model: c.modelName, Reason: reason})
-			continue
-		}
-		item := ranked{cand: c, pace: 0}
-		if c.known {
-			item.demoted = overUsed(c.est, 90)
-			item.pace = paceOf(c.est.Ratio, c.est.Reset, now)
-		}
-		kept = append(kept, item)
-	}
-	sort.SliceStable(kept, func(i, j int) bool {
-		a, b := kept[i], kept[j]
-		if a.pref != b.pref {
-			return a.pref < b.pref
-		}
-		if a.known != b.known {
-			return a.known
-		}
-		if a.demoted != b.demoted {
-			return !a.demoted
-		}
-		if a.pace != b.pace {
-			return a.pace > b.pace
-		}
-		if a.ch.ID != b.ch.ID {
-			return a.ch.ID < b.ch.ID
-		}
-		return a.modelName < b.modelName
-	})
 
 	reason := emptyReason()
 	reason.Filtered = filtered
@@ -109,6 +71,51 @@ func Select(ctx context.Context, req Request) (model.Route, model.RouteReason, e
 	}
 	win := kept[0]
 	return model.Route{Channel: win.ch.ID, Model: win.modelName}, reason, nil
+}
+
+type ranked struct {
+	cand
+	demoted bool
+	pace    float64
+}
+
+// rankTier filters one tier and orders whoever remains. Borrow looks at this
+// result, so a tier full of unusable candidates does not count as available.
+func rankTier(ctx context.Context, req Request, tier model.Tier, now time.Time) ([]ranked, []model.FilteredCandidate) {
+	cands, filtered := collect(ctx, req, tier)
+	kept := make([]ranked, 0, len(cands))
+	for _, c := range cands {
+		if reason := rejectReason(c, req, now); reason != "" {
+			filtered = append(filtered, model.FilteredCandidate{Channel: c.ch.ID, Model: c.modelName, Reason: reason})
+			continue
+		}
+		item := ranked{cand: c}
+		if c.known {
+			item.demoted = overUsed(c.est, 90)
+			item.pace = paceOf(c.est.Ratio, c.est.Reset, now)
+		}
+		kept = append(kept, item)
+	}
+	sort.SliceStable(kept, func(i, j int) bool {
+		a, b := kept[i], kept[j]
+		if a.pref != b.pref {
+			return a.pref < b.pref
+		}
+		if a.known != b.known {
+			return a.known
+		}
+		if a.demoted != b.demoted {
+			return !a.demoted
+		}
+		if a.pace != b.pace {
+			return a.pace > b.pace
+		}
+		if a.ch.ID != b.ch.ID {
+			return a.ch.ID < b.ch.ID
+		}
+		return a.modelName < b.modelName
+	})
+	return kept, filtered
 }
 
 type cand struct {
@@ -295,7 +302,7 @@ func fetchEst(ctx context.Context, q Quotas, id string) (quota.Estimate, bool) {
 		return quota.Estimate{Unknown: true}, false
 	}
 	est, err := q.Remaining(ctx, id)
-	if err != nil || est.Unknown || est.LimitTokens <= 0 {
+	if err != nil || est.Unknown || (est.LimitTokens <= 0 && est.LimitRequests <= 0) {
 		if err != nil {
 			return quota.Estimate{Unknown: true}, false
 		}
@@ -313,25 +320,44 @@ func paceOf(ratio float64, reset, now time.Time) float64 {
 }
 
 func overUsed(est quota.Estimate, pct int64) bool {
+	hit := false
 	if est.LimitTokens > 0 {
-		return est.UsedTokens*100 > est.LimitTokens*pct
+		hit = est.UsedTokens*100 > est.LimitTokens*pct
 	}
-	return (1 - est.Ratio) > float64(pct)/100+1e-9
+	if est.LimitRequests > 0 && est.UsedRequests*100 > est.LimitRequests*pct {
+		hit = true
+	}
+	if est.LimitTokens <= 0 && est.LimitRequests <= 0 {
+		return (1 - est.Ratio) > float64(pct)/100+1e-9
+	}
+	return hit
 }
 
 func belowRedline(est quota.Estimate, redline float64) bool {
 	if est.Unknown {
 		return false
 	}
+	ppm := int64(math.Round(redline * 1_000_000))
+	hit := false
+	have := false
 	if est.LimitTokens > 0 {
-		ppm := int64(math.Round(redline * 1_000_000))
+		have = true
 		remain := est.LimitTokens - est.UsedTokens
-		if remain < 0 {
-			return true
+		if remain < 0 || remain*1_000_000 <= est.LimitTokens*ppm {
+			hit = true
 		}
-		return remain*1_000_000 <= est.LimitTokens*ppm
 	}
-	return est.Ratio <= redline
+	if est.LimitRequests > 0 {
+		have = true
+		remain := est.LimitRequests - est.UsedRequests
+		if remain < 0 || remain*1_000_000 <= est.LimitRequests*ppm {
+			hit = true
+		}
+	}
+	if !have {
+		return est.Ratio <= redline
+	}
+	return hit
 }
 
 func emptyReason() model.RouteReason {

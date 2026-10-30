@@ -204,6 +204,86 @@ func TestClaudeFiveHourRedlineExample(t *testing.T) {
 	}
 }
 
+func TestRequestCapRemainingRatio(t *testing.T) {
+	now := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name       string
+		tokens     int64
+		requests   int64
+		usage      []int64
+		unknown    bool
+		ratio      float64
+		usedTokens int64
+		usedReqs   int64
+	}{
+		{name: "request only", requests: 4, usage: []int64{0, 0}, ratio: 0.5, usedReqs: 2},
+		{name: "tokens tighter", tokens: 100, requests: 10, usage: []int64{50}, ratio: 0.5, usedTokens: 50, usedReqs: 1},
+		{name: "requests tighter", tokens: 100, requests: 10, usage: []int64{1, 1, 1, 1, 1, 1, 1, 1}, ratio: 0.2, usedTokens: 8, usedReqs: 8},
+		{name: "neither limit", unknown: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l, _ := clocked(now)
+			l.Configure(model.Channel{ID: "c", QuotaWindows: []model.QuotaWindow{{
+				Name: "5h", ResetRule: "rolling", ResetAt: now.Add(time.Hour), LimitTokens: tc.tokens, LimitRequests: tc.requests,
+			}}})
+			for _, tokens := range tc.usage {
+				if err := l.Record(context.Background(), "c", model.Usage{Tokens: tokens, Source: "meter"}, now.Add(-time.Minute), now); err != nil {
+					t.Fatal(err)
+				}
+			}
+			est := mustRemaining(t, l, "c")
+			if est.Unknown != tc.unknown {
+				t.Fatalf("unknown %v estimate %+v", est.Unknown, est)
+			}
+			if tc.unknown {
+				return
+			}
+			if est.Ratio != tc.ratio || est.UsedRequests != tc.usedReqs || est.LimitRequests != tc.requests {
+				t.Fatalf("ratio estimate %+v", est)
+			}
+			if tc.tokens > 0 && (est.UsedTokens != tc.usedTokens || est.LimitTokens != tc.tokens) {
+				t.Fatalf("token side %+v", est)
+			}
+			if tc.tokens == 0 && est.LimitTokens != 0 {
+				t.Fatalf("request-only window kept a token limit %+v", est)
+			}
+		})
+	}
+}
+
+func TestObserveLimitKeepsOtherWindows(t *testing.T) {
+	now := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)
+	shortEnd := now.Add(time.Hour)
+	weekEnd := now.Add(7 * 24 * time.Hour)
+	cases := []struct {
+		name    string
+		observe time.Time
+		used    int64
+	}{
+		{name: "short window only", observe: shortEnd, used: 40},
+		{name: "no window", observe: now.Add(30 * time.Minute), used: 40},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l, clock := clocked(now)
+			l.Configure(model.Channel{ID: "c", QuotaWindows: []model.QuotaWindow{
+				{Name: "5h", ResetRule: "rolling", ResetAt: shortEnd, LimitTokens: 1000},
+				{Name: "weekly", ResetRule: "rolling", ResetAt: weekEnd, LimitTokens: 100},
+			}})
+			record(t, l, "c", tc.used, 1, now.Add(-time.Minute), now)
+			if err := l.ObserveLimit(context.Background(), "c", tc.observe); err != nil {
+				t.Fatal(err)
+			}
+			*clock = tc.observe
+			est := mustRemaining(t, l, "c")
+			if est.Blocked || est.Unknown || est.UsedTokens != tc.used || est.LimitTokens != 100 || est.Ratio >= 1 {
+				t.Fatalf("longer window lost usage %+v", est)
+			}
+		})
+	}
+}
+
 func clocked(now time.Time) (*Ledger, *time.Time) {
 	current := now
 	l := New()

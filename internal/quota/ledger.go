@@ -56,14 +56,15 @@ func (l *Ledger) Configure(ch model.Channel) {
 	specs := make([]windowSpec, 0, len(ch.QuotaWindows))
 	for _, w := range ch.QuotaWindows {
 		name := canonName(w.Name)
-		if name == "" || w.LimitTokens <= 0 {
+		if name == "" || (w.LimitTokens <= 0 && w.LimitRequests <= 0) {
 			continue
 		}
 		specs = append(specs, windowSpec{
-			Name:   name,
-			Rule:   canonRule(w.ResetRule),
-			Anchor: w.ResetAt.UTC(),
-			Limit:  w.LimitTokens,
+			Name:     name,
+			Rule:     canonRule(w.ResetRule),
+			Anchor:   w.ResetAt.UTC(),
+			Limit:    w.LimitTokens,
+			Requests: w.LimitRequests,
 		})
 	}
 	st.windows = specs
@@ -78,7 +79,7 @@ func (l *Ledger) state(id string) *chState {
 	return st
 }
 
-// Remaining reports the tightest limited window, or unknown when none has a token limit.
+// Remaining reports the tightest limited window, or unknown when none has a token or request limit.
 func (l *Ledger) Remaining(ctx context.Context, channelID string) (Estimate, error) {
 	if err := ctx.Err(); err != nil {
 		return Estimate{}, err
@@ -92,30 +93,39 @@ func (l *Ledger) Remaining(ctx context.Context, channelID string) (Estimate, err
 	}
 	est := Estimate{Unknown: true}
 	var (
-		have       bool
-		bestRemain int64
-		bestLimit  int64
-		bestEnd    time.Time
-		bestConf   float64
-		bestUsed   int64
+		have         bool
+		bestRemain   int64
+		bestLimit    int64
+		bestEnd      time.Time
+		bestConf     float64
+		bestUsed     int64
+		bestTokLimit int64
+		bestReqUsed  int64
+		bestReqLimit int64
 	)
 	for _, w := range st.windows {
 		start, end, ok := w.bounds(now)
 		if !ok {
 			continue
 		}
-		used, conf, saw := sumEvents(st.events, start, end)
+		used, reqs, conf, saw := sumEvents(st.events, start, end)
 		if !saw {
 			conf = 1
 		}
-		remain := w.Limit - used
-		if !have || tighter(remain, w.Limit, bestRemain, bestLimit) || (sameRatio(remain, w.Limit, bestRemain, bestLimit) && end.Before(bestEnd)) {
+		remain, limit, limited := tighterRemain(used, w.Limit, reqs, w.Requests)
+		if !limited {
+			continue
+		}
+		if !have || tighter(remain, limit, bestRemain, bestLimit) || (sameRatio(remain, limit, bestRemain, bestLimit) && end.Before(bestEnd)) {
 			have = true
 			bestRemain = remain
-			bestLimit = w.Limit
+			bestLimit = limit
 			bestEnd = end
 			bestConf = conf
 			bestUsed = used
+			bestTokLimit = w.Limit
+			bestReqUsed = reqs
+			bestReqLimit = w.Requests
 		}
 	}
 	if have {
@@ -124,7 +134,9 @@ func (l *Ledger) Remaining(ctx context.Context, channelID string) (Estimate, err
 		est.Reset = bestEnd
 		est.Confidence = bestConf
 		est.UsedTokens = bestUsed
-		est.LimitTokens = bestLimit
+		est.LimitTokens = bestTokLimit
+		est.UsedRequests = bestReqUsed
+		est.LimitRequests = bestReqLimit
 	}
 	if !st.blockUntil.IsZero() && now.Before(st.blockUntil) {
 		est.Blocked = true
@@ -174,7 +186,7 @@ func (l *Ledger) Record(ctx context.Context, channelID string, usage model.Usage
 	return nil
 }
 
-// ObserveLimit hard-blocks the channel until reset and moves each window anchor to that reset.
+// ObserveLimit hard-blocks the channel until reset. It moves only the window whose current end is that reset, and only when exactly one window matches.
 func (l *Ledger) ObserveLimit(ctx context.Context, channelID string, reset time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -185,9 +197,23 @@ func (l *Ledger) ObserveLimit(ctx context.Context, channelID string, reset time.
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	st := l.state(channelID)
-	st.blockUntil = reset.UTC()
-	for i := range st.windows {
-		st.windows[i].Anchor = reset.UTC()
+	reset = reset.UTC()
+	st.blockUntil = reset
+	now := l.now().UTC()
+	matched := -1
+	for i, w := range st.windows {
+		_, end, ok := w.bounds(now)
+		if !ok || !end.Equal(reset) {
+			continue
+		}
+		if matched >= 0 {
+			matched = -1
+			break
+		}
+		matched = i
+	}
+	if matched >= 0 {
+		st.windows[matched].Anchor = reset
 	}
 	return nil
 }
@@ -200,8 +226,9 @@ func sameRatio(remainA, limitA, remainB, limitB int64) bool {
 	return remainA*limitB == remainB*limitA
 }
 
-func sumEvents(events []usageEvent, start, end time.Time) (int64, float64, bool) {
+func sumEvents(events []usageEvent, start, end time.Time) (int64, int64, float64, bool) {
 	var used int64
+	var requests int64
 	var conf float64
 	saw := false
 	for _, e := range events {
@@ -209,12 +236,36 @@ func sumEvents(events []usageEvent, start, end time.Time) (int64, float64, bool)
 			continue
 		}
 		used += e.Tokens
+		requests++
 		if !saw || e.Confidence < conf {
 			conf = e.Confidence
 		}
 		saw = true
 	}
-	return used, conf, saw
+	return used, requests, conf, saw
+}
+
+// tighterRemain is the smaller remaining ratio of a token cap and a request cap.
+// A non-positive cap is ignored. One recorded attempt is one request.
+func tighterRemain(tokenUsed, tokenLimit, reqUsed, reqLimit int64) (remain, limit int64, ok bool) {
+	type pair struct{ remain, limit int64 }
+	var opts []pair
+	if tokenLimit > 0 {
+		opts = append(opts, pair{tokenLimit - tokenUsed, tokenLimit})
+	}
+	if reqLimit > 0 {
+		opts = append(opts, pair{reqLimit - reqUsed, reqLimit})
+	}
+	if len(opts) == 0 {
+		return 0, 0, false
+	}
+	best := opts[0]
+	for _, opt := range opts[1:] {
+		if tighter(opt.remain, opt.limit, best.remain, best.limit) {
+			best = opt
+		}
+	}
+	return best.remain, best.limit, true
 }
 
 var _ Estimator = (*Ledger)(nil)

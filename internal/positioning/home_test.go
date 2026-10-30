@@ -4,7 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"cardex/internal/model"
 )
@@ -79,5 +82,149 @@ func TestOpenRefusesCardexHome(t *testing.T) {
 	}
 	if _, err := Open(filepath.Join(user, ".cardex")); err == nil {
 		t.Fatal("opened ~/.cardex")
+	}
+}
+
+func TestPublishVersionIsMonotonicAcrossOpens(t *testing.T) {
+	home := t.TempDir()
+	cfg := []byte(`{
+		"positioning": [
+			{"id":"p1","model":"opus","family":"anthropic","tiers":["T3"],"capabilities":["web"],"preference":1}
+		]
+	}`)
+	if err := os.WriteFile(filepath.Join(home, "config.json"), cfg, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = a.Close() })
+	b, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	ctx := context.Background()
+
+	seed, err := a.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seed) != 1 || seed[0].Model != "opus" || seed[0].Family != "anthropic" || seed[0].Version != 1 || seed[0].Preference != 1 {
+		t.Fatalf("seed %+v", seed)
+	}
+	fromB, err := b.Current(ctx)
+	if err != nil || len(fromB) != 1 || fromB[0].Model != seed[0].Model || fromB[0].Version != seed[0].Version {
+		t.Fatalf("second open seed %+v err %v", fromB, err)
+	}
+
+	left, err := a.Propose(ctx, []model.Positioning{{
+		Model: "left", Family: "anthropic", Tiers: []model.Tier{model.TierT2}, Preference: 1,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := b.Propose(ctx, []model.Positioning{{
+		Model: "right", Family: "openai", Tiers: []model.Tier{model.TierT2}, Preference: 2,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	arrived := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	publishAfterRead = func() {
+		if calls.Add(1) <= 2 {
+			arrived <- struct{}{}
+			<-release
+		}
+	}
+	t.Cleanup(func() { publishAfterRead = nil })
+
+	var errA, errB error
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		errA = a.Approve(ctx, left.ID)
+	}()
+	go func() {
+		defer wg.Done()
+		errB = b.Approve(ctx, right.ID)
+	}()
+	waitArrived := func() {
+		t.Helper()
+		select {
+		case <-arrived:
+		case <-time.After(5 * time.Second):
+			t.Fatal("approval did not observe the shared version")
+		}
+	}
+	waitArrived()
+	waitArrived()
+	close(release)
+	wg.Wait()
+	if errA != nil || errB != nil {
+		t.Fatalf("overlap approve a %v b %v", errA, errB)
+	}
+	got, err := a.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Version != seed[0].Version+2 {
+		t.Fatalf("two publishes from %d became %+v", seed[0].Version, got)
+	}
+	if got[0].Model != "left" && got[0].Model != "right" {
+		t.Fatalf("published model %+v", got[0])
+	}
+	seenByB, err := b.Current(ctx)
+	if err != nil || len(seenByB) != 1 || seenByB[0].Version != got[0].Version || seenByB[0].Model != got[0].Model {
+		t.Fatalf("second open current %+v err %v", seenByB, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "positioning", "current.json")); !os.IsNotExist(err) {
+		t.Fatalf("current.json stat %v", err)
+	}
+
+	prev := got[0].Version
+	for i := 0; i < 2; i++ {
+		empty, err := a.Propose(ctx, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := b.Approve(ctx, empty.ID); err != nil {
+			t.Fatal(err)
+		}
+		cleared, err := a.Current(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cleared) != 0 {
+			t.Fatalf("empty approval %d restored rows %+v", i, cleared)
+		}
+	}
+	back, err := a.Propose(ctx, []model.Positioning{{
+		Model: "opus", Family: "anthropic", Tiers: []model.Tier{model.TierT3}, Capabilities: []string{"web"}, Preference: 1,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Approve(ctx, back.ID); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := a.Current(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 1 || restored[0].Model != "opus" || restored[0].Version != prev+3 {
+		t.Fatalf("empty approvals restarted the version: prev %d now %+v", prev, restored)
+	}
+	after, err := os.ReadFile(filepath.Join(home, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(cfg) {
+		t.Fatal("approve rewrote config.json")
 	}
 }

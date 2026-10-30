@@ -6,10 +6,11 @@ import (
 )
 
 type windowSpec struct {
-	Name   string
-	Rule   string
-	Anchor time.Time
-	Limit  int64
+	Name     string
+	Rule     string
+	Anchor   time.Time
+	Limit    int64
+	Requests int64
 }
 
 func canonName(name string) string {
@@ -38,7 +39,7 @@ func canonRule(rule string) string {
 
 func (w windowSpec) bounds(now time.Time) (start, end time.Time, ok bool) {
 	name := canonName(w.Name)
-	if name == "" || w.Limit <= 0 {
+	if name == "" || (w.Limit <= 0 && w.Requests <= 0) {
 		return time.Time{}, time.Time{}, false
 	}
 	now = now.UTC()

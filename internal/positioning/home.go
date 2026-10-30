@@ -10,24 +10,31 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"cardex/internal/model"
+	"cardex/internal/store"
 )
 
+// versionRowID stores the published table version when the approved table has
+// no model rows. Current leaves it out. The positioning table has no version of its own.
+const versionRowID = "cardex.positioning.version"
+
+// publishAfterRead runs inside the publish transaction after the stored version
+// is read and before rows are replaced. Tests use it to overlap two approvals.
+var publishAfterRead func()
+
 // Home is a versioned positioning table rooted at a caller-supplied directory.
-// The unapproved seed is config.json's positioning section. Proposals are files in that directory, not SQLite rows.
+// The unapproved seed is config.json's positioning section. Proposals are files.
+// An approval publishes the next table version in one transaction on home/cardex.db.
 type Home struct {
 	mu  sync.Mutex
 	dir string
+	db  *store.Store
 }
 
 type configFile struct {
 	Positioning []model.Positioning `json:"positioning"`
-}
-
-type savedCurrent struct {
-	Version int                 `json:"version"`
-	Entries []model.Positioning `json:"entries"`
 }
 
 type savedProposal struct {
@@ -46,7 +53,19 @@ func Open(home string) (*Home, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Home{dir: abs}, nil
+	db, err := store.Open(filepath.Join(abs, "cardex.db"))
+	if err != nil {
+		return nil, err
+	}
+	return &Home{dir: abs, db: db}, nil
+}
+
+// Close closes the shared home database.
+func (h *Home) Close() error {
+	if h == nil || h.db == nil {
+		return nil
+	}
+	return h.db.Close()
 }
 
 func refuseHome(path string) error {
@@ -75,23 +94,22 @@ func (h *Home) Current(ctx context.Context) ([]model.Positioning, error) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.currentLocked()
+	return h.currentLocked(ctx)
 }
 
-func (h *Home) currentLocked() ([]model.Positioning, error) {
-	path := filepath.Join(h.dir, "positioning", "current.json")
-	b, err := os.ReadFile(path)
-	if err == nil {
-		var saved savedCurrent
-		if err := json.Unmarshal(b, &saved); err != nil {
-			return nil, err
-		}
-		return stampVersion(saved.Entries, saved.Version), nil
-	}
-	if !os.IsNotExist(err) {
+func (h *Home) currentLocked(ctx context.Context) ([]model.Positioning, error) {
+	rows, err := h.db.ListPositioning(ctx)
+	if err != nil {
 		return nil, err
 	}
-	return h.seedLocked()
+	if len(rows) == 0 {
+		return h.seedLocked()
+	}
+	visible := withoutVersionRow(rows)
+	if len(visible) == 0 {
+		return []model.Positioning{}, nil
+	}
+	return stampVersion(visible, maxVersion(visible)), nil
 }
 
 func (h *Home) seedLocked() ([]model.Positioning, error) {
@@ -134,7 +152,7 @@ func (h *Home) Propose(ctx context.Context, entries []model.Positioning) (Propos
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	cur, err := h.currentLocked()
+	cur, err := h.currentLocked(ctx)
 	if err != nil {
 		return Proposal{}, err
 	}
@@ -164,32 +182,103 @@ func (h *Home) Approve(ctx context.Context, proposalID string) error {
 	if p.Status != "proposed" && p.Status != "" {
 		return fmt.Errorf("proposal %s is %s", proposalID, p.Status)
 	}
-	cur, err := h.currentLocked()
-	if err != nil {
-		return err
-	}
-	prev := 0
-	if len(cur) > 0 {
-		prev = cur[0].Version
-	}
-	next := prev + 1
-	entries := cloneEntries(p.Entries)
-	for i := range entries {
-		entries[i].Version = next
-	}
-	body, err := json.Marshal(savedCurrent{Version: next, Entries: entries})
-	if err != nil {
-		return err
-	}
-	dir := filepath.Join(h.dir, "positioning")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "current.json"), body, 0o644); err != nil {
+	if err := h.publish(ctx, cloneEntries(p.Entries)); err != nil {
 		return err
 	}
 	p.Status = "approved"
 	return h.writeProposal(p)
+}
+
+func (h *Home) publish(ctx context.Context, entries []model.Positioning) error {
+	var err error
+	delay := time.Millisecond
+	for i := 0; i < 40; i++ {
+		err = h.db.WithTx(ctx, func(ctx context.Context) error {
+			return h.publishOnce(ctx, entries)
+		})
+		if err == nil || !publishConflict(err) {
+			return err
+		}
+		if err = sleepCtx(ctx, delay); err != nil {
+			return err
+		}
+		if delay < 50*time.Millisecond {
+			delay *= 2
+		}
+	}
+	return err
+}
+
+func (h *Home) publishOnce(ctx context.Context, entries []model.Positioning) error {
+	rows, err := h.db.ListPositioning(ctx)
+	if err != nil {
+		return err
+	}
+	prev := 0
+	if len(rows) > 0 {
+		prev = maxVersion(rows)
+	} else {
+		seed, err := h.seedLocked()
+		if err != nil {
+			return err
+		}
+		if len(seed) > 0 {
+			prev = seed[0].Version
+		}
+	}
+	if publishAfterRead != nil {
+		publishAfterRead()
+	}
+	next := prev + 1
+	for _, row := range rows {
+		if err := h.db.DeletePositioning(ctx, row.ID); err != nil {
+			return err
+		}
+	}
+	if len(entries) == 0 {
+		carrier := model.Positioning{ID: versionRowID, Version: next}
+		return h.db.CreatePositioning(ctx, &carrier)
+	}
+	for i := range entries {
+		entries[i].Version = next
+		if entries[i].ID == versionRowID {
+			entries[i].ID = ""
+		}
+		if err := h.db.CreatePositioning(ctx, &entries[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func publishConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "database is locked")
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func withoutVersionRow(rows []model.Positioning) []model.Positioning {
+	out := make([]model.Positioning, 0, len(rows))
+	for _, row := range rows {
+		if row.ID == versionRowID {
+			continue
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 // Reject is unspecified. It does not change Current.

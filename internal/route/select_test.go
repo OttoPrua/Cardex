@@ -300,17 +300,17 @@ func TestSelectFiltersAndOrder(t *testing.T) {
 		}
 	})
 
-	t.Run("unhealthy same tier does not borrow", func(t *testing.T) {
+	t.Run("unhealthy same tier borrows one", func(t *testing.T) {
 		led, _, channels, pos := build(t, now, []spec{
 			{id: "sick", modelName: "sick-m", family: "f", tier: model.TierT1, health: model.HealthAuthFailed, limit: 100},
 			{id: "up", modelName: "up-m", family: "f", tier: model.TierT2, limit: 100},
 		})
 		rt, reason, err := call(t, now, led, channels, pos, model.Card{Kind: model.KindDev, Tier: model.TierT1}, nil)
-		if !errors.Is(err, ErrNoCandidate) || rt.Channel != "" {
-			t.Fatalf("borrowed past a sick candidate %+v err %v", rt, err)
+		if err != nil || rt.Channel != "up" || rt.Model != "up-m" {
+			t.Fatalf("unhealthy tier did not borrow %+v err %v", rt, err)
 		}
 		got, ok := oneReason(reason, "sick")
-		if !ok || got != ReasonHealth || containsChannel(reason, "up") {
+		if !ok || got != ReasonHealth || !containsChannel(reason, "up") {
 			t.Fatalf("reason %+v", reason)
 		}
 	})
@@ -406,6 +406,168 @@ func TestSelectFiltersAndOrder(t *testing.T) {
 	})
 }
 
+func TestBorrowOnlyAfterTierIsUnusable(t *testing.T) {
+	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	type want struct {
+		channel string
+		err     error
+		reasons map[string]string
+		absent  []string
+	}
+	cases := []struct {
+		name    string
+		card    model.Card
+		unknown string
+		specs   []spec
+		block   []string
+		inUse   map[string]int
+		want    want
+	}{
+		{
+			name: "health", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			specs: []spec{
+				{id: "sick", modelName: "sick-m", tier: model.TierT1, health: model.HealthAuthFailed, limit: 100},
+				{id: "up-sick", modelName: "up-sick-m", tier: model.TierT2, health: model.HealthDegraded, limit: 100},
+				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100},
+			},
+			want: want{channel: "up", reasons: map[string]string{"sick": ReasonHealth, "up-sick": ReasonHealth}},
+		},
+		{
+			name: "concurrency", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			specs: []spec{
+				{id: "busy", modelName: "busy-m", tier: model.TierT1, conc: 1, limit: 100},
+				{id: "up-busy", modelName: "up-busy-m", tier: model.TierT2, conc: 1, limit: 100},
+				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100},
+			},
+			inUse: map[string]int{"busy": 1, "up-busy": 1},
+			want:  want{channel: "up", reasons: map[string]string{"busy": ReasonConcurrency, "up-busy": ReasonConcurrency}},
+		},
+		{
+			name: "redline", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			specs: []spec{
+				{id: "low", modelName: "low-m", tier: model.TierT1, limit: 100, used: 90, redline: 0.2},
+				{id: "up-low", modelName: "up-low-m", tier: model.TierT2, limit: 100, used: 90, redline: 0.2},
+				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100, used: 10, redline: 0.2},
+			},
+			want: want{channel: "up", reasons: map[string]string{"low": ReasonRedline, "up-low": ReasonRedline}},
+		},
+		{
+			name: "blocked", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			specs: []spec{
+				{id: "held", modelName: "held-m", tier: model.TierT1, limit: 100},
+				{id: "up-held", modelName: "up-held-m", tier: model.TierT2, limit: 100},
+				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100},
+			},
+			block: []string{"held", "up-held"},
+			want:  want{channel: "up", reasons: map[string]string{"held": ReasonBlocked, "up-held": ReasonBlocked}},
+		},
+		{
+			name: "cutoff", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			specs: []spec{
+				{id: "hot", modelName: "hot-m", tier: model.TierT1, limit: 100, used: 99},
+				{id: "up-hot", modelName: "up-hot-m", tier: model.TierT2, limit: 100, used: 99},
+				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100, used: 10},
+			},
+			want: want{channel: "up", reasons: map[string]string{"hot": ReasonCutoff, "up-hot": ReasonCutoff}},
+		},
+		{
+			name: "unknown quota", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			unknown: "exclude",
+			specs: []spec{
+				{id: "mystery", modelName: "mystery-m", tier: model.TierT1},
+				{id: "up-mystery", modelName: "up-mystery-m", tier: model.TierT2},
+				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100},
+			},
+			want: want{channel: "up", reasons: map[string]string{"mystery": ReasonUnknownQuota, "up-mystery": ReasonUnknownQuota}},
+		},
+		{
+			name: "review family", card: model.Card{Kind: model.KindReview, Tier: model.TierT1, AuthorFamily: "anthropic"},
+			specs: []spec{
+				{id: "author", modelName: "author-m", family: "anthropic", tier: model.TierT1, limit: 100},
+				{id: "up-author", modelName: "up-author-m", family: "anthropic", tier: model.TierT2, limit: 100},
+				{id: "up", modelName: "up-m", family: "openai", tier: model.TierT2, limit: 100},
+			},
+			want: want{channel: "up", reasons: map[string]string{"author": ReasonFamily, "up-author": ReasonFamily}},
+		},
+		{
+			name: "request cap", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			specs: []spec{
+				{id: "hot", modelName: "hot-m", tier: model.TierT1, requests: 100, requestUse: 99},
+				{id: "up-hot", modelName: "up-hot-m", tier: model.TierT2, requests: 100, requestUse: 99},
+				{id: "up", modelName: "up-m", tier: model.TierT2, requests: 100, requestUse: 1},
+			},
+			want: want{channel: "up", reasons: map[string]string{"hot": ReasonCutoff, "up-hot": ReasonCutoff}},
+		},
+		{
+			name: "two steps up", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			specs: []spec{{id: "top", modelName: "top-m", tier: model.TierT3, limit: 100}},
+			want:  want{err: ErrNoCandidate, absent: []string{"top"}},
+		},
+		{
+			name: "unusable across two tiers", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			specs: []spec{
+				{id: "sick", modelName: "sick-m", tier: model.TierT1, health: model.HealthAuthFailed, limit: 100},
+				{id: "sick2", modelName: "sick2-m", tier: model.TierT2, health: model.HealthAuthFailed, limit: 100},
+				{id: "top", modelName: "top-m", tier: model.TierT3, limit: 100},
+			},
+			want: want{err: ErrNoCandidate, reasons: map[string]string{"sick": ReasonHealth, "sick2": ReasonHealth}, absent: []string{"top"}},
+		},
+		{
+			name: "downward", card: model.Card{Kind: model.KindDev, Tier: model.TierT2},
+			specs: []spec{{id: "low", modelName: "low-m", tier: model.TierT1, limit: 100}},
+			want:  want{err: ErrNoCandidate, absent: []string{"low"}},
+		},
+		{
+			name: "usable tier does not borrow", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			specs: []spec{
+				{id: "here", modelName: "here-m", tier: model.TierT1, limit: 100, used: 10},
+				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100},
+			},
+			want: want{channel: "here", absent: []string{"up"}},
+		},
+		{
+			name: "pin does not borrow", card: model.Card{Kind: model.KindDev, Tier: model.TierT1, Channel: "sick"},
+			specs: []spec{
+				{id: "sick", modelName: "sick-m", tier: model.TierT1, health: model.HealthAuthFailed, limit: 100},
+				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100},
+			},
+			want: want{err: ErrPinnedUnavailable, absent: []string{"up"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			led, _, channels, pos := build(t, now, tc.specs)
+			for _, id := range tc.block {
+				if err := led.ObserveLimit(context.Background(), id, now.Add(2*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rt, reason, err := call(t, now, led, channels, pos, tc.card, func(r *Request) {
+				r.UnknownQuota = tc.unknown
+				r.InUse = tc.inUse
+			})
+			if tc.want.err != nil {
+				if !errors.Is(err, tc.want.err) || rt.Channel != "" {
+					t.Fatalf("route %+v err %v reason %+v", rt, err, reason)
+				}
+			} else if err != nil || rt.Channel != tc.want.channel {
+				t.Fatalf("route %+v err %v reason %+v", rt, err, reason)
+			}
+			for id, why := range tc.want.reasons {
+				got, ok := oneReason(reason, id)
+				if !ok || got != why {
+					t.Fatalf("%s reason %q filtered %+v", id, got, reason.Filtered)
+				}
+			}
+			for _, id := range tc.want.absent {
+				if containsChannel(reason, id) {
+					t.Fatalf("%s was considered %+v", id, reason)
+				}
+			}
+		})
+	}
+}
+
 type spec struct {
 	id, modelName, family, source, window, rule string
 	tier                                        model.Tier
@@ -413,7 +575,7 @@ type spec struct {
 	redline                                     float64
 	health                                      model.Health
 	conc                                        int
-	limit, used                                 int64
+	limit, used, requests, requestUse           int64
 	anchor                                      time.Time
 	caps                                        []string
 }
@@ -451,14 +613,23 @@ func build(t *testing.T, now time.Time, specs []spec) (*quota.Ledger, *time.Time
 			ID: s.id, Runner: model.RunnerGrok, SourceGroup: s.source, Family: s.family,
 			Models: []string{s.modelName}, Concurrency: s.conc, Health: s.health, Redline: s.redline,
 		}
-		if s.limit > 0 {
+		if s.limit > 0 || s.requests > 0 {
 			ch.QuotaWindows = []model.QuotaWindow{{
-				Name: s.window, ResetRule: s.rule, LimitTokens: s.limit, ResetAt: s.anchor,
+				Name: s.window, ResetRule: s.rule, LimitTokens: s.limit, LimitRequests: s.requests, ResetAt: s.anchor,
 			}}
 		}
 		led.Configure(ch)
 		if s.used > 0 {
 			record(t, led, s.id, s.used, now)
+		}
+		extra := int(s.requestUse)
+		if s.used > 0 && extra > 0 {
+			extra--
+		}
+		for i := 0; i < extra; i++ {
+			if err := led.Record(context.Background(), s.id, model.Usage{Source: "meter"}, now.Add(-time.Minute), now.Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
 		}
 		channels = append(channels, ch)
 		pos = append(pos, model.Positioning{

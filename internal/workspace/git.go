@@ -30,6 +30,11 @@ func (Git) Create(ctx context.Context, req CreateRequest) (Worktree, error) {
 		return Worktree{}, err
 	}
 	if req.Continue {
+		// The previous attempt's worktree still has this branch until merge.
+		// Detach it in place so the new worktree can check the branch out.
+		if err := detachCardBranch(ctx, req.RepoPath, branch); err != nil {
+			return Worktree{}, err
+		}
 		if _, err := runGit(ctx, req.RepoPath, "worktree", "add", path, branch); err != nil {
 			return Worktree{}, err
 		}
@@ -49,6 +54,47 @@ func (Git) Create(ctx context.Context, req CreateRequest) (Worktree, error) {
 		return Worktree{}, err
 	}
 	return Worktree{Path: path, Branch: branch, BaseCommit: strings.TrimSpace(base)}, nil
+}
+
+// detachCardBranch frees the card branch when a previous attempt's worktree
+// still has it checked out. The worktree directory and its commits stay.
+func detachCardBranch(ctx context.Context, repo, branch string) error {
+	raw, err := runGit(ctx, repo, "worktree", "list", "--porcelain")
+	if err != nil {
+		return err
+	}
+	want := "refs/heads/" + branch
+	var path, checked string
+	release := func() error {
+		if path == "" || checked != want {
+			path, checked = "", ""
+			return nil
+		}
+		if _, err := runGit(ctx, path, "checkout", "--detach"); err != nil {
+			return err
+		}
+		path, checked = "", ""
+		return nil
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		if strings.TrimSpace(line) == "" {
+			if err := release(); err != nil {
+				return err
+			}
+			continue
+		}
+		key, val, ok := strings.Cut(line, " ")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "worktree":
+			path = val
+		case "branch":
+			checked = val
+		}
+	}
+	return release()
 }
 
 // Commit runs git add -A and commits when anything other than the excluded
@@ -153,7 +199,9 @@ func (Git) Remove(ctx context.Context, worktree string) error {
 }
 
 // BlockPush turns on per-worktree config, points core.hooksPath at the
-// Cardex reject-all hook, and sets every remote pushurl to an invalid address.
+// Cardex reject-all hook, sets every remote pushurl to an invalid address,
+// and denies every push transport in this worktree. Inherited pushurl values
+// stay in the effective list, so the transport denial is what stops them.
 // Push-related keys in the main repository config are left alone.
 func (Git) BlockPush(ctx context.Context, worktree string) error {
 	if strings.TrimSpace(worktree) == "" {
@@ -173,6 +221,19 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 		return err
 	}
 	if _, err := runGit(ctx, worktree, "config", "--worktree", "core.hooksPath", abs); err != nil {
+		return err
+	}
+	// Appending an invalid pushurl leaves inherited remote.*.pushurl values
+	// in effect, and --no-verify skips the pre-push hook. A specific
+	// protocol.<name>.allow in the main repo also outranks protocol.allow,
+	// so each transport is denied in this worktree only.
+	for _, proto := range []string{"file", "git", "ssh", "http", "https", "ftp", "ftps", "ext"} {
+		key := "protocol." + proto + ".allow"
+		if _, err := runGit(ctx, worktree, "config", "--worktree", key, "never"); err != nil {
+			return err
+		}
+	}
+	if _, err := runGit(ctx, worktree, "config", "--worktree", "protocol.allow", "never"); err != nil {
 		return err
 	}
 	raw, err := runGit(ctx, worktree, "remote")

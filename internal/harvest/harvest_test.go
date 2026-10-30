@@ -228,6 +228,92 @@ func TestHarvestAcceptanceTimeout(t *testing.T) {
 	}
 }
 
+func TestHarvestBudgetLimitedNotPassed(t *testing.T) {
+	tests := []struct {
+		name       string
+		kind       model.CardKind
+		acceptance []string
+		class      model.ErrorClass
+		change     bool
+		result     string
+		timeout    bool
+		want       model.Outcome
+	}{
+		{
+			name:       "code changes and passing acceptance",
+			kind:       model.KindDev,
+			acceptance: []string{"true"},
+			class:      model.ErrorBudgetLimited,
+			change:     true,
+			want:       model.OutcomeBudgetLimited,
+		},
+		{
+			name:   "design card valid result",
+			kind:   model.KindDesign,
+			class:  model.ErrorBudgetLimited,
+			result: "## 结论\n设计完成\n",
+			want:   model.OutcomeBudgetLimited,
+		},
+		{
+			name:       "violation still wins",
+			kind:       model.KindDev,
+			acceptance: []string{"true"},
+			class:      model.ErrorViolation,
+			change:     true,
+			want:       model.OutcomeViolation,
+		},
+		{
+			name:       "acceptance timeout still wins",
+			kind:       model.KindDev,
+			acceptance: []string{"sleep 30"},
+			class:      model.ErrorBudgetLimited,
+			change:     true,
+			timeout:    true,
+			want:       model.OutcomeTimeout,
+		},
+		{
+			name:   "unparsable result still wins",
+			kind:   model.KindDesign,
+			class:  model.ErrorBudgetLimited,
+			result: "hello world\n",
+			want:   model.OutcomeResultUnparsable,
+		},
+		{
+			name:       "incomplete events without budget_limited still pass",
+			kind:       model.KindDev,
+			acceptance: []string{"true"},
+			change:     true,
+			want:       model.OutcomePassed,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, head := newRepo(t)
+			if tc.change {
+				write(t, dir, "b.go", "package a\n\nfunc B() {}\n")
+			}
+			if tc.result != "" {
+				write(t, dir, ".cardex-result.md", tc.result)
+			}
+			ctx := context.Background()
+			if tc.timeout {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 300*time.Millisecond)
+				defer cancel()
+			}
+			res, err := Harvest(ctx, harvestInput(dir, head, model.Card{
+				ID: "c", Kind: tc.kind, Acceptance: tc.acceptance,
+			}, 1, []byte("{\"type\":\"assistant\",\"text\":\"hel"), tc.class))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Outcome != tc.want {
+				t.Fatalf("outcome %s want %s evidence %s", res.Outcome, tc.want, res.Evidence)
+			}
+		})
+	}
+}
+
 func harvestInput(dir, head string, card model.Card, exit int, output []byte, class model.ErrorClass) Input {
 	return Input{
 		Attempt:    model.Attempt{ID: "att", Card: card.ID, Worktree: dir, BaseCommit: head},

@@ -13,4 +13,10 @@
 `model.Claim` 没有目录位。现用路径以 `/` 结尾表示目录声明：它与该目录下空 symbol 的路径冲突，不与带 symbol 的声明冲突。空 symbol 无法区分「新建文件」和「已有文件的文件级锁」。若要同时表达，给 Claim 增加种类字段即可。
 
 ## 已知问题
-acceptance 在 context 没有 deadline 时默认 2 分钟。Git 不读 linked worktree 自己的 `info/exclude`（`info` 在 common dir），因此额外把该文件设为这个 worktree 的 `core.excludesFile`。`extensions.worktreeConfig` 写在公共 config；pushurl 和 hooksPath 只写 worktree 本地配置。
+acceptance 在 context 没有 deadline 时默认 2 分钟。Git 不读 linked worktree 自己的 `info/exclude`（`info` 在 common dir），因此额外把该文件设为这个 worktree 的 `core.excludesFile`。`extensions.worktreeConfig` 写在公共 config；pushurl 和 hooksPath 只写 worktree 本地配置。BlockPush 把该 worktree 的 `protocol.*.allow` 设为 never，因此这个 worktree 里的 fetch 也会被拒绝。
+
+## 修复记录
+BlockPush 之后该 worktree 的全部有效 push 目标都不可达，包括主仓库已继承的一个或多个 `remote.*.pushurl`；主仓库的 `remote.*.url`、既有 pushurl 和 `core.hooksPath` 不变。 → internal/workspace/git.go:230 → TestBlockPushBlocksInheritedPushURLs
+明确的 `budget_limited` 不能被代码改动加验收通过、或非代码卡的有效结果文件收成 passed；不压过 violation、验收超时和 result_unparsable。 → internal/harvest/decide.go:52 → TestHarvestBudgetLimitedNotPassed
+`Continue=true` 在上一尝试的 worktree 仍检出卡分支时也能创建；新 worktree 从卡分支 HEAD 开始，旧目录和提交保留。 → internal/workspace/git.go:35, internal/workspace/git.go:61 → TestCreateContinuationKeepsPreviousWorktree
+

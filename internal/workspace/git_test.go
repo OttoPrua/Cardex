@@ -257,6 +257,177 @@ func TestBlockPushIsolatesMainRepo(t *testing.T) {
 	}
 }
 
+func TestBlockPushBlocksInheritedPushURLs(t *testing.T) {
+	tests := []struct {
+		name       string
+		pushCounts []int
+	}{
+		{name: "single existing pushurl", pushCounts: []int{1}},
+		{name: "several pushurls on one remote", pushCounts: []int{2}},
+		{name: "several remotes", pushCounts: []int{1, 1}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertInheritedPushBlocked(t, tc.pushCounts)
+		})
+	}
+}
+
+func assertInheritedPushBlocked(t *testing.T, pushCounts []int) {
+	t.Helper()
+	repo := initRepo(t)
+	names := []string{"origin", "other", "extra"}
+	if len(pushCounts) > len(names) {
+		t.Fatalf("too many remotes")
+	}
+	type target struct {
+		remote string
+		bares  []string
+		seed   map[string]string
+	}
+	var targets []target
+	for i, n := range pushCounts {
+		name := names[i]
+		tg := target{remote: name, seed: map[string]string{}}
+		for j := 0; j < n; j++ {
+			bare := filepath.Join(t.TempDir(), name+"-"+[]string{"0", "1", "2"}[j]+".git")
+			gitRun(t, "", "init", "--bare", bare)
+			tg.bares = append(tg.bares, bare)
+		}
+		gitRun(t, repo, "remote", "add", name, tg.bares[0])
+		for _, bare := range tg.bares {
+			gitRun(t, repo, "config", "--local", "--add", "remote."+name+".pushurl", bare)
+			gitRun(t, repo, "push", bare, "HEAD:refs/heads/probe")
+			tg.seed[bare] = gitOut(t, bare, "rev-parse", "refs/heads/probe")
+		}
+		targets = append(targets, tg)
+	}
+
+	urlBefore := map[string]string{}
+	pushBefore := map[string]string{}
+	for _, tg := range targets {
+		urlBefore[tg.remote] = gitOut(t, repo, "config", "--local", "--get", "remote."+tg.remote+".url")
+		pushBefore[tg.remote] = gitOut(t, repo, "config", "--local", "--get-all", "remote."+tg.remote+".pushurl")
+	}
+	if _, err := gitOptional(repo, "config", "--local", "--get", "core.hooksPath"); err == nil {
+		t.Fatal("main repo already has hooksPath")
+	}
+
+	root := t.TempDir()
+	ctx := context.Background()
+	m := Git{}
+	wt, err := m.Create(ctx, CreateRequest{
+		CardID: "card", AttemptID: "a", ObjectiveID: "obj",
+		RepoPath: repo, WorktreeRoot: root, IntegrationBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "pushed.txt"), []byte("nope\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Commit(ctx, wt.Path, "should not land"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.BlockPush(ctx, wt.Path); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tg := range targets {
+		push := exec.Command("git", "-C", wt.Path, "push", "--no-verify", tg.remote, "HEAD:refs/heads/probe", "HEAD:refs/heads/probe-new")
+		push.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		out, err := push.CombinedOutput()
+		if err == nil {
+			t.Fatalf("push %s succeeded:\n%s", tg.remote, out)
+		}
+		for _, bare := range tg.bares {
+			got := gitOut(t, bare, "rev-parse", "refs/heads/probe")
+			if got != tg.seed[bare] {
+				t.Fatalf("%s probe moved %s -> %s\n%s", bare, tg.seed[bare], got, out)
+			}
+			if _, missing := gitOptional(bare, "rev-parse", "--verify", "refs/heads/probe-new"); missing == nil {
+				t.Fatalf("%s created probe-new\n%s", bare, out)
+			}
+		}
+	}
+
+	for _, tg := range targets {
+		urlAfter := gitOut(t, repo, "config", "--local", "--get", "remote."+tg.remote+".url")
+		if urlAfter != urlBefore[tg.remote] {
+			t.Fatalf("main %s url changed %s -> %s", tg.remote, urlBefore[tg.remote], urlAfter)
+		}
+		pushAfter := gitOut(t, repo, "config", "--local", "--get-all", "remote."+tg.remote+".pushurl")
+		if pushAfter != pushBefore[tg.remote] {
+			t.Fatalf("main %s pushurl changed %q -> %q", tg.remote, pushBefore[tg.remote], pushAfter)
+		}
+	}
+	if _, err := gitOptional(repo, "config", "--local", "--get", "core.hooksPath"); err == nil {
+		t.Fatal("main repo hooksPath was set")
+	}
+	for _, key := range []string{"protocol.allow", "protocol.file.allow", "protocol.https.allow", "protocol.ssh.allow", "protocol.http.allow", "protocol.git.allow"} {
+		if _, err := gitOptional(repo, "config", "--local", "--get", key); err == nil {
+			t.Fatalf("main repo %s was set", key)
+		}
+	}
+}
+
+func TestCreateContinuationKeepsPreviousWorktree(t *testing.T) {
+	repo := initRepo(t)
+	root := t.TempDir()
+	ctx := context.Background()
+	m := Git{}
+	first, err := m.Create(ctx, CreateRequest{
+		CardID: "card", AttemptID: "a1", ObjectiveID: "obj",
+		RepoPath: repo, WorktreeRoot: root, IntegrationBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(first.Path, "card.txt"), []byte("on card\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cardHead, err := m.Commit(ctx, first.Path, "card work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "main.txt"), []byte("on main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "add", "main.txt")
+	gitRun(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "advance main")
+	mainHead := gitOut(t, repo, "rev-parse", "HEAD")
+	if mainHead == cardHead {
+		t.Fatal("fixture did not move integration HEAD")
+	}
+
+	next, err := m.Create(ctx, CreateRequest{
+		CardID: "card", AttemptID: "a2", ObjectiveID: "obj",
+		RepoPath: repo, WorktreeRoot: root, IntegrationBranch: "main", Continue: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.BaseCommit != cardHead {
+		t.Fatalf("continuation base %s want card HEAD %s (integration %s)", next.BaseCommit, cardHead, mainHead)
+	}
+	if head := gitOut(t, next.Path, "rev-parse", "HEAD"); head != cardHead {
+		t.Fatalf("new worktree HEAD %s want %s", head, cardHead)
+	}
+	body, err := os.ReadFile(filepath.Join(first.Path, "card.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "on card\n" {
+		t.Fatalf("previous worktree file %q", body)
+	}
+	if gitOut(t, repo, "rev-parse", first.Branch) != cardHead {
+		t.Fatal("card branch commit is gone")
+	}
+	if _, err := os.Stat(first.Path); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func initRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

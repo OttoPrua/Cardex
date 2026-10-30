@@ -29,9 +29,10 @@ type facts struct {
 // decide applies design §5. Violation wins. An acceptance timeout is timeout.
 // A present result file that still cannot be parsed is result_unparsable.
 // Acceptance failure is tests_failed unless the runner class is one of the
-// retry/block classes. Passed has two shapes: code cards need changes and
-// acceptance success; other cards need a valid result file. No changes and
-// no valid result is no_output unless that runner class applies.
+// retry/block classes. An explicit budget_limited class is not passed, even
+// when a code card has changes and a passing acceptance or a non-code card
+// has a valid result file. Passed otherwise has those two shapes. No changes
+// and no valid result is no_output unless that runner class applies.
 func decide(f facts) model.Outcome {
 	if f.Class == model.ErrorViolation {
 		return model.OutcomeViolation
@@ -47,6 +48,9 @@ func decide(f facts) model.Outcome {
 			return outcome
 		}
 		return model.OutcomeTestsFailed
+	}
+	if f.Class == model.ErrorBudgetLimited {
+		return model.OutcomeBudgetLimited
 	}
 	if f.ProducesCode && f.HasChanges && f.Acceptance == acceptOK {
 		return model.OutcomePassed

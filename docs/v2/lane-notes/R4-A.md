@@ -15,3 +15,7 @@
 ## 已知问题
 
 legacy 的 status、source 或 reason 任一非空，卡就只出现在历史里，即使它挂在 active 目标上且状态已是 ready。历史页先读全表再分页。日志只返回末尾 32KiB。
+
+## 修复记录
+
+未答问题按自身筛选：answer 为空且所属目标为 active、paused 或 done_candidate 时留在默认视图，与问题种类无关；paused 和 done_candidate 仍不计入活跃目标，也不进历史。 → internal/board/data.go:185、internal/board/data.go:239、internal/board/data.go:250 → TestPendingQuestionsOnOpenObjectives

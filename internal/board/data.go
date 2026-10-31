@@ -153,8 +153,10 @@ func (h historyItem) Href() string {
 	return "/history?q=" + url.QueryEscape(h.ID)
 }
 
-// loadCurrent reads only active objectives. Cards of other objectives, including
-// a large done/canceled history, are never loaded into this response.
+// loadCurrent lists active objectives and their current cards. Cards of other
+// objectives, including a large done/canceled history, are never loaded into
+// this response. Unanswered questions are selected separately and stay when
+// the objective is active, paused, or done_candidate.
 func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 	objectives, err := db.ListObjectives(ctx, "")
 	if err != nil {
@@ -177,13 +179,13 @@ func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 		PendingQuestions: []questionBrief{},
 	}
 	counts := map[model.CardStatus]int{}
-	activeObj := map[string]bool{}
+	objStatus := map[string]model.ObjectiveStatus{}
 	cardsByID := map[string]model.Card{}
 	for _, o := range objectives {
+		objStatus[o.ID] = o.Status
 		if o.Status != model.ObjectiveActive {
 			continue
 		}
-		activeObj[o.ID] = true
 		nodes, err := db.ListNodes(ctx, o.ID)
 		if err != nil {
 			return nil, err
@@ -234,12 +236,24 @@ func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 		view.RunningAttempts = append(view.RunningAttempts, run)
 	}
 	for _, q := range questions {
-		if q.Answer != "" || !activeObj[q.Objective] {
+		if q.Answer != "" || !pendingQuestionStatus(objStatus[q.Objective]) {
 			continue
 		}
 		view.PendingQuestions = append(view.PendingQuestions, questionBrief{ID: q.ID, Objective: q.Objective, Text: q.Text})
 	}
 	return view, nil
+}
+
+// pendingQuestionStatus reports whether an unanswered question on an objective
+// of this status stays on the default view. Kind is irrelevant. Paused and
+// done_candidate are not active work; their unanswered questions still are.
+func pendingQuestionStatus(status model.ObjectiveStatus) bool {
+	switch status {
+	case model.ObjectiveActive, model.ObjectivePaused, model.ObjectiveDoneCandidate:
+		return true
+	default:
+		return false
+	}
 }
 
 func openQuestionCount(n model.DesignNode) int {

@@ -198,6 +198,204 @@ func TestViewsHTMLAndJSON(t *testing.T) {
 	_ = home
 }
 
+// TestPendingQuestionsOnOpenObjectives is the regression for unanswered
+// questions on active, paused, and done_candidate objectives. It drives
+// Handler for GET / and GET /api/work. Paused and done_candidate stay out
+// of active work and out of history.
+func TestPendingQuestionsOnOpenObjectives(t *testing.T) {
+	t.Chdir(t.TempDir())
+	db, home := openHome(t)
+	ctx := context.Background()
+	must(t, db.CreateProject(ctx, &model.Project{ID: "p1", RepoPath: home}))
+
+	for _, o := range []model.Objective{
+		{ID: "o-active", Title: "live work", Status: model.ObjectiveActive},
+		{ID: "o-paused", Title: "budget pause", Status: model.ObjectivePaused},
+		{ID: "o-cand", Title: "waiting confirm", Status: model.ObjectiveDoneCandidate},
+		{ID: "o-done", Title: "finished", Status: model.ObjectiveDone},
+		{ID: "o-canceled", Title: "stopped", Status: model.ObjectiveCanceled},
+	} {
+		o.Project = "p1"
+		o.Mode = model.ModeManual
+		o.FreezeMode = model.FreezeSafe
+		must(t, db.CreateObjective(ctx, &o))
+	}
+
+	for _, c := range []*model.Card{
+		{ID: "c-active-wait", Objective: "o-active", Title: "active waiting", Kind: model.KindDev, Status: model.CardWaiting, WaitReason: "blocked on review"},
+		{ID: "c-active-run", Objective: "o-active", Title: "active running", Kind: model.KindDev, Status: model.CardRunning, Claims: []model.Claim{{Path: "live.go", Symbol: "Run"}}},
+		{ID: "c-active-merge", Objective: "o-active", Title: "active merge", Kind: model.KindDev, Status: model.CardMergeQueued},
+		{ID: "c-active-paused", Objective: "o-active", Title: "paused card on live", Kind: model.KindDev, Status: model.CardPaused},
+		{ID: "c-active-held", Objective: "o-active", Title: "held card on live", Kind: model.KindDev, Status: model.CardPaused, Legacy: model.Legacy{Status: "held", Reason: "operator hold"}},
+		{ID: "c-paused-wait", Objective: "o-paused", Title: "waiting on paused", Kind: model.KindDev, Status: model.CardWaiting, WaitReason: "paused objective wait"},
+		{ID: "c-paused-run", Objective: "o-paused", Title: "running on paused", Kind: model.KindDev, Status: model.CardRunning, Claims: []model.Claim{{Path: "paused.go", Symbol: "PausedSym"}}},
+		{ID: "c-paused-merge", Objective: "o-paused", Title: "merge on paused", Kind: model.KindDev, Status: model.CardMergeQueued},
+		{ID: "c-cand-wait", Objective: "o-cand", Title: "waiting on candidate", Kind: model.KindDev, Status: model.CardWaiting, WaitReason: "candidate wait"},
+		{ID: "c-cand-run", Objective: "o-cand", Title: "running on candidate", Kind: model.KindDev, Status: model.CardRunning, Claims: []model.Claim{{Path: "cand.go", Symbol: "CandSym"}}},
+		{ID: "c-cand-merge", Objective: "o-cand", Title: "merge on candidate", Kind: model.KindDev, Status: model.CardMergeQueued},
+	} {
+		must(t, db.CreateCard(ctx, c))
+	}
+
+	started := time.Date(2026, 10, 31, 1, 0, 0, 0, time.UTC)
+	for _, a := range []model.Attempt{
+		{ID: "a-active", Card: "c-active-run"},
+		{ID: "a-paused", Card: "c-paused-run"},
+		{ID: "a-cand", Card: "c-cand-run"},
+	} {
+		a.Route = model.Route{Channel: "ch", Model: "fake"}
+		a.StartedAt = started
+		must(t, db.CreateAttempt(ctx, &a))
+	}
+
+	questions := []struct {
+		id, objective, text, answer string
+		kind                        model.QuestionKind
+		keep                        bool
+	}{
+		{id: "q-active-freeze", objective: "o-active", kind: model.QuestionFreeze, text: "freeze the live module?", keep: true},
+		{id: "q-active-reopen", objective: "o-active", kind: model.QuestionReopen, text: "reopen the live node?", keep: true},
+		{id: "q-paused-budget", objective: "o-paused", kind: model.QuestionBudget, text: "raise the paused budget?", keep: true},
+		{id: "q-paused-refusal", objective: "o-paused", kind: model.QuestionRefusal, text: "accept the paused refusal?", keep: true},
+		{id: "q-cand-done", objective: "o-cand", kind: model.QuestionDone, text: "confirm the candidate is done?", keep: true},
+		{id: "q-cand-breaker", objective: "o-cand", kind: model.QuestionBreaker, text: "breaker on the candidate node?", keep: true},
+		{id: "q-cand-custom", objective: "o-cand", kind: model.QuestionCustom, text: "custom note on the candidate?", keep: true},
+		{id: "q-active-answered", objective: "o-active", kind: model.QuestionBudget, text: "settled active budget", answer: "continue", keep: false},
+		{id: "q-paused-answered", objective: "o-paused", kind: model.QuestionDone, text: "settled paused done", answer: "no", keep: false},
+		{id: "q-cand-answered", objective: "o-cand", kind: model.QuestionCustom, text: "settled candidate custom", answer: "later", keep: false},
+		{id: "q-done-open", objective: "o-done", kind: model.QuestionDone, text: "unanswered on a done objective", keep: false},
+		{id: "q-canceled-open", objective: "o-canceled", kind: model.QuestionBudget, text: "unanswered on a canceled objective", keep: false},
+	}
+	for _, q := range questions {
+		must(t, db.CreateQuestion(ctx, &model.Question{
+			ID: q.id, Objective: q.objective, Kind: q.kind, Text: q.text, Answer: q.answer,
+		}))
+	}
+
+	hiddenWork := []string{
+		"objective o-paused", "objective o-cand", "objective o-done", "objective o-canceled",
+		"card c-active-paused", "card c-active-held",
+		"card c-paused-wait", "card c-paused-run", "card c-paused-merge",
+		"card c-cand-wait", "card c-cand-run", "card c-cand-merge",
+		"waiting c-paused-wait", "waiting c-cand-wait",
+		"attempt a-paused", "attempt a-cand",
+		"merge c-paused-merge", "merge c-cand-merge",
+		"PausedSym", "CandSym",
+	}
+
+	for _, path := range []string{"/", "/api/work"} {
+		rec := do(t, http.MethodGet, path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: status %d body %s", path, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		for _, q := range questions {
+			marker := "question " + q.id
+			if q.keep {
+				if path == "/" && !strings.Contains(body, marker+" "+q.text) {
+					t.Fatalf("GET %s missing %s %q", path, q.id, q.text)
+				}
+				continue
+			}
+			if strings.Contains(body, q.id) || strings.Contains(body, q.text) {
+				t.Fatalf("GET %s still shows dropped question %s", path, q.id)
+			}
+		}
+		for _, hidden := range hiddenWork {
+			if strings.Contains(body, hidden) {
+				t.Fatalf("GET %s contains %s", path, hidden)
+			}
+		}
+		if path == "/" {
+			assertContains(t, body,
+				"objective o-active",
+				"card c-active-wait", "card c-active-run", "card c-active-merge",
+				"waiting c-active-wait", "attempt a-active", "merge c-active-merge",
+				"claim live.go Run",
+			)
+			continue
+		}
+
+		view := decode[currentView](t, rec)
+		if len(view.Objectives) != 1 || view.Objectives[0].ID != "o-active" {
+			t.Fatalf("objectives %#v", view.Objectives)
+		}
+		wantCards := map[string]bool{"c-active-wait": true, "c-active-run": true, "c-active-merge": true}
+		if len(view.Cards) != len(wantCards) {
+			t.Fatalf("cards %#v", view.Cards)
+		}
+		for _, c := range view.Cards {
+			if !wantCards[c.ID] {
+				t.Fatalf("unexpected card %s", c.ID)
+			}
+		}
+		if len(view.Waiting) != 1 || view.Waiting[0].ID != "c-active-wait" {
+			t.Fatalf("waiting %#v", view.Waiting)
+		}
+		if len(view.RunningAttempts) != 1 || view.RunningAttempts[0].ID != "a-active" || view.RunningAttempts[0].Card != "c-active-run" {
+			t.Fatalf("running %#v", view.RunningAttempts)
+		}
+		if len(view.MergeQueue) != 1 || view.MergeQueue[0].ID != "c-active-merge" {
+			t.Fatalf("merge %#v", view.MergeQueue)
+		}
+		if got := countOf(view.StatusCounts, "waiting"); got != 1 {
+			t.Fatalf("waiting count %d", got)
+		}
+		if got := countOf(view.StatusCounts, "paused"); got != 0 {
+			t.Fatalf("paused count %d", got)
+		}
+		if got := countOf(view.StatusCounts, "running"); got != 1 {
+			t.Fatalf("running count %d", got)
+		}
+		if got := countOf(view.StatusCounts, "merge_queued"); got != 1 {
+			t.Fatalf("merge count %d", got)
+		}
+		gotQ := map[string]questionBrief{}
+		for _, q := range view.PendingQuestions {
+			if _, dup := gotQ[q.ID]; dup {
+				t.Fatalf("duplicate pending question %s", q.ID)
+			}
+			gotQ[q.ID] = q
+		}
+		for _, q := range questions {
+			got, ok := gotQ[q.id]
+			if q.keep {
+				if !ok || got.Objective != q.objective || got.Text != q.text {
+					t.Fatalf("pending %s: ok=%v got=%#v", q.id, ok, got)
+				}
+				delete(gotQ, q.id)
+				continue
+			}
+			if ok {
+				t.Fatalf("dropped question %s is pending", q.id)
+			}
+		}
+		if len(gotQ) != 0 {
+			t.Fatalf("extra pending questions %#v", gotQ)
+		}
+	}
+
+	histBody := do(t, http.MethodGet, "/history").Body.String()
+	assertContains(t, histBody, "history objective o-done", "history objective o-canceled", "history card c-active-held")
+	for _, hidden := range []string{"history objective o-paused", "history objective o-cand", "history objective o-active", "history card c-active-paused"} {
+		if strings.Contains(histBody, hidden) {
+			t.Fatalf("history html contains %s", hidden)
+		}
+	}
+	hist := decode[historyView](t, do(t, http.MethodGet, "/api/history"))
+	ids := itemIDs(hist.Items)
+	for _, id := range []string{"o-done", "o-canceled", "c-active-held"} {
+		if !ids[id] {
+			t.Fatalf("history missing %s in %#v", id, hist.Items)
+		}
+	}
+	for _, id := range []string{"o-active", "o-paused", "o-cand", "c-active-paused", "c-paused-wait", "c-cand-merge"} {
+		if ids[id] {
+			t.Fatalf("history includes %s", id)
+		}
+	}
+}
+
 func TestHistoryPages(t *testing.T) {
 	db, _ := openHome(t)
 	ctx := context.Background()

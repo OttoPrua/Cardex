@@ -19,3 +19,4 @@ acceptance 无 deadline 时默认 2 分钟。linked worktree 不读自己的 inf
 解除读取限制后，更长的继承或进程级 pushInsteadOf 仍不能让直接地址的 push --no-verify 更新本地仓库。 → internal/workspace/git.go:256, internal/workspace/git.go:259, internal/workspace/git.go:262 → TestBlockPushRefusesLongerPushInsteadOf
 拒绝推送不能只依赖可被推送选项覆盖的签名默认值。 → internal/workspace/git.go:260 → TestBlockPushRefusesLongerPushInsteadOf
 推送拒绝不能依赖目标端不支持可选能力，也不能依赖签名默认值。 → internal/workspace/git.go:260 → TestBlockPushRefusesLongerPushInsteadOf
+推送拒绝不能依赖可被普通推送参数替换的默认选项。 → internal/workspace/git.go:263 → TestBlockPushRefusesLongerPushInsteadOf

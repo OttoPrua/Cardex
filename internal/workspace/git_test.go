@@ -302,6 +302,17 @@ func TestBlockPushRefusesLongerPushInsteadOf(t *testing.T) {
 		{name: "other prefix no signed advertise", kind: "other-prefix", pushArgs: []string{"--no-signed"}, advertise: true},
 		{name: "other prefix signed if-asked advertise", kind: "other-prefix", pushArgs: []string{"--signed=if-asked"}, advertise: true},
 		{name: "other prefix gpgSign false advertise", kind: "other-prefix", configArgs: []string{"-c", "push.gpgSign=false"}, advertise: true},
+		{name: "long prefix push option signed false advertise", kind: "long-prefix", pushArgs: []string{"--push-option=review-probe", "--signed=false"}, advertise: true},
+		{name: "long prefix push option no signed advertise", kind: "long-prefix", pushArgs: []string{"--push-option=review-probe", "--no-signed"}, advertise: true},
+		{name: "long prefix push option signed if-asked advertise", kind: "long-prefix", pushArgs: []string{"--push-option=review-probe", "--signed=if-asked"}, advertise: true},
+		{name: "long prefix short option signed false advertise", kind: "long-prefix", pushArgs: []string{"-o", "review-probe", "--signed=false"}, advertise: true},
+		{name: "long prefix short option no signed advertise", kind: "long-prefix", pushArgs: []string{"-o", "review-probe", "--no-signed"}, advertise: true},
+		{name: "long prefix short option signed if-asked advertise", kind: "long-prefix", pushArgs: []string{"-o", "review-probe", "--signed=if-asked"}, advertise: true},
+		{name: "long prefix cleared push option signed false advertise", kind: "long-prefix", configArgs: []string{"-c", "push.pushOption=", "-c", "push.pushOption=review-probe"}, pushArgs: []string{"--signed=false"}, advertise: true},
+		{name: "long prefix cleared push option no signed advertise", kind: "long-prefix", configArgs: []string{"-c", "push.pushOption=", "-c", "push.pushOption=review-probe"}, pushArgs: []string{"--no-signed"}, advertise: true},
+		{name: "long prefix cleared push option signed if-asked advertise", kind: "long-prefix", configArgs: []string{"-c", "push.pushOption=", "-c", "push.pushOption=review-probe"}, pushArgs: []string{"--signed=if-asked"}, advertise: true},
+		{name: "long prefix push option gpgSign false advertise", kind: "long-prefix", configArgs: []string{"-c", "push.gpgSign=false"}, pushArgs: []string{"--push-option=review-probe"}, advertise: true},
+		{name: "long prefix push option followTags false advertise", kind: "long-prefix", configArgs: []string{"-c", "push.followTags=false"}, pushArgs: []string{"--push-option=review-probe", "--signed=false"}, advertise: true},
 		{name: "direct bare path", kind: "direct"},
 		{name: "dot", kind: "dot"},
 		{name: "relative path", kind: "relative"},
@@ -409,9 +420,6 @@ func assertLongerPushInsteadOfRefused(t *testing.T, kind string, configArgs, pus
 	}
 	if strings.Contains(string(out), "not allowed") {
 		t.Fatalf("git %s protocol denial:\n%s", strings.Join(args, " "), out)
-	}
-	if advertise && !strings.Contains(string(out), "new line characters") {
-		t.Fatalf("git %s was not refused in the client:\n%s", strings.Join(args, " "), out)
 	}
 	if after := gitOut(t, dest, "show-ref"); after != before {
 		t.Fatalf("destination refs changed\nbefore:\n%s\nafter:\n%s\npush:\n%s", before, after, out)

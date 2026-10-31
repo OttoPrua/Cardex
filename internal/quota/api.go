@@ -9,15 +9,20 @@ import (
 	"cardex/internal/model"
 )
 
-// ErrNotImplemented is returned until R2-D fills this package in.
+// ErrNotImplemented is returned by Stub. Ledger is the estimator.
 var ErrNotImplemented = errors.New("not implemented")
 
 // Estimate is the remaining ratio, the next reset, and how much to trust it.
 type Estimate struct {
-	Ratio      float64   // 剩余比例，1 表示全满。
-	Reset      time.Time // 重置时间。
-	Confidence float64   // 置信度，0 到 1。
-	Unknown    bool      // 没有配置上限时为真。
+	Ratio         float64   // 剩余比例，1 表示全满。多个有上限的窗口取最小。
+	Reset         time.Time // 该窗口的重置时间；硬封锁期间是观测到的重置时间。
+	Confidence    float64   // 置信度，0 到 1。未知用量低于已知用量。
+	Unknown       bool      // 没有配置上限时为真。
+	Blocked       bool      // 观测到撞线后，在 Reset 之前为真。
+	UsedTokens    int64     // 决定该结果的窗口里已计入的 token。
+	LimitTokens   int64     // 该窗口的 token 上限。0 表示未配置。
+	UsedRequests  int64     // 该窗口里的尝试次数。一次 Record 计一次。
+	LimitRequests int64     // 该窗口的请求上限。0 表示未配置。
 }
 
 // Estimator accounts usage into configured windows.

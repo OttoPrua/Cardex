@@ -46,13 +46,28 @@ type Objective struct {
 
 // DesignNode is one node in an objective's design tree.
 type DesignNode struct {
-	ID            string     `json:"id"`             // 节点标识。
-	Objective     string     `json:"objective"`      // 所属目标。
-	Parent        string     `json:"parent"`         // 父节点；方向层为空。
-	Layer         Layer      `json:"layer"`          // direction、module 或 detail。
-	DocPath       string     `json:"doc_path"`       // 集成分支上的节点文档路径。
-	OpenQuestions []string   `json:"open_questions"` // 尚未关闭的问题。
-	Status        NodeStatus `json:"status"`         // drafting、freezable、frozen、reopened。
+	ID            string           `json:"id"`             // 节点标识。
+	Objective     string           `json:"objective"`      // 所属目标。
+	Parent        string           `json:"parent"`         // 父节点；方向层为空。
+	Layer         Layer            `json:"layer"`          // direction、module 或 detail。
+	DocPath       string           `json:"doc_path"`       // 集成分支上的节点文档路径。
+	OpenQuestions OpenQuestionList `json:"open_questions"` // 尚未关闭的问题。旧数据可以是字符串数组。
+	Status        NodeStatus       `json:"status"`         // drafting、freezable、frozen、reopened。
+}
+
+// OpenQuestion is one design-node open question. Design §3 and §6.6.
+// It is not a Question（待拍板）.
+type OpenQuestion struct {
+	ID         string             `json:"id"`          // 问题标识。
+	Text       string             `json:"text"`        // 问题原文。旧字符串条目只填这一项。
+	Type       OpenQuestionType   `json:"type"`        // fact、experiment、decision 或 otto。
+	Status     OpenQuestionStatus `json:"status"`      // open、researching、answered、stale 或 unanswered。
+	Asks       int                `json:"asks"`        // 复查次数。
+	Answer     string             `json:"answer"`      // 结论。
+	Evidence   string             `json:"evidence"`    // 证据：文件行号、命令输出或 URL。
+	Confidence string             `json:"confidence"`  // 把握：高、中、低。
+	Commit     string             `json:"commit"`      // 派发时集成分支 HEAD。
+	CitedPaths []string           `json:"cited_paths"` // 证据里的路径。
 }
 
 // Legacy is the v1 status and source kept on an imported card.

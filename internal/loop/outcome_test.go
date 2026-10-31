@@ -459,6 +459,59 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		}
 	})
 
+	t.Run("a blocked channel is not selected again before reset", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		reset := time.Now().Add(3 * time.Hour).UTC().Truncate(time.Second)
+		a := f.channel("ch-a", "a")
+		b := f.channel("ch-b", "b")
+		card := f.card(model.Card{ID: "dev", Channel: a.ID})
+		f.attempt(card, 0, model.OutcomeQuotaHit, a.ID, reset.Format(time.RFC3339Nano))
+		f.step()
+		if f.mustCard("dev").Channel != b.ID {
+			t.Fatalf("first move %+v", f.mustCard("dev"))
+		}
+		f.attempt(f.mustCard("dev"), 1, model.OutcomeNoOutput, b.ID, "")
+		f.step()
+		got := f.mustCard("dev")
+		questions := f.questions()
+		if got.Channel != b.ID || got.Status != model.CardNeedsInput || len(questions) != 1 || !strings.Contains(questions[0].Text, "no other channel") {
+			t.Fatalf("card %+v questions %+v", got, questions)
+		}
+		blocked, err := f.db.GetChannel(f.ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if blocked.Health != model.HealthOK || !blocked.QuotaWindows[0].ResetAt.After(time.Now()) {
+			t.Fatalf("block expired %+v", blocked)
+		}
+		f.step()
+		if f.mustCard("dev").Channel != b.ID || len(f.questions()) != 1 {
+			t.Fatal("second step returned to the blocked channel")
+		}
+
+		f2 := newFx(t, model.ModeManual)
+		reset = time.Now().Add(3 * time.Hour).UTC().Truncate(time.Second)
+		a2 := f2.channel("ch-a", "a")
+		b2 := f2.channel("ch-b", "b")
+		c2 := f2.channel("ch-c", "c")
+		card2 := f2.card(model.Card{ID: "dev", Channel: a2.ID})
+		f2.attempt(card2, 0, model.OutcomeQuotaHit, a2.ID, reset.Format(time.RFC3339Nano))
+		f2.step()
+		if f2.mustCard("dev").Channel != b2.ID {
+			t.Fatalf("first move %+v", f2.mustCard("dev"))
+		}
+		f2.attempt(f2.mustCard("dev"), 1, model.OutcomeNoOutput, b2.ID, "")
+		f2.step()
+		got = f2.mustCard("dev")
+		if got.Channel != c2.ID || got.Status != model.CardReady || len(f2.questions()) != 0 {
+			t.Fatalf("picked %+v questions %+v", got, f2.questions())
+		}
+		f2.step()
+		if f2.mustCard("dev").Channel != c2.ID {
+			t.Fatal("second step left the unblocked channel")
+		}
+	})
+
 	t.Run("auth_failed notifies once and switches channel", func(t *testing.T) {
 		f := newFx(t, model.ModeManual)
 		dir := t.TempDir()
@@ -806,6 +859,43 @@ func TestDevStepAbsorption(t *testing.T) {
 		f3.step()
 		if f3.mustCard("dev").ReworkCount != 2 || len(f3.questions()) != 1 {
 			t.Fatal("second step reworked past the limit")
+		}
+	})
+
+	t.Run("a passed attempt after review rework creates a new review", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		ch := f.channel("ch-a", "author")
+		dev := f.card(model.Card{ID: "dev", Status: model.CardReviewing, Channel: ch.ID, AuthorFamily: "author"})
+		f.attempt(dev, 0, "", ch.ID, "")
+		dir := writeResult(t, "## 复核结论\nrework\nfix the boundary check\n")
+		review := f.card(model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardHarvesting, Deps: []string{"dev"}, AuthorFamily: "author"})
+		attempt := f.attempt(review, 0, model.OutcomePassed, ch.ID, "")
+		attempt.Worktree = dir
+		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
+			t.Fatal(err)
+		}
+		f.step()
+		if f.mustCard("dev").Status != model.CardReady || f.mustCard("rev").Status != model.CardDone {
+			t.Fatalf("rework dev %s review %s", f.mustCard("dev").Status, f.mustCard("rev").Status)
+		}
+		f.attempt(f.mustCard("dev"), 1, model.OutcomePassed, ch.ID, "")
+		f.step()
+		got := f.mustCard("dev")
+		reviews := cardsKind(f, model.KindReview)
+		readyN := 0
+		var fresh model.Card
+		for _, item := range reviews {
+			if item.Status == model.CardReady {
+				readyN++
+				fresh = item
+			}
+		}
+		if got.Status != model.CardReviewing || len(reviews) != 2 || readyN != 1 || !hasDepID(fresh, "dev") || fresh.AuthorFamily != "author" || f.mustCard("rev").Status != model.CardDone {
+			t.Fatalf("dev %+v reviews %+v", got, reviews)
+		}
+		f.step()
+		if f.mustCard("dev").Status != model.CardReviewing || len(cardsKind(f, model.KindReview)) != 2 {
+			t.Fatal("second step created another review")
 		}
 	})
 

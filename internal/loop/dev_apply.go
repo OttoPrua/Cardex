@@ -191,7 +191,7 @@ func historyBefore(attempts []model.Attempt, cur model.Attempt) History {
 
 func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 	for _, other := range st.snap.cards {
-		if other.Kind == model.KindReview && hasDep(other, card.ID) {
+		if other.Kind == model.KindReview && hasDep(other, card.ID) && !TerminalCard(other.Status) {
 			return nil
 		}
 	}
@@ -295,7 +295,7 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 func (st *step) nextChannel(current string) (model.Channel, bool) {
 	ids := make([]string, 0, len(st.snap.channels))
 	for _, ch := range st.snap.channels {
-		if ch.ID == current || ch.Health != model.HealthOK {
+		if ch.ID == current || ch.Health != model.HealthOK || st.quotaBlocked(ch) {
 			continue
 		}
 		ids = append(ids, ch.ID)
@@ -305,6 +305,50 @@ func (st *step) nextChannel(current string) (model.Channel, bool) {
 		return model.Channel{}, false
 	}
 	return st.snap.channel(ids[0])
+}
+
+// quotaBlocked reports a channel that stays healthy but cannot be selected
+// until a recorded quota reset. route.Select would reject it as blocked, and
+// a pinned card.Channel would skip that check, so reschedule must not pin it.
+func (st *step) quotaBlocked(ch model.Channel) bool {
+	if reset, ok := st.quotaBlockReset(ch.ID); ok && reset.After(st.now) {
+		return true
+	}
+	for _, window := range ch.QuotaWindows {
+		if window.Remaining == 0 && window.ResetAt.After(st.now) {
+			return true
+		}
+	}
+	return false
+}
+
+func (st *step) quotaBlockReset(channelID string) (time.Time, bool) {
+	var until time.Time
+	found := false
+	for _, event := range st.snap.events {
+		if event.Type != "quota_block" {
+			continue
+		}
+		var data struct {
+			Channel string `json:"channel"`
+			Reset   string `json:"reset"`
+		}
+		if err := json.Unmarshal(event.Data, &data); err != nil {
+			continue
+		}
+		if data.Channel != channelID && event.Entity != "channel:"+channelID {
+			continue
+		}
+		reset, err := time.Parse(time.RFC3339Nano, data.Reset)
+		if err != nil {
+			continue
+		}
+		if !found || reset.After(until) {
+			until = reset
+			found = true
+		}
+	}
+	return until, found
 }
 
 func (st *step) blockQuota(ch model.Channel, excerpt string) error {

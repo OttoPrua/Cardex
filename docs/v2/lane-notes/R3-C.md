@@ -18,9 +18,9 @@ rebase 和 repair 若没有 fake 脚本或 scripts/<id>.json，宿主仍会启�
 
 ## 修复记录
 B1 调度只把收割结果交给处置入口，生产不改终态 → internal/sched/loop.go:178 → TestHarvestDeliversBeforeStatusChange
-B2 复核看到未合并的候选分支 → internal/sched/loop.go:965,980 → TestReviewWorkspaceShowsUnmergedCandidate, TestReviewOfRepairShowsRootCandidate
-B3 自动派发带真实余量和本轮占用，填充复用路由检查 → internal/sched/loop.go:383,444,638 → TestAutomaticRouteSeesQuotaAndOccupancy, TestFillReusesAutomaticChecks
-B4 派发和填充拒绝未完成依赖、暂停或取消的目标、已占用符号 → internal/sched/loop.go:883,911 → TestDispatchRefusesUnfinishedDepsPausedClaims
-B5 中途失败的尝试由下次 Tick 和新 runner 接续 → internal/sched/loop.go:362,455 → TestPromptFailureResumesSameBranch, TestHostStartFailureResumesOnNewRunner
-B6 通知使用目标 Origin，已投递未回答的问题仍交给 notify → internal/sched/loop.go:829 → TestNotifyUsesObjectiveOriginAndReminds
+B2 复核看到未合并的候选分支 → internal/sched/loop.go:967,982 → TestReviewWorkspaceShowsUnmergedCandidate, TestReviewOfRepairShowsRootCandidate
+B3 自动派发带真实余量和本轮占用，填充复用路由检查；各窗口余量取最小值，不把快照相加 → internal/sched/loop.go:385,446,640,1042 → TestAutomaticRouteSeesQuotaAndOccupancy, TestFillReusesAutomaticChecks, TestQuotaWindowsKeepTheirOwnRatio
+B4 派发和填充拒绝未完成依赖、暂停或取消的目标、已占用符号 → internal/sched/loop.go:885,913 → TestDispatchRefusesUnfinishedDepsPausedClaims
+B5 中途失败的尝试由下次 Tick 和新 runner 接续，含已启动的 backlog → internal/sched/loop.go:279,457 → TestPromptFailureResumesSameBranch, TestHostStartFailureResumesOnNewRunner, TestBacklogFailureResumesSameAttempt
+B6 通知使用目标 Origin，已投递未回答的问题仍交给 notify → internal/sched/loop.go:831 → TestNotifyUsesObjectiveOriginAndReminds
 B7 修复链成功后收束已完成卡和工作区，前驱是立即前驱 → internal/merge/queue.go:155,179,259 → TestQueueRepairChainClosesCompletedCards, TestRepairOfRepairLinksImmediatePredecessor

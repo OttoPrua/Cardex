@@ -274,7 +274,9 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 		if card.Status == model.CardRunning || card.Status == model.CardHarvesting {
 			occupy = append(occupy, card)
 		}
-		if card.Kind == model.KindBacklog {
+		// A ready backlog waits for fill. One already running with no PID is an
+		// interrupted start and resumes here, the same way as any other card.
+		if card.Kind == model.KindBacklog && !resumable(card, attempts) {
 			continue
 		}
 		if card.Status == model.CardReady || claimWait(card) || resumable(card, attempts) {
@@ -1032,42 +1034,18 @@ func detachHead(ctx context.Context, worktree string) error {
 }
 
 type channelQuota struct {
-	led      *quota.Ledger
 	channels []model.Channel
 }
 
+// quotaView reports each window's own remaining ratio. The tightest window
+// wins. Snapshots are not ledger events, so two windows are not added together.
 func (r *Runner) quotaView(channels []model.Channel) route.Quotas {
-	led := quota.New()
-	led.SetClock(func() time.Time { return r.now() })
-	now := r.now()
-	for _, ch := range channels {
-		led.Configure(ch)
-		for _, w := range ch.QuotaWindows {
-			if w.LimitTokens <= 0 {
-				continue
-			}
-			used := w.UsedTokens
-			if used == 0 && w.Remaining > 0 && w.Remaining < 1 {
-				used = w.LimitTokens - int64(math.Round(w.Remaining*float64(w.LimitTokens)))
-			}
-			if used <= 0 {
-				continue
-			}
-			_ = led.Record(context.Background(), ch.ID, model.Usage{
-				Tokens: used, Source: "channel", Confidence: 1,
-			}, now.Add(-time.Second), now)
-		}
-	}
-	return channelQuota{led: led, channels: channels}
+	return channelQuota{channels: channels}
 }
 
 func (q channelQuota) Remaining(ctx context.Context, channelID string) (quota.Estimate, error) {
-	est, err := q.led.Remaining(ctx, channelID)
-	if err != nil {
-		return est, err
-	}
-	if !est.Unknown && (est.LimitTokens > 0 || est.LimitRequests > 0) {
-		return est, nil
+	if err := ctx.Err(); err != nil {
+		return quota.Estimate{}, err
 	}
 	for _, ch := range q.channels {
 		if ch.ID != channelID {
@@ -1076,8 +1054,9 @@ func (q channelQuota) Remaining(ctx context.Context, channelID string) (quota.Es
 		best := 0.0
 		known := false
 		var reset time.Time
+		var limit, used int64
 		for _, w := range ch.QuotaWindows {
-			ratio, ok := windowRatio(w)
+			ratio, lim, u, ok := quotaSnapshot(w)
 			if !ok {
 				continue
 			}
@@ -1085,15 +1064,11 @@ func (q channelQuota) Remaining(ctx context.Context, channelID string) (quota.Es
 				known = true
 				best = ratio
 				reset = w.ResetAt
+				limit, used = lim, u
 			}
 		}
 		if !known {
 			return quota.Estimate{Unknown: true}, nil
-		}
-		const limit = int64(1_000_000)
-		used := int64(math.Round((1 - best) * float64(limit)))
-		if used < 0 {
-			used = 0
 		}
 		return quota.Estimate{
 			Ratio: best, Reset: reset, Confidence: 1,
@@ -1101,6 +1076,41 @@ func (q channelQuota) Remaining(ctx context.Context, channelID string) (quota.Es
 		}, nil
 	}
 	return quota.Estimate{Unknown: true}, nil
+}
+
+// quotaSnapshot is one window's own balance. A token limit uses that window's
+// used count. A stored remaining ratio is not mixed with another window.
+func quotaSnapshot(w model.QuotaWindow) (ratio float64, limit, used int64, ok bool) {
+	if w.LimitTokens > 0 {
+		limit = w.LimitTokens
+		used = w.UsedTokens
+		if used <= 0 && w.Remaining > 0 && w.Remaining < 1 {
+			used = limit - int64(math.Round(w.Remaining*float64(limit)))
+		}
+		if used < 0 {
+			used = 0
+		}
+		if used > limit {
+			used = limit
+		}
+		return float64(limit-used) / float64(limit), limit, used, true
+	}
+	ratio, ok = windowRatio(w)
+	if !ok {
+		return 0, 0, 0, false
+	}
+	if ratio < 0 {
+		ratio = 0
+	}
+	if ratio > 1 {
+		ratio = 1
+	}
+	const synth = int64(1_000_000)
+	used = int64(math.Round((1 - ratio) * float64(synth)))
+	if used < 0 {
+		used = 0
+	}
+	return ratio, synth, used, true
 }
 
 func newID(prefix string) (string, error) {

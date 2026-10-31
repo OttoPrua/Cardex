@@ -3,6 +3,7 @@ package sched
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -327,6 +328,69 @@ func TestAutomaticRouteSeesQuotaAndOccupancy(t *testing.T) {
 	})
 }
 
+func TestQuotaWindowsKeepTheirOwnRatio(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	for _, windows := range []int{1, 2} {
+		t.Run(fmt.Sprintf("%d", windows), func(t *testing.T) {
+			home, db, repo := newHome(t)
+			_, obj := seedRepo(t, db, repo, "true")
+			wins := make([]model.QuotaWindow, windows)
+			for i := range wins {
+				wins[i] = model.QuotaWindow{
+					Name: "w" + fmt.Sprint(i), ResetRule: "rolling", ResetAt: now.Add(30 * time.Minute),
+					LimitTokens: 100, UsedTokens: 40, Remaining: 0.6, Confidence: 1,
+				}
+			}
+			ch := model.Channel{
+				ID: "ch", Runner: model.RunnerFake, Family: "alpha", Models: []string{"model-a"},
+				Concurrency: 2, Health: model.HealthOK, Tier: model.TierT2, Redline: 0.2,
+				QuotaWindows: wins,
+			}
+			if err := db.CreateChannel(ctx, &ch); err != nil {
+				t.Fatal(err)
+			}
+			pos := model.Positioning{
+				ID: "pos-ch", Model: "model-a", Family: "alpha",
+				Tiers: []model.Tier{model.TierT2}, Preference: 1,
+			}
+			if err := db.CreatePositioning(ctx, &pos); err != nil {
+				t.Fatal(err)
+			}
+			card := model.Card{ID: "c", Objective: obj, Kind: model.KindDev, Title: "c", Tier: model.TierT2, Status: model.CardReady}
+			if err := db.CreateCard(ctx, &card); err != nil {
+				t.Fatal(err)
+			}
+			prev := chooseRoute
+			t.Cleanup(func() { chooseRoute = prev })
+			chooseRoute = func(ctx context.Context, req route.Request) (model.Route, model.RouteReason, error) {
+				if req.Quota == nil {
+					t.Fatal("nil quota")
+				}
+				est, err := req.Quota.Remaining(ctx, "ch")
+				if err != nil || est.Unknown || est.LimitTokens <= 0 {
+					t.Fatalf("estimate %+v %v", est, err)
+				}
+				ratio := float64(est.LimitTokens-est.UsedTokens) / float64(est.LimitTokens)
+				if ratio < 0.5 {
+					t.Fatalf("windows summed into ratio %v (used %d limit %d)", ratio, est.UsedTokens, est.LimitTokens)
+				}
+				return prev(ctx, req)
+			}
+			r := New(home)
+			r.Now = func() time.Time { return now }
+			r.Launch = func(context.Context, string, string) (int, error) { return 63, nil }
+			if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			attempts, err := db.ListAttempts(ctx, "c")
+			if err != nil || len(attempts) != 1 || attempts[0].PID != 63 {
+				t.Fatalf("attempts %+v %v", attempts, err)
+			}
+		})
+	}
+}
+
 func TestFillReusesAutomaticChecks(t *testing.T) {
 	now := time.Now().UTC()
 	ctx := context.Background()
@@ -603,6 +667,74 @@ func TestPromptFailureResumesSameBranch(t *testing.T) {
 	}
 	if again[0].Branch != first[0].Branch {
 		t.Fatalf("branch changed %s -> %s", first[0].Branch, again[0].Branch)
+	}
+}
+
+func TestBacklogFailureResumesSameAttempt(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().UTC()
+	cases := []struct {
+		name   string
+		prompt bool
+	}{
+		{name: "prompt", prompt: true},
+		{name: "host", prompt: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home, db, repo := newHome(t)
+			_, obj := seedRepo(t, db, repo, "true")
+			channelNear(t, db, "ch", now.Add(30*time.Minute), 0.9, 0)
+			card := model.Card{
+				ID: "back", Objective: obj, Kind: model.KindBacklog, Title: "back",
+				Tier: model.TierT1, Status: model.CardReady,
+			}
+			if err := db.CreateCard(ctx, &card); err != nil {
+				t.Fatal(err)
+			}
+			n := 0
+			r := New(home)
+			r.Now = func() time.Time { return now }
+			if tc.prompt {
+				r.Prompt = func(context.Context, prompt.Input) (string, error) {
+					n++
+					if n == 1 {
+						return "", errors.New("prompt down")
+					}
+					return "PROMPT-OK", nil
+				}
+				r.Launch = func(context.Context, string, string) (int, error) { return 83, nil }
+			} else {
+				r.Launch = func(context.Context, string, string) (int, error) {
+					n++
+					if n == 1 {
+						return 0, errors.New("host down")
+					}
+					return 83, nil
+				}
+			}
+			if err := r.Tick(ctx); err == nil {
+				t.Fatal("first tick swallowed the failure")
+			}
+			first, err := db.ListAttempts(ctx, "back")
+			if err != nil || len(first) != 1 || first[0].PID != 0 || !first[0].EndedAt.IsZero() {
+				t.Fatalf("partial %+v %v", first, err)
+			}
+			got, err := db.GetCard(ctx, "back")
+			if err != nil || got.Status != model.CardRunning {
+				t.Fatalf("card %+v %v", got, err)
+			}
+			if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			again, err := db.ListAttempts(ctx, "back")
+			if err != nil || len(again) != 1 || again[0].ID != first[0].ID || again[0].PID != 83 {
+				t.Fatalf("resume %+v %v", again, err)
+			}
+			if again[0].Branch != first[0].Branch || !branchExists(repo, again[0].Branch) {
+				t.Fatalf("branch %s", again[0].Branch)
+			}
+		})
 	}
 }
 

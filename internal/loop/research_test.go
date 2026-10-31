@@ -372,7 +372,7 @@ func readyResearch(t *testing.T, st *store.Store, objective, node string) string
 func readyKind(t *testing.T, st *store.Store, objective, node string, kind model.CardKind) string {
 	t.Helper()
 	for _, c := range cardsOf(t, st, objective) {
-		if c.Node == node && c.Kind == kind && !terminalCard(c.Status) {
+		if c.Node == node && c.Kind == kind && c.Status == model.CardReady {
 			return c.ID
 		}
 	}

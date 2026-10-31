@@ -1117,7 +1117,13 @@ func AbsorbDisposed(ctx context.Context, d Deps, attemptID string, outcome model
 		}
 		return d.absorbResearch(ctx, obj, card, resultText, base)
 	case model.KindDesign, model.KindPlan, model.KindReplan:
-		return d.absorbDesign(ctx, obj, card, resultText, outcome)
+		if err := d.absorbDesign(ctx, obj, card, resultText, outcome); err != nil {
+			return err
+		}
+		if designUnusable(resultText, outcome) {
+			return nil
+		}
+		return d.markPassedDone(ctx, card, outcome)
 	case model.KindSpike:
 		return d.absorbSpike(ctx, obj, card, resultText)
 	case model.KindDev, model.KindReview:

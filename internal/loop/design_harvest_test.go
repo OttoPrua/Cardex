@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"cardex/internal/model"
+	"cardex/internal/question"
 	"cardex/internal/store"
 )
 
@@ -100,8 +101,142 @@ func TestAbsorbDisposedHarvest(t *testing.T) {
 				t.Fatal(err)
 			}
 			assertHarvestEffect(t, st, obj.ID, node.ID, tc.kind, tc.want)
+			switch tc.kind {
+			case model.KindDesign, model.KindPlan, model.KindReplan:
+				if got := cardStatus(t, st, card.ID); got != model.CardDone {
+					t.Fatalf("status %s", got)
+				}
+			case model.KindDev, model.KindReview:
+				if got := cardStatus(t, st, card.ID); got == model.CardDone || got == model.CardMerged {
+					t.Fatalf("status %s", got)
+				}
+			}
 		})
 	}
+}
+
+func TestAbsorbDisposedUnblocksNext(t *testing.T) {
+	t.Run("design after research", func(t *testing.T) {
+		st := openLoop(t)
+		obj := seedObjective(t, st, "", model.ModeAuto, model.FreezeSafe)
+		node := seedNode(t, st, obj.ID, "", model.LayerModule)
+		design := seedCard(t, st, obj.ID, node.ID, model.KindDesign, model.CardReady, "任务\n")
+		if design.Status == model.CardDone || design.Status == model.CardMerged {
+			t.Fatalf("status %s before harvest", design.Status)
+		}
+		later := makeAttempt(t, st, design.ID, 0, "design-base", goneWorktree(t), model.OutcomePassed)
+		if err := AbsorbDisposed(t.Context(), depsOf(st), later.ID, model.OutcomePassed, "## 开放问题\n- [fact] 端口是多少\n"); err != nil {
+			t.Fatal(err)
+		}
+		if got := cardStatus(t, st, design.ID); got != model.CardDone {
+			t.Fatalf("design status %s", got)
+		}
+		if err := loopStep(t, depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		if readyCount(t, st, obj.ID, node.ID, model.KindDesign) != 0 {
+			t.Fatal("next design while research is unfinished")
+		}
+		researchID := readyResearch(t, st, obj.ID, node.ID)
+		if cardStatus(t, st, researchID) == model.CardDone || cardStatus(t, st, researchID) == model.CardMerged {
+			t.Fatalf("research status %s before harvest", cardStatus(t, st, researchID))
+		}
+		research := makeAttempt(t, st, researchID, 0, "research-base", goneWorktree(t), model.OutcomePassed)
+		fact := "## 事实\n### Q1\n结论：8787\n证据：a.go:1\n把握：高\n"
+		if err := AbsorbDisposed(t.Context(), depsOf(st), research.ID, model.OutcomePassed, fact); err != nil {
+			t.Fatal(err)
+		}
+		if got := cardStatus(t, st, researchID); got != model.CardDone {
+			t.Fatalf("research status %s", got)
+		}
+		if q := findQ(nodeOf(t, st, node.ID), "Q1"); q.Status != model.OQAnswered || q.Answer != "8787" {
+			t.Fatalf("fact %+v", q)
+		}
+		if err := loopStep(t, depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		if readyCount(t, st, obj.ID, node.ID, model.KindDesign) != 1 {
+			t.Fatalf("ready design %d", readyCount(t, st, obj.ID, node.ID, model.KindDesign))
+		}
+		if n := countKind(t, st, obj.ID, node.ID, model.KindDesign); n != 2 {
+			t.Fatalf("design cards %d", n)
+		}
+		next := readyKind(t, st, obj.ID, node.ID, model.KindDesign)
+		if next == design.ID || cardStatus(t, st, design.ID) != model.CardDone {
+			t.Fatalf("next %s original %s", next, design.ID)
+		}
+	})
+
+	t.Run("replan promotes", func(t *testing.T) {
+		st := openLoop(t)
+		obj := seedObjective(t, st, "", model.ModeAuto, model.FreezeSafe)
+		node := seedNode(t, st, obj.ID, "", model.LayerModule)
+		design := seedCard(t, st, obj.ID, node.ID, model.KindDesign, model.CardReady, "任务\n")
+		if design.Status == model.CardDone || design.Status == model.CardMerged {
+			t.Fatalf("status %s before harvest", design.Status)
+		}
+		frozen := makeAttempt(t, st, design.ID, 0, "design-base", goneWorktree(t), model.OutcomePassed)
+		if err := AbsorbDisposed(t.Context(), depsOf(st), frozen.ID, model.OutcomePassed, "## 可冻结\n是\n"); err != nil {
+			t.Fatal(err)
+		}
+		if got := cardStatus(t, st, design.ID); got != model.CardDone {
+			t.Fatalf("design status %s", got)
+		}
+		if err := loopStep(t, depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		fq := freezeQs(questionsOf(t, st, obj.ID), node.ID)
+		if len(fq) != 1 {
+			t.Fatal("missing freeze question")
+		}
+		if _, err := question.New(st, nil).Answer(t.Context(), fq[0].ID, fq[0].Options[0]); err != nil {
+			t.Fatal(err)
+		}
+		if err := loopStep(t, depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		if nodeOf(t, st, node.ID).Status != model.NodeFrozen {
+			t.Fatal("module did not freeze")
+		}
+		report := seedCard(t, st, obj.ID, node.ID, model.KindDev, model.CardReady, "实现功能\n")
+		if report.Status == model.CardDone || report.Status == model.CardMerged {
+			t.Fatalf("status %s before harvest", report.Status)
+		}
+		dev := makeAttempt(t, st, report.ID, 0, "dev-base", goneWorktree(t), model.OutcomePassed)
+		if err := AbsorbDisposed(t.Context(), depsOf(st), dev.ID, model.OutcomePassed, "## 设计问题\n接口不一致\n"); err != nil {
+			t.Fatal(err)
+		}
+		if err := loopStep(t, depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		reopen := reopenQ(t, st, obj.ID, node.ID)
+		if _, err := question.New(st, nil).Answer(t.Context(), reopen.ID, reopen.Options[0]); err != nil {
+			t.Fatal(err)
+		}
+		if err := loopStep(t, depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		if nodeOf(t, st, node.ID).Status != model.NodeReopened {
+			t.Fatal("not reopened")
+		}
+		replanID := readyKind(t, st, obj.ID, node.ID, model.KindReplan)
+		if cardStatus(t, st, replanID) == model.CardDone || cardStatus(t, st, replanID) == model.CardMerged {
+			t.Fatalf("status %s before harvest", cardStatus(t, st, replanID))
+		}
+		later := makeAttempt(t, st, replanID, 0, "replan-base", goneWorktree(t), model.OutcomePassed)
+		if err := AbsorbDisposed(t.Context(), depsOf(st), later.ID, model.OutcomePassed, "## 可冻结\n是\n"); err != nil {
+			t.Fatal(err)
+		}
+		if got := cardStatus(t, st, replanID); got != model.CardDone {
+			t.Fatalf("replan status %s", got)
+		}
+		if err := loopStep(t, depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		if nodeOf(t, st, node.ID).Status != model.NodeFreezable {
+			t.Fatalf("status %s", nodeOf(t, st, node.ID).Status)
+		}
+	})
 }
 
 func TestTerminalCurrentAttemptStillAbsorbed(t *testing.T) {
@@ -155,7 +290,7 @@ func TestAbsorbBindsDisposedAttempt(t *testing.T) {
 		if norm := normalizeOf(t, st, obj.ID, card.ID); norm == nil {
 			t.Fatal("missing normalize card")
 		}
-		if got := cardStatus(t, st, card.ID); got == model.CardNeedsInput {
+		if got := cardStatus(t, st, card.ID); got == model.CardNeedsInput || got == model.CardDone {
 			t.Fatalf("status %s", got)
 		}
 	})

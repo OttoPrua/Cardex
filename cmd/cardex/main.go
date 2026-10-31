@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,7 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	"cardex/internal/board"
 	"cardex/internal/sched"
 	"cardex/internal/store"
 )
@@ -156,45 +154,48 @@ func runServe(ctx context.Context, home, addr string, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	db, err := store.Open(filepath.Join(home, "cardex.db"))
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	defer db.Close()
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	srv := &http.Server{Handler: board.Handler()}
-	go func() { _ = srv.Serve(ln) }()
-	defer func() {
-		shut, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shut)
+	// Serve owns the listener and the tick loop. This loop copies its address
+	// and iteration log onto the writer TestServeLoopsUntilStopped already watches.
+	errc := make(chan error, 1)
+	go func() {
+		errc <- sched.Serve(ctx, home, addr)
 	}()
-	fmt.Fprintf(stdout, "serve listening %s\n", ln.Addr())
-	loop := sched.Stub{}
-	for n := 1; ; n++ {
-		if ctx.Err() != nil {
-			return 0
+	printed := false
+	seen := 0
+	for {
+		if !printed {
+			if b, rerr := os.ReadFile(filepath.Join(home, "serve-addr")); rerr == nil {
+				fmt.Fprintf(stdout, "serve listening %s\n", strings.TrimSpace(string(b)))
+				printed = true
+			}
 		}
-		err := loop.Tick(ctx)
-		if ctx.Err() != nil {
-			return 0
+		if b, rerr := os.ReadFile(filepath.Join(home, "serve-loop.log")); rerr == nil {
+			n := strings.Count(string(b), "\n")
+			for seen < n {
+				seen++
+				fmt.Fprintf(stdout, "serve stub-loop iteration %d\n", seen)
+			}
 		}
-		if err != nil && !errors.Is(err, sched.ErrNotImplemented) {
-			fmt.Fprintf(stderr, "tick error: %v\n", err)
-			return 1
-		}
-		fmt.Fprintf(stdout, "serve stub-loop iteration %d\n", n)
-		timer := time.NewTimer(150 * time.Millisecond)
 		select {
+		case err := <-errc:
+			if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) {
+				return 0
+			}
+			fmt.Fprintln(stderr, err)
+			return 1
 		case <-ctx.Done():
-			timer.Stop()
+			select {
+			case err := <-errc:
+				if err != nil && !errors.Is(err, context.Canceled) {
+					fmt.Fprintln(stderr, err)
+					return 1
+				}
+			case <-time.After(3 * time.Second):
+				fmt.Fprintln(stderr, "serve did not return")
+				return 1
+			}
 			return 0
-		case <-timer.C:
+		case <-time.After(20 * time.Millisecond):
 		}
 	}
 }

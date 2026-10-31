@@ -127,10 +127,12 @@ func TestS12(t *testing.T) {
 	h.NoError(h.DB.CreateObjective(ctx, obj))
 	node := &model.DesignNode{Objective: obj.ID, Layer: model.LayerModule, Status: model.NodeDrafting}
 	h.NoError(h.DB.CreateNode(ctx, node))
-	h.NoError(h.DB.CreateCard(ctx, &model.Card{
+	done := &model.Card{
 		Objective: obj.ID, Node: node.ID, Kind: model.KindDesign, Title: "设计",
-		Body: "## 可冻结\n是\n", Tier: model.TierT3, Status: model.CardDone,
-	}))
+		Body: "请设计这个模块\n", Tier: model.TierT3, Status: model.CardDone,
+	}
+	h.NoError(h.DB.CreateCard(ctx, done))
+	e2ePlant(t, h, done.ID, "## 可冻结\n是\n")
 	eng := loop.New(h.DB, workspace.Git{}, quietDeliver{})
 	h.NoError(eng.Step(ctx, obj.ID))
 	got := e2eNode(t, h, node.ID)
@@ -164,10 +166,12 @@ func TestS13(t *testing.T) {
 	h.NoError(h.DB.CreateNode(ctx, direction))
 	h.NoError(h.DB.CreateNode(ctx, module))
 	for _, id := range []string{direction.ID, module.ID} {
-		h.NoError(h.DB.CreateCard(ctx, &model.Card{
+		done := &model.Card{
 			Objective: obj.ID, Node: id, Kind: model.KindDesign, Title: "设计",
-			Body: "## 可冻结\n是\n", Tier: model.TierT3, Status: model.CardDone,
-		}))
+			Body: "请设计这个节点\n", Tier: model.TierT3, Status: model.CardDone,
+		}
+		h.NoError(h.DB.CreateCard(ctx, done))
+		e2ePlant(t, h, done.ID, "## 可冻结\n是\n")
 	}
 	eng := loop.New(h.DB, workspace.Git{}, quietDeliver{})
 	h.NoError(eng.Step(ctx, obj.ID))
@@ -201,10 +205,12 @@ func TestS14(t *testing.T) {
 	running := &model.Card{Objective: obj.ID, Node: node.ID, Kind: model.KindDev, Title: "进行中", Body: "在跑", Tier: model.TierT2, Status: model.CardRunning}
 	h.NoError(h.DB.CreateCard(ctx, ready))
 	h.NoError(h.DB.CreateCard(ctx, running))
-	h.NoError(h.DB.CreateCard(ctx, &model.Card{
+	done := &model.Card{
 		Objective: obj.ID, Node: node.ID, Kind: model.KindDev, Title: "已完成",
-		Body: "## 设计问题\n接口不一致\n", Tier: model.TierT2, Status: model.CardDone,
-	}))
+		Body: "实现已经完成\n", Tier: model.TierT2, Status: model.CardDone,
+	}
+	h.NoError(h.DB.CreateCard(ctx, done))
+	e2ePlant(t, h, done.ID, "## 设计问题\n接口不一致\n")
 	eng := loop.New(h.DB, workspace.Git{}, quietDeliver{})
 	h.NoError(eng.Step(ctx, obj.ID))
 	if e2eNode(t, h, node.ID).Status == model.NodeReopened {

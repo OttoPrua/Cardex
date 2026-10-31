@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -83,12 +85,21 @@ func e2eReady(t *testing.T, h *Harness, objective, node string, kind model.CardK
 	return out
 }
 
-func e2eFinish(t *testing.T, h *Harness, id, body string) {
+func e2eFinish(t *testing.T, h *Harness, id, result string) {
 	t.Helper()
 	c := e2eCard(t, h, id)
 	c.Status = model.CardDone
-	c.Body = body
 	h.NoError(h.DB.UpdateCard(t.Context(), &c))
+	e2ePlant(t, h, id, result)
+}
+
+func e2ePlant(t *testing.T, h *Harness, cardID, result string) {
+	t.Helper()
+	dir := t.TempDir()
+	h.NoError(os.WriteFile(filepath.Join(dir, ".cardex-result.md"), []byte(result), 0o644))
+	h.NoError(h.DB.CreateAttempt(t.Context(), &model.Attempt{
+		Card: cardID, Worktree: dir, BaseCommit: "e2e-base",
+	}))
 }
 
 // e2eFinishResearch replaces a research card body with a ## 事实 block for every Q<id> it listed.

@@ -2,6 +2,9 @@ package loop
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"cardex/internal/model"
@@ -49,25 +52,53 @@ func seedNode(t *testing.T, st *store.Store, objective, parent string, layer mod
 
 func seedCard(t *testing.T, st *store.Store, objective, node string, kind model.CardKind, status model.CardStatus, body string) model.Card {
 	t.Helper()
+	prompt := body
+	result := ""
+	if terminalCard(status) && strings.Contains(body, "## ") {
+		result = body
+		prompt = "任务提示，与结果不同\n"
+	}
 	c := &model.Card{
-		Objective: objective, Node: node, Kind: kind, Title: "卡", Body: body,
+		Objective: objective, Node: node, Kind: kind, Title: "卡", Body: prompt,
 		Tier: model.DefaultTier(kind), Status: status,
 	}
 	if err := st.CreateCard(t.Context(), c); err != nil {
 		t.Fatal(err)
 	}
+	if result != "" {
+		plantResult(t, st, c.ID, result, "seed-base")
+	}
 	return *c
 }
 
-func finishCard(t *testing.T, st *store.Store, id, body string) {
+func finishCard(t *testing.T, st *store.Store, id, result string) {
+	t.Helper()
+	finishCardBase(t, st, id, result, "finish-base")
+}
+
+func finishCardBase(t *testing.T, st *store.Store, id, result, base string) {
 	t.Helper()
 	c, err := st.GetCard(t.Context(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.Status = model.CardDone
-	c.Body = body
+	if strings.TrimSpace(c.Body) == "" || c.Body == result {
+		c.Body = "任务提示，与结果不同\n"
+	}
 	if err := st.UpdateCard(t.Context(), &c); err != nil {
+		t.Fatal(err)
+	}
+	plantResult(t, st, c.ID, result, base)
+}
+
+func plantResult(t *testing.T, st *store.Store, cardID, result, base string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".cardex-result.md"), []byte(result), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateAttempt(t.Context(), &model.Attempt{Card: cardID, Worktree: dir, BaseCommit: base}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -501,11 +532,13 @@ func TestTagsSpikeAndReopen(t *testing.T) {
 	if spike == nil || spike.Status == model.CardMergeQueued {
 		t.Fatalf("spike %+v", spike)
 	}
+	task := spike.Body
 	spike.Status = model.CardMergeQueued
-	spike.Body = spike.Body + "\n## 结论\n能撑住\n"
+	spike.Body = task + "## 结论\n不能撑住\n"
 	if err := st.UpdateCard(t.Context(), spike); err != nil {
 		t.Fatal(err)
 	}
+	plantResult(t, st, spike.ID, task+"## 结论\n能撑住\n", "spike-base")
 	if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
 		t.Fatal(err)
 	}

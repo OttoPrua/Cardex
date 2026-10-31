@@ -1,8 +1,8 @@
 package loop
 
 import (
+	"context"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 
@@ -122,72 +122,97 @@ func TestIncompleteResearchParse(t *testing.T) {
 	}
 }
 
-func TestStaleUsesWorkspaceDiff(t *testing.T) {
-	repo := gitRepo(t)
+func TestStaleUsesAttemptBaseAgainstIntegrationHead(t *testing.T) {
+	repo := t.TempDir()
 	st := openLoop(t)
 	proj := &model.Project{RepoPath: repo, TestCmd: "true", DesignDir: "docs"}
 	if err := st.CreateProject(t.Context(), proj); err != nil {
 		t.Fatal(err)
 	}
 	obj := seedObjective(t, st, proj.ID, model.ModeAuto, model.FreezeSafe)
+	obj.IntegrationBranch = "cardex/test/main"
+	if err := st.UpdateObjective(t.Context(), &obj); err != nil {
+		t.Fatal(err)
+	}
 	node := seedNode(t, st, obj.ID, "", model.LayerModule)
 	seedCard(t, st, obj.ID, node.ID, model.KindDesign, model.CardDone, `
 ## 开放问题
-- [fact] 文件现在写了什么
+- [fact] 只在集成分支上变了
+- [fact] 只在主 checkout 里脏
 - [fact] 保持不变的文件
 `)
-	d := Deps{Store: st, WS: workspace.Git{}}
-	if err := designStep(t.Context(), d, obj.ID); err != nil {
+	fake := &compareFake{
+		head: "head-now",
+		files: map[string][]string{
+			"attempt-base→head-now": {"only-on-integration.go"},
+		},
+		dirty: []string{"dirty-main.go"},
+	}
+	d := Deps{Store: st, WS: fake}
+	if err := loopStep(t, d, obj.ID); err != nil {
 		t.Fatal(err)
 	}
-	var researchID, base string
+	var researchID string
 	for _, c := range cardsOf(t, st, obj.ID) {
 		if c.Kind == model.KindResearch && c.Node == node.ID {
 			researchID = c.ID
-			base = c.Base
+			c.Base = "created-base"
+			if err := st.UpdateCard(t.Context(), &c); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
-	if researchID == "" || base == "" {
-		t.Fatalf("research base %q id %q", base, researchID)
+	if researchID == "" {
+		t.Fatal("missing research card")
 	}
-	if err := os.WriteFile(repo+"/file.go", []byte("package a\nfunc Changed() {}\n"), 0o644); err != nil {
+	card, err := st.GetCard(t.Context(), researchID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	gitRun(t, repo, "add", "file.go")
-	gitRun(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "change")
-	head := strings.TrimSpace(gitOut(t, repo, "rev-parse", "HEAD"))
-	if head == base {
-		t.Fatal("HEAD did not move")
+	card.Status = model.CardDone
+	card.Body = "任务提示，与结果不同\n"
+	if err := st.UpdateCard(t.Context(), &card); err != nil {
+		t.Fatal(err)
 	}
-	finishCard(t, st, researchID, `
+	plantResult(t, st, researchID, `
 ## 事实
 ### Q1
 结论：旧内容
-证据：file.go:1
+证据：only-on-integration.go:1
 把握：高
 ### Q2
+结论：脏文件
+证据：dirty-main.go:1
+把握：高
+### Q3
 结论：还在
 证据：keep.go:1
 把握：高
-`)
-	if err := designStep(t.Context(), d, obj.ID); err != nil {
+`, "attempt-base")
+	if err := loopStep(t, d, obj.ID); err != nil {
 		t.Fatal(err)
 	}
 	node = nodeOf(t, st, node.ID)
-	var changed, kept model.OpenQuestion
+	byID := map[string]model.OpenQuestion{}
 	for _, q := range node.OpenQuestions {
-		switch q.ID {
-		case "Q1":
-			changed = q
-		case "Q2":
-			kept = q
+		byID[q.ID] = q
+	}
+	if byID["Q1"].Commit != "attempt-base" || byID["Q1"].Commit == "created-base" || byID["Q1"].Status != model.OQStale {
+		t.Fatalf("integration change %+v", byID["Q1"])
+	}
+	if byID["Q2"].Status != model.OQAnswered || byID["Q3"].Status != model.OQAnswered {
+		t.Fatalf("dirty %+v keep %+v", byID["Q2"], byID["Q3"])
+	}
+	if fake.diffCalls != 0 {
+		t.Fatalf("worktree diff calls %d", fake.diffCalls)
+	}
+	if len(fake.pairs) == 0 || fake.ref != obj.IntegrationBranch {
+		t.Fatalf("compare pairs %v ref %q", fake.pairs, fake.ref)
+	}
+	for _, pair := range fake.pairs {
+		if pair[0] != "attempt-base" || pair[1] != "head-now" {
+			t.Fatalf("compare pair %v", pair)
 		}
-	}
-	if changed.Commit != base || changed.Commit == head || changed.Status != model.OQStale {
-		t.Fatalf("stale %+v head %s", changed, head)
-	}
-	if kept.Status != model.OQAnswered {
-		t.Fatalf("unchanged fact %+v", kept)
 	}
 	var summary string
 	for _, c := range cardsOf(t, st, obj.ID) {
@@ -202,14 +227,14 @@ func TestStaleUsesWorkspaceDiff(t *testing.T) {
 	dir := seedNode(t, st, obj.ID, "", model.LayerDirection)
 	dir.OpenQuestions = model.OpenQuestionList{{
 		ID: "Q0", Text: "盘点 目标", Type: model.OQFact, Status: model.OQAnswered,
-		Answer: "旧盘点", Evidence: "file.go:1", Confidence: "高",
-		Commit: base, CitedPaths: []string{"file.go"},
+		Answer: "旧盘点", Evidence: "only-on-integration.go:1", Confidence: "高",
+		Commit: "attempt-base", CitedPaths: []string{"only-on-integration.go"},
 	}}
 	if err := st.UpdateNode(t.Context(), &dir); err != nil {
 		t.Fatal(err)
 	}
 	seedCard(t, st, obj.ID, dir.ID, model.KindDesign, model.CardDone, "## 子节点\n- [module] 账单\n")
-	if err := designStep(t.Context(), d, obj.ID); err != nil {
+	if err := loopStep(t, d, obj.ID); err != nil {
 		t.Fatal(err)
 	}
 	dir = nodeOf(t, st, dir.ID)
@@ -233,6 +258,58 @@ func TestStaleUsesWorkspaceDiff(t *testing.T) {
 	}
 	if !find(childBody, "可能过期") || !find(childBody, "盘点 目标") {
 		t.Fatalf("child summary %s", childBody)
+	}
+}
+
+func loopStep(t *testing.T, d Deps, objectiveID string) error {
+	t.Helper()
+	return New(d.Store, d.WS, d.Notify).Step(t.Context(), objectiveID)
+}
+
+type compareFake struct {
+	head      string
+	ref       string
+	pairs     [][2]string
+	files     map[string][]string
+	dirty     []string
+	diffCalls int
+}
+
+func (f *compareFake) Head(_ context.Context, _, ref string) (string, error) {
+	f.ref = ref
+	return f.head, nil
+}
+
+func (f *compareFake) CompareCommits(_ context.Context, _, from, to string) (workspace.Diff, error) {
+	f.pairs = append(f.pairs, [2]string{from, to})
+	return workspace.Diff{Files: f.files[from+"→"+to]}, nil
+}
+
+func (f *compareFake) Create(context.Context, workspace.CreateRequest) (workspace.Worktree, error) {
+	return workspace.Worktree{}, workspace.ErrNotImplemented
+}
+func (f *compareFake) Commit(context.Context, string, string) (string, error) {
+	return "", workspace.ErrNotImplemented
+}
+func (f *compareFake) Diff(context.Context, string, string) (workspace.Diff, error) {
+	f.diffCalls++
+	return workspace.Diff{Files: append([]string(nil), f.dirty...)}, nil
+}
+func (f *compareFake) Remove(context.Context, string) error    { return workspace.ErrNotImplemented }
+func (f *compareFake) BlockPush(context.Context, string) error { return workspace.ErrNotImplemented }
+
+func TestDesignPhaseDoesNotReadGitMetadata(t *testing.T) {
+	for _, name := range []string{"design.go", "design_parse.go", "research.go"} {
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(raw)
+		for _, bad := range []string{"packed-refs", "commondir", "readGitHEAD", "gitdir:", "exec.Command"} {
+			if strings.Contains(text, bad) {
+				t.Fatalf("%s contains %s", name, bad)
+			}
+		}
 	}
 }
 
@@ -348,35 +425,4 @@ func sameSet(a, b []int) bool {
 		}
 	}
 	return true
-}
-
-func gitRepo(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	gitRun(t, dir, "init", "-b", "main")
-	if err := os.WriteFile(dir+"/file.go", []byte("package a\nfunc A() {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dir+"/keep.go", []byte("package a\nfunc Keep() {}\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, dir, "add", "file.go", "keep.go")
-	gitRun(t, dir, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "init")
-	return dir
-}
-
-func gitRun(t *testing.T, dir string, args ...string) {
-	t.Helper()
-	_ = gitOut(t, dir, args...)
-}
-
-func gitOut(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s: %v %s", strings.Join(args, " "), err, out)
-	}
-	return string(out)
 }

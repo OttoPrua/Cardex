@@ -13,6 +13,8 @@ const (
 	evResearch   = "loop.research"
 	evFreezable  = "loop.freezable"
 	evReviewPass = "loop.review_pass"
+	evReviewBind = "loop.review_bind"
+	evReopenUsed = "loop.reopen_used"
 )
 
 type freezeKind int

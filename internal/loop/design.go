@@ -54,10 +54,10 @@ func designStep(ctx context.Context, d Deps, objectiveID string) error {
 	if err := d.dispatchResearch(ctx, obj); err != nil {
 		return err
 	}
-	if err := d.followResearch(ctx, obj, researched); err != nil {
+	if err := d.advanceNodes(ctx, obj); err != nil {
 		return err
 	}
-	if err := d.advanceNodes(ctx, obj); err != nil {
+	if err := d.progressNodes(ctx, obj, researched); err != nil {
 		return err
 	}
 	return d.ensureDirection(ctx, obj)
@@ -112,42 +112,46 @@ func neverMerge(k model.CardKind) bool {
 }
 
 func (d Deps) absorbOne(ctx context.Context, obj model.Objective, card model.Card, researched map[string]bool) error {
+	text, base, err := d.harvested(ctx, card)
+	if err != nil {
+		return err
+	}
 	switch card.Kind {
 	case model.KindResearch:
 		if card.Node == "" {
-			return d.absorbInventory(ctx, obj, card)
+			return d.absorbInventory(ctx, obj, card, text, base)
 		}
-		if err := d.absorbResearch(ctx, obj, card); err != nil {
+		if err := d.absorbResearch(ctx, obj, card, text, base); err != nil {
 			return err
 		}
 		researched[card.Node] = true
 		return nil
 	case model.KindDesign, model.KindPlan, model.KindReplan:
-		return d.absorbDesign(ctx, obj, card)
+		return d.absorbDesign(ctx, obj, card, text)
 	case model.KindSpike:
-		return d.absorbSpike(ctx, obj, card)
+		return d.absorbSpike(ctx, obj, card, text)
 	case model.KindDev, model.KindReview:
-		return d.absorbDevReview(ctx, obj, card)
+		return d.absorbDevReview(ctx, obj, card, text)
 	default:
 		return d.markAbsorbed(ctx, card.ID, nil)
 	}
 }
 
-func (d Deps) absorbInventory(ctx context.Context, obj model.Objective, card model.Card) error {
+func (d Deps) absorbInventory(ctx context.Context, obj model.Objective, card model.Card, result, base string) error {
 	q := model.OpenQuestion{
 		ID: "Q0", Type: model.OQFact, Text: "盘点 " + obj.Title,
-		Status: model.OQUnanswered, CitedPaths: []string{}, Commit: card.Base,
+		Status: model.OQUnanswered, CitedPaths: []string{}, Commit: base,
 	}
-	secs := splitSections(card.Body)
+	secs := splitSections(result)
 	if b, ok := parseFactSection(secs["事实"])["Q0"]; ok {
-		applyBlock(&q, b, card.Base)
+		applyBlock(&q, b, base)
 	} else {
 		text := strings.TrimSpace(secs["事实"])
 		if text == "" {
 			text = strings.TrimSpace(secs["结论"])
 		}
 		if text != "" {
-			applyBlock(&q, factBlock{present: true, answer: text, evidence: text}, card.Base)
+			applyBlock(&q, factBlock{present: true, answer: text, evidence: text}, base)
 		}
 	}
 	if q.Text == "" {
@@ -160,7 +164,7 @@ func (d Deps) absorbInventory(ctx context.Context, obj model.Objective, card mod
 	return d.markAbsorbed(ctx, card.ID, raw)
 }
 
-func (d Deps) absorbDesign(ctx context.Context, obj model.Objective, card model.Card) error {
+func (d Deps) absorbDesign(ctx context.Context, obj model.Objective, card model.Card, result string) error {
 	if card.Node == "" {
 		return d.markAbsorbed(ctx, card.ID, nil)
 	}
@@ -168,7 +172,7 @@ func (d Deps) absorbDesign(ctx context.Context, obj model.Objective, card model.
 	if err != nil {
 		return err
 	}
-	secs := splitSections(card.Body)
+	secs := splitSections(result)
 	var fresh []model.OpenQuestion
 	for _, line := range parseQuestionLines(secs["开放问题"]) {
 		switch line.kind {
@@ -199,17 +203,21 @@ func (d Deps) absorbDesign(ctx context.Context, obj model.Objective, card model.
 		}
 	}
 	if parseFreezable(secs["可冻结"]) {
-		if err := d.noteEvent(ctx, "node:"+node.ID, evFreezable, nil); err != nil {
+		if err := d.noteFreezable(ctx, node.ID, card.ID, node.Status == model.NodeReopened); err != nil {
 			return err
 		}
 	}
 	return d.markAbsorbed(ctx, card.ID, nil)
 }
 
-func (d Deps) absorbSpike(ctx context.Context, obj model.Objective, card model.Card) error {
+func (d Deps) absorbSpike(ctx context.Context, obj model.Objective, card model.Card, result string) error {
 	if card.Node != "" {
-		if id := spikeQuestionID(card.Body); id != "" {
-			conclusion := strings.TrimSpace(splitSections(card.Body)["结论"])
+		id := spikeQuestionID(result)
+		if id == "" {
+			id = spikeQuestionID(card.Body)
+		}
+		if id != "" {
+			conclusion := strings.TrimSpace(splitSections(result)["结论"])
 			if conclusion != "" {
 				node, err := d.Store.GetNode(ctx, card.Node)
 				if err != nil {
@@ -244,8 +252,8 @@ func spikeQuestionID(body string) string {
 	return ""
 }
 
-func (d Deps) absorbDevReview(ctx context.Context, obj model.Objective, card model.Card) error {
-	secs := splitSections(card.Body)
+func (d Deps) absorbDevReview(ctx context.Context, obj model.Objective, card model.Card, result string) error {
+	secs := splitSections(result)
 	problem := strings.TrimSpace(secs["设计问题"])
 	if problem != "" && card.Node != "" {
 		if _, err := d.questions().Create(ctx, model.Question{
@@ -260,7 +268,11 @@ func (d Deps) absorbDevReview(ctx context.Context, obj model.Objective, card mod
 		}
 	}
 	if card.Kind == model.KindReview && problem == "" && passedReview(secs["复核结论"]) && card.Node != "" {
-		if err := d.noteEvent(ctx, "node:"+card.Node, evReviewPass, nil); err != nil {
+		raw, err := json.Marshal(reviewBind{Design: card.ID})
+		if err != nil {
+			return err
+		}
+		if err := d.Store.AppendEvent(ctx, &model.Event{Entity: "card:" + card.ID, Type: evReviewPass, Data: raw}); err != nil {
 			return err
 		}
 	}
@@ -319,37 +331,31 @@ func (d Deps) createChild(ctx context.Context, obj model.Objective, parent model
 	if err := d.Store.CreateNode(ctx, child); err != nil {
 		return err
 	}
+	if err := d.assignDocPath(ctx, obj, child); err != nil {
+		return err
+	}
 	return d.createWorkCard(ctx, obj, *child, model.KindDesign, title)
 }
 
-func (d Deps) followResearch(ctx context.Context, obj model.Objective, nodes map[string]bool) error {
-	if len(nodes) == 0 {
-		return nil
+func (d Deps) progressNodes(ctx context.Context, obj model.Objective, researched map[string]bool) error {
+	nodes, err := d.Store.ListNodes(ctx, obj.ID)
+	if err != nil {
+		return err
 	}
 	cards, err := d.Store.ListCards(ctx, obj.ID)
 	if err != nil {
 		return err
 	}
-	for id := range nodes {
-		if id == "" || unfinishedResearch(cards, id) {
-			continue
-		}
-		node, err := d.Store.GetNode(ctx, id)
-		if err != nil {
-			return err
-		}
-		if activeWork(cards, id) {
+	questions, err := d.Store.ListQuestions(ctx, obj.ID)
+	if err != nil {
+		return err
+	}
+	for _, node := range nodes {
+		if !mayReceiveNext(node, cards, questions, researched[node.ID]) {
 			continue
 		}
 		kind := followKind(node.Status)
-		title := "设计"
-		switch kind {
-		case model.KindPlan:
-			title = "拆卡"
-		case model.KindReplan:
-			title = "重规划"
-		}
-		if err := d.createWorkCard(ctx, obj, node, kind, title); err != nil {
+		if err := d.createWorkCard(ctx, obj, node, kind, workTitle(kind)); err != nil {
 			return err
 		}
 		cards, err = d.Store.ListCards(ctx, obj.ID)
@@ -358,6 +364,41 @@ func (d Deps) followResearch(ctx context.Context, obj model.Objective, nodes map
 		}
 	}
 	return nil
+}
+
+func mayReceiveNext(node model.DesignNode, cards []model.Card, questions []model.Question, researched bool) bool {
+	if node.ID == "" || unfinishedResearch(cards, node.ID) || activeWork(cards, node.ID) || waitingHuman(questions, node.ID) {
+		return false
+	}
+	if researched {
+		return true
+	}
+	switch node.Status {
+	case model.NodeDrafting, model.NodeReopened:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitingHuman(questions []model.Question, nodeID string) bool {
+	for _, q := range questions {
+		if q.Scope == nodeID && strings.TrimSpace(q.Answer) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+func workTitle(kind model.CardKind) string {
+	switch kind {
+	case model.KindPlan:
+		return "拆卡"
+	case model.KindReplan:
+		return "重规划"
+	default:
+		return "设计"
+	}
 }
 
 func followKind(st model.NodeStatus) model.CardKind {
@@ -397,16 +438,19 @@ func (d Deps) advanceNode(ctx context.Context, obj model.Objective, nodeID strin
 	if err != nil {
 		return err
 	}
-	if node.Status != model.NodeReopened {
-		if err := d.applyReopen(ctx, obj, &node, questions, cards); err != nil {
-			return err
-		}
+	if err := d.applyReopen(ctx, obj, &node, questions, cards); err != nil {
+		return err
 	}
 	node, err = d.Store.GetNode(ctx, nodeID)
 	if err != nil {
 		return err
 	}
-	if node.Status == model.NodeFrozen || node.Status == model.NodeReopened {
+	if node.Status == model.NodeReopened {
+		if err := d.promoteReopened(ctx, &node); err != nil {
+			return err
+		}
+	}
+	if node.Status == model.NodeFrozen {
 		return nil
 	}
 	proposed, err := d.hasEvent(ctx, "node:"+node.ID, evFreezable)
@@ -422,6 +466,18 @@ func (d Deps) advanceNode(ctx context.Context, obj model.Objective, nodeID strin
 	if node.Status != model.NodeFreezable {
 		return nil
 	}
+	questions, err = d.Store.ListQuestions(ctx, obj.ID)
+	if err != nil {
+		return err
+	}
+	cards, err = d.Store.ListCards(ctx, obj.ID)
+	if err != nil {
+		return err
+	}
+	notes, err := d.reopenNotes(ctx, node.ID)
+	if err != nil {
+		return err
+	}
 	blocked := nodeBlocked(node)
 	switch decideFreeze(node.Layer, obj.FreezeMode) {
 	case freezeNow:
@@ -430,7 +486,7 @@ func (d Deps) advanceNode(ctx context.Context, obj model.Objective, nodeID strin
 		}
 		return d.freezeNode(ctx, obj, node)
 	case freezeAsk:
-		q, ok := freezeQuestion(questions, node.ID)
+		q, ok := currentFreeze(questions, node.ID, spentFreeze(notes))
 		if !ok {
 			created, err := d.questions().Create(ctx, model.Question{
 				Objective: obj.ID,
@@ -450,24 +506,43 @@ func (d Deps) advanceNode(ctx context.Context, obj model.Objective, nodeID strin
 		}
 		return d.freezeNode(ctx, obj, node)
 	case freezeReview:
-		if !hasKind(cards, node.ID, model.KindReview) {
-			if err := d.addCard(ctx, obj, &model.Card{
-				Objective: obj.ID,
-				Node:      node.ID,
-				Kind:      model.KindReview,
-				Title:     "复核 " + node.ID,
-				Body:      "复核节点 " + node.ID + "\n",
-				Tier:      model.TierT3,
-				Status:    model.CardReady,
-			}); err != nil {
-				return err
-			}
-		}
-		ok, err := d.hasEvent(ctx, "node:"+node.ID, evReviewPass)
+		designID, err := d.latestFreezableCard(ctx, node.ID)
 		if err != nil {
 			return err
 		}
-		if blocked || !ok {
+		review, ok, err := d.boundReview(ctx, cards, node.ID, designID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			family, err := d.designFamily(ctx, designID)
+			if err != nil {
+				return err
+			}
+			created := &model.Card{
+				Objective:    obj.ID,
+				Node:         node.ID,
+				Kind:         model.KindReview,
+				Title:        "复核 " + node.ID,
+				Body:         "复核节点 " + node.ID + "\n",
+				Tier:         model.TierT3,
+				Status:       model.CardReady,
+				AuthorFamily: family,
+			}
+			if err := d.addCard(ctx, obj, created); err != nil {
+				return err
+			}
+			raw, err := json.Marshal(reviewBind{Design: designID})
+			if err != nil {
+				return err
+			}
+			return d.Store.AppendEvent(ctx, &model.Event{Entity: "card:" + created.ID, Type: evReviewBind, Data: raw})
+		}
+		passed, err := d.hasEvent(ctx, "card:"+review.ID, evReviewPass)
+		if err != nil {
+			return err
+		}
+		if blocked || !passed {
 			return nil
 		}
 		return d.freezeNode(ctx, obj, node)
@@ -477,18 +552,15 @@ func (d Deps) advanceNode(ctx context.Context, obj model.Objective, nodeID strin
 }
 
 func (d Deps) applyReopen(ctx context.Context, obj model.Objective, node *model.DesignNode, questions []model.Question, cards []model.Card) error {
-	var q model.Question
-	found := false
-	for _, item := range questions {
-		if item.Kind == model.QuestionReopen && item.Scope == node.ID && consented(item) {
-			q = item
-			found = true
-			break
-		}
+	notes, err := d.reopenNotes(ctx, node.ID)
+	if err != nil {
+		return err
 	}
-	if !found || !consented(q) {
+	q, ok := reopenUnused(notes, questions, node.ID)
+	if !ok {
 		return nil
 	}
+	replanID, inFlight := replanInFlight(cards, node.ID)
 	node.Status = model.NodeReopened
 	if err := d.Store.UpdateNode(ctx, node); err != nil {
 		return err
@@ -502,10 +574,31 @@ func (d Deps) applyReopen(ctx context.Context, obj model.Objective, node *model.
 			return err
 		}
 	}
-	if hasKind(cards, node.ID, model.KindReplan) {
-		return nil
+	if !inFlight {
+		if err := d.createWorkCard(ctx, obj, *node, model.KindReplan, "重规划"); err != nil {
+			return err
+		}
+		updated, err := d.Store.ListCards(ctx, obj.ID)
+		if err != nil {
+			return err
+		}
+		for _, c := range updated {
+			if c.Node == node.ID && c.Kind == model.KindReplan && !terminalCard(c.Status) && c.Status != model.CardPaused {
+				replanID = c.ID
+			}
+		}
 	}
-	return d.createWorkCard(ctx, obj, *node, model.KindReplan, "重规划")
+	var freezeIDs []string
+	for _, item := range questions {
+		if item.Kind == model.QuestionFreeze && item.Scope == node.ID {
+			freezeIDs = append(freezeIDs, item.ID)
+		}
+	}
+	raw, err := json.Marshal(reopenNote{Question: q.ID, Freeze: freezeIDs, Replan: replanID})
+	if err != nil {
+		return err
+	}
+	return d.Store.AppendEvent(ctx, &model.Event{Entity: "node:" + node.ID, Type: evReopenUsed, Data: raw})
 }
 
 func (d Deps) freezeNode(ctx context.Context, obj model.Objective, node model.DesignNode) error {
@@ -525,9 +618,9 @@ func (d Deps) freezeNode(ctx context.Context, obj model.Objective, node model.De
 	return d.createWorkCard(ctx, obj, node, model.KindPlan, "拆卡")
 }
 
-func freezeQuestion(questions []model.Question, nodeID string) (model.Question, bool) {
+func currentFreeze(questions []model.Question, nodeID string, spent map[string]bool) (model.Question, bool) {
 	for _, q := range questions {
-		if q.Kind == model.QuestionFreeze && q.Scope == nodeID {
+		if q.Kind == model.QuestionFreeze && q.Scope == nodeID && !spent[q.ID] {
 			return q, true
 		}
 	}
@@ -564,6 +657,9 @@ func (d Deps) ensureDirection(ctx context.Context, obj model.Objective) error {
 		OpenQuestions: model.OpenQuestionList{q0},
 	}
 	if err := d.Store.CreateNode(ctx, node); err != nil {
+		return err
+	}
+	if err := d.assignDocPath(ctx, obj, node); err != nil {
 		return err
 	}
 	return d.createWorkCard(ctx, obj, *node, model.KindDesign, "设计方向")
@@ -658,9 +754,6 @@ func (d Deps) addCard(ctx context.Context, obj model.Objective, c *model.Card) e
 	if c.Tier == "" || c.Tier == model.TierNone {
 		c.Tier = model.DefaultTier(c.Kind)
 	}
-	if c.Kind == model.KindResearch && c.Base == "" {
-		c.Base = d.head(ctx, obj)
-	}
 	return d.Store.CreateCard(ctx, c)
 }
 
@@ -737,4 +830,242 @@ func (d Deps) noteEvent(ctx context.Context, entity, typ string, data []byte) er
 
 func (d Deps) markAbsorbed(ctx context.Context, cardID string, data []byte) error {
 	return d.noteEvent(ctx, "card:"+cardID, evAbsorbed, data)
+}
+
+type freezableNote struct {
+	Card string `json:"card"`
+	Gen  int    `json:"gen"`
+}
+
+type reviewBind struct {
+	Design string `json:"design"`
+}
+
+type reopenNote struct {
+	Question string   `json:"question"`
+	Freeze   []string `json:"freeze"`
+	Replan   string   `json:"replan"`
+}
+
+func (d Deps) noteFreezable(ctx context.Context, nodeID, cardID string, reopened bool) error {
+	gen := 0
+	if reopened {
+		notes, err := d.reopenNotes(ctx, nodeID)
+		if err != nil {
+			return err
+		}
+		gen = len(notes)
+	}
+	raw, err := json.Marshal(freezableNote{Card: cardID, Gen: gen})
+	if err != nil {
+		return err
+	}
+	return d.Store.AppendEvent(ctx, &model.Event{Entity: "node:" + nodeID, Type: evFreezable, Data: raw})
+}
+
+func (d Deps) reopenNotes(ctx context.Context, nodeID string) ([]reopenNote, error) {
+	ev, err := d.Store.ListEvents(ctx, "node:"+nodeID)
+	if err != nil {
+		return nil, err
+	}
+	var notes []reopenNote
+	for _, e := range ev {
+		if e.Type != evReopenUsed || len(e.Data) == 0 {
+			continue
+		}
+		var n reopenNote
+		if err := json.Unmarshal(e.Data, &n); err != nil {
+			return nil, err
+		}
+		notes = append(notes, n)
+	}
+	return notes, nil
+}
+
+func reopenUnused(notes []reopenNote, questions []model.Question, nodeID string) (model.Question, bool) {
+	used := map[string]bool{}
+	for _, n := range notes {
+		if n.Question != "" {
+			used[n.Question] = true
+		}
+	}
+	for _, q := range questions {
+		if q.Kind == model.QuestionReopen && q.Scope == nodeID && consented(q) && !used[q.ID] {
+			return q, true
+		}
+	}
+	return model.Question{}, false
+}
+
+func spentFreeze(notes []reopenNote) map[string]bool {
+	spent := map[string]bool{}
+	for _, n := range notes {
+		for _, id := range n.Freeze {
+			if id != "" {
+				spent[id] = true
+			}
+		}
+	}
+	return spent
+}
+
+func replanInFlight(cards []model.Card, nodeID string) (string, bool) {
+	for _, c := range cards {
+		if c.Node != nodeID || c.Kind != model.KindReplan {
+			continue
+		}
+		if terminalCard(c.Status) || c.Status == model.CardPaused || notStartedCard(c.Status) {
+			continue
+		}
+		return c.ID, true
+	}
+	return "", false
+}
+
+func (d Deps) promoteReopened(ctx context.Context, node *model.DesignNode) error {
+	notes, err := d.reopenNotes(ctx, node.ID)
+	if err != nil || len(notes) == 0 {
+		return err
+	}
+	cardID, err := d.freezableForGen(ctx, node.ID, len(notes))
+	if err != nil || cardID == "" {
+		return err
+	}
+	card, err := d.Store.GetCard(ctx, cardID)
+	if err != nil {
+		return err
+	}
+	if card.Kind != model.KindReplan || card.Node != node.ID || !terminalCard(card.Status) || nodeBlocked(*node) {
+		return nil
+	}
+	node.Status = model.NodeFreezable
+	return d.Store.UpdateNode(ctx, node)
+}
+
+func (d Deps) freezableForGen(ctx context.Context, nodeID string, gen int) (string, error) {
+	ev, err := d.Store.ListEvents(ctx, "node:"+nodeID)
+	if err != nil {
+		return "", err
+	}
+	var cardID string
+	for _, e := range ev {
+		if e.Type != evFreezable || len(e.Data) == 0 {
+			continue
+		}
+		var n freezableNote
+		if err := json.Unmarshal(e.Data, &n); err != nil {
+			return "", err
+		}
+		if n.Gen == gen && n.Card != "" {
+			cardID = n.Card
+		}
+	}
+	return cardID, nil
+}
+
+func (d Deps) latestFreezableCard(ctx context.Context, nodeID string) (string, error) {
+	ev, err := d.Store.ListEvents(ctx, "node:"+nodeID)
+	if err != nil {
+		return "", err
+	}
+	var cardID string
+	for _, e := range ev {
+		if e.Type != evFreezable || len(e.Data) == 0 {
+			continue
+		}
+		var n freezableNote
+		if json.Unmarshal(e.Data, &n) != nil || n.Card == "" {
+			continue
+		}
+		cardID = n.Card
+	}
+	return cardID, nil
+}
+
+func (d Deps) boundReview(ctx context.Context, cards []model.Card, nodeID, designID string) (model.Card, bool, error) {
+	for _, c := range cards {
+		if c.Node != nodeID || c.Kind != model.KindReview {
+			continue
+		}
+		ev, err := d.Store.ListEvents(ctx, "card:"+c.ID)
+		if err != nil {
+			return model.Card{}, false, err
+		}
+		for _, e := range ev {
+			if e.Type != evReviewBind || len(e.Data) == 0 {
+				continue
+			}
+			var b reviewBind
+			if err := json.Unmarshal(e.Data, &b); err != nil {
+				return model.Card{}, false, err
+			}
+			if b.Design == designID {
+				return c, true, nil
+			}
+		}
+	}
+	return model.Card{}, false, nil
+}
+
+func (d Deps) designFamily(ctx context.Context, cardID string) (string, error) {
+	if cardID == "" || d.Store == nil {
+		return "", nil
+	}
+	card, err := d.Store.GetCard(ctx, cardID)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(card.AuthorFamily) != "" {
+		return card.AuthorFamily, nil
+	}
+	attempts, err := d.Store.ListAttempts(ctx, cardID)
+	if err != nil {
+		return "", err
+	}
+	var family string
+	for _, a := range attempts {
+		if f := attemptFamily(a); f != "" {
+			family = f
+		}
+	}
+	return family, nil
+}
+
+func attemptFamily(a model.Attempt) string {
+	for _, c := range a.RouteReason.Candidates {
+		if c.Family == "" {
+			continue
+		}
+		if a.Route.Model == "" || c.Model == a.Route.Model {
+			return c.Family
+		}
+	}
+	for _, c := range a.RouteReason.Candidates {
+		if c.Family != "" {
+			return c.Family
+		}
+	}
+	return ""
+}
+
+func (d Deps) assignDocPath(ctx context.Context, obj model.Objective, node *model.DesignNode) error {
+	if node == nil || strings.TrimSpace(node.DocPath) != "" || node.ID == "" {
+		return nil
+	}
+	dir := "docs/design"
+	if obj.Project != "" {
+		p, err := d.Store.GetProject(ctx, obj.Project)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(p.DesignDir) != "" {
+			dir = strings.TrimSpace(p.DesignDir)
+		}
+	}
+	dir = strings.Trim(strings.ReplaceAll(dir, "\\", "/"), "/")
+	if dir == "" {
+		dir = "docs/design"
+	}
+	node.DocPath = dir + "/" + obj.ID + "/" + node.ID + ".md"
+	return d.Store.UpdateNode(ctx, node)
 }

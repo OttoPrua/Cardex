@@ -8,7 +8,19 @@ import (
 	"strings"
 
 	"cardex/internal/model"
+	"cardex/internal/workspace"
 )
+
+// commitDiff is the two-commit comparison workspace.Manager does not provide yet.
+// from is the attempt base recorded at dispatch; to is the integration branch HEAD.
+type commitDiff interface {
+	CompareCommits(ctx context.Context, repo, from, to string) (workspace.Diff, error)
+}
+
+// integrationHead is the integration-branch HEAD read workspace.Manager does not provide yet.
+type integrationHead interface {
+	Head(ctx context.Context, repo, ref string) (string, error)
+}
 
 func (d Deps) repoPath(ctx context.Context, obj model.Objective) (string, error) {
 	if d.Store == nil || obj.Project == "" || d.WS == nil {
@@ -19,20 +31,6 @@ func (d Deps) repoPath(ctx context.Context, obj model.Objective) (string, error)
 		return "", err
 	}
 	return p.RepoPath, nil
-}
-
-func (d Deps) head(ctx context.Context, obj model.Objective) string {
-	repo, err := d.repoPath(ctx, obj)
-	if err != nil || repo == "" {
-		return ""
-	}
-	if obj.IntegrationBranch != "" {
-		if h, err := readGitHEAD(repo, obj.IntegrationBranch); err == nil && h != "" {
-			return h
-		}
-	}
-	h, _ := readGitHEAD(repo, "")
-	return h
 }
 
 func (d Deps) dispatchResearch(ctx context.Context, obj model.Objective) error {
@@ -97,7 +95,7 @@ func (d Deps) dispatchResearch(ctx context.Context, obj model.Objective) error {
 	return nil
 }
 
-func (d Deps) absorbResearch(ctx context.Context, obj model.Objective, card model.Card) error {
+func (d Deps) absorbResearch(ctx context.Context, obj model.Objective, card model.Card, text, base string) error {
 	node, err := d.Store.GetNode(ctx, card.Node)
 	if err != nil {
 		return err
@@ -106,7 +104,7 @@ func (d Deps) absorbResearch(ctx context.Context, obj model.Objective, card mode
 	if err != nil {
 		return err
 	}
-	blocks := parseFactSection(splitSections(card.Body)["事实"])
+	blocks := parseFactSection(splitSections(text)["事实"])
 	for _, id := range ids {
 		b, ok := blocks[id]
 		if !ok {
@@ -116,7 +114,7 @@ func (d Deps) absorbResearch(ctx context.Context, obj model.Objective, card mode
 			if node.OpenQuestions[i].ID != id {
 				continue
 			}
-			applyBlock(&node.OpenQuestions[i], b, card.Base)
+			applyBlock(&node.OpenQuestions[i], b, base)
 		}
 	}
 	if err := d.Store.UpdateNode(ctx, &node); err != nil {
@@ -146,16 +144,24 @@ func (d Deps) researchIDs(ctx context.Context, card model.Card) ([]string, error
 		}
 		return ids, nil
 	}
-	ids := questionIDsInBody(card.Body)
-	for id := range parseFactSection(splitSections(card.Body)["事实"]) {
-		ids = append(ids, id)
-	}
-	return ids, nil
+	return questionIDsInBody(card.Body), nil
 }
 
 func (d Deps) markStale(ctx context.Context, obj model.Objective, n *model.DesignNode) error {
+	if d.WS == nil {
+		return nil
+	}
+	heads, headOK := d.WS.(integrationHead)
+	diffs, diffOK := d.WS.(commitDiff)
+	if !headOK || !diffOK {
+		return nil
+	}
 	repo, err := d.repoPath(ctx, obj)
-	if err != nil || repo == "" || d.WS == nil {
+	if err != nil || repo == "" {
+		return err
+	}
+	head, err := heads.Head(ctx, repo, obj.IntegrationBranch)
+	if err != nil || head == "" {
 		return err
 	}
 	cache := map[string]map[string]bool{}
@@ -168,7 +174,7 @@ func (d Deps) markStale(ctx context.Context, obj model.Objective, n *model.Desig
 		}
 		files, ok := cache[q.Commit]
 		if !ok {
-			diff, err := d.WS.Diff(ctx, repo, q.Commit)
+			diff, err := diffs.CompareCommits(ctx, repo, q.Commit, head)
 			if err != nil {
 				return err
 			}
@@ -186,6 +192,40 @@ func (d Deps) markStale(ctx context.Context, obj model.Objective, n *model.Desig
 		}
 	}
 	return nil
+}
+
+func (d Deps) harvested(ctx context.Context, card model.Card) (string, string, error) {
+	if d.Store == nil {
+		return "", "", nil
+	}
+	attempts, err := d.Store.ListAttempts(ctx, card.ID)
+	if err != nil {
+		return "", "", err
+	}
+	var best *model.Attempt
+	var text string
+	for i := range attempts {
+		wt := strings.TrimSpace(attempts[i].Worktree)
+		if wt == "" {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(wt, ".cardex-result.md"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", "", err
+		}
+		if best == nil || attempts[i].Index >= best.Index {
+			cp := attempts[i]
+			best = &cp
+			text = string(raw)
+		}
+	}
+	if best == nil {
+		return "", "", nil
+	}
+	return text, best.BaseCommit, nil
 }
 
 func (d Deps) factList(ctx context.Context, obj model.Objective, node model.DesignNode) ([]model.OpenQuestion, error) {
@@ -240,80 +280,4 @@ func normPath(p string) string {
 	p = filepath.ToSlash(strings.TrimSpace(p))
 	p = strings.TrimPrefix(p, "./")
 	return p
-}
-
-func readGitHEAD(repo, branch string) (string, error) {
-	gitPath := filepath.Join(repo, ".git")
-	info, err := os.Stat(gitPath)
-	if err != nil {
-		return "", err
-	}
-	gitDir := gitPath
-	if !info.IsDir() {
-		raw, err := os.ReadFile(gitPath)
-		if err != nil {
-			return "", err
-		}
-		line := strings.TrimSpace(string(raw))
-		const prefix = "gitdir:"
-		if !strings.HasPrefix(line, prefix) {
-			return "", os.ErrNotExist
-		}
-		gitDir = strings.TrimSpace(strings.TrimPrefix(line, prefix))
-		if !filepath.IsAbs(gitDir) {
-			gitDir = filepath.Join(repo, gitDir)
-		}
-	}
-	ref := ""
-	if branch == "" {
-		raw, err := os.ReadFile(filepath.Join(gitDir, "HEAD"))
-		if err != nil {
-			return "", err
-		}
-		line := strings.TrimSpace(string(raw))
-		if strings.HasPrefix(line, "ref:") {
-			ref = strings.TrimSpace(strings.TrimPrefix(line, "ref:"))
-		} else if isHex(line) {
-			return line, nil
-		} else {
-			return "", os.ErrNotExist
-		}
-	} else {
-		ref = "refs/heads/" + branch
-	}
-	if hash, err := os.ReadFile(filepath.Join(gitDir, filepath.FromSlash(ref))); err == nil {
-		s := strings.TrimSpace(string(hash))
-		if isHex(s) {
-			return s, nil
-		}
-	}
-	packed, err := os.ReadFile(filepath.Join(gitDir, "packed-refs"))
-	if err != nil {
-		return "", err
-	}
-	for _, line := range strings.Split(string(packed), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, "^") {
-			continue
-		}
-		parts := strings.Fields(line)
-		if len(parts) == 2 && parts[1] == ref && isHex(parts[0]) {
-			return parts[0], nil
-		}
-	}
-	return "", os.ErrNotExist
-}
-
-func isHex(s string) bool {
-	if len(s) < 7 {
-		return false
-	}
-	for _, c := range s {
-		switch {
-		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
-		default:
-			return false
-		}
-	}
-	return true
 }

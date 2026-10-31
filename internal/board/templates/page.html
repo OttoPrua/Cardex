@@ -1,0 +1,125 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>{{.Title}}</title>
+</head>
+<body>
+<nav>
+<a href="/">当前工作</a>
+<a href="/channels">渠道</a>
+<a href="/history">历史</a>
+</nav>
+{{if .Current}}{{template "current" .Current}}{{end}}
+{{if .Channels}}{{template "channels" .Channels}}{{end}}
+{{if .Card}}{{template "card" .Card}}{{end}}
+{{if .History}}{{template "history" .History}}{{end}}
+<script>
+setInterval(function () {
+  fetch({{.PollPath}}, {method: "GET", headers: {"Accept": "application/json"}});
+}, 5000);
+</script>
+</body>
+</html>
+{{end}}
+
+{{define "current"}}
+<section id="current-work">
+{{range .Objectives}}
+<article class="objective">
+<h2>{{.Title}}</h2>
+<p>objective {{.ID}} status {{.Status}}</p>
+<ul>
+{{range .Nodes}}
+<li>node {{.ID}} status {{.Status}} open_questions {{.OpenQuestionCount}}</li>
+{{end}}
+</ul>
+</article>
+{{end}}
+<h3>卡</h3>
+<ul>
+{{range .Cards}}
+<li>card {{.ID}} status {{.Status}} {{.Title}}</li>
+{{end}}
+</ul>
+<h3>状态</h3>
+<ul>
+{{range .StatusCounts}}
+<li>status {{.Status}} count {{.Count}}</li>
+{{end}}
+</ul>
+<h3>waiting</h3>
+<ul>
+{{range .Waiting}}
+<li>waiting {{.ID}} reason {{.WaitReason}}</li>
+{{end}}
+</ul>
+<h3>运行中的尝试</h3>
+<ul>
+{{range .RunningAttempts}}
+<li>attempt {{.ID}} card <a href="/cards/{{.Card}}">{{.Card}}</a> channel {{.Channel}}
+{{range .Claims}}claim {{.Path}} {{.Symbol}} {{end}}</li>
+{{end}}
+</ul>
+<h3>合并队列</h3>
+<ul>
+{{range .MergeQueue}}
+<li>merge {{.ID}} {{.Title}}</li>
+{{end}}
+</ul>
+<h3>待拍板</h3>
+<ul>
+{{range .PendingQuestions}}
+<li>question {{.ID}} {{.Text}}</li>
+{{end}}
+</ul>
+</section>
+{{end}}
+
+{{define "channels"}}
+<section id="channels">
+{{range .Channels}}
+<article class="channel">
+<h2>{{.ID}}</h2>
+<p>health {{.Health}} redline {{.Redline}} occupied {{.Occupied}} concurrency {{.Concurrency}}</p>
+<ul>
+{{range .Windows}}
+<li>window {{.Name}} remaining {{.Remaining}} confidence {{.Confidence}} reset {{.ResetAt}}</li>
+{{end}}
+</ul>
+</article>
+{{end}}
+</section>
+{{end}}
+
+{{define "card"}}
+<article class="card">
+<h2>{{.Title}}</h2>
+<p>card {{.ID}} status {{.Status}}</p>
+<ul>
+{{range .Attempts}}
+<li>attempt {{.ID}} outcome {{.Outcome}} excerpt {{.ErrorExcerpt}} ended {{.Ended}}
+<pre class="route-reason">{{.RouteReasonJSON}}</pre>
+<a href="{{.LogTailURL}}">output.log</a>
+</li>
+{{end}}
+</ul>
+</article>
+{{end}}
+
+{{define "history"}}
+<section id="history">
+<form method="get" action="/history">
+<input type="search" name="q" value="{{.Query}}">
+<input type="text" name="status" value="{{.Status}}">
+<input type="number" name="page" value="{{.Page}}">
+<button type="submit">搜索</button>
+</form>
+<p>total {{.Total}} page {{.Page}} page_size {{.PageSize}}</p>
+<ul>
+{{range .Items}}
+<li>history {{.Kind}} {{.ID}} status {{.Status}} legacy {{.LegacyStatus}} {{.Title}} <a href="{{.Href}}">详情</a></li>
+{{end}}
+</ul>
+</section>
+{{end}}

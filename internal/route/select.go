@@ -107,14 +107,16 @@ func rankTier(ctx context.Context, req Request, tier model.Tier, now time.Time) 
 		if a.known != b.known {
 			return a.known
 		}
-		// Pace and the 90% demotion compare only inside one source group.
-		if a.ch.SourceGroup == b.ch.SourceGroup {
-			if a.demoted != b.demoted {
-				return !a.demoted
-			}
-			if a.pace != b.pace {
-				return a.pace > b.pace
-			}
+		// SourceGroup is a group key, like preference: demotion and Pace
+		// compare only after two candidates share that group.
+		if a.ch.SourceGroup != b.ch.SourceGroup {
+			return a.ch.SourceGroup < b.ch.SourceGroup
+		}
+		if a.demoted != b.demoted {
+			return !a.demoted
+		}
+		if a.pace != b.pace {
+			return a.pace > b.pace
 		}
 		if a.ch.ID != b.ch.ID {
 			return a.ch.ID < b.ch.ID

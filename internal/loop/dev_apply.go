@@ -288,6 +288,8 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 			}
 			return st.openQuestion(model.QuestionCustom, card.ID, "card", "no other channel is available", true)
 		}
+		pin := keptPin(st.snap.events, card)
+		card.Channel = channelID
 		card.Status = model.CardReady
 		if err := st.saveCard(card); err != nil {
 			return err
@@ -296,6 +298,7 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 			"channel": channelID,
 			"model":   modelName,
 			"exclude": attempt.Route.Channel,
+			"pin":     pin,
 		})
 	}
 	card.Status = model.CardReady
@@ -307,14 +310,11 @@ func (st *step) nextRoute(card model.Card, failed string) (string, string, bool,
 	if err != nil {
 		return "", "", false, err
 	}
-	if len(req.Positioning) == 0 {
-		return "", "", false, nil
-	}
 	picked, _, err := route.Select(st.ctx, req)
 	if err != nil || picked.Channel == "" || picked.Channel == failed {
 		return "", "", false, nil
 	}
-	return picked.Channel, picked.Model, true, nil
+	return picked.Channel, surfaceModel(picked.Model), true, nil
 }
 
 func rowsWithModel(rows []model.Positioning) []model.Positioning {

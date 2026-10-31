@@ -346,24 +346,24 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		f.step()
 		got := f.mustCard("dev")
 		routed := latestAuto(f, "dev")
-		if got.Status != model.CardReady || got.Channel != a.ID || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
+		if got.Status != model.CardReady || got.Channel != b.ID || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
 			t.Fatalf("reschedule %+v route %+v", got, routed)
 		}
 		if len(f.questions()) != 0 {
 			t.Fatal("question on the first miss")
 		}
 		f.step()
-		if f.mustCard("dev").Channel != a.ID || latestAuto(f, "dev") != routed || len(f.questions()) != 0 {
+		if f.mustCard("dev").Channel != b.ID || latestAuto(f, "dev") != routed || len(f.questions()) != 0 {
 			t.Fatal("second step changed the first reschedule")
 		}
 		f.attempt(card, 1, model.OutcomeNoOutput, b.ID, "")
 		f.step()
 		got = f.mustCard("dev")
-		if got.Channel != a.ID || got.Status != model.CardNeedsInput || len(f.questions()) != 1 || latestAuto(f, "dev") != routed {
+		if got.Channel != b.ID || got.Status != model.CardNeedsInput || len(f.questions()) != 1 || latestAuto(f, "dev") != routed {
 			t.Fatalf("second miss %+v questions %d", got, len(f.questions()))
 		}
 		f.step()
-		if f.mustCard("dev").Channel != a.ID || len(f.questions()) != 1 || latestAuto(f, "dev") != routed {
+		if f.mustCard("dev").Channel != b.ID || len(f.questions()) != 1 || latestAuto(f, "dev") != routed {
 			t.Fatal("second step rescheduled again")
 		}
 	})
@@ -409,7 +409,7 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		f.step()
 		got := f.mustCard("dev")
 		routed := latestAuto(f, "dev")
-		if got.Status != model.CardReady || got.Channel != a.ID || got.Base != attempt.Branch || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
+		if got.Status != model.CardReady || got.Channel != b.ID || got.Base != attempt.Branch || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
 			t.Fatalf("card %+v route %+v", got, routed)
 		}
 		blocked, err := f.db.GetChannel(f.ctx, a.ID)
@@ -458,7 +458,7 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if again.QuotaWindows[0].Remaining != 0 || f.mustCard("dev").Channel != a.ID || latestAuto(f, "dev") != routed || len(f.events("quota_block")) != 1 {
+		if again.QuotaWindows[0].Remaining != 0 || f.mustCard("dev").Channel != b.ID || latestAuto(f, "dev") != routed || len(f.events("quota_block")) != 1 {
 			t.Fatal("second step changed the quota block")
 		}
 	})
@@ -473,14 +473,14 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		f.attempt(card, 0, model.OutcomeQuotaHit, a.ID, reset.Format(time.RFC3339Nano))
 		f.step()
 		routed := latestAuto(f, "dev")
-		if f.mustCard("dev").Channel != a.ID || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
+		if f.mustCard("dev").Channel != b.ID || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
 			t.Fatalf("first move %+v route %+v", f.mustCard("dev"), routed)
 		}
 		f.attempt(f.mustCard("dev"), 1, model.OutcomeNoOutput, b.ID, "")
 		f.step()
 		got := f.mustCard("dev")
 		questions := f.questions()
-		if got.Channel != a.ID || got.Status != model.CardNeedsInput || len(questions) != 1 || !strings.Contains(questions[0].Text, "no other channel") || latestAuto(f, "dev") != routed {
+		if got.Channel != b.ID || got.Status != model.CardNeedsInput || len(questions) != 1 || !strings.Contains(questions[0].Text, "no other channel") || latestAuto(f, "dev") != routed {
 			t.Fatalf("card %+v questions %+v route %+v", got, questions, latestAuto(f, "dev"))
 		}
 		blocked, err := f.db.GetChannel(f.ctx, a.ID)
@@ -491,7 +491,7 @@ func TestDevStepOutcomeRows(t *testing.T) {
 			t.Fatalf("block expired %+v", blocked)
 		}
 		f.step()
-		if f.mustCard("dev").Channel != a.ID || len(f.questions()) != 1 || latestAuto(f, "dev") != routed {
+		if f.mustCard("dev").Channel != b.ID || len(f.questions()) != 1 || latestAuto(f, "dev") != routed {
 			t.Fatal("second step returned to the blocked channel")
 		}
 
@@ -505,18 +505,18 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		f2.attempt(card2, 0, model.OutcomeQuotaHit, a2.ID, reset.Format(time.RFC3339Nano))
 		f2.step()
 		first := latestAuto(f2, "dev")
-		if f2.mustCard("dev").Channel != a2.ID || !first.ok || first.channel != b2.ID || first.exclude != a2.ID {
+		if f2.mustCard("dev").Channel != b2.ID || !first.ok || first.channel != b2.ID || first.exclude != a2.ID {
 			t.Fatalf("first move %+v route %+v", f2.mustCard("dev"), first)
 		}
 		f2.attempt(f2.mustCard("dev"), 1, model.OutcomeNoOutput, b2.ID, "")
 		f2.step()
 		got = f2.mustCard("dev")
 		next := latestAuto(f2, "dev")
-		if got.Channel != a2.ID || got.Status != model.CardReady || len(f2.questions()) != 0 || !next.ok || next.channel != c2.ID || next.exclude != b2.ID {
+		if got.Channel != c2.ID || got.Status != model.CardReady || len(f2.questions()) != 0 || !next.ok || next.channel != c2.ID || next.exclude != b2.ID {
 			t.Fatalf("picked %+v questions %+v route %+v", got, f2.questions(), next)
 		}
 		f2.step()
-		if f2.mustCard("dev").Channel != a2.ID || latestAuto(f2, "dev") != next {
+		if f2.mustCard("dev").Channel != c2.ID || latestAuto(f2, "dev") != next {
 			t.Fatal("second step left the unblocked channel")
 		}
 	})
@@ -529,7 +529,7 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		b := f.channel("ch-b", "b")
 		f.position("fake", "a", model.TierT2)
 		card := f.card(model.Card{ID: "dev", Channel: a.ID})
-		f.attempt(card, 0, model.OutcomeAuthFailed, a.ID, "token rejected")
+		attempt := f.attempt(card, 0, model.OutcomeAuthFailed, a.ID, "token rejected")
 		f.step()
 		health, err := f.db.GetChannel(f.ctx, a.ID)
 		if err != nil {
@@ -539,8 +539,9 @@ func TestDevStepOutcomeRows(t *testing.T) {
 			t.Fatalf("health %s", health.Health)
 		}
 		routed := latestAuto(f, "dev")
-		if f.mustCard("dev").Channel != a.ID || f.mustCard("dev").Status != model.CardReady || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
-			t.Fatalf("card %+v route %+v", f.mustCard("dev"), routed)
+		got := f.mustCard("dev")
+		if got.Channel != b.ID || got.Status != model.CardReady || got.Base != attempt.Branch || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
+			t.Fatalf("card %+v route %+v", got, routed)
 		}
 		if len(f.events("notify")) != 1 {
 			t.Fatalf("notifications %d", len(f.events("notify")))
@@ -556,7 +557,7 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(string(body), f.obj.Origin) || !strings.Contains(string(body), "auth_failed") {
+		if !strings.Contains(string(body), f.obj.Origin) || !strings.Contains(string(body), `"destination": "`+f.obj.Origin) || !strings.Contains(string(body), `"adapter": "file"`) || !strings.Contains(string(body), "auth_failed") {
 			t.Fatalf("notice %s", body)
 		}
 		f.step()
@@ -568,7 +569,7 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(files) != 1 || again.Health != model.HealthAuthFailed || len(f.events("notify")) != 1 || f.mustCard("dev").Channel != a.ID || latestAuto(f, "dev") != routed {
+		if len(files) != 1 || again.Health != model.HealthAuthFailed || len(f.events("notify")) != 1 || f.mustCard("dev").Channel != b.ID || latestAuto(f, "dev") != routed {
 			t.Fatal("second step notified again")
 		}
 	})
@@ -589,14 +590,15 @@ func TestDevStepOutcomeRows(t *testing.T) {
 						t.Fatalf("retry %d %+v route %+v", i, got, latestAuto(f, "dev"))
 					}
 				}
-				f.attempt(card, 2, outcome, a.ID, "")
+				current := f.attempt(card, 2, outcome, a.ID, "")
 				f.step()
 				routed := latestAuto(f, "dev")
-				if f.mustCard("dev").Channel != a.ID || f.mustCard("dev").Status != model.CardReady || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
-					t.Fatalf("switch %+v route %+v", f.mustCard("dev"), routed)
+				switched := f.mustCard("dev")
+				if switched.Channel != b.ID || switched.Status != model.CardReady || switched.Base != current.Branch || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
+					t.Fatalf("switch %+v route %+v", switched, routed)
 				}
 				f.step()
-				if f.mustCard("dev").Channel != a.ID || latestAuto(f, "dev") != routed {
+				if f.mustCard("dev").Channel != b.ID || latestAuto(f, "dev") != routed {
 					t.Fatal("second step switched again")
 				}
 			})

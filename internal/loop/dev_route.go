@@ -14,8 +14,11 @@ import (
 
 // routeRequestFrom assembles the facts DevStep uses for an automatic channel
 // choice. deciding clears card and objective pins on the probe so the choice
-// itself is not an explicit pin. A later call leaves those fields as stored
-// and drops the failed channel unless that stored pin names it.
+// itself is not an explicit pin. A later call clears a channel this lane just
+// stored when it matches the latest auto_route, puts back a user pin saved on
+// that event, and drops the failed channel unless the pin names it. An empty
+// positioning table supplies unsaved rows from each channel's own tier and
+// models; those rows are not written to the store.
 func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, objective model.Objective, now time.Time, failed string, deciding bool) (route.Request, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -29,6 +32,9 @@ func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, obj
 		return route.Request{}, err
 	}
 	rows = rowsWithModel(rows)
+	if len(rows) == 0 {
+		channels, rows = candidatesFromChannels(channels)
+	}
 	inUse, attempts, err := globalOccupancy(ctx, db)
 	if err != nil {
 		return route.Request{}, err
@@ -46,13 +52,19 @@ func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, obj
 	}
 	probe := card
 	obj := objective
+	auto := latestAutoChoice(events, card.ID)
 	if deciding {
 		probe.Channel = ""
 		probe.Model = ""
 		obj.Channel = ""
 		obj.Model = ""
-	} else if failed == "" {
-		failed = latestExclude(events, card.ID)
+	} else {
+		if failed == "" {
+			failed = auto.exclude
+		}
+		if auto.channel != "" && probe.Channel == auto.channel {
+			probe.Channel = auto.pin
+		}
 	}
 	pin := probe.Channel
 	if pin == "" {
@@ -115,21 +127,98 @@ func withoutChannel(channels []model.Channel, failed, pin string) []model.Channe
 	return out
 }
 
-func latestExclude(events []model.Event, cardID string) string {
-	exclude := ""
+type autoChoice struct {
+	channel string
+	pin     string
+	exclude string
+}
+
+func latestAutoChoice(events []model.Event, cardID string) autoChoice {
+	var last autoChoice
 	for _, event := range events {
 		if event.Type != "auto_route" || event.Entity != "card:"+cardID {
 			continue
 		}
 		var data struct {
+			Channel string `json:"channel"`
+			Pin     string `json:"pin"`
 			Exclude string `json:"exclude"`
 		}
 		if json.Unmarshal(event.Data, &data) != nil {
 			continue
 		}
-		exclude = data.Exclude
+		last = autoChoice{channel: data.Channel, pin: data.Pin, exclude: data.Exclude}
 	}
-	return exclude
+	return last
+}
+
+// keptPin is the user pin to remember across an automatic write. A channel
+// stored by the previous auto_route is not itself a user pin.
+func keptPin(events []model.Event, card model.Card) string {
+	auto := latestAutoChoice(events, card.ID)
+	if auto.channel != "" && card.Channel == auto.channel {
+		return auto.pin
+	}
+	return card.Channel
+}
+
+// modelChannelSep aliases a model name that several channels offer, so one
+// channel's tier cannot qualify another channel.
+const modelChannelSep = "\x1f"
+
+// candidatesFromChannels builds selector rows from each channel's own tier
+// and models. Shared model names are aliased per channel. Nothing is stored.
+func candidatesFromChannels(channels []model.Channel) ([]model.Channel, []model.Positioning) {
+	counts := map[string]int{}
+	for _, ch := range channels {
+		for _, name := range uniqueModels(ch.Models) {
+			counts[name]++
+		}
+	}
+	bound := make([]model.Channel, len(channels))
+	var rows []model.Positioning
+	for i, ch := range channels {
+		bound[i] = ch
+		names := uniqueModels(ch.Models)
+		offered := make([]string, 0, len(names))
+		for _, name := range names {
+			label := name
+			if counts[name] > 1 {
+				label = name + modelChannelSep + ch.ID
+			}
+			offered = append(offered, label)
+			if ch.Tier == "" || ch.Tier == model.TierNone {
+				continue
+			}
+			rows = append(rows, model.Positioning{
+				Model: label,
+				Tiers: []model.Tier{ch.Tier},
+			})
+		}
+		bound[i].Models = offered
+	}
+	return bound, rows
+}
+
+func uniqueModels(models []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, name := range models {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+func surfaceModel(name string) string {
+	if i := strings.Index(name, modelChannelSep); i >= 0 {
+		return name[:i]
+	}
+	return name
 }
 
 type tokenAt struct {

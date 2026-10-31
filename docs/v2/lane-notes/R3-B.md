@@ -13,12 +13,12 @@ plan、review、normalize、replan 的 `passed` 在同一次调用里吸收。�
 设计期、`DesignStep`、研究卡事实流和冻结是 R3-A。合并队列、派发、`sched.Loop`、宿主启动和声明冲突等待是 R3-C。prompt 模板和真正的 notify 包是 R3-D。S09 与 S15 使用 loop 内的 file 通知，不调用 `notify.Stub` 或 `question.Stub`。没有改 `internal/model`，也没有做骨架卡门禁、认证失败后的渠道恢复、backlog、看板、成绩单、真实 CLI、`~/.cardex` 或 push。
 
 ## 接口请求
-R3-C 调用 `loop.DevStep(ctx, objectiveID)`，进程需已设置 `CARDEX_HOME`。通知用 `loop.WithNotifier` 注入；未注入时写到 `$CARDEX_HOME/notifications`。配额封锁用 `loop.RestoreQuota` 重放。自动换渠道写入的 channel/model 是筛选结果，不是用户显式指定；`route.Select` 会把非空 channel 当成显式指定并跳过红线，派发前应清掉再选。定位表为空时，本步临时把各渠道已有模型标成卡的 tier，表非空时只用表。这次不需要新的 model 字段。
+R3-C 调用 `loop.DevStep(ctx, objectiveID)`，进程需已设置 `CARDEX_HOME`。通知用 `loop.WithNotifier` 注入；未注入时写到 `$CARDEX_HOME/notifications`。配额封锁用 `loop.RestoreQuota` 重放。自动换渠道把选出的 channel 写进卡，model 只记在 `auto_route`。`route.Select` 仍把非空 Channel 当成显式 pin 并跳过红线。派发若再次选择：卡 channel 等于最近一条 `auto_route.channel` 时要清掉；该事件的 `pin` 非空才是用户 pin，应放回请求，`exclude` 是失败渠道。`route.Request` 仍没有 Exclude 字段。不需要新的 model 字段。
 
-本 lane 不把自动选出的 channel/model 写进卡或目标，只记在 `auto_route`（channel、model、exclude）。`route.Request` 没有失败渠道字段，`explicitPin` 仍把任何非空 Channel/Model 当成用户指定。最小共享改动：给 `route.Request` 增加 `Exclude []string`，`Select` 从自动候选里丢掉这些渠道；用户写在 Channel 或 Model 上的 pin 保持原样，即使它就是刚失败的渠道。派发读 `auto_route`，不要把其中的 channel 抄进 Card.Channel 再选。不需要新的 model 字段。上面「派发前应清掉再选」和「空表临时把各渠道模型标成卡的 tier」不再成立。
+定位表为空时，本 lane 只在当次请求里用各渠道自己的 tier 和模型造候选，不写入定位表，也不把卡的 tier 盖到每个模型上。
 
 ## 转交
-TestS07、TestS08、TestS09 失败：夹具没有定位表行，并断言 Card.Channel 变成下一个渠道。空表不再发明 tier 行，结果是 needs_input；自动选择记在 auto_route，不再写入 Card.Channel。不改 internal/e2e。
+无。
 
 ## 已知问题
 自动模式下相同错误签名出现两次会熔断。传输、超时、额度和认证如果摘录相同，也会计入这个签名。连续失败那一条不计这些基础设施结果。
@@ -31,3 +31,6 @@ budget_limited 的自动续做只限一次，再次出现即使硬预算未设�
 同一次重开或熔断只派一张 replan，结束后不因节点仍重开或同一批尝试再次派卡 → internal/loop/dev_apply.go:846、internal/loop/dev_apply.go:919 → TestReplanTriggerConsumed
 自动换渠道必须计入其他目标的占用和去重后的窗口配额，空定位表不能发明候选，选出的渠道不能写成显式 pin → internal/loop/dev_route.go:19、internal/loop/dev_route.go:144、internal/loop/dev_route.go:195、internal/loop/dev_apply.go:295、internal/loop/dev_apply.go:310 → TestAutomaticReassignmentUsesRoute、TestAutomaticRouteIsNotAnExplicitPin
 熔断 replan 的消费键必须钉在触发它的证据上，吸收该 replan 的尝试后旧的重复签名和停滞都不能再次派卡 → internal/loop/dev_apply.go:874、internal/loop/dev_apply.go:918、internal/loop/dev_apply.go:982 → TestBreakerReplanAbsorbed
+换渠道必须把选出的渠道写入卡并标为 ready；定位表为空时用各渠道自己的 tier 和模型作未保存候选，自动写入的渠道在下次路由请求里不是用户 pin → internal/loop/dev_apply.go:292、internal/loop/dev_route.go:66、internal/loop/dev_route.go:171 → TestS07
+换渠道必须把选出的渠道写入卡并标为 ready；定位表为空时用各渠道自己的 tier 和模型作未保存候选，自动写入的渠道在下次路由请求里不是用户 pin → internal/loop/dev_apply.go:292、internal/loop/dev_route.go:66、internal/loop/dev_route.go:171 → TestS08
+换渠道必须把选出的渠道写入卡并标为 ready；定位表为空时用各渠道自己的 tier 和模型作未保存候选，自动写入的渠道在下次路由请求里不是用户 pin → internal/loop/dev_apply.go:292、internal/loop/dev_route.go:66、internal/loop/dev_route.go:171 → TestS09

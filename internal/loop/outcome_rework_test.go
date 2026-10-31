@@ -2,11 +2,14 @@ package loop
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"cardex/internal/model"
+	"cardex/internal/quota"
 	"cardex/internal/route"
 )
 
@@ -60,11 +63,12 @@ func TestPassedCardsEnterReview(t *testing.T) {
 
 func TestAutomaticReassignmentUsesRoute(t *testing.T) {
 	cases := []struct {
-		name    string
-		outcome model.Outcome
-		priors  int
-		block   string
-		want    string
+		name      string
+		outcome   model.Outcome
+		priors    int
+		block     string
+		want      string
+		modelName string
 	}{
 		{name: "no_output tier", outcome: model.OutcomeNoOutput, block: "tier", want: "ch-c"},
 		{name: "quota_hit redline", outcome: model.OutcomeQuotaHit, block: "redline", want: "ch-c"},
@@ -74,7 +78,12 @@ func TestAutomaticReassignmentUsesRoute(t *testing.T) {
 		{name: "timeout stays once", outcome: model.OutcomeTimeout, priors: 1, block: "tier", want: "ch-a"},
 		{name: "transport stays once", outcome: model.OutcomeTransport, priors: 1, block: "tier", want: "ch-a"},
 		{name: "no_output no candidate", outcome: model.OutcomeNoOutput, block: "none", want: ""},
-		{name: "empty positioning", outcome: model.OutcomeNoOutput, block: "empty", want: ""},
+		{name: "empty positioning", outcome: model.OutcomeNoOutput, block: "empty", want: "ch-b"},
+		{name: "transport empty positioning", outcome: model.OutcomeTransport, priors: 2, block: "empty", want: "ch-b"},
+		{name: "timeout empty positioning", outcome: model.OutcomeTimeout, priors: 2, block: "empty", want: "ch-b"},
+		{name: "empty positioning lower tier", outcome: model.OutcomeNoOutput, block: "empty-tier", want: "ch-c"},
+		{name: "empty positioning family", outcome: model.OutcomeNoOutput, block: "empty-family", want: "ch-c"},
+		{name: "empty shared model keeps channel tier", outcome: model.OutcomeNoOutput, block: "empty-shared", want: "ch-c", modelName: "shared"},
 		{name: "overlap windows", outcome: model.OutcomeNoOutput, block: "overlap", want: "ch-b"},
 		{name: "window and attempt once", outcome: model.OutcomeQuotaHit, block: "dedup", want: "ch-b"},
 		{name: "other objective usage", outcome: model.OutcomeNoOutput, block: "other-usage", want: "ch-c"},
@@ -123,6 +132,31 @@ func TestAutomaticReassignmentUsesRoute(t *testing.T) {
 				f.position("mc", "fam-c", model.TierT3)
 			case "empty":
 				tier = model.TierT2
+			case "empty-tier":
+				tier = model.TierT3
+				b.Tier = model.TierT1
+				f.saveChannel(b)
+				c.Tier = model.TierT3
+				f.saveChannel(c)
+			case "empty-family":
+				kind = model.KindReview
+				tier = model.TierT3
+				family = "fam-b"
+				b.Tier = model.TierT3
+				f.saveChannel(b)
+				c.Tier = model.TierT3
+				f.saveChannel(c)
+			case "empty-shared":
+				tier = model.TierT3
+				a.Models = []string{"shared"}
+				a.Tier = model.TierT2
+				f.saveChannel(a)
+				b.Tier = model.TierT1
+				b.Models = []string{"shared"}
+				f.saveChannel(b)
+				c.Tier = model.TierT3
+				c.Models = []string{"shared"}
+				f.saveChannel(c)
 			case "overlap":
 				tier = model.TierT2
 				reset := time.Now().Add(2 * time.Hour).UTC()
@@ -191,14 +225,27 @@ func TestAutomaticReassignmentUsesRoute(t *testing.T) {
 				return
 			}
 			routed := latestAuto(f, "c")
-			if got.Status != model.CardReady || got.Channel != a.ID || got.Model != "" || !routed.ok || routed.channel != tc.want || routed.exclude != a.ID {
+			if got.Status != model.CardReady || got.Channel != tc.want || got.Model != "" || !routed.ok || routed.channel != tc.want || routed.exclude != a.ID {
 				t.Fatalf("card %+v route %+v", got, routed)
 			}
-			if tc.want == c.ID && routed.model != "mc" {
+			wantModel := tc.modelName
+			if wantModel == "" && tc.want == c.ID {
+				wantModel = "mc"
+			}
+			if wantModel == "" && tc.want == b.ID {
+				wantModel = "mb"
+			}
+			if wantModel != "" && routed.model != wantModel {
 				t.Fatalf("model %s route %+v", routed.model, routed)
 			}
-			if tc.want == b.ID && routed.model != "mb" {
-				t.Fatalf("model %s route %+v", routed.model, routed)
+			if tc.block == "empty" || tc.block == "empty-tier" || tc.block == "empty-family" || tc.block == "empty-shared" {
+				rows, err := f.db.ListPositioning(f.ctx)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(rows) != 0 {
+					t.Fatalf("persisted positioning %+v", rows)
+				}
 			}
 			if tc.outcome == model.OutcomeQuotaHit || tc.outcome == model.OutcomeAuthFailed || tc.outcome == model.OutcomeTransport || tc.outcome == model.OutcomeTimeout {
 				if got.Base != current.Branch {
@@ -219,7 +266,7 @@ func TestAutomaticReassignmentUsesRoute(t *testing.T) {
 			}
 			f.step()
 			again := latestAuto(f, "c")
-			if again != routed || f.mustCard("c").Channel != a.ID || f.mustCard("c").Model != "" {
+			if again != routed || f.mustCard("c").Channel != tc.want || f.mustCard("c").Model != "" {
 				t.Fatalf("second step card %+v route %+v", f.mustCard("c"), again)
 			}
 		})
@@ -241,7 +288,7 @@ func TestAutomaticRouteIsNotAnExplicitPin(t *testing.T) {
 		f.step()
 		got := f.mustCard("c")
 		routed := latestAuto(f, "c")
-		if got.Channel != "" || got.Model != "" || !routed.ok || routed.channel != b.ID || routed.model != "mb" || routed.exclude != a.ID {
+		if got.Channel != b.ID || got.Model != "" || !routed.ok || routed.channel != b.ID || routed.model != "mb" || routed.exclude != a.ID {
 			t.Fatalf("card %+v route %+v", got, routed)
 		}
 		b.Redline = 0.5
@@ -286,7 +333,7 @@ func TestAutomaticRouteIsNotAnExplicitPin(t *testing.T) {
 		f.step()
 		got := f.mustCard("c")
 		routed := latestAuto(f, "c")
-		if got.Channel != b.ID || got.Model != "" || !routed.ok || routed.channel != c.ID || routed.exclude != a.ID {
+		if got.Channel != c.ID || got.Model != "" || !routed.ok || routed.channel != c.ID || routed.model != "mc" || routed.exclude != a.ID {
 			t.Fatalf("card %+v route %+v", got, routed)
 		}
 		req, err := routeRequestFrom(f.ctx, f.db, got, f.objective(), time.Now().UTC(), "", false)
@@ -324,7 +371,7 @@ func TestAutomaticRouteIsNotAnExplicitPin(t *testing.T) {
 		f.step()
 		got := f.mustCard("c")
 		routed := latestAuto(f, "c")
-		if got.Channel != a.ID || got.Model != "" || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
+		if got.Channel != b.ID || got.Model != "" || !routed.ok || routed.channel != b.ID || routed.model != "mb" || routed.exclude != a.ID {
 			t.Fatalf("card %+v route %+v", got, routed)
 		}
 		req, err := routeRequestFrom(f.ctx, f.db, got, f.objective(), time.Now().UTC(), "", false)
@@ -351,6 +398,179 @@ func TestAutomaticRouteIsNotAnExplicitPin(t *testing.T) {
 			t.Fatalf("picked %+v reason %+v", picked, reason)
 		}
 	})
+
+	t.Run("empty positioning choice is not a pin", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		a := f.channel("ch-a", "fam-a", "ma")
+		b := f.channel("ch-b", "fam-b", "mb")
+		c := f.channel("ch-c", "fam-c", "mc")
+		card := f.card(model.Card{ID: "c", Kind: model.KindDev, Tier: model.TierT2, Status: model.CardHarvesting})
+		f.attempt(card, 0, model.OutcomeNoOutput, a.ID, "")
+		f.step()
+		got := f.mustCard("c")
+		routed := latestAuto(f, "c")
+		if got.Channel != b.ID || got.Model != "" || got.Status != model.CardReady || !routed.ok || routed.channel != b.ID || routed.model != "mb" || routed.exclude != a.ID {
+			t.Fatalf("card %+v route %+v", got, routed)
+		}
+		rows, err := f.db.ListPositioning(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("persisted positioning %+v", rows)
+		}
+		b.Redline = 0.5
+		b.QuotaWindows[0].UsedTokens = 90
+		f.saveChannel(b)
+		req, err := routeRequestFrom(f.ctx, f.db, got, f.objective(), time.Now().UTC(), "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.Card.Channel != "" || req.Card.Model != "" || req.Objective.Channel != "" || req.Objective.Model != "" {
+			t.Fatalf("stored automatic channel stayed a pin: card %q/%q objective %q/%q", req.Card.Channel, req.Card.Model, req.Objective.Channel, req.Objective.Model)
+		}
+		for _, ch := range req.Channels {
+			if ch.ID == a.ID {
+				t.Fatal("failed channel was still offered")
+			}
+		}
+		picked, reason, err := route.Select(f.ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if picked.Channel != c.ID || picked.Model == "" {
+			t.Fatalf("picked %+v filtered %+v scores %+v", picked, reason.Filtered, reason.Scores)
+		}
+		if len(reason.Scores) == 1 && reason.Scores[0].Score == 0 && len(reason.Filtered) == 0 {
+			t.Fatalf("explicit pin path %+v", reason)
+		}
+	})
+}
+
+func TestScenarioSwitchShapes(t *testing.T) {
+	t.Run("no_output", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		a := f.channel("ch-a", "ch-a")
+		b := f.channel("ch-b", "ch-b")
+		card := f.card(model.Card{ID: "c", Channel: a.ID, Status: model.CardHarvesting})
+		f.attempt(card, 0, model.OutcomeNoOutput, a.ID, "")
+		f.step()
+		got := f.mustCard("c")
+		if got.Channel != b.ID || got.Status != model.CardReady || len(f.questions()) != 0 {
+			t.Fatalf("switch %+v questions %+v", got, f.questions())
+		}
+		rows, err := f.db.ListPositioning(f.ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("persisted positioning %+v", rows)
+		}
+		f.attempt(got, 1, model.OutcomeNoOutput, b.ID, "")
+		f.step()
+		got = f.mustCard("c")
+		if got.Channel != b.ID || got.Status != model.CardNeedsInput || len(f.questions()) != 1 || f.questions()[0].Answer != "" {
+			t.Fatalf("ask %+v questions %+v", got, f.questions())
+		}
+		f.step()
+		if f.mustCard("c").Channel != b.ID || len(f.questions()) != 1 {
+			t.Fatal("second step changed the no-output disposition")
+		}
+	})
+
+	t.Run("quota_hit", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		a := f.channel("ch-a", "ch-a")
+		b := f.channel("ch-b", "ch-b")
+		reset := time.Date(2026, 12, 1, 3, 4, 5, 0, time.UTC)
+		card := f.card(model.Card{ID: "c", Channel: a.ID, Status: model.CardHarvesting})
+		attempt := f.attempt(card, 0, model.OutcomeQuotaHit, a.ID, "quota reset "+reset.Format(time.RFC3339))
+		f.step()
+		got := f.mustCard("c")
+		if got.Channel != b.ID || got.Status != model.CardReady || got.Base != attempt.Branch {
+			t.Fatalf("continue %+v", got)
+		}
+		blocked, err := f.db.GetChannel(f.ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if blocked.Health != model.HealthOK || len(blocked.QuotaWindows) != 1 || blocked.QuotaWindows[0].Remaining != 0 || !blocked.QuotaWindows[0].ResetAt.Equal(reset) {
+			t.Fatalf("channel %+v", blocked)
+		}
+		led := quota.New()
+		if err := RestoreQuota(f.ctx, led, f.events("")); err != nil {
+			t.Fatal(err)
+		}
+		rem, err := led.Remaining(f.ctx, a.ID)
+		if err != nil || !rem.Blocked {
+			t.Fatalf("remaining %+v %v", rem, err)
+		}
+		if len(f.events("quota_block")) != 1 {
+			t.Fatalf("events %+v", f.events("quota_block"))
+		}
+		f.step()
+		if f.mustCard("c").Channel != b.ID || len(f.events("quota_block")) != 1 {
+			t.Fatal("second step blocked or switched again")
+		}
+	})
+
+	t.Run("auth_failed", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		obj := f.objective()
+		obj.Origin = "lark:ou_s09"
+		if err := f.db.UpdateObjective(f.ctx, &obj); err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		f.ctx = WithNotifier(f.ctx, FileNotifier{Dir: dir})
+		a := f.channel("ch-a", "ch-a")
+		b := f.channel("ch-b", "ch-b")
+		card := f.card(model.Card{ID: "c", Channel: a.ID, Status: model.CardHarvesting})
+		attempt := f.attempt(card, 0, model.OutcomeAuthFailed, a.ID, "token rejected")
+		f.step()
+		got := f.mustCard("c")
+		if got.Channel != b.ID || got.Base != attempt.Branch || got.Status != model.CardReady {
+			t.Fatalf("switch %+v", got)
+		}
+		ch, err := f.db.GetChannel(f.ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ch.Health != model.HealthAuthFailed {
+			t.Fatalf("health %s", ch.Health)
+		}
+		body := noticeFile(t, dir, "auth_failed")
+		if !strings.Contains(body, obj.Origin) || !strings.Contains(body, `"destination": "`+obj.Origin) || !strings.Contains(body, `"adapter": "file"`) {
+			t.Fatalf("notice %s", body)
+		}
+		f.step()
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(files) != 1 || f.mustCard("c").Channel != b.ID {
+			t.Fatal("second step notified or switched again")
+		}
+	})
+}
+
+func noticeFile(t *testing.T, dir, kind string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		body, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), `"kind": "`+kind+`"`) {
+			return string(body)
+		}
+	}
+	t.Fatalf("no %s notice in %s", kind, dir)
+	return ""
 }
 
 func TestListKeysDoNotCollide(t *testing.T) {

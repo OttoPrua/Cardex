@@ -92,7 +92,11 @@ func (q *Service) mergeOne(ctx context.Context, card *model.Card) error {
 	if strings.TrimSpace(repo) == "" || strings.TrimSpace(branch) == "" {
 		return fmt.Errorf("merge: objective %s has no repo or integration branch", obj.ID)
 	}
-	cardBranch := CardBranch(obj.ID, subjectID(card))
+	root, err := q.rootID(ctx, card)
+	if err != nil {
+		return err
+	}
+	cardBranch := CardBranch(obj.ID, root)
 	oldHead, err := gitOut(ctx, repo, "rev-parse", branch)
 	if err != nil {
 		return err
@@ -143,25 +147,79 @@ func (q *Service) mergeOne(ctx context.Context, card *model.Card) error {
 	if err := q.DB.UpdateCard(ctx, &fresh); err != nil {
 		return err
 	}
-	if fresh.Kind == model.KindRebase || fresh.Kind == model.KindRepair {
-		if len(fresh.Deps) > 0 {
-			parent, err := q.DB.GetCard(ctx, fresh.Deps[0])
-			if err == nil && parent.Status != model.CardMerged {
-				parent.Status = model.CardMerged
-				parent.WaitReason = ""
-				_ = q.DB.UpdateCard(ctx, &parent)
-				_ = q.removeWorktrees(ctx, &parent)
+	return q.closePredecessors(ctx, &fresh)
+}
+
+// rootID is the card whose branch the repair chain continues. Deps point at
+// the immediate predecessor, so a repair of a repair walks back to the original.
+func (q *Service) rootID(ctx context.Context, card *model.Card) (string, error) {
+	cur := *card
+	seen := map[string]bool{}
+	for (cur.Kind == model.KindRepair || cur.Kind == model.KindRebase) && len(cur.Deps) > 0 {
+		next := strings.TrimSpace(cur.Deps[0])
+		if next == "" || seen[next] {
+			break
+		}
+		seen[next] = true
+		parent, err := q.DB.GetCard(ctx, next)
+		if err != nil {
+			return "", err
+		}
+		if parent.Kind != model.KindRepair && parent.Kind != model.KindRebase {
+			return parent.ID, nil
+		}
+		cur = parent
+	}
+	return cur.ID, nil
+}
+
+// closePredecessors marks every completed repair/rebase predecessor, and the
+// original card, merged, and removes their worktrees. An ordinary unfinished
+// dependency is left alone. A second call changes nothing.
+func (q *Service) closePredecessors(ctx context.Context, card *model.Card) error {
+	if card.Kind != model.KindRepair && card.Kind != model.KindRebase {
+		return nil
+	}
+	cur := card
+	seen := map[string]bool{card.ID: true}
+	for len(cur.Deps) > 0 {
+		id := strings.TrimSpace(cur.Deps[0])
+		if id == "" || seen[id] {
+			return nil
+		}
+		seen[id] = true
+		parent, err := q.DB.GetCard(ctx, id)
+		if err != nil {
+			return err
+		}
+		if !chainCompleted(parent.Status) {
+			return nil
+		}
+		if parent.Status != model.CardMerged {
+			parent.Status = model.CardMerged
+			parent.WaitReason = ""
+			if err := q.DB.UpdateCard(ctx, &parent); err != nil {
+				return err
+			}
+			if err := q.removeWorktrees(ctx, &parent); err != nil {
+				return err
 			}
 		}
+		if parent.Kind != model.KindRepair && parent.Kind != model.KindRebase {
+			return nil
+		}
+		cur = &parent
 	}
 	return nil
 }
 
-func subjectID(card *model.Card) string {
-	if (card.Kind == model.KindRebase || card.Kind == model.KindRepair) && len(card.Deps) > 0 {
-		return card.Deps[0]
+func chainCompleted(status model.CardStatus) bool {
+	switch status {
+	case model.CardReady, model.CardRunning, model.CardPaused:
+		return false
+	default:
+		return true
 	}
-	return card.ID
 }
 
 // CardBranch is the branch a card's attempts commit to.
@@ -184,6 +242,10 @@ func (q *Service) failCard(ctx context.Context, card *model.Card, kind model.Car
 		detail = string(kind) + " failed"
 	}
 	id := prefix + card.ID
+	root, err := q.rootID(ctx, card)
+	if err != nil {
+		return err
+	}
 	if _, err := q.DB.GetCard(ctx, id); err != nil {
 		follow := model.Card{
 			ID:         id,
@@ -194,8 +256,8 @@ func (q *Service) failCard(ctx context.Context, card *model.Card, kind model.Car
 			Body:       detail,
 			Tier:       model.TierT2,
 			Status:     model.CardReady,
-			Deps:       []string{subjectID(card)},
-			Base:       CardBranch(card.Objective, subjectID(card)),
+			Deps:       []string{card.ID},
+			Base:       CardBranch(card.Objective, root),
 			Acceptance: append([]string(nil), card.Acceptance...),
 			ReworkNote: detail,
 		}

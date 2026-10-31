@@ -1,20 +1,26 @@
 # R3-C
 
 ## 做了什么
-每个目标一条 `merge.Service`：临时 worktree 里把卡分支三方合并到集成分支 HEAD，跑 acceptance 和 `test_cmd`。通过则快进（旧 HEAD 是祖先），删除 worktree，保留分支。同一目标串行。冲突不移动 HEAD，派 `rb-` rebase，正文含冲突路径和冲突块。验收或 `test_cmd` 变红不移动 HEAD，派 `rp-` repair，正文含失败输出。二者都在原卡分支上续做。
-`sched.Runner.Tick` 走设计 §6.1 的八步：`host.Reconcile`；harvest 后处置；仅 `mode=auto` 调 `designStep`/`devStep`；每目标一步合并；派发 ready 卡（claims 冲突则 waiting，原因写明占用卡和符号；否则 `route.Select`、`workspace.Create`、写 prompt，并以新进程组启动 host）；余量填充（重置在 2 小时内且剩余高于红线加 20%，且本轮没有别的 ready 卡需要该渠道）；`config.json` 的 schedules 到期入队一次；对待投递问题调用 notify。`mode=manual` 不自动生成，派发、复核和合并照常。没有新事实时再 Tick 不会多一次尝试、快进、定时卡或通知。
-`sched.Serve` 循环 Tick 并挂 `board.Handler`。取消后不杀掉仍活着的 host。S02、S03、S04、S05、S19、S20 走这条调度器。
-cron-lite 是五段「分 时 日 月 周」。每段只能是 `*` 或一个整数，周日是 0。没有范围、列表、步长或名字。`every` 按时间槽去重，同一槽只入队一次。
+merge.Service 在临时 worktree 把卡分支合并到集成分支，跑 acceptance 和 test_cmd。通过则快进并删除 worktree。冲突派 rb-，测试变红派 rp-，二者都在原卡分支上续做。新修复的 Deps 指向立即前驱。成功合并后，链上每一张已完成的卡标为 merged 并删除 worktree，再跑一次不变。普通未完成依赖保持原状。
+sched.Runner.Tick 走 §6.1 八步。收割结果交给 Runner.Dispose；生产 New 不设置它，也不改终态、不写复核结论。仅 mode=auto 调 designStep/devStep。普通派发和填充共用未完成执行依赖、暂停/取消目标、符号占用（含运行中的 backlog）这三项拒绝。每次 route.Select 都带真实余量和本轮已接受的占用。填充只额外限制临近重置的窗口，一个已触红线的窗口不会被另一个宽裕窗口盖住，也不把渠道写成显式指定。复核检出被复核卡的候选分支（修复链则是原卡分支）后 detach。worktree 或分支已经建好，或卡已 running 但尝试没有 PID 和结束记录时，下一次 Tick 和新 runner 接续同一尝试。notify 的 Origin 是目标的创建会话；已投递但未回答的问题仍交给 notify。
+S02、S03、S04、S05、S19、S20 在场景里注入这条调度器。Harness 默认仍是 stub。serve 调用 sched.Serve。
 
 ## 没做什么，以及原因
-未实现设计 §6.2–§6.6。未重写路由、看板、通知适配器或 prompt 模板。`cardex host` 和 `cardex schedule` 的 CLI 文案保持原样。未改 `internal/model`，未加依赖。
+未实现设计 §6.2–§6.6。未改路由算法、看板、通知适配器、prompt 模板、quota 数学、cron-lite 或 internal/model。
 
 ## 接口请求
-`cardex host <attempt-id>` 仍打印「未实现（由 R2-A 负责）」。调度器设置 `CARDEX_SCHED_HOST=1`，在 init 里调用 `host.Run(host.WithWorkspace(ctx, workspace.Git{}), home, id)`，子进程才会真的跑尝试。请把 host 子命令接到 `host.Run`，然后去掉这个环境变量。
-loop 没有处置入口，`DesignStep`/`DevStep` 仍返回 ErrNotImplemented。passed 的 dev、repair、rebase、skeleton、backlog 会先入队 `rv-<id>`，正文是写入 `## 复核结论` / `pass` 的替身脚本。请给出处置函数后换掉。
-`prompt.Build` 和 `notify.Stub.Deliver` 仍是 ErrNotImplemented。Tick 会调用；prompt 失败时退回标题加正文，通知失败则留到下一轮。
-`model.Budget` 还没有时长。调度把 `30m` 写到 `attempts/<id>/hard-duration`。请按 R2-A 的请求加上 `HardDuration`。
-`Serve` 没有 io.Writer。`runServe` 除调用 `sched.Serve` 外，还把 `$CARDEX_HOME/serve-addr` 和 `serve-loop.log` 抄到原 stdout（`serve listening` 与 `serve stub-loop iteration N`），这样 `TestServeLoopsUntilStopped` 不用改断言。
+loop 仍只有 DesignStep 和 DevStep。请提供处置函数；调度只在 Dispose 非空时调用。
+host 子命令仍打印未实现。调度设置 CARDEX_SCHED_HOST=1，在 init 里调用 host.Run。请把子命令接到 host.Run 后去掉这个环境变量。
+prompt.Build 和 notify.Stub.Deliver 仍是 ErrNotImplemented。model.Budget 没有时长，调度把 30m 写到 attempts/<id>/hard-duration。
 
 ## 已知问题
-复核结论是固定的 pass，不是另一个模型族的真实复核。rebase 和 repair 若没有 fake 脚本或 `scripts/<id>.json`，宿主仍会启动，但工作区可能没有解冲突或修好测试，合并会再次失败。
+rebase 和 repair 若没有 fake 脚本或 scripts/<id>.json，宿主仍会启动，但工作区可能没有解冲突或修好测试，合并会再次失败。
+
+## 修复记录
+B1 调度只把收割结果交给处置入口，生产不改终态 → internal/sched/loop.go:178 → TestHarvestDeliversBeforeStatusChange
+B2 复核看到未合并的候选分支 → internal/sched/loop.go:965,980 → TestReviewWorkspaceShowsUnmergedCandidate, TestReviewOfRepairShowsRootCandidate
+B3 自动派发带真实余量和本轮占用，填充复用路由检查 → internal/sched/loop.go:383,444,638 → TestAutomaticRouteSeesQuotaAndOccupancy, TestFillReusesAutomaticChecks
+B4 派发和填充拒绝未完成依赖、暂停或取消的目标、已占用符号 → internal/sched/loop.go:883,911 → TestDispatchRefusesUnfinishedDepsPausedClaims
+B5 中途失败的尝试由下次 Tick 和新 runner 接续 → internal/sched/loop.go:362,455 → TestPromptFailureResumesSameBranch, TestHostStartFailureResumesOnNewRunner
+B6 通知使用目标 Origin，已投递未回答的问题仍交给 notify → internal/sched/loop.go:829 → TestNotifyUsesObjectiveOriginAndReminds
+B7 修复链成功后收束已完成卡和工作区，前驱是立即前驱 → internal/merge/queue.go:155,179,259 → TestQueueRepairChainClosesCompletedCards, TestRepairOfRepairLinksImmediatePredecessor

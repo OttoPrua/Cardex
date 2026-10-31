@@ -3,12 +3,13 @@ package sched
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"cardex/internal/model"
 	"cardex/internal/notify"
 	"cardex/internal/prompt"
+	"cardex/internal/quota"
 	"cardex/internal/route"
 	"cardex/internal/store"
 	"cardex/internal/workspace"
@@ -30,17 +32,6 @@ const (
 	fillWindow = 2 * time.Hour
 	fillMargin = 0.20
 	hardDur    = "30m"
-
-	reviewPassScript = `{
-  "attempts": {
-    "0": {
-      "write_files": [
-        {"path": ".cardex-result.md", "content": "## 复核结论\npass\n"}
-      ],
-      "exit_code": 0
-    }
-  }
-}`
 )
 
 // Collaborators the default path calls. Tests replace them to observe the call.
@@ -51,7 +42,8 @@ var (
 	deliverMsg  = func(ctx context.Context, msg notify.Message) error {
 		return notify.Stub{}.Deliver(ctx, msg)
 	}
-	startHost = launchDetached
+	startHost   = launchDetached
+	chooseRoute = route.Select
 )
 
 // Runner is one scheduler pass over a CARDEX_HOME. A nil hook calls the real collaborator.
@@ -63,6 +55,9 @@ type Runner struct {
 	Notify func(ctx context.Context, msg notify.Message) error
 	Launch func(ctx context.Context, home, attemptID string) (int, error)
 	Script func(card model.Card) ([]byte, bool)
+	// Dispose receives each harvested result. Tests set it. Production leaves
+	// it nil: internal/loop has no disposition entry, and Tick does not invent one.
+	Dispose func(ctx context.Context, card *model.Card, res harvest.Result) error
 }
 
 // New returns the production runner for home.
@@ -98,11 +93,7 @@ func (r *Runner) Tick(ctx context.Context) error {
 	if err := r.mergeStep(ctx, db); err != nil {
 		return err
 	}
-	used, err := r.dispatch(ctx, db)
-	if err != nil {
-		return err
-	}
-	if err := r.fill(ctx, db, used); err != nil {
+	if _, err := r.dispatch(ctx, db); err != nil {
 		return err
 	}
 	if err := r.schedules(ctx, db); err != nil {
@@ -133,14 +124,8 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			if attempt.ErrorExcerpt == "" {
 				attempt.ErrorExcerpt = "host lost"
 			}
-			card.Status = model.CardNeedsInput
-			if card.WaitReason == "" {
-				card.WaitReason = "host lost"
-			}
-			if err := db.UpdateCard(ctx, &card); err != nil {
-				return err
-			}
-			if err := db.UpdateAttempt(ctx, &attempt); err != nil {
+			res := harvest.Result{Outcome: model.OutcomeNoOutput, Excerpt: attempt.ErrorExcerpt}
+			if err := r.deliver(ctx, db, &card, &attempt, res); err != nil {
 				return err
 			}
 			continue
@@ -181,14 +166,25 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 		if len(kept) > 0 {
 			card.Claims = kept
 		}
-		if err := r.dispose(ctx, db, &card, res); err != nil {
-			return err
-		}
-		if err := db.UpdateAttempt(ctx, &attempt); err != nil {
+		if err := r.deliver(ctx, db, &card, &attempt, res); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// deliver hands the harvested result to the disposition entry, then stores the
+// attempt. Card status is whatever the entry left; Tick does not set it first.
+func (r *Runner) deliver(ctx context.Context, db *store.Store, card *model.Card, attempt *model.Attempt, res harvest.Result) error {
+	if r.Dispose != nil {
+		if err := r.Dispose(ctx, card, res); err != nil {
+			return err
+		}
+	}
+	if err := db.UpdateCard(ctx, card); err != nil {
+		return err
+	}
+	return db.UpdateAttempt(ctx, attempt)
 }
 
 func (r *Runner) familyOf(ctx context.Context, db *store.Store, channelID string) string {
@@ -200,104 +196,6 @@ func (r *Runner) familyOf(ctx context.Context, db *store.Store, channelID string
 		return ""
 	}
 	return ch.Family
-}
-
-func (r *Runner) dispose(ctx context.Context, db *store.Store, card *model.Card, res harvest.Result) error {
-	if card.Kind == model.KindReview {
-		return r.disposeReview(ctx, db, card, res)
-	}
-	if res.Outcome == model.OutcomePassed && mergesKind(card.Kind) {
-		id := "rv-" + card.ID
-		if _, err := db.GetCard(ctx, id); err != nil {
-			if !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
-			review := model.Card{
-				ID:           id,
-				Objective:    card.Objective,
-				Node:         card.Node,
-				Kind:         model.KindReview,
-				Title:        "review " + card.Title,
-				Body:         reviewPassScript,
-				Tier:         model.TierT3,
-				Status:       model.CardReady,
-				Deps:         []string{card.ID},
-				AuthorFamily: card.AuthorFamily,
-			}
-			if err := db.CreateCard(ctx, &review); err != nil {
-				return err
-			}
-		}
-		card.Status = model.CardReviewing
-		return db.UpdateCard(ctx, card)
-	}
-	if res.Outcome == model.OutcomePassed {
-		card.Status = model.CardDone
-		return db.UpdateCard(ctx, card)
-	}
-	if res.Outcome == model.OutcomeTestsFailed {
-		card.Status = model.CardReady
-		card.ReworkCount++
-		card.ReworkNote = res.Excerpt
-		return db.UpdateCard(ctx, card)
-	}
-	card.Status = model.CardNeedsInput
-	if card.WaitReason == "" {
-		card.WaitReason = string(res.Outcome)
-	}
-	return db.UpdateCard(ctx, card)
-}
-
-func (r *Runner) disposeReview(ctx context.Context, db *store.Store, card *model.Card, res harvest.Result) error {
-	subjectID := ""
-	if len(card.Deps) > 0 {
-		subjectID = card.Deps[0]
-	}
-	if res.Outcome == model.OutcomePassed && subjectID != "" {
-		subject, err := db.GetCard(ctx, subjectID)
-		if err != nil {
-			return err
-		}
-		verdict := reviewWord(res.ResultText)
-		if verdict == "rework" {
-			subject.Status = model.CardReady
-			subject.ReworkCount++
-			subject.ReworkNote = strings.TrimSpace(res.ResultText)
-			if err := db.UpdateCard(ctx, &subject); err != nil {
-				return err
-			}
-		} else {
-			if err := merge.New(db).Enqueue(ctx, subject.ID); err != nil {
-				return err
-			}
-		}
-		card.Status = model.CardDone
-		return db.UpdateCard(ctx, card)
-	}
-	card.Status = model.CardNeedsInput
-	return db.UpdateCard(ctx, card)
-}
-
-func reviewWord(text string) string {
-	for _, field := range strings.Fields(strings.ToLower(text)) {
-		field = strings.Trim(field, "`*_.,;:()[]\"'")
-		if field == "rework" {
-			return "rework"
-		}
-		if field == "pass" {
-			return "pass"
-		}
-	}
-	return ""
-}
-
-func mergesKind(kind model.CardKind) bool {
-	switch kind {
-	case model.KindDev, model.KindRepair, model.KindRebase, model.KindSkeleton, model.KindBacklog:
-		return true
-	default:
-		return false
-	}
 }
 
 func (r *Runner) advance(ctx context.Context, db *store.Store) error {
@@ -353,9 +251,13 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 		return nil, err
 	}
 	live := map[string]bool{}
+	inUse := map[string]int{}
 	for _, attempt := range attempts {
-		if host.LiveHost(attempt) || (attempt.Outcome == "" && attempt.EndedAt.IsZero() && attempt.PID > 0) {
+		if host.LiveHost(attempt) {
 			live[attempt.Card] = true
+		}
+		if attemptOccupies(attempt) {
+			inUse[attempt.Route.Channel]++
 		}
 	}
 	objs, err := db.ListObjectives(ctx, "")
@@ -369,13 +271,13 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 	var occupy []model.Card
 	var ready []model.Card
 	for _, card := range cards {
+		if card.Status == model.CardRunning || card.Status == model.CardHarvesting {
+			occupy = append(occupy, card)
+		}
 		if card.Kind == model.KindBacklog {
 			continue
 		}
-		if card.Status == model.CardRunning {
-			occupy = append(occupy, card)
-		}
-		if card.Status == model.CardReady || claimWait(card) {
+		if card.Status == model.CardReady || claimWait(card) || resumable(card, attempts) {
 			ready = append(ready, card)
 		}
 	}
@@ -388,30 +290,23 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 	if err != nil {
 		return nil, err
 	}
+	quotas := r.quotaView(channels)
 	for _, card := range ready {
 		if live[card.ID] {
 			continue
 		}
 		obj, ok := objByID[card.Objective]
-		if !ok || (obj.Status != model.ObjectiveActive && obj.Status != model.ObjectiveDoneCandidate) {
+		if !ok {
 			continue
 		}
-		if card.Kind != model.KindReview {
-			probe := append(append([]model.Card{}, occupy...), card)
-			conflicts, err := claims.Conflicts(probe)
-			if err != nil {
-				return nil, err
-			}
-			if reason := conflictReason(conflicts, card.ID); reason != "" {
-				card.Status = model.CardWaiting
-				card.WaitReason = reason
-				if err := db.UpdateCard(ctx, &card); err != nil {
-					return nil, err
-				}
-				continue
-			}
+		allowed, err := r.allow(ctx, db, &card, obj, occupy, true)
+		if err != nil {
+			return nil, err
 		}
-		ch, err := r.launchCard(ctx, db, card, obj, channels, pos, attempts, "")
+		if !allowed {
+			continue
+		}
+		ch, err := r.launchCard(ctx, db, card, obj, channels, pos, inUse, quotas)
 		if err != nil {
 			if errors.Is(err, route.ErrNoCandidate) || errors.Is(err, route.ErrPinnedUnavailable) {
 				continue
@@ -426,7 +321,9 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 			card.Status = model.CardRunning
 			occupy = append(occupy, card)
 		}
-		attempts = append(attempts, model.Attempt{Card: card.ID, Route: model.Route{Channel: ch}})
+	}
+	if err := r.fill(ctx, db, used, cards, objByID, channels, pos, occupy, inUse, quotas); err != nil {
+		return nil, err
 	}
 	return used, nil
 }
@@ -462,54 +359,40 @@ func lessCard(a, b model.Card, objs map[string]model.Objective) bool {
 	return a.ID < b.ID
 }
 
-func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, channels []model.Channel, pos []model.Positioning, attempts []model.Attempt, pin string) (string, error) {
+func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas) (string, error) {
+	if open, err := openAttempt(ctx, db, card.ID); err != nil {
+		return "", err
+	} else if open != nil {
+		return r.resumeAttempt(ctx, db, card, obj, open)
+	}
 	project, err := db.GetProject(ctx, obj.Project)
 	if err != nil {
 		return "", err
 	}
-	inUse := map[string]int{}
-	index := 0
-	for _, attempt := range attempts {
-		if attempt.Card == card.ID {
-			index++
-		}
-		if attempt.Route.Channel != "" && (host.LiveHost(attempt) || (attempt.EndedAt.IsZero() && attempt.Exit == nil && attempt.PID > 0)) {
-			inUse[attempt.Route.Channel]++
-		}
+	prev, err := db.ListAttempts(ctx, card.ID)
+	if err != nil {
+		return "", err
 	}
-	var rt model.Route
-	var reason model.RouteReason
-	if pin != "" {
-		modelName := ""
-		for _, ch := range channels {
-			if ch.ID == pin && len(ch.Models) > 0 {
-				modelName = ch.Models[0]
-			}
-		}
-		rt = model.Route{Channel: pin, Model: modelName}
-	} else {
-		rt, reason, err = route.Select(ctx, route.Request{
-			Card:         card,
-			Objective:    obj,
-			AuthorFamily: card.AuthorFamily,
-			Channels:     channels,
-			Positioning:  pos,
-			InUse:        inUse,
-			Now:          r.now(),
-		})
-		if err != nil {
-			return "", err
-		}
+	rt, reason, err := chooseRoute(ctx, route.Request{
+		Card:         card,
+		Objective:    obj,
+		AuthorFamily: card.AuthorFamily,
+		Channels:     channels,
+		Positioning:  pos,
+		InUse:        inUse,
+		Quota:        quotas,
+		Now:          r.now(),
+	})
+	if err != nil {
+		return "", err
 	}
 	attemptID, err := newID("a")
 	if err != nil {
 		return "", err
 	}
-	wsCard := card.ID
-	cont := card.ReworkCount > 0
-	if (card.Kind == model.KindRebase || card.Kind == model.KindRepair) && len(card.Deps) > 0 {
-		wsCard = card.Deps[0]
-		cont = true
+	wsCard, cont, readOnly, err := r.workspaceTarget(ctx, db, card)
+	if err != nil {
+		return "", err
 	}
 	root := project.WorktreeRoot
 	if strings.TrimSpace(root) == "" {
@@ -527,39 +410,20 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err != nil {
 		return "", err
 	}
+	if readOnly {
+		if err := detachHead(ctx, wt.Path); err != nil {
+			return "", err
+		}
+	}
 	dir := filepath.Join(r.Home, "attempts", attemptID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	text, err := r.promptText(ctx, prompt.Input{
-		Card:       card,
-		Objective:  obj,
-		ReworkNote: card.ReworkNote,
-		Repo:       project.RepoPath,
-		Revision:   wt.BaseCommit,
-	})
-	if err != nil && !errors.Is(err, prompt.ErrNotImplemented) {
-		return "", err
-	}
-	if strings.TrimSpace(text) == "" {
-		text = strings.TrimSpace(card.Title + "\n" + card.Body)
-	}
 	promptPath := filepath.Join(dir, "prompt.txt")
-	if err := os.WriteFile(promptPath, []byte(text), 0o644); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "hard-duration"), []byte(hardDur), 0o644); err != nil {
-		return "", err
-	}
-	if script := r.scriptFor(card); len(script) > 0 {
-		if err := os.WriteFile(filepath.Join(dir, "script.json"), script, 0o644); err != nil {
-			return "", err
-		}
-	}
 	attempt := model.Attempt{
 		ID:          attemptID,
 		Card:        card.ID,
-		Index:       index,
+		Index:       len(prev),
 		Route:       rt,
 		RouteReason: reason,
 		Worktree:    wt.Path,
@@ -576,16 +440,89 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err := db.UpdateCard(ctx, &card); err != nil {
 		return "", err
 	}
+	if inUse != nil && rt.Channel != "" {
+		inUse[rt.Channel]++
+	}
+	if err := r.writePrompt(ctx, db, card, obj, project.RepoPath, &attempt); err != nil {
+		return "", err
+	}
+	if err := r.startAttempt(ctx, db, &attempt); err != nil {
+		return "", err
+	}
+	return rt.Channel, nil
+}
+
+func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, attempt *model.Attempt) (string, error) {
+	project, err := db.GetProject(ctx, obj.Project)
+	if err != nil {
+		return "", err
+	}
+	if card.Status != model.CardRunning {
+		card.Status = model.CardRunning
+		card.WaitReason = ""
+		if err := db.UpdateCard(ctx, &card); err != nil {
+			return "", err
+		}
+	}
+	if err := r.writePrompt(ctx, db, card, obj, project.RepoPath, attempt); err != nil {
+		return "", err
+	}
+	if err := r.startAttempt(ctx, db, attempt); err != nil {
+		return "", err
+	}
+	return attempt.Route.Channel, nil
+}
+
+func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, repo string, attempt *model.Attempt) error {
+	dir := filepath.Join(r.Home, "attempts", attempt.ID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	text, err := r.promptText(ctx, prompt.Input{
+		Card:       card,
+		Objective:  obj,
+		ReworkNote: card.ReworkNote,
+		Repo:       repo,
+		Revision:   attempt.BaseCommit,
+	})
+	if err != nil && !errors.Is(err, prompt.ErrNotImplemented) {
+		return err
+	}
+	if strings.TrimSpace(text) == "" {
+		text = strings.TrimSpace(card.Title + "\n" + card.Body)
+	}
+	promptPath := filepath.Join(dir, "prompt.txt")
+	if err := os.WriteFile(promptPath, []byte(text), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hard-duration"), []byte(hardDur), 0o644); err != nil {
+		return err
+	}
+	if script := r.scriptFor(card); len(script) > 0 {
+		if err := os.WriteFile(filepath.Join(dir, "script.json"), script, 0o644); err != nil {
+			return err
+		}
+	}
+	if attempt.PromptPath != promptPath {
+		attempt.PromptPath = promptPath
+		if err := db.UpdateAttempt(ctx, attempt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *Runner) startAttempt(ctx context.Context, db *store.Store, attempt *model.Attempt) error {
 	launch := startHost
 	if r.Launch != nil {
 		launch = func(home, id string) (int, error) { return r.Launch(ctx, home, id) }
 	}
-	pid, err := launch(r.Home, attemptID)
+	pid, err := launch(r.Home, attempt.ID)
 	if err != nil {
-		return "", err
+		return err
 	}
 	waitPID(ctx, func() (int, bool) {
-		got, err := db.GetAttempt(ctx, attemptID)
+		got, err := db.GetAttempt(ctx, attempt.ID)
 		if err != nil {
 			return 0, false
 		}
@@ -594,12 +531,12 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		}
 		return 0, false
 	})
-	got, err := db.GetAttempt(ctx, attemptID)
+	got, err := db.GetAttempt(ctx, attempt.ID)
 	if err == nil && got.PID == 0 && got.EndedAt.IsZero() {
 		got.PID = pid
 		_ = db.UpdateAttempt(ctx, &got)
 	}
-	return rt.Channel, nil
+	return nil
 }
 
 func (r *Runner) promptText(ctx context.Context, in prompt.Input) (string, error) {
@@ -627,11 +564,7 @@ func (r *Runner) scriptFor(card model.Card) []byte {
 	return b
 }
 
-func (r *Runner) fill(ctx context.Context, db *store.Store, used map[string]bool) error {
-	cards, err := db.ListCards(ctx, "")
-	if err != nil {
-		return err
-	}
+func (r *Runner) fill(ctx context.Context, db *store.Store, used map[string]bool, cards []model.Card, objByID map[string]model.Objective, channels []model.Channel, pos []model.Positioning, occupy []model.Card, inUse map[string]int, quotas route.Quotas) error {
 	var backlog []model.Card
 	for _, card := range cards {
 		if card.Status == model.CardReady && card.Kind == model.KindBacklog {
@@ -641,44 +574,51 @@ func (r *Runner) fill(ctx context.Context, db *store.Store, used map[string]bool
 	if len(backlog) == 0 {
 		return nil
 	}
-	channels, err := db.ListChannels(ctx)
-	if err != nil {
-		return err
-	}
-	objs, err := db.ListObjectives(ctx, "")
-	if err != nil {
-		return err
-	}
-	objByID := map[string]model.Objective{}
-	for _, obj := range objs {
-		objByID[obj.ID] = obj
-	}
-	pos, err := db.ListPositioning(ctx)
-	if err != nil {
-		return err
-	}
-	attempts, err := db.ListAttempts(ctx, "")
-	if err != nil {
-		return err
-	}
 	now := r.now()
 	for _, ch := range channels {
 		if used[ch.ID] || !windowFills(ch, now) || readyNeeds(cards, ch.ID) {
 			continue
 		}
-		if len(backlog) == 0 {
+		var card model.Card
+		var obj model.Objective
+		found := false
+		for i := range backlog {
+			candidate := backlog[i]
+			o, ok := objByID[candidate.Objective]
+			if !ok {
+				continue
+			}
+			allowed, err := r.allow(ctx, db, &candidate, o, occupy, false)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				continue
+			}
+			card, obj, found = candidate, o, true
 			break
 		}
-		card := backlog[0]
-		obj, ok := objByID[card.Objective]
-		if !ok {
+		if !found {
 			continue
 		}
-		if _, err := r.launchCard(ctx, db, card, obj, channels, pos, attempts, ch.ID); err != nil {
+		// One channel, not an explicit pin: Select still applies health, capability, concurrency, and redline.
+		if _, err := r.launchCard(ctx, db, card, obj, []model.Channel{ch}, pos, inUse, quotas); err != nil {
+			if errors.Is(err, route.ErrNoCandidate) || errors.Is(err, route.ErrPinnedUnavailable) {
+				continue
+			}
 			return err
 		}
-		backlog = backlog[1:]
+		for i := range backlog {
+			if backlog[i].ID == card.ID {
+				backlog = append(backlog[:i], backlog[i+1:]...)
+				break
+			}
+		}
 		used[ch.ID] = true
+		if len(card.Claims) > 0 {
+			card.Status = model.CardRunning
+			occupy = append(occupy, card)
+		}
 	}
 	return nil
 }
@@ -696,19 +636,41 @@ func readyNeeds(cards []model.Card, channelID string) bool {
 }
 
 func windowFills(ch model.Channel, now time.Time) bool {
-	limit := ch.Redline + fillMargin
+	margin := ch.Redline + fillMargin
+	near := false
 	for _, w := range ch.QuotaWindows {
-		if w.ResetAt.IsZero() || !w.ResetAt.After(now) {
+		ratio, known := windowRatio(w)
+		if !known {
 			continue
 		}
-		if w.ResetAt.Sub(now) > fillWindow {
+		if ratio <= ch.Redline {
+			return false
+		}
+		if w.ResetAt.IsZero() || !w.ResetAt.After(now) || w.ResetAt.Sub(now) > fillWindow {
 			continue
 		}
-		if w.Remaining > limit {
-			return true
+		if ratio > margin {
+			near = true
 		}
 	}
-	return false
+	return near
+}
+
+func windowRatio(w model.QuotaWindow) (float64, bool) {
+	if w.LimitTokens > 0 {
+		used := w.UsedTokens
+		if used < 0 {
+			used = 0
+		}
+		if used > w.LimitTokens {
+			used = w.LimitTokens
+		}
+		return float64(w.LimitTokens-used) / float64(w.LimitTokens), true
+	}
+	if w.Name != "" || !w.ResetAt.IsZero() {
+		return w.Remaining, true
+	}
+	return 0, false
 }
 
 type scheduleFile struct {
@@ -869,9 +831,17 @@ func (r *Runner) notify(ctx context.Context, db *store.Store) error {
 	if err != nil {
 		return err
 	}
+	objs, err := db.ListObjectives(ctx, "")
+	if err != nil {
+		return err
+	}
+	originOf := map[string]string{}
+	for _, obj := range objs {
+		originOf[obj.ID] = obj.Origin
+	}
 	for i := range questions {
 		q := questions[i]
-		if q.Answer != "" || len(q.Deliveries) > 0 {
+		if q.Answer != "" {
 			continue
 		}
 		msg := notify.Message{
@@ -879,7 +849,7 @@ func (r *Runner) notify(ctx context.Context, db *store.Store) error {
 			Objective:  q.Objective,
 			Text:       q.Text,
 			Home:       r.Home,
-			Origin:     q.Scope,
+			Origin:     originOf[q.Objective],
 		}
 		var err error
 		if r.Notify != nil {
@@ -893,6 +863,11 @@ func (r *Runner) notify(ctx context.Context, db *store.Store) error {
 			}
 			return err
 		}
+		// Dedup and backoff live in notify. A prior delivery must not skip the
+		// call; record only the first handoff so a quiet tick adds no new row.
+		if len(q.Deliveries) > 0 {
+			continue
+		}
 		q.Deliveries = append(q.Deliveries, model.Delivery{
 			At:          r.now().UTC(),
 			Adapter:     "sched",
@@ -903,6 +878,229 @@ func (r *Runner) notify(ctx context.Context, db *store.Store) error {
 		}
 	}
 	return nil
+}
+
+func (r *Runner) allow(ctx context.Context, db *store.Store, card *model.Card, obj model.Objective, occupy []model.Card, markWait bool) (bool, error) {
+	if obj.Status != model.ObjectiveActive && obj.Status != model.ObjectiveDoneCandidate {
+		return false, nil
+	}
+	if !executionDepsDone(ctx, db, *card) {
+		return false, nil
+	}
+	if card.Kind == model.KindReview {
+		return true, nil
+	}
+	probe := append(append([]model.Card{}, occupy...), *card)
+	conflicts, err := claims.Conflicts(probe)
+	if err != nil {
+		return false, err
+	}
+	if reason := conflictReason(conflicts, card.ID); reason != "" {
+		if markWait && (card.Status != model.CardWaiting || card.WaitReason != reason) {
+			card.Status = model.CardWaiting
+			card.WaitReason = reason
+			if err := db.UpdateCard(ctx, card); err != nil {
+				return false, err
+			}
+		}
+		return false, nil
+	}
+	return true, nil
+}
+
+func executionDepsDone(ctx context.Context, db *store.Store, card model.Card) bool {
+	if card.Kind == model.KindReview || card.Kind == model.KindRepair || card.Kind == model.KindRebase {
+		return true
+	}
+	for _, id := range card.Deps {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		dep, err := db.GetCard(ctx, id)
+		if err != nil {
+			return false
+		}
+		switch dep.Status {
+		case model.CardMerged, model.CardDone, model.CardCanceled:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func resumable(card model.Card, attempts []model.Attempt) bool {
+	for _, attempt := range attempts {
+		if attempt.Card == card.ID && attempt.PID == 0 && attemptOpen(attempt) {
+			return true
+		}
+	}
+	return false
+}
+
+func attemptOpen(a model.Attempt) bool {
+	return a.Outcome == "" && a.EndedAt.IsZero() && a.Exit == nil
+}
+
+func attemptOccupies(a model.Attempt) bool {
+	return a.Route.Channel != "" && attemptOpen(a)
+}
+
+func openAttempt(ctx context.Context, db *store.Store, cardID string) (*model.Attempt, error) {
+	attempts, err := db.ListAttempts(ctx, cardID)
+	if err != nil {
+		return nil, err
+	}
+	var found *model.Attempt
+	for i := range attempts {
+		if attempts[i].PID == 0 && attemptOpen(attempts[i]) {
+			copy := attempts[i]
+			found = &copy
+		}
+	}
+	return found, nil
+}
+
+func (r *Runner) workspaceTarget(ctx context.Context, db *store.Store, card model.Card) (string, bool, bool, error) {
+	switch card.Kind {
+	case model.KindReview:
+		// The candidate branch belongs to the original card. A repair or rebase
+		// subject does not have a branch under its own id.
+		id, err := reviewBranchCard(ctx, db, reviewSubject(card))
+		return id, true, true, err
+	case model.KindRepair, model.KindRebase:
+		id, err := rootCardID(ctx, db, card)
+		return id, true, false, err
+	default:
+		return card.ID, card.ReworkCount > 0, false, nil
+	}
+}
+
+func reviewBranchCard(ctx context.Context, db *store.Store, subjectID string) (string, error) {
+	if subjectID == "" {
+		return "", fmt.Errorf("sched: review has no subject")
+	}
+	subject, err := db.GetCard(ctx, subjectID)
+	if err != nil {
+		return "", err
+	}
+	if subject.Kind == model.KindRepair || subject.Kind == model.KindRebase {
+		return rootCardID(ctx, db, subject)
+	}
+	return subject.ID, nil
+}
+
+func reviewSubject(card model.Card) string {
+	if len(card.Deps) > 0 && strings.TrimSpace(card.Deps[0]) != "" {
+		return strings.TrimSpace(card.Deps[0])
+	}
+	if strings.HasPrefix(card.ID, "rv-") {
+		return strings.TrimPrefix(card.ID, "rv-")
+	}
+	return card.ID
+}
+
+func rootCardID(ctx context.Context, db *store.Store, card model.Card) (string, error) {
+	cur := card
+	seen := map[string]bool{}
+	for (cur.Kind == model.KindRepair || cur.Kind == model.KindRebase) && len(cur.Deps) > 0 {
+		next := strings.TrimSpace(cur.Deps[0])
+		if next == "" || seen[next] {
+			break
+		}
+		seen[next] = true
+		parent, err := db.GetCard(ctx, next)
+		if err != nil {
+			return "", err
+		}
+		if parent.Kind != model.KindRepair && parent.Kind != model.KindRebase {
+			return parent.ID, nil
+		}
+		cur = parent
+	}
+	return cur.ID, nil
+}
+
+func detachHead(ctx context.Context, worktree string) error {
+	cmd := exec.CommandContext(ctx, "git", "-C", worktree, "checkout", "--detach")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("detach review worktree: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+type channelQuota struct {
+	led      *quota.Ledger
+	channels []model.Channel
+}
+
+func (r *Runner) quotaView(channels []model.Channel) route.Quotas {
+	led := quota.New()
+	led.SetClock(func() time.Time { return r.now() })
+	now := r.now()
+	for _, ch := range channels {
+		led.Configure(ch)
+		for _, w := range ch.QuotaWindows {
+			if w.LimitTokens <= 0 {
+				continue
+			}
+			used := w.UsedTokens
+			if used == 0 && w.Remaining > 0 && w.Remaining < 1 {
+				used = w.LimitTokens - int64(math.Round(w.Remaining*float64(w.LimitTokens)))
+			}
+			if used <= 0 {
+				continue
+			}
+			_ = led.Record(context.Background(), ch.ID, model.Usage{
+				Tokens: used, Source: "channel", Confidence: 1,
+			}, now.Add(-time.Second), now)
+		}
+	}
+	return channelQuota{led: led, channels: channels}
+}
+
+func (q channelQuota) Remaining(ctx context.Context, channelID string) (quota.Estimate, error) {
+	est, err := q.led.Remaining(ctx, channelID)
+	if err != nil {
+		return est, err
+	}
+	if !est.Unknown && (est.LimitTokens > 0 || est.LimitRequests > 0) {
+		return est, nil
+	}
+	for _, ch := range q.channels {
+		if ch.ID != channelID {
+			continue
+		}
+		best := 0.0
+		known := false
+		var reset time.Time
+		for _, w := range ch.QuotaWindows {
+			ratio, ok := windowRatio(w)
+			if !ok {
+				continue
+			}
+			if !known || ratio < best {
+				known = true
+				best = ratio
+				reset = w.ResetAt
+			}
+		}
+		if !known {
+			return quota.Estimate{Unknown: true}, nil
+		}
+		const limit = int64(1_000_000)
+		used := int64(math.Round((1 - best) * float64(limit)))
+		if used < 0 {
+			used = 0
+		}
+		return quota.Estimate{
+			Ratio: best, Reset: reset, Confidence: 1,
+			LimitTokens: limit, UsedTokens: used,
+		}, nil
+	}
+	return quota.Estimate{Unknown: true}, nil
 }
 
 func newID(prefix string) (string, error) {

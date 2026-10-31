@@ -3,6 +3,7 @@ package sched
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -11,6 +12,27 @@ import (
 
 	"cardex/internal/board"
 )
+
+type serveLogKey struct{}
+
+// WithLog attaches the writer that Serve uses for its listening and iteration lines.
+func WithLog(ctx context.Context, w io.Writer) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if w == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, serveLogKey{}, w)
+}
+
+func serveWriter(ctx context.Context) io.Writer {
+	if ctx == nil {
+		return nil
+	}
+	w, _ := ctx.Value(serveLogKey{}).(io.Writer)
+	return w
+}
 
 // Serve loops Tick until ctx is cancelled and serves board.Handler on addr.
 // A host process started by Tick is not killed when ctx is cancelled.
@@ -37,6 +59,9 @@ func Serve(ctx context.Context, home, addr string) error {
 		_ = srv.Shutdown(shut)
 	}()
 	fmt.Printf("serve listening %s\n", ln.Addr())
+	if w := serveWriter(ctx); w != nil {
+		fmt.Fprintf(w, "serve listening %s\n", ln.Addr())
+	}
 	runner := &Runner{Home: home}
 	logPath := filepath.Join(home, "serve-loop.log")
 	n := 0
@@ -52,6 +77,9 @@ func Serve(ctx context.Context, home, addr string) error {
 			return err
 		}
 		n++
+		if w := serveWriter(ctx); w != nil {
+			fmt.Fprintf(w, "serve stub-loop iteration %d\n", n)
+		}
 		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return err

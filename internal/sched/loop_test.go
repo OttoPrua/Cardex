@@ -2,7 +2,9 @@ package sched
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"cardex/internal/harvest"
 	"cardex/internal/host"
+	"cardex/internal/merge"
 	"cardex/internal/model"
 	"cardex/internal/notify"
 	"cardex/internal/prompt"
@@ -110,6 +114,7 @@ func TestTickManualMergesWithoutAutoCards(t *testing.T) {
 	}
 	called := map[string]int{}
 	r := New(home)
+	r.Dispose = passDisposition(db)
 	r.Engine = func(_ context.Context, id string) error {
 		called[id]++
 		extra := model.Card{
@@ -334,7 +339,7 @@ func TestTickNotifyOnce(t *testing.T) {
 	if err := r.Tick(ctx); err != nil || r.Tick(ctx) != nil {
 		t.Fatal("tick")
 	}
-	if len(calls) != 1 || calls[0].QuestionID != "q1" || calls[0].Text != "decide" {
+	if len(calls) != 2 || calls[0].QuestionID != "q1" || calls[0].Text != "decide" || calls[1].QuestionID != "q1" {
 		t.Fatalf("calls %+v", calls)
 	}
 	got, err := db.GetQuestion(ctx, "q1")
@@ -583,6 +588,13 @@ func channelNear(t *testing.T, db *store.Store, id string, reset time.Time, rema
 	if err := db.CreateChannel(context.Background(), &ch); err != nil {
 		t.Fatal(err)
 	}
+	pos := model.Positioning{
+		ID: "pos-" + ch.ID, Model: "model-a", Family: "alpha",
+		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+	}
+	if err := db.CreatePositioning(context.Background(), &pos); err != nil {
+		t.Fatal(err)
+	}
 	return ch.ID
 }
 
@@ -694,6 +706,123 @@ func readLog(home string, err error) error {
 type logErr struct{ s string }
 
 func (e *logErr) Error() string { return e.s }
+
+const reviewPassScript = `{
+  "attempts": {
+    "0": {
+      "write_files": [
+        {"path": ".cardex-result.md", "content": "## 复核结论\npass\n"}
+      ],
+      "exit_code": 0
+    }
+  }
+}`
+
+// passDisposition is the test stand-in for the missing loop disposition entry.
+func passDisposition(db *store.Store) func(context.Context, *model.Card, harvest.Result) error {
+	return func(ctx context.Context, card *model.Card, res harvest.Result) error {
+		if card.Kind == model.KindReview {
+			subjectID := ""
+			if len(card.Deps) > 0 {
+				subjectID = card.Deps[0]
+			}
+			if res.Outcome == model.OutcomePassed && subjectID != "" {
+				switch reviewWord(res.ResultText) {
+				case "rework":
+					subject, err := db.GetCard(ctx, subjectID)
+					if err != nil {
+						return err
+					}
+					subject.Status = model.CardReady
+					subject.ReworkCount++
+					subject.ReworkNote = strings.TrimSpace(res.ResultText)
+					if err := db.UpdateCard(ctx, &subject); err != nil {
+						return err
+					}
+				case "pass":
+					if err := merge.New(db).Enqueue(ctx, subjectID); err != nil {
+						return err
+					}
+				default:
+					card.Status = model.CardNeedsInput
+					return nil
+				}
+				card.Status = model.CardDone
+				return nil
+			}
+			card.Status = model.CardNeedsInput
+			return nil
+		}
+		if res.Outcome == model.OutcomePassed && mergesKind(card.Kind) {
+			id := "rv-" + card.ID
+			existing, err := db.GetCard(ctx, id)
+			switch {
+			case err == nil && reviewFinished(existing.Status):
+				return nil
+			case err == nil:
+			case errors.Is(err, sql.ErrNoRows):
+				review := model.Card{
+					ID: id, Objective: card.Objective, Node: card.Node, Kind: model.KindReview,
+					Title: "review " + card.Title, Body: reviewPassScript, Tier: model.TierT3,
+					Status: model.CardReady, Deps: []string{card.ID}, AuthorFamily: card.AuthorFamily,
+				}
+				if err := db.CreateCard(ctx, &review); err != nil {
+					return err
+				}
+			default:
+				return err
+			}
+			card.Status = model.CardReviewing
+			return nil
+		}
+		if res.Outcome == model.OutcomePassed {
+			card.Status = model.CardDone
+			return nil
+		}
+		if res.Outcome == model.OutcomeTestsFailed {
+			card.Status = model.CardReady
+			card.ReworkCount++
+			card.ReworkNote = res.Excerpt
+			return nil
+		}
+		card.Status = model.CardNeedsInput
+		if card.WaitReason == "" {
+			card.WaitReason = string(res.Outcome)
+		}
+		return nil
+	}
+}
+
+func reviewFinished(status model.CardStatus) bool {
+	switch status {
+	case model.CardDone, model.CardMerged, model.CardCanceled, model.CardFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func reviewWord(text string) string {
+	for _, field := range strings.Fields(strings.ToLower(text)) {
+		field = strings.Trim(field, "`*_.,;:()[]\"'")
+		if field == "rework" {
+			return "rework"
+		}
+		if field == "pass" {
+			return "pass"
+		}
+	}
+	return ""
+}
+
+func mergesKind(kind model.CardKind) bool {
+	switch kind {
+	case model.KindDev, model.KindRepair, model.KindRebase, model.KindSkeleton, model.KindBacklog:
+		return true
+	default:
+		return false
+	}
+}
 
 func dumpCards(t *testing.T, db *store.Store) {
 	t.Helper()

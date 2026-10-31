@@ -2,7 +2,9 @@ package e2e
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,10 +20,12 @@ import (
 	"cardex/internal/classify"
 	"cardex/internal/harvest"
 	"cardex/internal/host"
+	"cardex/internal/merge"
 	"cardex/internal/model"
 	"cardex/internal/quota"
 	"cardex/internal/route"
 	"cardex/internal/sched"
+	"cardex/internal/store"
 )
 
 func TestS01(t *testing.T) {
@@ -32,6 +36,7 @@ func TestS01(t *testing.T) {
 func TestS02(t *testing.T) {
 	// 同一文件、不同函数的两张卡并行，都能合并。
 	h := New(t)
+	useLaneSched(t, h)
 	stopLater(t, h)
 	commitRepo(t, h.Repo, "answer.go", answerWithFuncs, "funcs")
 	_, obj := bindProject(t, h, "true")
@@ -77,6 +82,7 @@ func TestS02(t *testing.T) {
 func TestS03(t *testing.T) {
 	// 同一函数的两张卡，第二张等待后再跑。
 	h := New(t)
+	useLaneSched(t, h)
 	stopLater(t, h)
 	commitRepo(t, h.Repo, "answer.go", answerWithFuncs, "funcs")
 	_, obj := bindProject(t, h, "true")
@@ -125,6 +131,7 @@ func TestS03(t *testing.T) {
 func TestS04(t *testing.T) {
 	// 未声明的重叠改动产生冲突，派变基卡后合并。
 	h := New(t)
+	useLaneSched(t, h)
 	stopLater(t, h)
 	commitRepo(t, h.Repo, "extra.txt", "base\n", "extra")
 	_, obj := bindProject(t, h, "true")
@@ -187,6 +194,7 @@ func TestS04(t *testing.T) {
 func TestS05(t *testing.T) {
 	// 合并后测试变红，派修复卡。
 	h := New(t)
+	useLaneSched(t, h)
 	stopLater(t, h)
 	_, obj := bindProject(t, h, "./test.sh")
 	installRoutes(t, h)
@@ -436,6 +444,7 @@ func TestS18(t *testing.T) {
 func TestS19(t *testing.T) {
 	// 余量填充，临近重置的渠道拿到 backlog 卡。
 	h := New(t)
+	useLaneSched(t, h)
 	stopLater(t, h)
 	ctx := context.Background()
 	ch, err := h.RegisterFakeChannel("alpha", model.TierT1, RemainingWindow{
@@ -448,6 +457,13 @@ func TestS19(t *testing.T) {
 	ch.Redline = 0
 	ch.Models = []string{"model-a"}
 	if err := h.DB.UpdateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	pos := model.Positioning{
+		ID: "pos-" + ch.ID, Model: "model-a", Family: "alpha",
+		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+	}
+	if err := h.DB.CreatePositioning(ctx, &pos); err != nil {
 		t.Fatal(err)
 	}
 	_, obj := bindProject(t, h, "true")
@@ -477,6 +493,7 @@ func TestS19(t *testing.T) {
 func TestS20(t *testing.T) {
 	// manual 目标不自动生成卡，但复核和合并照常。
 	h := New(t)
+	useLaneSched(t, h)
 	stopLater(t, h)
 	commitRepo(t, h.Repo, "note.txt", "base\n", "note")
 	_, obj := bindProject(t, h, "true")
@@ -704,6 +721,117 @@ func fakeScriptRaw(hold string, files, funcs []map[string]string) []byte {
 		panic(err)
 	}
 	return raw
+}
+
+func useLaneSched(t *testing.T, h *Harness) {
+	t.Helper()
+	r := sched.New(h.Home)
+	r.Dispose = scenarioDispose(h.DB)
+	h.Sched = r
+}
+
+const scenarioReviewScript = `{
+  "attempts": {
+    "0": {
+      "write_files": [
+        {"path": ".cardex-result.md", "content": "## 复核结论\npass\n"}
+      ],
+      "exit_code": 0
+    }
+  }
+}`
+
+func scenarioDispose(db *store.Store) func(context.Context, *model.Card, harvest.Result) error {
+	return func(ctx context.Context, card *model.Card, res harvest.Result) error {
+		if card.Kind == model.KindReview {
+			subjectID := ""
+			if len(card.Deps) > 0 {
+				subjectID = card.Deps[0]
+			}
+			if res.Outcome == model.OutcomePassed && subjectID != "" {
+				switch scenarioReviewWord(res.ResultText) {
+				case "rework":
+					subject, err := db.GetCard(ctx, subjectID)
+					if err != nil {
+						return err
+					}
+					subject.Status = model.CardReady
+					subject.ReworkCount++
+					subject.ReworkNote = strings.TrimSpace(res.ResultText)
+					if err := db.UpdateCard(ctx, &subject); err != nil {
+						return err
+					}
+				case "pass":
+					if err := merge.New(db).Enqueue(ctx, subjectID); err != nil {
+						return err
+					}
+				default:
+					card.Status = model.CardNeedsInput
+					return nil
+				}
+				card.Status = model.CardDone
+				return nil
+			}
+			card.Status = model.CardNeedsInput
+			return nil
+		}
+		if res.Outcome == model.OutcomePassed && scenarioMerges(card.Kind) {
+			id := "rv-" + card.ID
+			existing, err := db.GetCard(ctx, id)
+			switch {
+			case err == nil && (existing.Status == model.CardDone || existing.Status == model.CardMerged || existing.Status == model.CardCanceled || existing.Status == model.CardFailed):
+				return nil
+			case err == nil:
+			case errors.Is(err, sql.ErrNoRows):
+				review := model.Card{
+					ID: id, Objective: card.Objective, Node: card.Node, Kind: model.KindReview,
+					Title: "review " + card.Title, Body: scenarioReviewScript, Tier: model.TierT3,
+					Status: model.CardReady, Deps: []string{card.ID}, AuthorFamily: card.AuthorFamily,
+				}
+				if err := db.CreateCard(ctx, &review); err != nil {
+					return err
+				}
+			default:
+				return err
+			}
+			card.Status = model.CardReviewing
+			return nil
+		}
+		if res.Outcome == model.OutcomePassed {
+			card.Status = model.CardDone
+			return nil
+		}
+		if res.Outcome == model.OutcomeTestsFailed {
+			card.Status = model.CardReady
+			card.ReworkCount++
+			card.ReworkNote = res.Excerpt
+			return nil
+		}
+		card.Status = model.CardNeedsInput
+		if card.WaitReason == "" {
+			card.WaitReason = string(res.Outcome)
+		}
+		return nil
+	}
+}
+
+func scenarioReviewWord(text string) string {
+	for _, field := range strings.Fields(strings.ToLower(text)) {
+		field = strings.Trim(field, "`*_.,;:()[]\"'")
+		if field == "rework" || field == "pass" {
+			return field
+		}
+	}
+	return ""
+}
+
+func scenarioMerges(kind model.CardKind) bool {
+	switch kind {
+	case model.KindDev, model.KindRepair, model.KindRebase, model.KindSkeleton, model.KindBacklog:
+		return true
+	default:
+		return false
+	}
 }
 
 func runnerOf(t *testing.T, h *Harness) *sched.Runner {

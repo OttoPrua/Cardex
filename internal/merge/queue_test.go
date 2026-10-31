@@ -323,6 +323,144 @@ func commitCard(t *testing.T, db *store.Store, repo, obj, base, id, file, body s
 	return seededCard{Card: card, Worktree: wt}
 }
 
+func TestQueueRepairChainClosesCompletedCards(t *testing.T) {
+	ctx := context.Background()
+	db, repo := openFixture(t)
+	proj := seedProject(t, db, repo, "p", "true")
+	obj := seedObjective(t, db, repo, proj, "o", "main")
+	skel := model.Card{ID: "skel", Objective: obj, Kind: model.KindSkeleton, Title: "skel", Tier: model.TierT2, Status: model.CardReady}
+	if err := db.CreateCard(ctx, &skel); err != nil {
+		t.Fatal(err)
+	}
+	c := commitCard(t, db, repo, obj, "main", "c", "a.txt", "shipped\n")
+	c.Card.Status = model.CardWaiting
+	c.Card.Deps = []string{"skel"}
+	if err := db.UpdateCard(ctx, &c.Card); err != nil {
+		t.Fatal(err)
+	}
+	rpWT := filepath.Join(t.TempDir(), "rp")
+	rp2WT := filepath.Join(t.TempDir(), "rp2")
+	detachWorktree(t, c.Worktree)
+	addWorktree(t, repo, CardBranch(obj, "c"), rpWT)
+	detachWorktree(t, rpWT)
+	addWorktree(t, repo, CardBranch(obj, "c"), rp2WT)
+	rp := model.Card{
+		ID: "rp-c", Objective: obj, Kind: model.KindRepair, Title: "rp", Tier: model.TierT2,
+		Status: model.CardWaiting, Deps: []string{"c"},
+	}
+	rp2 := model.Card{
+		ID: "rp-rp-c", Objective: obj, Kind: model.KindRepair, Title: "rp2", Tier: model.TierT2,
+		Status: model.CardMergeQueued, Deps: []string{"rp-c"},
+	}
+	if err := db.CreateCard(ctx, &rp); err != nil || db.CreateCard(ctx, &rp2) != nil {
+		t.Fatal("cards")
+	}
+	for _, item := range []struct{ id, path string }{{"rp-c", rpWT}, {"rp-rp-c", rp2WT}} {
+		attempt := model.Attempt{ID: "a-" + item.id, Card: item.id, Worktree: item.path, Branch: CardBranch(obj, "c")}
+		if err := db.CreateAttempt(ctx, &attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before, err := gitRev(repo, "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := New(db)
+	if err := q.Step(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"c", "rp-c", "rp-rp-c"} {
+		got, err := db.GetCard(ctx, id)
+		if err != nil || got.Status != model.CardMerged {
+			t.Fatalf("%s %+v %v", id, got, err)
+		}
+	}
+	left, err := db.GetCard(ctx, "skel")
+	if err != nil || left.Status != model.CardReady {
+		t.Fatalf("ordinary dep %+v %v", left, err)
+	}
+	for _, path := range []string{c.Worktree, rpWT, rp2WT} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("worktree %s still present (%v)", path, err)
+		}
+	}
+	head, err := gitRev(repo, "main")
+	if err != nil || head == before {
+		t.Fatalf("integration did not move %s -> %s", before, head)
+	}
+	if err := q.Step(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	again, err := gitRev(repo, "main")
+	if err != nil || again != head {
+		t.Fatalf("second closeout moved HEAD %s -> %s", head, again)
+	}
+	for _, id := range []string{"c", "rp-c", "rp-rp-c"} {
+		got, err := db.GetCard(ctx, id)
+		if err != nil || got.Status != model.CardMerged {
+			t.Fatalf("second closeout %s %+v %v", id, got, err)
+		}
+	}
+	cards, err := db.ListCards(ctx, obj)
+	if err != nil || len(cards) != 4 {
+		t.Fatalf("cards %+v %v", cards, err)
+	}
+}
+
+func TestRepairOfRepairLinksImmediatePredecessor(t *testing.T) {
+	ctx := context.Background()
+	db, repo := openFixture(t)
+	proj := seedProject(t, db, repo, "p", "echo RED_TEST; exit 1")
+	obj := seedObjective(t, db, repo, proj, "o", "main")
+	c := commitCard(t, db, repo, obj, "main", "c", "a.txt", "shipped\n")
+	c.Card.Status = model.CardWaiting
+	if err := db.UpdateCard(ctx, &c.Card); err != nil {
+		t.Fatal(err)
+	}
+	rp := model.Card{
+		ID: "rp-c", Objective: obj, Kind: model.KindRepair, Title: "rp", Tier: model.TierT2,
+		Status: model.CardMergeQueued, Deps: []string{"c"}, Acceptance: []string{"true"},
+	}
+	if err := db.CreateCard(ctx, &rp); err != nil {
+		t.Fatal(err)
+	}
+	q := New(db)
+	if err := q.Step(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	follow, err := db.GetCard(ctx, "rp-rp-c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(follow.Deps) != 1 || follow.Deps[0] != "rp-c" {
+		t.Fatalf("predecessor %+v", follow.Deps)
+	}
+	if follow.Base != CardBranch(obj, "c") {
+		t.Fatalf("base %s", follow.Base)
+	}
+	mid, err := db.GetCard(ctx, "rp-c")
+	if err != nil || mid.Status == model.CardMerged {
+		t.Fatalf("intermediate %+v %v", mid, err)
+	}
+}
+
+func detachWorktree(t *testing.T, path string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", path, "checkout", "--detach")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("detach %s: %v %s", path, err, out)
+	}
+}
+
+func addWorktree(t *testing.T, repo, branch, path string) {
+	t.Helper()
+	cmd := exec.Command("git", "worktree", "add", path, branch)
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("worktree add %s: %v %s", path, err, out)
+	}
+}
+
 func writeCmd(t *testing.T, mark, label string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "cmd-"+label+".sh")

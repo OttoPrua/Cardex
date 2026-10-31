@@ -15,7 +15,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"cardex/internal/sched"
 	"cardex/internal/store"
@@ -154,50 +153,12 @@ func runServe(ctx context.Context, home, addr string, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	// Serve owns the listener and the tick loop. This loop copies its address
-	// and iteration log onto the writer TestServeLoopsUntilStopped already watches.
-	errc := make(chan error, 1)
-	go func() {
-		errc <- sched.Serve(ctx, home, addr)
-	}()
-	printed := false
-	seen := 0
-	for {
-		if !printed {
-			if b, rerr := os.ReadFile(filepath.Join(home, "serve-addr")); rerr == nil {
-				fmt.Fprintf(stdout, "serve listening %s\n", strings.TrimSpace(string(b)))
-				printed = true
-			}
-		}
-		if b, rerr := os.ReadFile(filepath.Join(home, "serve-loop.log")); rerr == nil {
-			n := strings.Count(string(b), "\n")
-			for seen < n {
-				seen++
-				fmt.Fprintf(stdout, "serve stub-loop iteration %d\n", seen)
-			}
-		}
-		select {
-		case err := <-errc:
-			if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) {
-				return 0
-			}
-			fmt.Fprintln(stderr, err)
-			return 1
-		case <-ctx.Done():
-			select {
-			case err := <-errc:
-				if err != nil && !errors.Is(err, context.Canceled) {
-					fmt.Fprintln(stderr, err)
-					return 1
-				}
-			case <-time.After(3 * time.Second):
-				fmt.Fprintln(stderr, "serve did not return")
-				return 1
-			}
-			return 0
-		case <-time.After(20 * time.Millisecond):
-		}
+	err = sched.Serve(sched.WithLog(ctx, stdout), home, addr)
+	if err == nil || ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return 0
 	}
+	fmt.Fprintln(stderr, err)
+	return 1
 }
 
 func reservedPort(addr string) bool {

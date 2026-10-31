@@ -47,7 +47,7 @@ func New(tb testing.TB) *Harness {
 		Home:    home,
 		TestCmd: "./test.sh",
 		DB:      db,
-		Sched:   sched.New(home),
+		Sched:   sched.Stub{},
 	}
 	if err := h.initRepo(); err != nil {
 		tb.Fatal(err)

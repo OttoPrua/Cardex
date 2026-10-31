@@ -21,11 +21,7 @@ type Stub struct{}
 func (Stub) Step(context.Context, string) error { return ErrNotImplemented }
 
 // DesignStep is the design-phase entry R3-A owns.
-// DesignStep keeps the historical name. The design phase runs through designStep,
-// which Engine.Step calls with a store. Without a store this returns an error.
-func DesignStep(ctx context.Context, objectiveID string) error {
-	return designStep(ctx, Deps{}, objectiveID)
-}
+func DesignStep(ctx context.Context, objectiveID string) error { return ErrNotImplemented }
 
 // DevStep is the development-phase entry R3-B owns.
 func DevStep(ctx context.Context, objectiveID string) error { return ErrNotImplemented }

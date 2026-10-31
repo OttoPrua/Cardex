@@ -519,6 +519,24 @@ func passedReview(section string) bool {
 	return strings.EqualFold(first, "pass") || first == "通过"
 }
 
+// freezePassAllowed is the freeze-pass gate. A failed or canceled review,
+// and any attempt outcome other than passed, cannot freeze the node.
+// An empty outcome still counts only for an already done or merged card,
+// which is how existing terminal absorption records a pass.
+func freezePassAllowed(status model.CardStatus, outcome model.Outcome) bool {
+	if status == model.CardFailed || status == model.CardCanceled {
+		return false
+	}
+	switch outcome {
+	case model.OutcomePassed:
+		return true
+	case "":
+		return status == model.CardDone || status == model.CardMerged
+	default:
+		return false
+	}
+}
+
 func questionIDsInBody(body string) []string {
 	var ids []string
 	seen := map[string]bool{}

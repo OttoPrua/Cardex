@@ -131,11 +131,11 @@ func questionsOf(t *testing.T, st *store.Store, objective string) []model.Questi
 }
 
 func TestDesignStepNeedsStoreAndDevStaysOpen(t *testing.T) {
-	if err := DesignStep(t.Context(), "o"); err == nil {
-		t.Fatal("DesignStep without a store returned nil")
+	if !errors.Is(DesignStep(t.Context(), "o"), ErrNotImplemented) {
+		t.Fatal("DesignStep")
 	}
 	if !errors.Is(DevStep(t.Context(), "o"), ErrNotImplemented) {
-		t.Fatal("DevStep changed")
+		t.Fatal("DevStep")
 	}
 	st := openLoop(t)
 	obj := seedObjective(t, st, "", model.ModeAuto, model.FreezeSafe)

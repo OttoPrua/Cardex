@@ -540,6 +540,9 @@ func TestReviewTracksCurrentDesign(t *testing.T) {
 	if got.AuthorFamily != "family-a" {
 		t.Fatalf("author family %q", got.AuthorFamily)
 	}
+	if len(got.Deps) == 0 || got.Deps[0] != first.ID {
+		t.Fatalf("review deps %+v want design %s", got.Deps, first.ID)
+	}
 	if err := st.AppendEvent(t.Context(), &model.Event{Entity: "node:" + node.ID, Type: evReviewPass, Data: []byte(`{}`)}); err != nil {
 		t.Fatal(err)
 	}
@@ -567,6 +570,9 @@ func TestReviewTracksCurrentDesign(t *testing.T) {
 			reviewB = c.ID
 			if c.AuthorFamily != "family-b" {
 				t.Fatalf("second family %q", c.AuthorFamily)
+			}
+			if len(c.Deps) == 0 || c.Deps[0] != second.ID {
+				t.Fatalf("second review deps %+v want %s", c.Deps, second.ID)
 			}
 		}
 	}

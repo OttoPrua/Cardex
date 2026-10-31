@@ -112,7 +112,7 @@ func neverMerge(k model.CardKind) bool {
 }
 
 func (d Deps) absorbOne(ctx context.Context, obj model.Objective, card model.Card, researched map[string]bool) error {
-	text, base, err := d.harvested(ctx, card)
+	text, base, outcome, err := d.harvested(ctx, card)
 	if err != nil {
 		return err
 	}
@@ -127,11 +127,11 @@ func (d Deps) absorbOne(ctx context.Context, obj model.Objective, card model.Car
 		researched[card.Node] = true
 		return nil
 	case model.KindDesign, model.KindPlan, model.KindReplan:
-		return d.absorbDesign(ctx, obj, card, text)
+		return d.absorbDesign(ctx, obj, card, text, outcome)
 	case model.KindSpike:
 		return d.absorbSpike(ctx, obj, card, text)
 	case model.KindDev, model.KindReview:
-		return d.absorbDevReview(ctx, obj, card, text)
+		return d.absorbDevReview(ctx, obj, card, text, outcome)
 	default:
 		return d.markAbsorbed(ctx, card.ID, nil)
 	}
@@ -164,7 +164,10 @@ func (d Deps) absorbInventory(ctx context.Context, obj model.Objective, card mod
 	return d.markAbsorbed(ctx, card.ID, raw)
 }
 
-func (d Deps) absorbDesign(ctx context.Context, obj model.Objective, card model.Card, result string) error {
+func (d Deps) absorbDesign(ctx context.Context, obj model.Objective, card model.Card, result string, outcome model.Outcome) error {
+	if designUnusable(result, outcome) {
+		return d.divertUnparsed(ctx, obj, card)
+	}
 	if card.Node == "" {
 		return d.markAbsorbed(ctx, card.ID, nil)
 	}
@@ -252,7 +255,7 @@ func spikeQuestionID(body string) string {
 	return ""
 }
 
-func (d Deps) absorbDevReview(ctx context.Context, obj model.Objective, card model.Card, result string) error {
+func (d Deps) absorbDevReview(ctx context.Context, obj model.Objective, card model.Card, result string, outcome model.Outcome) error {
 	secs := splitSections(result)
 	problem := strings.TrimSpace(secs["设计问题"])
 	if problem != "" && card.Node != "" {
@@ -267,7 +270,7 @@ func (d Deps) absorbDevReview(ctx context.Context, obj model.Objective, card mod
 			return err
 		}
 	}
-	if card.Kind == model.KindReview && problem == "" && passedReview(secs["复核结论"]) && card.Node != "" {
+	if card.Kind == model.KindReview && problem == "" && passedReview(secs["复核结论"]) && card.Node != "" && freezePassAllowed(card.Status, outcome) {
 		raw, err := json.Marshal(reviewBind{Design: card.ID})
 		if err != nil {
 			return err
@@ -528,6 +531,7 @@ func (d Deps) advanceNode(ctx context.Context, obj model.Objective, nodeID strin
 				Tier:         model.TierT3,
 				Status:       model.CardReady,
 				AuthorFamily: family,
+				Deps:         []string{designID},
 			}
 			if err := d.addCard(ctx, obj, created); err != nil {
 				return err
@@ -1068,4 +1072,135 @@ func (d Deps) assignDocPath(ctx context.Context, obj model.Objective, node *mode
 	}
 	node.DocPath = dir + "/" + obj.ID + "/" + node.ID + ".md"
 	return d.Store.UpdateNode(ctx, node)
+}
+
+// AbsorbDisposed absorbs the attempt being disposed. The integrator sets
+// sched.Runner.Dispose so that, before the worktree is removed, it calls
+// AbsorbDisposed(ctx, Deps{Store, WS, Notify}, attemptID, res.Outcome, res.ResultText).
+// resultText is the harvest payload. This does not read any attempt worktree,
+// and it does not select an older attempt whose result file is still present.
+func AbsorbDisposed(ctx context.Context, d Deps, attemptID string, outcome model.Outcome, resultText string) error {
+	if d.Store == nil {
+		return errors.New("loop: AbsorbDisposed: nil store")
+	}
+	attemptID = strings.TrimSpace(attemptID)
+	if attemptID == "" {
+		return errors.New("loop: AbsorbDisposed: attempt id required")
+	}
+	attempt, err := d.Store.GetAttempt(ctx, attemptID)
+	if err != nil {
+		return err
+	}
+	card, err := d.Store.GetCard(ctx, attempt.Card)
+	if err != nil {
+		return err
+	}
+	obj, err := d.Store.GetObjective(ctx, card.Objective)
+	if err != nil {
+		return err
+	}
+	seen, err := d.hasEvent(ctx, "card:"+card.ID, evAbsorbed)
+	if err != nil {
+		return err
+	}
+	if seen {
+		return nil
+	}
+	base := attempt.BaseCommit
+	switch card.Kind {
+	case model.KindResearch:
+		if card.Node == "" {
+			if err := d.absorbInventory(ctx, obj, card, resultText, base); err != nil {
+				return err
+			}
+			return d.markPassedDone(ctx, card, outcome)
+		}
+		return d.absorbResearch(ctx, obj, card, resultText, base)
+	case model.KindDesign, model.KindPlan, model.KindReplan:
+		return d.absorbDesign(ctx, obj, card, resultText, outcome)
+	case model.KindSpike:
+		return d.absorbSpike(ctx, obj, card, resultText)
+	case model.KindDev, model.KindReview:
+		return d.absorbDevReview(ctx, obj, card, resultText, outcome)
+	default:
+		return d.markAbsorbed(ctx, card.ID, nil)
+	}
+}
+
+// designUnusable reports a missing or unparsable design, plan, or replan result.
+// Empty text, a result_unparsable outcome, or text with no section heading
+// is not a successful absorb.
+func designUnusable(result string, outcome model.Outcome) bool {
+	if outcome == model.OutcomeResultUnparsable {
+		return true
+	}
+	text := strings.TrimSpace(result)
+	if text == "" {
+		return true
+	}
+	return !strings.Contains(text, "##")
+}
+
+// divertUnparsed creates one T1 normalize card for the source card.
+// A later unusable result, or an existing normalize card, marks the source needs_input.
+func (d Deps) divertUnparsed(ctx context.Context, obj model.Objective, card model.Card) error {
+	existing, err := d.normalizeFor(ctx, obj.ID, card.ID)
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		return d.addCard(ctx, obj, &model.Card{
+			Objective: obj.ID,
+			Node:      card.Node,
+			Kind:      model.KindNormalize,
+			Title:     "整理",
+			Body:      "整理 " + card.ID + "\n",
+			Tier:      model.TierT1,
+			Status:    model.CardReady,
+			Deps:      []string{card.ID},
+		})
+	}
+	fresh, err := d.Store.GetCard(ctx, card.ID)
+	if err != nil {
+		return err
+	}
+	if fresh.Status != model.CardNeedsInput {
+		fresh.Status = model.CardNeedsInput
+		if err := d.Store.UpdateCard(ctx, &fresh); err != nil {
+			return err
+		}
+	}
+	return d.markAbsorbed(ctx, card.ID, nil)
+}
+
+func (d Deps) normalizeFor(ctx context.Context, objective, cardID string) (*model.Card, error) {
+	cards, err := d.Store.ListCards(ctx, objective)
+	if err != nil {
+		return nil, err
+	}
+	for i := range cards {
+		if cards[i].Kind != model.KindNormalize {
+			continue
+		}
+		if len(cards[i].Deps) > 0 && cards[i].Deps[0] == cardID {
+			c := cards[i]
+			return &c, nil
+		}
+	}
+	return nil, nil
+}
+
+func (d Deps) markPassedDone(ctx context.Context, card model.Card, outcome model.Outcome) error {
+	if outcome != model.OutcomePassed {
+		return nil
+	}
+	fresh, err := d.Store.GetCard(ctx, card.ID)
+	if err != nil {
+		return err
+	}
+	if fresh.Status == model.CardDone || fresh.Status == model.CardMerged {
+		return nil
+	}
+	fresh.Status = model.CardDone
+	return d.Store.UpdateCard(ctx, &fresh)
 }

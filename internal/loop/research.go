@@ -194,38 +194,51 @@ func (d Deps) markStale(ctx context.Context, obj model.Objective, n *model.Desig
 	return nil
 }
 
-func (d Deps) harvested(ctx context.Context, card model.Card) (string, string, error) {
+func (d Deps) harvested(ctx context.Context, card model.Card) (string, string, model.Outcome, error) {
 	if d.Store == nil {
-		return "", "", nil
+		return "", "", "", nil
 	}
 	attempts, err := d.Store.ListAttempts(ctx, card.ID)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
+	cur := currentAttempt(attempts)
+	if cur == nil {
+		return "", "", "", nil
+	}
+	text, err := attemptResult(cur.Worktree)
+	if err != nil {
+		return "", "", "", err
+	}
+	return text, cur.BaseCommit, cur.Outcome, nil
+}
+
+// currentAttempt is the attempt under disposal: the highest index.
+// A missing result file does not fall through to an older attempt.
+func currentAttempt(attempts []model.Attempt) *model.Attempt {
 	var best *model.Attempt
-	var text string
 	for i := range attempts {
-		wt := strings.TrimSpace(attempts[i].Worktree)
-		if wt == "" {
-			continue
-		}
-		raw, err := os.ReadFile(filepath.Join(wt, ".cardex-result.md"))
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return "", "", err
-		}
-		if best == nil || attempts[i].Index >= best.Index {
+		if best == nil || attempts[i].Index > best.Index {
 			cp := attempts[i]
 			best = &cp
-			text = string(raw)
 		}
 	}
-	if best == nil {
-		return "", "", nil
+	return best
+}
+
+func attemptResult(worktree string) (string, error) {
+	wt := strings.TrimSpace(worktree)
+	if wt == "" {
+		return "", nil
 	}
-	return text, best.BaseCommit, nil
+	raw, err := os.ReadFile(filepath.Join(wt, ".cardex-result.md"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(raw), nil
 }
 
 func (d Deps) factList(ctx context.Context, obj model.Objective, node model.DesignNode) ([]model.OpenQuestion, error) {

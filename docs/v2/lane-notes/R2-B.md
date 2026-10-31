@@ -11,7 +11,7 @@ LaunchSpec 缺 goal_mode/requires：用 Grok.GoalMode；Drive 无 prompt 参数�
 
 ## 已知问题
 N2：AGY 嵌套错误 {"error":{"message":"quota exceeded"}} 与多行 JSON 的 usage 仍未按 v1 完整文档提取，不在本次 findings。
-B2 准则 1 豁免：没有可引用的交互额度转录或会话额度字段。不把无头 stderr 的 quota exceeded、headless HTTP 429 错误记录或 PTY 正文 signal: killed 当成 ErrGrokQuotaHit，也不发明样本。
+B2 准则 1 仍未完成：没有可引用的交互额度转录或会话额度字段，Drive 与 ReadGrokGoalSession 没有 ErrGrokQuotaHit 路径，没有伪造样本。无头 stderr 的 quota exceeded、headless HTTP 429 错误记录和 PTY 正文 signal: killed 都不是额度终态。
 
 ## 修复记录
 接收 prompt 正文的参数必须是文件内容，不能是路径 → internal/runner/grok.go:78、cursor.go:34、kimi.go:45、agy.go:40 → TestPromptFileBody

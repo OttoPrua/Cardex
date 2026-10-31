@@ -282,32 +282,44 @@ func TestBlockPushRefusesLongerPushInsteadOf(t *testing.T) {
 		kind       string
 		configArgs []string
 		pushArgs   []string
+		advertise  bool
 	}{
 		{name: "long prefix direct address", kind: "long-prefix"},
-		{name: "long prefix --signed=false", kind: "long-prefix", pushArgs: []string{"--signed=false"}},
-		{name: "long prefix --no-signed", kind: "long-prefix", pushArgs: []string{"--no-signed"}},
-		{name: "long prefix --signed=if-asked", kind: "long-prefix", pushArgs: []string{"--signed=if-asked"}},
-		{name: "long prefix -c push.gpgSign=false", kind: "long-prefix", configArgs: []string{"-c", "push.gpgSign=false"}},
-		{name: "different long prefix", kind: "other-prefix"},
-		{name: "different long prefix --signed=false", kind: "other-prefix", pushArgs: []string{"--signed=false"}},
-		{name: "different long prefix --no-signed", kind: "other-prefix", pushArgs: []string{"--no-signed"}},
-		{name: "different long prefix --signed=if-asked", kind: "other-prefix", pushArgs: []string{"--signed=if-asked"}},
-		{name: "different long prefix -c push.gpgSign=false", kind: "other-prefix", configArgs: []string{"-c", "push.gpgSign=false"}},
+		{name: "long prefix signed false", kind: "long-prefix", pushArgs: []string{"--signed=false"}},
+		{name: "long prefix no signed", kind: "long-prefix", pushArgs: []string{"--no-signed"}},
+		{name: "long prefix signed if-asked", kind: "long-prefix", pushArgs: []string{"--signed=if-asked"}},
+		{name: "long prefix gpgSign false", kind: "long-prefix", configArgs: []string{"-c", "push.gpgSign=false"}},
+		{name: "long prefix signed false advertise", kind: "long-prefix", pushArgs: []string{"--signed=false"}, advertise: true},
+		{name: "long prefix no signed advertise", kind: "long-prefix", pushArgs: []string{"--no-signed"}, advertise: true},
+		{name: "long prefix signed if-asked advertise", kind: "long-prefix", pushArgs: []string{"--signed=if-asked"}, advertise: true},
+		{name: "long prefix gpgSign false advertise", kind: "long-prefix", configArgs: []string{"-c", "push.gpgSign=false"}, advertise: true},
+		{name: "other prefix", kind: "other-prefix"},
+		{name: "other prefix signed false", kind: "other-prefix", pushArgs: []string{"--signed=false"}},
+		{name: "other prefix no signed", kind: "other-prefix", pushArgs: []string{"--no-signed"}},
+		{name: "other prefix signed if-asked", kind: "other-prefix", pushArgs: []string{"--signed=if-asked"}},
+		{name: "other prefix gpgSign false", kind: "other-prefix", configArgs: []string{"-c", "push.gpgSign=false"}},
+		{name: "other prefix signed false advertise", kind: "other-prefix", pushArgs: []string{"--signed=false"}, advertise: true},
+		{name: "other prefix no signed advertise", kind: "other-prefix", pushArgs: []string{"--no-signed"}, advertise: true},
+		{name: "other prefix signed if-asked advertise", kind: "other-prefix", pushArgs: []string{"--signed=if-asked"}, advertise: true},
+		{name: "other prefix gpgSign false advertise", kind: "other-prefix", configArgs: []string{"-c", "push.gpgSign=false"}, advertise: true},
 		{name: "direct bare path", kind: "direct"},
 		{name: "dot", kind: "dot"},
 		{name: "relative path", kind: "relative"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assertLongerPushInsteadOfRefused(t, tc.kind, tc.configArgs, tc.pushArgs)
+			assertLongerPushInsteadOfRefused(t, tc.kind, tc.configArgs, tc.pushArgs, tc.advertise)
 		})
 	}
 }
 
-func assertLongerPushInsteadOfRefused(t *testing.T, kind string, configArgs, pushArgs []string) {
+func assertLongerPushInsteadOfRefused(t *testing.T, kind string, configArgs, pushArgs []string, advertise bool) {
 	t.Helper()
 	repo := initRepo(t)
 	bare := filepath.Join(t.TempDir(), "target.git")
+	if strings.Contains(bare, "=") {
+		t.Fatalf("bare path contains '=': %s", bare)
+	}
 	gitRun(t, "", "init", "--bare", bare)
 	gitRun(t, repo, "remote", "add", "origin", bare)
 	gitRun(t, repo, "push", bare, "HEAD:refs/heads/probe")
@@ -381,6 +393,12 @@ func assertLongerPushInsteadOfRefused(t *testing.T, kind string, configArgs, pus
 		front = append(front, configArgs...)
 		args = append(front, args...)
 	}
+	if advertise {
+		gitRun(t, dest, "config", "receive.advertisePushOptions", "true")
+		if got := gitOut(t, dest, "config", "--local", "--get", "receive.advertisePushOptions"); got != "true" {
+			t.Fatalf("destination advertisePushOptions %q", got)
+		}
+	}
 	if strings.Contains(strings.Join(args, " "), "--dry-run") {
 		t.Fatal("push refusal must be a real push")
 	}
@@ -391,6 +409,9 @@ func assertLongerPushInsteadOfRefused(t *testing.T, kind string, configArgs, pus
 	}
 	if strings.Contains(string(out), "not allowed") {
 		t.Fatalf("git %s protocol denial:\n%s", strings.Join(args, " "), out)
+	}
+	if advertise && !strings.Contains(string(out), "new line characters") {
+		t.Fatalf("git %s was not refused in the client:\n%s", strings.Join(args, " "), out)
 	}
 	if after := gitOut(t, dest, "show-ref"); after != before {
 		t.Fatalf("destination refs changed\nbefore:\n%s\nafter:\n%s\npush:\n%s", before, after, out)

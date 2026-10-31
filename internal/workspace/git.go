@@ -204,12 +204,12 @@ func (Git) Remove(ctx context.Context, worktree string) error {
 // skips the hook. A push that names a URL directly, including "." and a
 // relative path, is rewritten by an empty pushInsteadOf. A longer inherited
 // or process-level pushInsteadOf outranks that empty prefix, and a direct
-// URL has no receivepack. Refusing that resolved local target does not
-// depend on push.gpgSign: --signed=false, --no-signed, --signed=if-asked,
-// and -c push.gpgSign=false turn the signature default off. push.pushOption
-// is sent anyway. A local receive-pack does not advertise push options
-// unless the destination opts in, so the push fails before any ref update.
-// Fetch and ls-remote do not send push options. The empty rewrite is
+// URL has no receivepack. The configured push option contains a newline,
+// so git push rejects it in the client before receive-pack. That check does
+// not consult receive.advertisePushOptions or push.gpgSign, and it still
+// runs for --signed=false, --no-signed, --signed=if-asked, and
+// -c push.gpgSign=false. Fetch and ls-remote do not read push.pushOption.
+// The empty rewrite is
 // ignored when a remote already has a pushurl, and http(s) ignores
 // receivepack, so those pushurls are rewritten with insteadOf. insteadOf
 // does not apply to a local fetch URL. protocol.allow is left unset.
@@ -235,8 +235,8 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 		return err
 	}
 	// An empty prefix matches every push URL, including "." and "nested/bare.git".
-	// Fetch does not consult pushInsteadOf. A longer prefix wins; push.pushOption
-	// below still refuses that destination when signing is turned off.
+	// Fetch does not consult pushInsteadOf. A longer prefix wins; the newline
+	// push option below still refuses that resolved destination.
 	if _, err := runGit(ctx, worktree, "config", "--worktree", "--add", "url."+blockedPushURL+"/.pushInsteadOf", ""); err != nil {
 		return err
 	}
@@ -253,17 +253,17 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 	if err != nil {
 		return fmt.Errorf("workspace: push reject command: %w", err)
 	}
-	// Signature defaults lose to --signed=false, --no-signed, --signed=if-asked,
-	// and -c push.gpgSign=false. push.pushOption does not. The default local
-	// receive-pack does not advertise push options, so this rejects the push
-	// before refs are updated. Fetch and ls-remote ignore it.
+	// git push rejects a push option that contains a newline before it
+	// talks to receive-pack. The check does not read
+	// receive.advertisePushOptions or push.gpgSign, and --no-verify does
+	// not skip it. Fetch and ls-remote ignore push.pushOption.
 	if _, err := runGit(ctx, worktree, "config", "--worktree", "push.pushOption", blockedPushOption); err != nil {
 		return err
 	}
 	// Worktree values override an inherited push.gpgSign=false. They do not
 	// change the main repository config. gpg.format pins OpenPGP so an
-	// inherited ssh signer is not used. This still refuses a destination that
-	// advertises push options, until a push option turns signing off.
+	// inherited ssh signer is not used. Turning signing off skips this
+	// path; the newline push option above still refuses the push.
 	if _, err := runGit(ctx, worktree, "config", "--worktree", "push.gpgSign", "true"); err != nil {
 		return err
 	}
@@ -293,9 +293,10 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 
 const blockedPushURL = "invalid://cardex.blocked/push"
 
-// blockedPushOption is sent with every push from the worktree. A local
-// receive-pack rejects it unless that repository advertises push options.
-const blockedPushOption = "cardex-blocked"
+// blockedPushOption contains a newline. git push rejects that in the
+// client, including when the destination advertises push options and
+// signing is turned off.
+const blockedPushOption = "cardex-blocked\nrefuse"
 
 // httpPushSchemes ignore remote.<name>.receivepack. Rewriting them stops an
 // inherited pushurl of that scheme from being contacted.

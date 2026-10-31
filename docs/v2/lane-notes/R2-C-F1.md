@@ -10,7 +10,7 @@ Git 已记录、文件字节相同的改动仍是一条文件级声明。提交�
 model.Claim 仍无种类字段。空 symbol 只表示整文件，不能表示新建。Conflicts 增加 exists func(path string) bool，返回 false 才视为新建。集成者给 Claim 加种类字段后可去掉这个旁路。
 
 ## 已知问题
-acceptance 无 deadline 时默认 2 分钟。linked worktree 不读自己的 info/exclude，仍改用 core.excludesFile。extensions.worktreeConfig 写在公共 config。https、http、ftp、ftps 的 fetch 和 ls-remote 仍被 insteadOf 改写到无效地址，本次不修。目标仓库若打开 receive.advertisePushOptions，并且调用方关掉签名，较长的 pushInsteadOf 仍可能写入该仓库；默认 bare 不会打开这项，本次不修。
+acceptance 无 deadline 时默认 2 分钟。linked worktree 不读自己的 info/exclude，仍改用 core.excludesFile。extensions.worktreeConfig 写在公共 config。https、http、ftp、ftps 的 fetch 和 ls-remote 仍被 insteadOf 改写到无效地址，本次不修。
 
 ## 修复记录
 文件内容不变不能据此忽略 Git 已记录的模式变化。 → internal/claims/symbols.go:170 → TestModeOnlyChangeIsClaim
@@ -18,3 +18,4 @@ acceptance 无 deadline 时默认 2 分钟。linked worktree 不读自己的 inf
 防推送措施不应连带禁止正常的 Git 读取。 → internal/workspace/git.go:232, internal/workspace/git.go:240, internal/workspace/git.go:259 → TestBlockPushBlocksInheritedPushURLs
 解除读取限制后，更长的继承或进程级 pushInsteadOf 仍不能让直接地址的 push --no-verify 更新本地仓库。 → internal/workspace/git.go:256, internal/workspace/git.go:259, internal/workspace/git.go:262 → TestBlockPushRefusesLongerPushInsteadOf
 拒绝推送不能只依赖可被推送选项覆盖的签名默认值。 → internal/workspace/git.go:260 → TestBlockPushRefusesLongerPushInsteadOf
+推送拒绝不能依赖目标端不支持可选能力，也不能依赖签名默认值。 → internal/workspace/git.go:260 → TestBlockPushRefusesLongerPushInsteadOf

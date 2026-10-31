@@ -19,9 +19,9 @@
 无。
 
 ## 修复记录
-开放问题不规范枚举软处理并保留原文 → internal/model/open_question.go:101,122；internal/store/open_question.go:59 → TestOpenQuestionIrregularEnumsSoft
+开放问题不规范枚举软处理并保留原文 → internal/model/open_question.go:101,122；internal/store/open_question.go:62 → TestOpenQuestionIrregularEnumsSoft
 Pace 只在同 preference、同 tier、同 SourceGroup 内比较 → internal/route/select.go:111 → TestSelectPaceStaysInsideSource
 滚动月从原锚点钳位月末 → internal/quota/window.go:171,198 → TestRollingMonthlyKeepsAnchorDay
 提案差异包含 tier 和能力 → internal/positioning/home.go:433 → TestProposalDiffIncludesTierAndCapability
-表版本不作为模型行返回，空表版本仍递增 → internal/positioning/home.go:100,265；internal/store/positioning.go:61,95 → TestEmptyPublishHidesVersionRow
-可识别 tier 归一，无法识别则待复核且不发布原 token → internal/positioning/home.go:193,366；internal/store/positioning.go:17 → TestApproveNormalizesTierAndMarksUnknown
+表版本不作为模型行返回，空表版本仍递增 → internal/positioning/home.go:100,265；internal/store/positioning.go:61,95,141 → TestEmptyPublishHidesVersionRow
+可识别 tier 归一，无法识别则待复核且不发布原 token → internal/model/enums.go:307；internal/positioning/home.go:193,366；internal/store/positioning.go:28 → TestApproveNormalizesTierAndMarksUnknown, TestPositioningTierCaseIsSoft

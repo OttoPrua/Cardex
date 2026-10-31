@@ -96,16 +96,11 @@ func (d Deps) absorbTerminal(ctx context.Context, obj model.Objective) (map[stri
 		if !terminalCard(card.Status) {
 			continue
 		}
-		done, err := d.hasEvent(ctx, "card:"+card.ID, evAbsorbed)
+		consumed, err := d.currentAttemptConsumed(ctx, card)
 		if err != nil {
 			return nil, err
 		}
-		if done {
-			continue
-		}
-		if skip, err := d.continuationSettled(ctx, card); err != nil {
-			return nil, err
-		} else if skip {
+		if consumed {
 			continue
 		}
 		if err := d.absorbOne(ctx, obj, card, researched); err != nil {
@@ -364,7 +359,23 @@ func (d Deps) progressNodes(ctx context.Context, obj model.Objective, researched
 		if err != nil {
 			return err
 		}
-		if blocked || !mayReceiveNext(node, cards, questions, researched[node.ID]) {
+		if blocked {
+			continue
+		}
+		if followKind(node.Status) == model.KindPlan {
+			if unfinishedResearch(cards, node.ID) || hasKind(cards, node.ID, model.KindPlan) {
+				continue
+			}
+			if err := d.createWorkCard(ctx, obj, node, model.KindPlan, workTitle(model.KindPlan)); err != nil {
+				return err
+			}
+			cards, err = d.Store.ListCards(ctx, obj.ID)
+			if err != nil {
+				return err
+			}
+			continue
+		}
+		if !mayReceiveNext(node, cards, questions, researched[node.ID]) {
 			continue
 		}
 		kind := followKind(node.Status)
@@ -629,6 +640,10 @@ func (d Deps) freezeNode(ctx context.Context, obj model.Objective, node model.De
 	if hasKind(cards, node.ID, model.KindPlan) {
 		return nil
 	}
+	blocked, err := d.unmergedDesignFile(ctx, obj, node, cards)
+	if err != nil || blocked {
+		return err
+	}
 	return d.createWorkCard(ctx, obj, node, model.KindPlan, "拆卡")
 }
 
@@ -759,7 +774,7 @@ func (d Deps) createWorkCard(ctx context.Context, obj model.Objective, node mode
 	if err != nil {
 		return err
 	}
-	return d.addCard(ctx, obj, &model.Card{
+	if err := d.addCard(ctx, obj, &model.Card{
 		Objective: obj.ID,
 		Node:      node.ID,
 		Kind:      kind,
@@ -767,7 +782,38 @@ func (d Deps) createWorkCard(ctx context.Context, obj model.Objective, node mode
 		Body:      body,
 		Tier:      model.DefaultTier(kind),
 		Status:    model.CardReady,
-	})
+	}); err != nil {
+		return err
+	}
+	if kind != model.KindPlan {
+		return nil
+	}
+	return d.consumeSettledResearch(ctx, obj.ID, node.ID)
+}
+
+// consumeSettledResearch ties already-settled research to the plan just created.
+// Later research is left pending so it can receive its own successor.
+func (d Deps) consumeSettledResearch(ctx context.Context, objective, nodeID string) error {
+	cards, err := d.Store.ListCards(ctx, objective)
+	if err != nil {
+		return err
+	}
+	var research []model.Card
+	for _, c := range cards {
+		if c.Node == nodeID && c.Kind == model.KindResearch && terminalCard(c.Status) {
+			research = append(research, c)
+		}
+	}
+	settled, err := d.researchSettled(ctx, research)
+	if err != nil || !settled {
+		return err
+	}
+	for _, c := range research {
+		if err := d.markContinued(ctx, c.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d Deps) addCard(ctx context.Context, obj model.Objective, c *model.Card) error {
@@ -1138,6 +1184,75 @@ func designUnusable(result string, outcome model.Outcome) bool {
 	return !strings.Contains(text, "##")
 }
 
+// currentAttemptConsumed is true when this card's current attempt was already
+// absorbed. A card-level loop.absorbed mark applies only when the card has no attempt.
+func (d Deps) currentAttemptConsumed(ctx context.Context, card model.Card) (bool, error) {
+	_, _, _, attemptID, err := d.harvested(ctx, card)
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(attemptID) != "" {
+		return d.attemptHandled(ctx, attemptID)
+	}
+	done, err := d.hasEvent(ctx, "card:"+card.ID, evAbsorbed)
+	if err != nil || done {
+		return done, err
+	}
+	return d.continuationSettled(ctx, card)
+}
+
+// recordSkippedResearch keeps the 未能核实 record for a terminal research card
+// that has no valid answer, and does not store the voided result text.
+func (d Deps) recordSkippedResearch(ctx context.Context, obj model.Objective, card model.Card, base string) error {
+	if card.Node == "" {
+		return d.absorbInventory(ctx, obj, card, "", base)
+	}
+	node, err := d.Store.GetNode(ctx, card.Node)
+	if err != nil {
+		return err
+	}
+	ids, err := d.researchIDs(ctx, card)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for _, id := range ids {
+		for i := range node.OpenQuestions {
+			if node.OpenQuestions[i].ID != id || node.OpenQuestions[i].Status != model.OQResearching {
+				continue
+			}
+			node.OpenQuestions[i].Status = model.OQUnanswered
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return d.Store.UpdateNode(ctx, &node)
+}
+
+// applyNormalize restores Deps[0] from this normalize attempt. A usable pass applies
+// the normalize text to the source and leaves the source status alone. A failed,
+// canceled, or unusable normalize sets the source to needs_input.
+func (d Deps) applyNormalize(ctx context.Context, obj model.Objective, card model.Card, text string, outcome model.Outcome) error {
+	if len(card.Deps) == 0 || strings.TrimSpace(card.Deps[0]) == "" {
+		return nil
+	}
+	source, err := d.Store.GetCard(ctx, card.Deps[0])
+	if err != nil {
+		return err
+	}
+	switch source.Kind {
+	case model.KindDesign, model.KindPlan, model.KindReplan:
+	default:
+		return nil
+	}
+	if card.Status == model.CardFailed || card.Status == model.CardCanceled || skippedOutcome(outcome, card.Status) || designUnusable(text, outcome) {
+		return d.markNeedsInput(ctx, source.ID)
+	}
+	return d.applyDesign(ctx, obj, source, text)
+}
+
 // recoverUnparsed keeps one normalize card tied to the source.
 // resolved is true only after that card has failed or its extraction was absorbed.
 func (d Deps) recoverUnparsed(ctx context.Context, obj model.Objective, card model.Card) (bool, error) {
@@ -1319,6 +1434,16 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 		}
 	}
 	if skippedOutcome(outcome, card.Status) {
+		if card.Kind == model.KindResearch {
+			if err := d.recordSkippedResearch(ctx, obj, card, base); err != nil {
+				return err
+			}
+		}
+		if card.Kind == model.KindNormalize {
+			if err := d.applyNormalize(ctx, obj, card, text, outcome); err != nil {
+				return err
+			}
+		}
 		if err := d.markAttempt(ctx, attemptID); err != nil {
 			return err
 		}
@@ -1368,6 +1493,10 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 		}
 	case model.KindDev, model.KindReview:
 		if err := d.absorbDevReview(ctx, obj, card, text, outcome); err != nil {
+			return err
+		}
+	case model.KindNormalize:
+		if err := d.applyNormalize(ctx, obj, card, text, outcome); err != nil {
 			return err
 		}
 	default:
@@ -1427,14 +1556,14 @@ func (d Deps) settleFrozenResearch(ctx context.Context, obj model.Objective) err
 		if !pending {
 			continue
 		}
-		blocked, err := d.unmergedDesignFile(ctx, obj, node, cards)
-		if err != nil {
-			return err
-		}
-		if blocked {
-			continue
-		}
 		if !readyFollow(cards, node.ID, model.KindPlan) {
+			blocked, err := d.unmergedDesignFile(ctx, obj, node, cards)
+			if err != nil {
+				return err
+			}
+			if blocked {
+				continue
+			}
 			if err := d.createWorkCard(ctx, obj, node, model.KindPlan, workTitle(model.KindPlan)); err != nil {
 				return err
 			}
@@ -1479,11 +1608,13 @@ func (d Deps) researchSettled(ctx context.Context, cards []model.Card) (bool, er
 	return true, nil
 }
 
+// readyFollow reports a live successor. A finished plan does not consume a later research wave.
 func readyFollow(cards []model.Card, nodeID string, kind model.CardKind) bool {
 	for _, c := range cards {
-		if c.Node == nodeID && c.Kind == kind && c.Status == model.CardReady {
-			return true
+		if c.Node != nodeID || c.Kind != kind || terminalCard(c.Status) || c.Status == model.CardPaused || c.Status == model.CardNeedsInput {
+			continue
 		}
+		return true
 	}
 	return false
 }

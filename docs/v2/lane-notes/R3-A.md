@@ -33,3 +33,8 @@ B8 消费按尝试而不是按卡；transport、失败、取消、violation 不�
 B9 可解析的 design、plan、replan 不等于已合入；merge_queued 和 merged 保持不变，节点文档或上下文包未合入时不标 done、不派下一张 → `internal/loop/design.go:363` `design.go:1196` `design.go:1524` → `TestParsedOutputWaitsForMerge`
 B10 空或 result_unparsable 的 design、plan、replan 只建一张整理卡；未结束不标 needs_input、不消费，失败后才 needs_input，通过的提取吸收到源卡 → `internal/loop/design.go:1143` `design.go:1342` → `TestNormalizeRecovery`
 B11 mode=manual 时收割和 Step 都不创建设计期节点或 design、plan、replan、research、spike 卡 → `internal/loop/research.go:37` `design.go:286` `design.go:311` `design.go:645` `design.go:696` `design.go:734` `design.go:774` → `TestManualHarvestRefusesDesignPhase`
+B1 已被后继 plan 消费的历史研究不得再派第二张 plan；创建该 plan 时已结束的研究记为已消费，进行中的 plan 也算后继已经存在 → `internal/loop/design.go:366` `design.go:640` `design.go:791` `design.go:1559` `design.go:1612` → `TestHistoricalResearchDoesNotDispatchAnotherPlan`
+B8 两个吸收入口都先看当前尝试，卡级 loop.absorbed 不能封死同卡的后续尝试 → `internal/loop/design.go:99` `design.go:1189` `design.go:1428` → `TestCurrentAttemptNotSealedByCardAbsorb`
+B9 依赖设计文档的后继 plan 只在文档合入之后生成；每条冻结入口都等这次合入，未改文档则立刻派 → `internal/loop/design.go:358` `design.go:643` `design.go:1560` → `TestFreezeWaitsForMergedDesign`
+B10 只收割一次整理卡就把结果写回仍处于 harvesting 的 Deps[0] 源卡；通过施加设计效果，失败、取消或不可用则 needs_input，不重收源尝试、不把源卡预设为终态 → `internal/loop/design.go:1237` `design.go:1443` `design.go:1499` → `TestNormalizeHarvestRestoresSource`
+B12 研究真正终态且没有有效答案时仍记下 unanswered（盘点为 Q0）并不写入作废文本，随后继续推进 → `internal/loop/design.go:1206` `design.go:1438` → `TestTerminalResearchWithoutAnswerContinues`

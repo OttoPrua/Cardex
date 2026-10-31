@@ -14,9 +14,12 @@ import (
 	"cardex/internal/classify"
 	"cardex/internal/harvest"
 	"cardex/internal/host"
+	"cardex/internal/loop"
 	"cardex/internal/model"
+	"cardex/internal/question"
 	"cardex/internal/quota"
 	"cardex/internal/route"
+	"cardex/internal/workspace"
 )
 
 func TestS01(t *testing.T) {
@@ -117,17 +120,112 @@ func TestS11(t *testing.T) {
 
 func TestS12(t *testing.T) {
 	// 设计期，safe 模式下 module 层冻结需要问题确认。
-	t.Skip("R3-A")
+	h := New(t)
+	t.Setenv("CARDEX_HOME", h.Home)
+	ctx := t.Context()
+	obj := &model.Objective{Title: "S12", Mode: model.ModeAuto, FreezeMode: model.FreezeSafe, Status: model.ObjectiveActive, Origin: "codex:s12"}
+	h.NoError(h.DB.CreateObjective(ctx, obj))
+	node := &model.DesignNode{Objective: obj.ID, Layer: model.LayerModule, Status: model.NodeDrafting}
+	h.NoError(h.DB.CreateNode(ctx, node))
+	h.NoError(h.DB.CreateCard(ctx, &model.Card{
+		Objective: obj.ID, Node: node.ID, Kind: model.KindDesign, Title: "设计",
+		Body: "## 可冻结\n是\n", Tier: model.TierT3, Status: model.CardDone,
+	}))
+	eng := loop.New(h.DB, workspace.Git{}, quietDeliver{})
+	h.NoError(eng.Step(ctx, obj.ID))
+	got := e2eNode(t, h, node.ID)
+	h.Equal(got.Status, model.NodeFreezable)
+	fq := e2eFreezeQuestion(t, h, obj.ID, node.ID)
+	svc := question.New(h.DB, quietDeliver{})
+	if _, err := svc.Answer(ctx, fq.ID, ""); err == nil {
+		t.Fatal("empty answer")
+	}
+	h.NoError(eng.Step(ctx, obj.ID))
+	h.Equal(e2eNode(t, h, node.ID).Status, model.NodeFreezable)
+	if _, err := svc.Answer(ctx, fq.ID, fq.Options[0]); err != nil {
+		t.Fatal(err)
+	}
+	h.NoError(eng.Step(ctx, obj.ID))
+	h.Equal(e2eNode(t, h, node.ID).Status, model.NodeFrozen)
+	if !e2eHasKind(t, h, obj.ID, node.ID, model.KindPlan) {
+		t.Fatal("frozen module has no plan card")
+	}
 }
 
 func TestS13(t *testing.T) {
-	// fast 模式下自动冻结。
-	t.Skip("R3-A")
+	// fast 模式下非方向层自动冻结，方向层仍要 Otto 确认。
+	h := New(t)
+	t.Setenv("CARDEX_HOME", h.Home)
+	ctx := t.Context()
+	obj := &model.Objective{Title: "S13", Mode: model.ModeAuto, FreezeMode: model.FreezeFast, Status: model.ObjectiveActive, Origin: "codex:s13"}
+	h.NoError(h.DB.CreateObjective(ctx, obj))
+	direction := &model.DesignNode{Objective: obj.ID, Layer: model.LayerDirection, Status: model.NodeDrafting}
+	module := &model.DesignNode{Objective: obj.ID, Layer: model.LayerModule, Status: model.NodeDrafting}
+	h.NoError(h.DB.CreateNode(ctx, direction))
+	h.NoError(h.DB.CreateNode(ctx, module))
+	for _, id := range []string{direction.ID, module.ID} {
+		h.NoError(h.DB.CreateCard(ctx, &model.Card{
+			Objective: obj.ID, Node: id, Kind: model.KindDesign, Title: "设计",
+			Body: "## 可冻结\n是\n", Tier: model.TierT3, Status: model.CardDone,
+		}))
+	}
+	eng := loop.New(h.DB, workspace.Git{}, quietDeliver{})
+	h.NoError(eng.Step(ctx, obj.ID))
+	h.Equal(e2eNode(t, h, direction.ID).Status, model.NodeFreezable)
+	if e2eFreezeQuestion(t, h, obj.ID, direction.ID).ID == "" {
+		t.Fatal("direction fast froze without a freeze question")
+	}
+	h.Equal(e2eNode(t, h, module.ID).Status, model.NodeFrozen)
+	qs, err := h.DB.ListQuestions(ctx, obj.ID)
+	h.NoError(err)
+	for _, q := range qs {
+		if q.Kind == model.QuestionFreeze && q.Scope == module.ID {
+			t.Fatal("fast module created a freeze question")
+		}
+	}
+	if !e2eHasKind(t, h, obj.ID, module.ID, model.KindPlan) {
+		t.Fatal("fast module has no plan card")
+	}
 }
 
 func TestS14(t *testing.T) {
 	// 开发卡报告设计问题，经确认重开节点，下游卡暂停，派重规划卡。
-	t.Skip("R3-A")
+	h := New(t)
+	t.Setenv("CARDEX_HOME", h.Home)
+	ctx := t.Context()
+	obj := &model.Objective{Title: "S14", Mode: model.ModeAuto, FreezeMode: model.FreezeSafe, Status: model.ObjectiveActive, Origin: "codex:s14"}
+	h.NoError(h.DB.CreateObjective(ctx, obj))
+	node := &model.DesignNode{Objective: obj.ID, Layer: model.LayerModule, Status: model.NodeFrozen}
+	h.NoError(h.DB.CreateNode(ctx, node))
+	ready := &model.Card{Objective: obj.ID, Node: node.ID, Kind: model.KindDev, Title: "未开始", Body: "待做", Tier: model.TierT2, Status: model.CardReady}
+	running := &model.Card{Objective: obj.ID, Node: node.ID, Kind: model.KindDev, Title: "进行中", Body: "在跑", Tier: model.TierT2, Status: model.CardRunning}
+	h.NoError(h.DB.CreateCard(ctx, ready))
+	h.NoError(h.DB.CreateCard(ctx, running))
+	h.NoError(h.DB.CreateCard(ctx, &model.Card{
+		Objective: obj.ID, Node: node.ID, Kind: model.KindDev, Title: "已完成",
+		Body: "## 设计问题\n接口不一致\n", Tier: model.TierT2, Status: model.CardDone,
+	}))
+	eng := loop.New(h.DB, workspace.Git{}, quietDeliver{})
+	h.NoError(eng.Step(ctx, obj.ID))
+	if e2eNode(t, h, node.ID).Status == model.NodeReopened {
+		t.Fatal("reopened before the question was answered")
+	}
+	reopen := e2eQuestionKind(t, h, obj.ID, node.ID, model.QuestionReopen)
+	if reopen.ID == "" || len(reopen.Options) == 0 {
+		t.Fatal("missing reopen question")
+	}
+	h.Equal(e2eCard(t, h, ready.ID).Status, model.CardReady)
+	h.Equal(e2eCard(t, h, running.ID).Status, model.CardRunning)
+	if _, err := question.New(h.DB, quietDeliver{}).Answer(ctx, reopen.ID, reopen.Options[0]); err != nil {
+		t.Fatal(err)
+	}
+	h.NoError(eng.Step(ctx, obj.ID))
+	h.Equal(e2eNode(t, h, node.ID).Status, model.NodeReopened)
+	h.Equal(e2eCard(t, h, ready.ID).Status, model.CardPaused)
+	h.Equal(e2eCard(t, h, running.ID).Status, model.CardRunning)
+	if !e2eHasKind(t, h, obj.ID, node.ID, model.KindReplan) {
+		t.Fatal("missing replan card")
+	}
 }
 
 func TestS15(t *testing.T) {

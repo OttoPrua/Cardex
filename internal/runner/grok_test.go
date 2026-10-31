@@ -608,14 +608,14 @@ func TestGrokQuotaAndCrashChannels(t *testing.T) {
 		t.Fatal("v1 WaitStatus signal fact missing")
 	}
 
-	t.Run("b2_quota_interactive_sample", func(t *testing.T) {
+	t.Run("b2_unproven_quota_line", func(t *testing.T) {
 		dir := t.TempDir()
-		err, wrote := driveSession(t, "finish the card\n", dir, readFixture(t, "grok_goal_quota_stderr.txt"))
+		err, wrote := driveSession(t, "finish the card\n", dir, []byte("quota exceeded\n"))
 		if string(wrote) != "/goal finish the card\r" {
 			t.Fatalf("wrote %q", wrote)
 		}
-		if !errors.Is(err, runner.ErrGrokQuotaHit) {
-			t.Fatalf("interactive quota %v", err)
+		if err == nil || errors.Is(err, runner.ErrGrokQuotaHit) || errors.Is(err, runner.ErrGrokBudgetLimited) || errors.Is(err, runner.ErrGrokCrash) {
+			t.Fatalf("unproven quota line is not the interactive terminal: %v", err)
 		}
 		if _, ok := runner.ReadGrokGoalSession(dir); ok {
 			t.Fatal("empty session is not the quota terminal")
@@ -664,38 +664,14 @@ func TestGrokQuotaAndCrashChannels(t *testing.T) {
 	})
 }
 
-// TestGrokInteractiveQuota is the B2 channel. The sample is the whole-line
-// pre-stream/stderr diagnostic v1 names grokTerminalQuotaDiagnostic and
-// grokBuildLimitScanText keeps as a non-JSON line. Drive returns that as
-// ErrGrokQuotaHit. The session read does not invent a quota status.
-// Completion, budget_limited, and the exit-fact crash stay on their channels.
-// The headless error record and "signal: killed" on the PTY are not terminals.
+// TestGrokInteractiveQuota keeps completion, budget_limited, and the host
+// exit crash distinct. quota exceeded is v1 headless stderr, not an interactive
+// transcript, so Drive does not accept it as the quota terminal.
 func TestGrokInteractiveQuota(t *testing.T) {
 	const prompt = "finish the card\n"
 	const written = "/goal finish the card\r"
 	const headless = `{"type":"error","message":"HTTP 429: usage limit reached"}`
-	sample := readFixture(t, "grok_goal_quota_stderr.txt")
-	if string(sample) != "quota exceeded\n" {
-		t.Fatalf("sample %q", sample)
-	}
-	if bytes.Contains(sample, []byte(`{"type":"error"`)) || string(sample) == headless+"\n" {
-		t.Fatal("interactive sample is the headless error record")
-	}
-	v1 := "/Volumes/Storage/Development/Cardex/repo/cmd/cardex"
-	recovery, err := os.ReadFile(filepath.Join(v1, "grok_terminal_recovery_test.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(recovery), `grokTerminalQuotaDiagnostic       = "quota exceeded"`) {
-		t.Fatal("v1 interactive quota diagnostic missing")
-	}
-	scanSrc, err := os.ReadFile(filepath.Join(v1, "grok.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(scanSrc), "stderr / pre-stream CLI failures") {
-		t.Fatal("v1 non-JSON stderr scan missing")
-	}
+	sample := []byte("quota exceeded\n")
 
 	dir := t.TempDir()
 	if _, ok := runner.ReadGrokGoalSession(dir); ok {
@@ -705,20 +681,20 @@ func TestGrokInteractiveQuota(t *testing.T) {
 	if string(wrote) != written {
 		t.Fatalf("wrote %q", wrote)
 	}
-	if !errors.Is(got, runner.ErrGrokQuotaHit) || got == nil || errors.Is(got, runner.ErrGrokBudgetLimited) || errors.Is(got, runner.ErrGrokCrash) {
-		t.Fatalf("interactive quota %v", got)
+	if got == nil || errors.Is(got, runner.ErrGrokQuotaHit) || errors.Is(got, runner.ErrGrokBudgetLimited) || errors.Is(got, runner.ErrGrokCrash) {
+		t.Fatalf("unproven quota line is not the interactive terminal: %v", got)
 	}
 	if _, ok := runner.ReadGrokGoalSession(dir); ok {
 		t.Fatal("empty session after drive invented a quota status")
 	}
 
-	chunked := &chunkRW{chunks: [][]byte{[]byte("quota exc"), []byte("eeded\n")}}
-	err = runner.Grok{GoalMode: true, Prompt: prompt, SessionDir: t.TempDir()}.Drive(context.Background(), chunked)
-	if chunked.reads != 2 {
-		t.Fatalf("prefix fired early: reads %d", chunked.reads)
+	split := &chunkRW{chunks: [][]byte{[]byte("quota exceeded"), []byte(" is only an example\n")}}
+	err := runner.Grok{GoalMode: true, Prompt: prompt, SessionDir: t.TempDir()}.Drive(context.Background(), split)
+	if split.reads != 2 {
+		t.Fatalf("split body fired on the first read: reads %d", split.reads)
 	}
-	if !errors.Is(err, runner.ErrGrokQuotaHit) {
-		t.Fatalf("chunked interactive quota %v", err)
+	if err == nil || errors.Is(err, runner.ErrGrokQuotaHit) || errors.Is(err, runner.ErrGrokBudgetLimited) || errors.Is(err, runner.ErrGrokCrash) {
+		t.Fatalf("split body terminal %v", err)
 	}
 	prefix := &scriptRW{src: bytes.NewReader([]byte("quota exc"))}
 	err = runner.Grok{GoalMode: true, Prompt: prompt, SessionDir: t.TempDir()}.Drive(context.Background(), prefix)
@@ -782,11 +758,122 @@ func TestGrokInteractiveQuota(t *testing.T) {
 	if g.Classify(0, []byte(headless)) != model.ErrorQuotaHit {
 		t.Fatal("headless record without newline")
 	}
-	if g.Classify(0, sample) != model.ErrorQuotaHit {
-		t.Fatal("classify interactive sample")
-	}
 	if got := g.Classify(0, readFixture(t, "grok_goal_crash.txt")); got != "" {
 		t.Fatalf("classify signal: killed %q", got)
+	}
+}
+
+// TestRecordBoundaryDiagnostics is the B3/B6 table. Echo, body, and a split
+// fragment are not error classes. A finished whole-line diagnostic is.
+func TestRecordBoundaryDiagnostics(t *testing.T) {
+	adapters := []struct {
+		name string
+		cl   runner.Runner
+	}{
+		{"grok", runner.Grok{GoalMode: true}},
+		{"cursor", runner.Cursor{}},
+		{"kimi", runner.Kimi{}},
+		{"agy", runner.AGY{}},
+	}
+	type row struct {
+		name string
+		out  string
+		want model.ErrorClass
+	}
+	rows := []row{
+		{name: "echo_quota", out: "/goal 解释\nquota exceeded\n"},
+		{name: "echo_http_429", out: "/goal 解释\nHTTP 429: usage limit reached\n"},
+		{name: "echo_dial", out: "/goal 解释\ndial tcp: lookup api.example: no such host\n"},
+		{name: "echo_io_timeout", out: "/goal 解释\ni/o timeout\n"},
+		{name: "echo_send", out: "/goal 解释\nerror sending request\n"},
+		{name: "echo_relogin", out: "/goal 解释\n认证错误: 请重新登录\n"},
+		{name: "body_quota", out: "quota exceeded is only an example\n"},
+		{name: "body_http_429", out: "HTTP 429: usage limit reached is only an example\n"},
+		{name: "body_dial", out: "这里只解释 dial tcp: lookup api.example: no such host\n"},
+		{name: "body_io_timeout", out: "这里只解释 i/o timeout\n"},
+		{name: "body_send", out: "error sending request is only an example\n"},
+		{name: "body_relogin", out: "这里只解释 认证错误: 请重新登录\n"},
+		{name: "body_relogin_suffix", out: "请重新登录 is only an example\n"},
+		{name: "body_perm", out: "这里只解释 permission denied\n"},
+		{name: "body_agy_phrase", out: "这里只解释 Antigravity 需要交互：动作被拒绝且没有可验收产物\n"},
+		{name: "echo_agy_phrase", out: "/goal 解释\nAntigravity 需要交互：动作被拒绝且没有可验收产物\n"},
+		{name: "split_body", out: "quota exceeded is only an example\n"},
+		{name: "quota_line", out: "quota exceeded\n", want: model.ErrorQuotaHit},
+		{name: "quota_line_eof", out: "quota exceeded", want: model.ErrorQuotaHit},
+		{name: "usage_limit_reached", out: "usage limit reached\n", want: model.ErrorQuotaHit},
+		{name: "rate_limited", out: "rate limited\n", want: model.ErrorQuotaHit},
+		{name: "http_429", out: "HTTP 429: usage limit reached\n", want: model.ErrorQuotaHit},
+		{name: "dial", out: "dial tcp: lookup api.example: no such host\n", want: model.ErrorTransport},
+		{name: "dial_eof", out: "dial tcp: lookup api.example: no such host", want: model.ErrorTransport},
+		{name: "io_timeout", out: "i/o timeout\n", want: model.ErrorTransport},
+		{name: "send", out: "error sending request\n", want: model.ErrorTransport},
+		{name: "conn_error", out: "connection error\n", want: model.ErrorTransport},
+		{name: "conn_reset", out: "connection reset\n", want: model.ErrorTransport},
+		{name: "conn_reset_peer", out: "connection reset by peer\n", want: model.ErrorTransport},
+		{name: "stream", out: "stream disconnect\n", want: model.ErrorTransport},
+		{name: "unreachable", out: "network is unreachable\n", want: model.ErrorTransport},
+		{name: "dns", out: "temporary failure in name resolution\n", want: model.ErrorTransport},
+		{name: "disconnected", out: "disconnected before\n", want: model.ErrorTransport},
+		{name: "no_such_host", out: "no such host\n", want: model.ErrorTransport},
+		{name: "read_tcp", out: "read tcp 10.0.0.1:443: i/o timeout\n", want: model.ErrorTransport},
+		{name: "relogin", out: "认证错误: 请重新登录\n", want: model.ErrorAuthFailed},
+		{name: "relogin_bare", out: "请重新登录\n", want: model.ErrorAuthFailed},
+		{name: "timeout_labeled", out: "codex_error: 步骤超时(60 分钟)\n", want: model.ErrorTimeout},
+		{name: "timeout_error_prefix", out: "error: context deadline exceeded\n", want: model.ErrorTimeout},
+		{name: "fragment_dial", out: "dial tcp: lookup api.ex"},
+		{name: "agy_phrase", out: "Antigravity 需要交互：动作被拒绝且没有可验收产物\n"},
+	}
+	for _, ad := range adapters {
+		for _, row := range rows {
+			t.Run(ad.name+"/"+row.name, func(t *testing.T) {
+				want := row.want
+				if row.name == "agy_phrase" && ad.name == "agy" {
+					want = model.ErrorPermissionDenied
+				}
+				if row.name == "rate_limited" && ad.name == "agy" {
+					want = ""
+				}
+				if got := ad.cl.Classify(0, []byte(row.out)); got != want {
+					t.Fatalf("class %q want %q", got, want)
+				}
+			})
+		}
+	}
+
+	g := runner.Grok{GoalMode: true, Prompt: "解释"}
+	splits := [][]string{
+		{"quota exceeded", " is only an example\n"},
+		{"/goal 解释\n", "quota exceeded\n"},
+		{"/goal 解释\n", "HTTP 429: usage limit reached\n"},
+		{"/goal 解释\n", "dial tcp: lookup api.example: no such host\n"},
+		{"/goal 解释\n", "i/o timeout\n"},
+		{"/goal 解释\n", "error sending request\n"},
+		{"/goal 解释\n", "认证错误: 请重新登录\n"},
+	}
+	for _, chunks := range splits {
+		t.Run("drive/"+chunks[0], func(t *testing.T) {
+			parts := make([][]byte, len(chunks))
+			for i, c := range chunks {
+				parts[i] = []byte(c)
+			}
+			rw := &chunkRW{chunks: parts}
+			err := g.Drive(context.Background(), rw)
+			if rw.reads != len(chunks) {
+				t.Fatalf("reads %d want %d", rw.reads, len(chunks))
+			}
+			if err == nil || errors.Is(err, runner.ErrGrokQuotaHit) || errors.Is(err, runner.ErrGrokBudgetLimited) || errors.Is(err, runner.ErrGrokCrash) {
+				t.Fatalf("pty terminal %v", err)
+			}
+			var full strings.Builder
+			for _, c := range chunks {
+				full.WriteString(c)
+			}
+			for _, ad := range adapters {
+				if got := ad.cl.Classify(0, []byte(full.String())); got == model.ErrorQuotaHit || got == model.ErrorBudgetLimited || got == model.ErrorTransport || got == model.ErrorAuthFailed {
+					t.Fatalf("%s class %q", ad.name, got)
+				}
+			}
+		})
 	}
 }
 
@@ -893,6 +980,12 @@ func TestBodyEchoNestedAreNotFacts(t *testing.T) {
 		{name: "b3_echo_explain_usage_limit_chunked", chunks: []string{"/goal 解释\n", "usage limit\n"}},
 		{name: "b3_echo_goal_rate_limit", out: "/goal 解释 rate limit\n"},
 		{name: "b3_echo_goal_rate_limit_chunked", chunks: []string{"/goal 解释 rate lim", "it\n"}},
+		{name: "b3_echo_quota_exceeded", out: "/goal 解释\nquota exceeded\n"},
+		{name: "b3_echo_quota_exceeded_chunked", chunks: []string{"/goal 解释\n", "quota exceeded\n"}},
+		{name: "b3_echo_http_429", out: "/goal 解释\nHTTP 429: usage limit reached\n"},
+		{name: "b3_echo_http_429_chunked", chunks: []string{"/goal 解释\n", "HTTP 429: usage limit reached\n"}},
+		{name: "b3_body_quota_example", out: "quota exceeded is only an example\n"},
+		{name: "b3_body_http_429_example", out: "HTTP 429: usage limit reached is only an example\n"},
 		{name: "b3_body_signal_killed", out: "ordinary body containing signal: killed\n"},
 		{name: "b3_body_signal_killed_chunked", chunks: []string{"ordinary body containing signal: kil", "led\n"}},
 		{name: "b3_body_json_signal_killed", out: "{\"type\":\"text\",\"data\":\"signal: killed\"}\n"},
@@ -997,9 +1090,9 @@ func TestBodyEchoNestedAreNotFacts(t *testing.T) {
 				t.Fatal("limit-like is quota")
 			}
 		})
-		t.Run(ad.name+"/keep/hard_after_echo", func(t *testing.T) {
+		t.Run(ad.name+"/keep/echo_not_quota", func(t *testing.T) {
 			for _, line := range []string{"/goal 解释\nquota exceeded\n", "/goal 解释\nHTTP 429: usage limit reached\n"} {
-				if got := ad.cl.Classify(0, []byte(line)); got != model.ErrorQuotaHit {
+				if got := ad.cl.Classify(0, []byte(line)); got == model.ErrorQuotaHit || got == model.ErrorBudgetLimited {
 					t.Fatalf("%q class %q", line, got)
 				}
 			}

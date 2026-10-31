@@ -51,7 +51,7 @@ func (AGY) Classify(_ int, output []byte) model.ErrorClass {
 	if cls != "" {
 		return cls
 	}
-	if agyNeedsInteraction(output) || strings.Contains(string(output), "Antigravity 需要交互：动作被拒绝且没有可验收产物") {
+	if agyNeedsInteraction(output) || agyPermissionPhrase(output) {
 		return model.ErrorPermissionDenied
 	}
 	trim := bytes.TrimSpace(output)
@@ -103,6 +103,17 @@ func agyNeedsInteraction(output []byte) bool {
 		}
 	}
 	return agyDeniedCount(obj["denied_actions"]) > 0
+}
+
+func agyPermissionPhrase(output []byte) bool {
+	const phrase = "Antigravity 需要交互：动作被拒绝且没有可验收产物"
+	found := false
+	walkNonEchoLines(output, func(line string) {
+		if line == phrase {
+			found = true
+		}
+	})
+	return found
 }
 
 func agyBody(obj map[string]json.RawMessage) string {

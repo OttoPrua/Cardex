@@ -157,9 +157,8 @@ const grokGoalObserveEvery = 100 * time.Millisecond
 // Drive writes the literal /goal and the prompt. Completion and budget_limited
 // come from SessionDir, because goal-mode Build does not emit session JSON on
 // the PTY. The session is polled while Read is blocked and checked again after
-// EOF. A whole-line pre-stream/stderr quota diagnostic on the PTY is
-// ErrGrokQuotaHit. Body, a /goal echo, a streaming-json error record, and
-// "signal: killed" are not. Crash is ConsumeGrokProcessExit.
+// EOF. v1 has no interactive transcript for a quota line on this channel, so
+// PTY bytes are not ErrGrokQuotaHit. Crash is ConsumeGrokProcessExit.
 func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 	if !g.GoalMode {
 		return nil
@@ -175,7 +174,6 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 		return err
 	}
 	tmp := make([]byte, 32*1024)
-	var pty []byte
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -183,15 +181,9 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 		if term, ok := ReadGrokGoalSession(g.SessionDir); ok {
 			return term
 		}
-		n, err, term, termOK := readGoalChunk(ctx, rw, tmp, g.SessionDir)
+		_, err, term, termOK := readGoalChunk(ctx, rw, tmp, g.SessionDir)
 		if termOK {
 			return term
-		}
-		if n > 0 {
-			pty = append(pty, tmp[:n]...)
-			if interactiveQuota(pty) {
-				return ErrGrokQuotaHit
-			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -202,9 +194,6 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 	}
 	if term, ok := ReadGrokGoalSession(g.SessionDir); ok {
 		return term
-	}
-	if interactiveQuota(pty) {
-		return ErrGrokQuotaHit
 	}
 	return errGrokNoTerminal
 }
@@ -272,9 +261,11 @@ var (
 	kimiQuotaRe       = regexp.MustCompile(`(?i)(?:^|[^0-9])429(?:[^0-9]|$)|too many requests|rate limit|quota (?:exceeded|exhausted)|insufficient (?:quota|credits)|usage limit|额度(?:不足|已用完)|配额(?:不足|已用尽)|限额(?:不足|已用尽)`)
 	// plainQuotaLine is v1 policyPlainQuotaDiagnosticRe: a whole-line presemantic
 	// quota diagnostic. A sentence that merely contains the words is not a line.
-	plainQuotaLine     = regexp.MustCompile(`(?i)^(?:error:\s*)?(?:(?:http(?:/\d(?:\.\d)?)?\s+)?429(?::\s*(?:too many requests|rate limit(?:ed)?|usage limit(?: reached)?|quota (?:exceeded|exhausted)))?|too many requests|rate limit|usage limit|quota (?:exceeded|exhausted)|insufficient (?:quota|credits)|out of (?:credits|usage)|额度(?:不足|已用完)|配额(?:不足|已用尽)|限额(?:不足|已用尽))$`)
-	plainTransportLine = regexp.MustCompile(`(?i)^(?:error:\s*)?connection (?:reset by peer|refused|closed)$`)
-	plainTimeoutLine   = regexp.MustCompile(`(?i)^(?:(?:步骤超时|远程步骤超时|远端步骤超时)[（(][^)）]*[)）]|context deadline exceeded|deadline exceeded \()$`)
+	plainQuotaLine = regexp.MustCompile(`(?i)^(?:error:\s*)?(?:(?:http(?:/\d(?:\.\d)?)?\s+)?429(?::\s*(?:too many requests|rate limit(?:ed)?|usage limit(?: reached)?|quota (?:exceeded|exhausted)))?|too many requests|rate limit(?:ed)?|usage limit(?: reached)?|quota (?:exceeded|exhausted)|insufficient (?:quota|credits)|out of (?:credits|usage)|额度(?:不足|已用完)|配额(?:不足|已用尽)|限额(?:不足|已用尽))$`)
+	// plainTransportLine is v1 policyPlainTransportDiagnosticRe plus whole lines
+	// transportRe already accepts (connection error/reset, disconnected before).
+	plainTransportLine = regexp.MustCompile(`(?i)^(?:error:\s*)?(?:connection (?:reset(?: by peer)?|refused|closed|error)|socket (?:closed|error)|error sending request|tls (?:handshake|error)|unexpected eof|disconnected before(?: (?:receiving )?(?:a )?response)?|i/o timeout|econn(?:reset|refused)|stream disconnect|no route to host|network is unreachable|host is unreachable|temporary failure in name resolution|no such host|dns (?:lookup|resolution) (?:failed|error)|getaddrinfo\s+(?:enotfound|eai_again)(?:\s+[a-z0-9._:-]+)?|dial tcp:\s*lookup\s+[a-z0-9._-]+(?:\s+on\s+[^:;]+)?:\s*no such host|(?:read|write) tcp [^;]+:\s*(?:connection reset by peer|i/o timeout))$`)
+	plainTimeoutLine   = regexp.MustCompile(`(?i)^(?:(?:error|grok_build_process_error|codex_error|remote_codex_error):\s*)?(?:(?:步骤超时|远程步骤超时|远端步骤超时)[（(][^)）]*[)）]|context deadline exceeded|deadline exceeded \()$`)
 )
 
 // acceptedBootstrapBeforeProviderRefusal is the exact PTY line v1 records.
@@ -321,77 +312,61 @@ func classifyScanned(output []byte, quota *regexp.Regexp, before func(string) mo
 	}
 }
 
-// errorScan collects explicit error-record fields and whole-line presemantic
-// diagnostics. Body, a wrapped /goal echo, assistant JSON, and an unfinished
-// record are not error facts. Nested business fields are not walked.
+// errorScan collects explicit error-record fields and whole-line diagnostics.
+// Body, a /goal echo plus the following echo line, assistant JSON, and an
+// unfinished record are not error facts. The caller passes the whole capture,
+// so the last line is at EOF even without a newline. Nested fields are not walked.
 func errorScan(output []byte) string {
-	text, _ := scanOutput(output)
-	return text
+	return scanOutput(output)
 }
 
-// interactiveQuota is the goal-mode quota channel: a whole-line pre-stream or
-// stderr diagnostic on the PTY. A streaming-json error record is the headless
-// channel and is not this fact.
-func interactiveQuota(output []byte) bool {
-	_, quota := scanOutput(output)
-	return quota
-}
-
-func scanOutput(output []byte) (text string, quotaPlain bool) {
+func scanOutput(output []byte) string {
 	var parts []string
+	walkNonEchoLines(output, func(line string) {
+		if heldJSONRecord(line) {
+			return
+		}
+		var obj map[string]any
+		if line[0] == '{' && json.Unmarshal([]byte(line), &obj) == nil && len(obj) > 0 {
+			parts = append(parts, errorFields(obj)...)
+			return
+		}
+		if plainDiagnostic(line) {
+			parts = append(parts, line)
+		}
+	})
+	return strings.Join(parts, "\n")
+}
+
+// walkNonEchoLines yields finished lines. A /goal echo and the single
+// following line (the rest of that echo) are not yielded. A blank line ends
+// the echo. The last line of output is finished: Classify sees the whole capture.
+func walkNonEchoLines(output []byte, fn func(line string)) {
 	echo := false
 	rest := output
 	for len(rest) > 0 {
 		raw := rest
-		complete := false
 		if i := bytes.IndexByte(rest, '\n'); i >= 0 {
 			raw = rest[:i]
 			rest = rest[i+1:]
-			complete = true
 		} else {
 			rest = nil
 		}
 		line := strings.TrimSpace(strings.TrimRight(string(raw), "\r"))
 		if line == "" {
-			if complete {
-				echo = false
-			}
-			continue
-		}
-		if goalEchoLine(line) {
-			if complete {
-				echo = true
-			}
-			continue
-		}
-		if heldJSONRecord(line) {
-			continue
-		}
-		var obj map[string]any
-		if line[0] == '{' && json.Unmarshal([]byte(line), &obj) == nil && len(obj) > 0 {
-			parts = append(parts, errorFields(obj)...)
 			echo = false
 			continue
 		}
-		if !complete && !plainDiagnostic(line) {
+		if goalEchoLine(line) {
+			echo = true
 			continue
 		}
-		if echo && !hardDiagnostic(line) {
+		if echo {
+			echo = false
 			continue
 		}
-		if !plainDiagnostic(line) {
-			if complete {
-				echo = false
-			}
-			continue
-		}
-		echo = false
-		parts = append(parts, line)
-		if plainQuotaLine.MatchString(line) {
-			quotaPlain = true
-		}
+		fn(line)
 	}
-	return strings.Join(parts, "\n"), quotaPlain
 }
 
 func plainDiagnostic(line string) bool {
@@ -407,35 +382,38 @@ func plainDiagnostic(line string) bool {
 	}
 }
 
-// hardDiagnostic is a plain diagnostic that is not the bare keyword a wrapped
-// /goal echo leaves on the next line.
-func hardDiagnostic(line string) bool {
-	return plainDiagnostic(line) && !softEchoWord(line)
-}
-
-func softEchoWord(line string) bool {
-	switch strings.ToLower(strings.TrimSpace(line)) {
-	case "usage limit", "rate limit", "too many requests":
-		return true
-	default:
-		return false
-	}
-}
-
 func labeledDiagnostic(line string, re *regexp.Regexp) bool {
 	loc := re.FindStringIndex(line)
-	if loc == nil || !allowedLabelPrefix(line[:loc[0]]) || hasCJK(line[loc[1]:]) {
+	if loc == nil || !allowedLabelPrefix(line[:loc[0]]) {
+		return false
+	}
+	prefix, suffix := line[:loc[0]], line[loc[1]:]
+	matched := line[loc[0]:loc[1]]
+	if hasCJK(matched) && strings.TrimSpace(suffix) != "" {
+		return false
+	}
+	if strings.TrimSpace(prefix) != "" && !whitelistedLabel(prefix) && strings.TrimSpace(suffix) != "" {
+		return false
+	}
+	if hasCJK(suffix) && !hasCJK(matched) {
 		return false
 	}
 	return true
 }
 
 func allowedLabelPrefix(s string) bool {
-	s = strings.TrimSpace(s)
-	if s == "" {
+	if strings.TrimSpace(s) == "" {
 		return true
 	}
-	s = strings.TrimSpace(strings.TrimRight(s, ":"))
+	if !strings.Contains(s, ":") {
+		return false
+	}
+	label := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(s), ":"))
+	return label != "" && !strings.ContainsAny(label, " \t")
+}
+
+func whitelistedLabel(s string) bool {
+	s = strings.TrimSpace(strings.TrimRight(strings.TrimSpace(s), ":"))
 	switch strings.ToLower(s) {
 	case "error", "grok_build_process_error", "codex_error", "remote_codex_error":
 		return true

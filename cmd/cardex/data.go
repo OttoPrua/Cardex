@@ -168,16 +168,40 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *project == "" || *title == "" {
-		fmt.Fprintln(stderr, "--project and --title are required")
+	if *project == "" {
+		fmt.Fprintln(stderr, "--project is required")
 		return 2
 	}
+	modeVal, modeOK := normalizeObjectiveMode(*mode)
+	freezeVal, freezeOK := normalizeFreezeMode(*freeze)
+	statusVal, statusOK := normalizeObjectiveStatus(*status)
+	titleVal := *title
+	var reasons []string
+	if titleVal == "" {
+		titleVal = "(needs input)"
+		statusVal = model.ObjectivePaused
+		reasons = append(reasons, "missing title")
+	}
+	if !modeOK {
+		reasons = append(reasons, "unrecognized mode "+*mode)
+		modeVal = model.ModeAuto
+		statusVal = model.ObjectivePaused
+	}
+	if !freezeOK {
+		reasons = append(reasons, "unrecognized freeze-mode "+*freeze)
+		freezeVal = model.FreezeSafe
+		statusVal = model.ObjectivePaused
+	}
+	if !statusOK {
+		reasons = append(reasons, "unrecognized status "+*status)
+		statusVal = model.ObjectivePaused
+	}
 	o := model.Objective{
-		ID: *id, Project: *project, Title: *title,
+		ID: *id, Project: *project, Title: titleVal,
 		Acceptance: model.Acceptance{Commands: acceptance, Checklist: checks},
 		Budget:     model.Budget{SoftTokens: *soft, HardTokens: *hard},
-		Priority:   *priority, Mode: model.ObjectiveMode(*mode), FreezeMode: model.FreezeMode(*freeze),
-		Origin: *origin, Status: model.ObjectiveStatus(*status), IntegrationBranch: *branch,
+		Priority:   *priority, Mode: modeVal, FreezeMode: freezeVal,
+		Origin: *origin, Status: statusVal, IntegrationBranch: *branch,
 		Channel: *channel, Model: *modelName,
 	}
 	if o.ID == "" {
@@ -200,6 +224,17 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	if err := db.CreateObjective(context.Background(), &o); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if len(reasons) > 0 {
+		q := model.Question{
+			Objective: o.ID,
+			Kind:      model.QuestionCustom,
+			Text:      strings.Join(reasons, "; "),
+		}
+		if err := db.CreateQuestion(context.Background(), &q); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
 	}
 	return emit(stdout, asJSON, o, o.ID+"\t"+o.Title)
 }
@@ -430,6 +465,45 @@ func normalizeTier(raw string) (model.Tier, bool) {
 	default:
 		return model.TierNone, false
 	}
+}
+
+func normalizeObjectiveMode(raw string) (model.ObjectiveMode, bool) {
+	if raw == "" {
+		return model.ModeAuto, true
+	}
+	folded := strings.ToLower(raw)
+	for _, m := range model.AllObjectiveModes() {
+		if string(m) == folded {
+			return m, true
+		}
+	}
+	return model.ModeAuto, false
+}
+
+func normalizeFreezeMode(raw string) (model.FreezeMode, bool) {
+	if raw == "" {
+		return model.FreezeSafe, true
+	}
+	folded := strings.ToLower(raw)
+	for _, m := range model.AllFreezeModes() {
+		if string(m) == folded {
+			return m, true
+		}
+	}
+	return model.FreezeSafe, false
+}
+
+func normalizeObjectiveStatus(raw string) (model.ObjectiveStatus, bool) {
+	if raw == "" {
+		return model.ObjectiveActive, true
+	}
+	folded := strings.ToLower(raw)
+	for _, s := range model.AllObjectiveStatuses() {
+		if string(s) == folded {
+			return s, true
+		}
+	}
+	return model.ObjectivePaused, false
 }
 
 func normalizeStatus(raw string) (model.CardStatus, bool) {

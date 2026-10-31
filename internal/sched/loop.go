@@ -54,7 +54,7 @@ type Runner struct {
 	Notify func(ctx context.Context, msg notify.Message) error
 	Launch func(ctx context.Context, home, attemptID string) (int, error)
 	Script func(card model.Card) ([]byte, bool)
-	// Dispose receives each harvested result. The loop owner installs it.
+	// Dispose receives each harvested result. New installs loop.Dispose.
 	// A nil hook leaves the attempt pending. A hook error leaves the attempt
 	// unconsumed and does not change the card. Sched does not create a review,
 	// enqueue a merge, or read pass/rework out of the result body.
@@ -62,7 +62,10 @@ type Runner struct {
 }
 
 // New returns the production runner for home.
-func New(home string) *Runner { return &Runner{Home: home} }
+// Serve and the CLI call New, so they hand each harvest to loop.Dispose.
+func New(home string) *Runner {
+	return &Runner{Home: home, Dispose: loop.Dispose}
+}
 
 func (r *Runner) now() time.Time {
 	if r != nil && r.Now != nil {
@@ -176,7 +179,7 @@ func (r *Runner) deliver(ctx context.Context, db *store.Store, card *model.Card,
 	if r.Dispose == nil {
 		return nil
 	}
-	if err := r.Dispose(ctx, card, res); err != nil {
+	if err := r.Dispose(loop.WithStore(ctx, db), card, res); err != nil {
 		return err
 	}
 	attempt.Outcome = res.Outcome

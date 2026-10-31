@@ -3,7 +3,6 @@ package sched
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -46,7 +45,7 @@ var (
 	chooseRoute = route.Select
 )
 
-// Runner is one scheduler pass over a CARDEX_HOME. A nil hook calls the real collaborator.
+// Runner is one scheduler pass over a CARDEX_HOME. A nil Dispose leaves harvest pending.
 type Runner struct {
 	Home   string
 	Now    func() time.Time
@@ -55,28 +54,12 @@ type Runner struct {
 	Notify func(ctx context.Context, msg notify.Message) error
 	Launch func(ctx context.Context, home, attemptID string) (int, error)
 	Script func(card model.Card) ([]byte, bool)
-	// Dispose receives each harvested result. Tests set it. A nil hook runs the
-	// production review and merge handoff. A hook error leaves the attempt
-	// unconsumed. Outcomes the handoff does not cover stay pending.
+	// Dispose receives each harvested result. The loop owner installs it.
+	// A nil hook leaves the attempt pending. A hook error leaves the attempt
+	// unconsumed and does not change the card. Sched does not create a review,
+	// enqueue a merge, or read pass/rework out of the result body.
 	Dispose func(ctx context.Context, card *model.Card, res harvest.Result) error
 }
-
-// errLeavePending means the production handoff does not cover this result.
-// deliver keeps the attempt unconsumed and Tick continues.
-var errLeavePending = errors.New("sched: harvest left pending")
-
-// reviewHandoffBody is the review card a passed dev attempt hands off to.
-// The result file says pass so a later harvest can enqueue the subject.
-const reviewHandoffBody = `{
-  "attempts": {
-    "0": {
-      "write_files": [
-        {"path": ".cardex-result.md", "content": "## 复核结论\npass\n"}
-      ],
-      "exit_code": 0
-    }
-  }
-}`
 
 // New returns the production runner for home.
 func New(home string) *Runner { return &Runner{Home: home} }
@@ -184,21 +167,16 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 	return nil
 }
 
-// deliver hands the harvested result to the disposition entry. The attempt is
-// stored as consumed only after the hook returns nil. A nil hook runs the
-// production review and merge handoff. A hook error leaves the attempt
-// deliverable and does not change the card.
+// deliver hands the harvested result to the disposition collaborator.
+// The attempt is stored as consumed only after that call returns nil.
+// With no collaborator installed, the attempt stays pending and the card
+// is not written. Sched does not turn a passed dev into a review, enqueue
+// the reviewed card, or scan the body for pass/rework.
 func (r *Runner) deliver(ctx context.Context, db *store.Store, card *model.Card, attempt *model.Attempt, res harvest.Result) error {
-	fn := r.Dispose
-	if fn == nil {
-		fn = func(ctx context.Context, card *model.Card, res harvest.Result) error {
-			return r.productionDispose(ctx, db, card, res)
-		}
+	if r.Dispose == nil {
+		return nil
 	}
-	if err := fn(ctx, card, res); err != nil {
-		if r.Dispose == nil && errors.Is(err, errLeavePending) {
-			return nil
-		}
+	if err := r.Dispose(ctx, card, res); err != nil {
 		return err
 	}
 	attempt.Outcome = res.Outcome
@@ -212,80 +190,6 @@ func (r *Runner) deliver(ctx context.Context, db *store.Store, card *model.Card,
 		return err
 	}
 	return db.UpdateAttempt(ctx, attempt)
-}
-
-// productionDispose is the review and merge handoff New and Serve both run.
-// A passed dev card enters review. A passed review whose result says pass
-// enqueues that subject. Anything else stays pending for the loop owner.
-func (r *Runner) productionDispose(ctx context.Context, db *store.Store, card *model.Card, res harvest.Result) error {
-	if card.Kind == model.KindReview {
-		subjectID := ""
-		if len(card.Deps) > 0 {
-			subjectID = strings.TrimSpace(card.Deps[0])
-		}
-		if res.Outcome != model.OutcomePassed || subjectID == "" || reviewVerdictWord(res.ResultText) != "pass" {
-			return errLeavePending
-		}
-		if err := merge.New(db).Enqueue(ctx, subjectID); err != nil {
-			return err
-		}
-		card.Status = model.CardDone
-		return nil
-	}
-	if res.Outcome != model.OutcomePassed || !handoffKind(card.Kind) {
-		return errLeavePending
-	}
-	id := "rv-" + card.ID
-	existing, err := db.GetCard(ctx, id)
-	switch {
-	case err == nil && reviewClosed(existing.Status):
-		return nil
-	case err == nil:
-	case errors.Is(err, sql.ErrNoRows):
-		review := model.Card{
-			ID: id, Objective: card.Objective, Node: card.Node, Kind: model.KindReview,
-			Title: "review " + card.Title, Body: reviewHandoffBody, Tier: model.TierT3,
-			Status: model.CardReady, Deps: []string{card.ID}, AuthorFamily: card.AuthorFamily,
-		}
-		if err := db.CreateCard(ctx, &review); err != nil {
-			return err
-		}
-	default:
-		return err
-	}
-	card.Status = model.CardReviewing
-	return nil
-}
-
-func handoffKind(kind model.CardKind) bool {
-	switch kind {
-	case model.KindDev, model.KindRepair, model.KindRebase, model.KindSkeleton, model.KindBacklog:
-		return true
-	default:
-		return false
-	}
-}
-
-func reviewClosed(status model.CardStatus) bool {
-	switch status {
-	case model.CardDone, model.CardMerged, model.CardCanceled, model.CardFailed:
-		return true
-	default:
-		return false
-	}
-}
-
-func reviewVerdictWord(text string) string {
-	for _, field := range strings.Fields(strings.ToLower(text)) {
-		field = strings.Trim(field, "`*_.,;:()[]\"'")
-		if field == "rework" {
-			return "rework"
-		}
-		if field == "pass" {
-			return "pass"
-		}
-	}
-	return ""
 }
 
 func (r *Runner) familyOf(ctx context.Context, db *store.Store, channelID string) string {

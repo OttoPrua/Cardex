@@ -12,9 +12,10 @@ import (
 )
 
 // Snapshot records are ordinary ledger events, and an event is counted by every
-// open window that covers its time. Each window's used count is therefore placed
-// on a time inside that window and outside any shorter window already filled,
-// so a larger window cannot broadcast its total onto a smaller limit.
+// open window that covers its time. A positive used count is placed inside its
+// own window and outside every other window that must not absorb it, including
+// a zero-used window and a window whose reset has already passed. A charge that
+// cannot be placed that way is omitted instead of stamped at now.
 
 type snapSpan struct {
 	start  time.Time
@@ -36,17 +37,23 @@ type quotaHit struct {
 func recordSnapshot(ctx context.Context, led *quota.Ledger, ch model.Channel, now time.Time) error {
 	var spans []snapSpan
 	for _, w := range ch.QuotaWindows {
-		if w.LimitTokens <= 0 || w.UsedTokens <= 0 {
-			continue
-		}
-		if !w.ResetAt.IsZero() && !now.Before(w.ResetAt) {
+		if w.LimitTokens <= 0 {
 			continue
 		}
 		start, end, ok := ledgerBounds(w.Name, w.ResetRule, w.ResetAt, now)
 		if !ok {
 			continue
 		}
-		spans = append(spans, snapSpan{start: start, end: end, used: w.UsedTokens})
+		used := w.UsedTokens
+		// The snapshot belongs to the period that ended at ResetAt. The fresh
+		// window still has to keep other charges out, but it has no current use.
+		if !w.ResetAt.IsZero() && !now.Before(w.ResetAt) {
+			used = 0
+		}
+		if used < 0 {
+			used = 0
+		}
+		spans = append(spans, snapSpan{start: start, end: end, used: used})
 	}
 	for _, ev := range attributeSnapshots(spans, now) {
 		usage := model.Usage{Tokens: ev.tokens, Source: "snapshot", Confidence: 1}
@@ -121,15 +128,9 @@ func feasibleTime(spans []snapSpan, i int, charge int64, now time.Time) (time.Ti
 		}
 		cands = append(cands, spans[j].end, spans[j].start.Add(-time.Nanosecond))
 	}
-	var fallback time.Time
-	found := false
 	for _, c := range cands {
 		if !spanContains(target, c) {
 			continue
-		}
-		if !found {
-			fallback = c
-			found = true
 		}
 		affordable := true
 		for j := range spans {
@@ -144,9 +145,6 @@ func feasibleTime(spans []snapSpan, i int, charge int64, now time.Time) (time.Ti
 		if affordable {
 			return c, true
 		}
-	}
-	if found {
-		return fallback, true
 	}
 	return time.Time{}, false
 }

@@ -455,6 +455,273 @@ func TestHermesReceiverAckInAttempt(t *testing.T) {
 	}
 }
 
+// consumingReceiver acks a wake id once. A later file with that id is skipped,
+// the same way the real receiver leaves a settled inbound alone.
+type consumingReceiver struct {
+	profile  string
+	session  string
+	consumed map[string]bool
+	skips    int
+	ackNew   bool
+}
+
+func (r *consumingReceiver) receive(home, subscriptionID string) error {
+	dir := hermesInboxDir(home, subscriptionID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".ack.json") || strings.HasPrefix(name, ".") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		ack, ok := validateHermesInbound(path, subscriptionID, r.profile, r.session)
+		if !ok {
+			continue
+		}
+		raw, err := json.MarshalIndent(ack, "", "  ")
+		if err != nil {
+			return err
+		}
+		for _, id := range ack.WakeEventIDs {
+			if r.consumed[id] {
+				r.skips++
+				continue
+			}
+			if !r.ackNew {
+				continue
+			}
+			r.consumed[id] = true
+			if err := os.WriteFile(hermesAckPath(home, subscriptionID, id), append(raw, '\n'), 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func hermesInboundFiles(t *testing.T, home, sub string) map[string]hermesInboundFile {
+	t.Helper()
+	dir := hermesInboxDir(home, sub)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]hermesInboundFile{}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".ack.json") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body hermesInboundFile
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatal(err)
+		}
+		stem := strings.TrimSuffix(name, ".json")
+		out[stem] = body
+	}
+	return out
+}
+
+func TestDueHermesReminderIsConsumableAgain(t *testing.T) {
+	const (
+		profile = "profile"
+		session = "session"
+		sub     = "mgr-r3d"
+	)
+	hermesID := "hermes:" + profile + "/" + session
+	cases := []struct {
+		name     string
+		origin   string
+		fallback string
+	}{
+		{name: "hermes-origin", origin: hermesID},
+		{name: "hermes-fallback", origin: "codex:thread-a", fallback: hermesID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("CARDEX_HOME", home)
+			cur := time.Date(2026, 10, 31, 3, 0, 0, 0, time.UTC)
+			var execs int
+			svc := New(func(_ context.Context, argv []string) error {
+				execs++
+				if len(argv) == 0 || argv[0] == "hermes" {
+					t.Fatalf("argv %v", argv)
+				}
+				return nil
+			}, func() time.Time { return cur })
+			recv := &consumingReceiver{
+				profile: profile, session: session,
+				consumed: map[string]bool{},
+				ackNew:   true,
+			}
+			svc.receiveHermes = recv.receive
+			msg := Message{
+				QuestionID:     "q-" + tc.name,
+				Objective:      "obj",
+				Origin:         tc.origin,
+				Fallback:       tc.fallback,
+				Text:           "still open",
+				Home:           home,
+				SubscriptionID: sub,
+			}
+			if err := svc.Deliver(context.Background(), msg); err != nil {
+				t.Fatal(err)
+			}
+			first := hermesInboundFiles(t, home, sub)
+			if len(first) != 1 || len(recv.consumed) != 1 {
+				t.Fatalf("first files %d consumed %d", len(first), len(recv.consumed))
+			}
+			var wake1 string
+			var body1 hermesInboundFile
+			for id, body := range first {
+				wake1, body1 = id, body
+			}
+			headerSub, highWater, rows := mustParseCompact(t, body1.Message)
+			if headerSub != sub || highWater != 1 || len(rows) != 1 || rows[0].wake != rows[0].task+":1" || wake1 != rows[0].wake {
+				t.Fatalf("first wake %s high %d rows %+v", wake1, highWater, rows)
+			}
+			digest1 := inboundDigest(body1.Message)
+			if body1.InboundDigest != digest1 || !recv.consumed[wake1] || !strings.HasPrefix(body1.Message, "cardex-wake v1 ") {
+				t.Fatalf("first body digest %s", body1.InboundDigest)
+			}
+			task := rows[0].task
+
+			ackPath := hermesAckPath(home, sub, wake1)
+			ackRaw, err := os.ReadFile(ackPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(ackPath); err != nil {
+				t.Fatal(err)
+			}
+			before := svc.sent[msg.QuestionID]
+			skipsBefore := recv.skips
+			execsBefore := execs
+			if !cur.Before(before.at.Add(before.gap + time.Nanosecond)) {
+				t.Fatal("clock already opened the next reminder")
+			}
+			if err := svc.Deliver(context.Background(), msg); err == nil {
+				t.Fatal("same-delivery retry succeeded without its ack")
+			}
+			after := svc.sent[msg.QuestionID]
+			if after.wakeSeq != before.wakeSeq || after.gap != before.gap || !after.at.Equal(before.at) || !reflect.DeepEqual(after.completed, before.completed) {
+				t.Fatalf("retry opened a new reminder")
+			}
+			if execs != execsBefore || recv.skips <= skipsBefore || len(recv.consumed) != 1 {
+				t.Fatalf("retry execs %d skips %d consumed %+v", execs, recv.skips, recv.consumed)
+			}
+			retryFiles := hermesInboundFiles(t, home, sub)
+			retry, ok := retryFiles[wake1]
+			if !ok || len(retryFiles) != 1 || retry.Message != body1.Message || retry.InboundDigest != digest1 {
+				t.Fatalf("retry wake changed: %v", retryFiles)
+			}
+			if err := os.WriteFile(ackPath, ackRaw, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			cur = before.at.Add(before.gap + time.Nanosecond)
+			if err := svc.Deliver(context.Background(), msg); err != nil {
+				t.Fatal(err)
+			}
+			files := hermesInboundFiles(t, home, sub)
+			if len(files) != 2 {
+				t.Fatalf("reminder files %d", len(files))
+			}
+			var wake2 string
+			var body2 hermesInboundFile
+			for id, body := range files {
+				if id == wake1 {
+					continue
+				}
+				wake2, body2 = id, body
+			}
+			headerSub, highWater, rows = mustParseCompact(t, body2.Message)
+			digest2 := inboundDigest(body2.Message)
+			if headerSub != sub || highWater != 2 || wake2 != task+":2" || rows[0].wake != wake2 || digest2 == digest1 || body2.InboundDigest != digest2 {
+				t.Fatalf("second wake %s digest %s rows %+v", wake2, digest2, rows)
+			}
+			if !strings.HasPrefix(body2.Message, "cardex-wake v1 ") || !recv.consumed[wake1] || !recv.consumed[wake2] {
+				t.Fatalf("consumed %+v", recv.consumed)
+			}
+			if tc.fallback == "" && execs != 0 {
+				t.Fatalf("origin row execs %d", execs)
+			}
+			if tc.fallback != "" && execs != 2 {
+				t.Fatalf("fallback row execs %d", execs)
+			}
+
+			homeD := t.TempDir()
+			t.Setenv("CARDEX_HOME", homeD)
+			curD := time.Date(2026, 10, 31, 5, 0, 0, 0, time.UTC)
+			recvD := &consumingReceiver{
+				profile: profile, session: session,
+				consumed: map[string]bool{},
+				ackNew:   true,
+			}
+			svcD := New(func(context.Context, []string) error { return nil }, func() time.Time { return curD })
+			svcD.receiveHermes = recvD.receive
+			msgD := msg
+			msgD.Home = homeD
+			msgD.QuestionID = msg.QuestionID + "-ack"
+			if err := svcD.Deliver(context.Background(), msgD); err != nil {
+				t.Fatal(err)
+			}
+			planted := hermesInboundFiles(t, homeD, sub)
+			if len(planted) != 1 {
+				t.Fatalf("planted %d", len(planted))
+			}
+			var oldWake string
+			var oldBody hermesInboundFile
+			for id, body := range planted {
+				oldWake, oldBody = id, body
+			}
+			if !hermesAckCovers(homeD, sub, oldWake, oldBody.InboundDigest) {
+				t.Fatal("first ack missing")
+			}
+			st := svcD.sent[msgD.QuestionID]
+			curD = st.at.Add(st.gap + time.Nanosecond)
+			recvD.ackNew = false
+			if err := svcD.Deliver(context.Background(), msgD); err == nil {
+				t.Fatal("previous ack confirmed the later reminder")
+			}
+			later := hermesInboundFiles(t, homeD, sub)
+			var newWake string
+			var newBody hermesInboundFile
+			for id, body := range later {
+				if id == oldWake {
+					continue
+				}
+				newWake, newBody = id, body
+			}
+			if newWake == "" || newWake == oldWake || newBody.InboundDigest == oldBody.InboundDigest {
+				t.Fatalf("later wake %s", newWake)
+			}
+			if !hermesAckCovers(homeD, sub, oldWake, oldBody.InboundDigest) || hermesAckCovers(homeD, sub, newWake, newBody.InboundDigest) {
+				t.Fatal("ack coverage does not follow the delivery")
+			}
+			recvD.ackNew = true
+			if err := svcD.Deliver(context.Background(), msgD); err != nil {
+				t.Fatal(err)
+			}
+			confirmed := hermesInboundFiles(t, homeD, sub)[newWake]
+			if !recvD.consumed[newWake] || confirmed.WakeEventIDs[0] != newWake || confirmed.InboundDigest != newBody.InboundDigest {
+				t.Fatalf("new reminder confirmed as %v", confirmed.WakeEventIDs)
+			}
+			if svcD.sent[msgD.QuestionID].wakeSeq != 2 || !hermesAckCovers(homeD, sub, newWake, newBody.InboundDigest) {
+				t.Fatalf("seq %d", svcD.sent[msgD.QuestionID].wakeSeq)
+			}
+		})
+	}
+}
+
 func TestLarkArgvIsNotAProcess(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CARDEX_HOME", home)

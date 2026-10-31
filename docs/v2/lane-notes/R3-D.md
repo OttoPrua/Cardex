@@ -25,3 +25,4 @@ Hermes origin 是 `hermes:<profile>/<session>`，没有 subscription id。调用
 B1 通用前言按 kind 读模板，不单拒后续模板 → internal/prompt/preface.go:15 internal/prompt/build_test.go:163 → TestPrefacesRender
 B2 部分失败仍按问题 id 保留去重和递增退避 → internal/notify/deliver.go:60 internal/notify/deliver.go:88 → TestPartialFailureKeepsDedupeAndBackoff
 B3 Hermes 入站用接收端目录和 compact wake，同一次投递确认 ack → internal/notify/hermes.go:53 internal/notify/hermes.go:139 internal/notify/api.go:20 → TestHermesReceiverAckInAttempt
+每次到期提醒必须具有接收端可重新消费的投递身份，不能复用前次提醒的 wake id 和 ack。 → internal/notify/hermes.go:81 internal/notify/hermes.go:188 internal/notify/hermes.go:212 internal/notify/deliver.go:78 internal/notify/deliver.go:83 internal/notify/deliver.go:182 → TestDueHermesReminderIsConsumableAgain

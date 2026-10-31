@@ -73,11 +73,14 @@ func validSubscriptionID(id string) bool {
 
 // compactQuestionWake builds one receiver-valid cardex-wake v1 body.
 // The question text stays in the file inbox; this body is not that text.
-func compactQuestionWake(subscriptionID, questionID, objective string) (string, []string) {
+func compactQuestionWake(subscriptionID, questionID, objective string, seq int) (string, []string) {
 	task := compactTaskID(questionID)
-	wake := task + ":1"
+	if seq < 1 {
+		seq = 1
+	}
+	wake := fmt.Sprintf("%s:%d", task, seq)
 	var b strings.Builder
-	fmt.Fprintf(&b, "cardex-wake v1 n=1 high_water=1 sub=%s\n", subscriptionID)
+	fmt.Fprintf(&b, "cardex-wake v1 n=1 high_water=%d sub=%s\n", seq, subscriptionID)
 	fmt.Fprintf(&b, "%s type=needs_owner project=%s status=open reason=question transition=- wake=%s\n",
 		task, compactProject(objective), wake)
 	return b.String(), []string{wake}
@@ -136,12 +139,12 @@ func isTaskID(s string) bool {
 	return true
 }
 
-func writeHermesInbound(home, originID string, msg Message, now time.Time) (wakeID, digest string, err error) {
+func writeHermesInbound(home, originID string, msg Message, now time.Time, seq int) (wakeID, digest string, err error) {
 	if !validSubscriptionID(msg.SubscriptionID) {
 		return "", "", fmt.Errorf("invalid_subscription_id")
 	}
 	profile, session := splitHermesID(originID)
-	message, wakeIDs := compactQuestionWake(msg.SubscriptionID, msg.QuestionID, msg.Objective)
+	message, wakeIDs := compactQuestionWake(msg.SubscriptionID, msg.QuestionID, msg.Objective, seq)
 	wakeID = wakeIDs[0]
 	if wakeID == "" || strings.Contains(wakeID, "/") || strings.Contains(wakeID, "..") {
 		return "", "", fmt.Errorf("invalid_wake_id")
@@ -193,11 +196,14 @@ func hermesAckCovers(home, subscriptionID, wakeID, digest string) bool {
 	return false
 }
 
-func (s *Service) deliverHermes(home, originID string, msg Message, now time.Time) error {
-	wakeID, digest, err := writeHermesInbound(home, originID, msg, now)
+func (s *Service) deliverHermes(home, originID string, msg Message, now time.Time, seq int) error {
+	wakeID, digest, err := writeHermesInbound(home, originID, msg, now, seq)
 	if err != nil {
 		return err
 	}
+	s.hermesWrote = true
+	s.hermesWake = wakeID
+	s.hermesDigest = digest
 	if s.receiveHermes != nil {
 		if err := s.receiveHermes(home, msg.SubscriptionID); err != nil {
 			return err

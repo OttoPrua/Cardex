@@ -62,7 +62,7 @@ func Serve(ctx context.Context, home, addr string) error {
 	if w := serveWriter(ctx); w != nil {
 		fmt.Fprintf(w, "serve listening %s\n", ln.Addr())
 	}
-	runner := &Runner{Home: home}
+	runner := New(home)
 	logPath := filepath.Join(home, "serve-loop.log")
 	n := 0
 	for {

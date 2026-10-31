@@ -890,6 +890,42 @@ func TestHarvestStaysPendingUntilDisposition(t *testing.T) {
 					t.Fatalf("card %+v %v", card, err)
 				}
 			}
+			if tc.name == "success" {
+				if err := New(home).Tick(ctx); err != nil {
+					t.Fatal(err)
+				}
+				stored, err := db.GetAttempt(ctx, "a-c")
+				if err != nil || stored.Outcome != model.OutcomePassed {
+					t.Fatalf("stored %+v %v", stored, err)
+				}
+				got, err := db.GetCard(ctx, "c")
+				if err != nil || got.Status != model.CardReviewing {
+					t.Fatalf("card %+v %v", got, err)
+				}
+				review, err := db.GetCard(ctx, "rv-c")
+				if err != nil || review.Kind != model.KindReview || review.Status != model.CardReady {
+					t.Fatalf("review %+v %v", review, err)
+				}
+				serveOnce(t, home)
+				cards, err := db.ListCards(ctx, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				n := 0
+				for _, card := range cards {
+					if card.Kind == model.KindReview {
+						n++
+					}
+				}
+				if n != 1 {
+					t.Fatalf("reviews %d", n)
+				}
+				again, err := db.GetAttempt(ctx, "a-c")
+				if err != nil || again.Outcome != model.OutcomePassed {
+					t.Fatalf("delivered again %+v %v", again, err)
+				}
+				return
+			}
 			if err := New(home).Tick(ctx); err != nil {
 				t.Fatal(err)
 			}
@@ -1136,9 +1172,13 @@ func TestQuotaEstimateDrivesDispatchAndFill(t *testing.T) {
 }
 
 type spentAttempt struct {
-	tokens int64
-	ended  time.Time
-	hit    time.Time
+	id       string
+	tokens   int64
+	ended    time.Time
+	hit      time.Time
+	excerpt  string
+	log      string
+	quotaHit bool
 }
 
 func runQuotaMode(t *testing.T, now time.Time, windows []model.QuotaWindow, redline float64, spent []spentAttempt, mode string) (quota.Estimate, bool, bool) {
@@ -1171,20 +1211,38 @@ func runQuotaMode(t *testing.T, now time.Time, windows []model.QuotaWindow, redl
 		}
 		exit := 0
 		for i, item := range spent {
+			id := item.id
+			if id == "" {
+				id = fmt.Sprintf("spent-%d", i)
+			}
 			att := model.Attempt{
-				ID: fmt.Sprintf("spent-%d", i), Card: "spent",
+				ID: id, Card: "spent",
 				Route:     model.Route{Channel: "ch", Model: "model-a"},
 				StartedAt: item.ended.Add(-time.Minute), EndedAt: item.ended, Exit: &exit,
 				Usage:   model.Usage{Tokens: item.tokens, Source: "event", Confidence: 1},
 				Outcome: model.OutcomePassed,
 			}
-			if !item.hit.IsZero() {
+			if !item.hit.IsZero() || item.quotaHit {
 				att.Outcome = model.OutcomeQuotaHit
 				att.ErrorClass = model.ErrorQuotaHit
-				att.ErrorExcerpt = "quota hit, reset at " + item.hit.UTC().Format(time.RFC3339)
+				switch {
+				case item.excerpt != "":
+					att.ErrorExcerpt = item.excerpt
+				case !item.hit.IsZero():
+					att.ErrorExcerpt = "quota hit, reset at " + item.hit.UTC().Format(time.RFC3339)
+				}
 			}
 			if err := db.CreateAttempt(ctx, &att); err != nil {
 				t.Fatal(err)
+			}
+			if item.log != "" {
+				dir := filepath.Join(home, "attempts", id)
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "output.log"), []byte(item.log), 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 	}
@@ -1440,4 +1498,424 @@ func TestWorkspaceExistsBeforeAttemptResumes(t *testing.T) {
 			t.Fatalf("worktree %q %v", body, err)
 		}
 	})
+}
+
+func TestProductionDeliveryHandsOffReviewAndMerge(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "cmd", "cardex", "main.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "loop := sched.New(home)") {
+		t.Fatal("runServe does not tick sched.New")
+	}
+	cases := []struct {
+		name  string
+		mode  model.ObjectiveMode
+		kind  string
+		serve bool
+	}{
+		{name: "manual dev", mode: model.ModeManual, kind: "dev"},
+		{name: "auto dev", mode: model.ModeAuto, kind: "dev"},
+		{name: "manual review", mode: model.ModeManual, kind: "review"},
+		{name: "auto review", mode: model.ModeAuto, kind: "review"},
+		{name: "serve dev", mode: model.ModeManual, kind: "dev", serve: true},
+		{name: "disposition failure", mode: model.ModeManual, kind: "fail"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			home, db, repo := newHome(t)
+			_, obj := seedRepo(t, db, repo, "true")
+			got, err := db.GetObjective(ctx, obj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got.Mode = tc.mode
+			if err := db.UpdateObjective(ctx, &got); err != nil {
+				t.Fatal(err)
+			}
+			switch tc.kind {
+			case "dev":
+				plantPassedDev(t, db, repo, obj)
+			case "review":
+				plantPassedReview(t, db, repo, obj, "c1")
+			case "fail":
+				plantPassedReview(t, db, repo, obj, "")
+			}
+			r := New(home)
+			if r.Dispose != nil {
+				t.Fatal("production runner installed Dispose")
+			}
+			tick := func() error {
+				if tc.serve {
+					serveOnce(t, home)
+					return nil
+				}
+				return r.Tick(ctx)
+			}
+			err = tick()
+			if tc.kind == "fail" {
+				if err == nil {
+					t.Fatal("disposition failure was stored")
+				}
+				assertPendingReview(t, db)
+				if err := r.Tick(ctx); err == nil {
+					t.Fatal("second tick stored the failure")
+				}
+				assertPendingReview(t, db)
+				assertNoGeneratedCards(t, db)
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.kind == "dev" {
+				assertDevDelivered(t, db)
+			} else {
+				assertReviewDelivered(t, db)
+			}
+			assertNoGeneratedCards(t, db)
+			if tc.serve {
+				if err := New(home).Tick(ctx); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if tc.kind == "dev" {
+				assertDevDelivered(t, db)
+			} else {
+				assertReviewDelivered(t, db)
+			}
+			assertNoGeneratedCards(t, db)
+		})
+	}
+}
+
+func plantPassedDev(t *testing.T, db interface {
+	CreateCard(context.Context, *model.Card) error
+	CreateAttempt(context.Context, *model.Attempt) error
+}, repo, obj string) {
+	t.Helper()
+	ctx := context.Background()
+	card := model.Card{
+		ID: "c", Objective: obj, Kind: model.KindDev, Title: "c", Tier: model.TierT2, Status: model.CardRunning,
+	}
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	wt := plantWorktree(t, repo, true)
+	exit := 0
+	attempt := model.Attempt{
+		ID: "a-c", Card: "c", Worktree: wt, BaseCommit: rev(t, repo, "HEAD~1"),
+		Exit: &exit, EndedAt: time.Now().UTC(),
+	}
+	if err := db.CreateAttempt(ctx, &attempt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func plantPassedReview(t *testing.T, db interface {
+	CreateCard(context.Context, *model.Card) error
+	CreateAttempt(context.Context, *model.Attempt) error
+}, repo, obj, subjectID string) {
+	t.Helper()
+	ctx := context.Background()
+	if subjectID != "" {
+		branch(t, repo, obj, subjectID, "unique.txt", "candidate\n")
+		subject := model.Card{
+			ID: subjectID, Objective: obj, Kind: model.KindDev, Title: subjectID,
+			Tier: model.TierT2, Status: model.CardReviewing,
+		}
+		if err := db.CreateCard(ctx, &subject); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deps := []string{}
+	if subjectID != "" {
+		deps = []string{subjectID}
+	} else {
+		deps = []string{"missing-subject"}
+	}
+	review := model.Card{
+		ID: "rv-c1", Objective: obj, Kind: model.KindReview, Title: "review",
+		Tier: model.TierT3, Status: model.CardRunning, Deps: deps,
+	}
+	if err := db.CreateCard(ctx, &review); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".cardex-result.md"), []byte("## 复核结论\npass\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exit := 0
+	attempt := model.Attempt{
+		ID: "a-rv", Card: "rv-c1", Worktree: repo, BaseCommit: rev(t, repo, "HEAD"),
+		Exit: &exit, EndedAt: time.Now().UTC(),
+	}
+	if err := db.CreateAttempt(ctx, &attempt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertDevDelivered(t *testing.T, db interface {
+	GetAttempt(context.Context, string) (model.Attempt, error)
+	GetCard(context.Context, string) (model.Card, error)
+	ListCards(context.Context, string) ([]model.Card, error)
+}) {
+	t.Helper()
+	ctx := context.Background()
+	stored, err := db.GetAttempt(ctx, "a-c")
+	if err != nil || stored.Outcome != model.OutcomePassed {
+		t.Fatalf("attempt %+v %v", stored, err)
+	}
+	card, err := db.GetCard(ctx, "c")
+	if err != nil || card.Status != model.CardReviewing {
+		t.Fatalf("card %+v %v", card, err)
+	}
+	n := 0
+	cards, err := db.ListCards(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range cards {
+		if item.Kind != model.KindReview {
+			continue
+		}
+		n++
+		if item.ID != "rv-c" || len(item.Deps) != 1 || item.Deps[0] != "c" {
+			t.Fatalf("review %+v", item)
+		}
+	}
+	if n != 1 {
+		t.Fatalf("review cards %d", n)
+	}
+}
+
+func assertReviewDelivered(t *testing.T, db interface {
+	GetAttempt(context.Context, string) (model.Attempt, error)
+	GetCard(context.Context, string) (model.Card, error)
+}) {
+	t.Helper()
+	ctx := context.Background()
+	stored, err := db.GetAttempt(ctx, "a-rv")
+	if err != nil || stored.Outcome != model.OutcomePassed {
+		t.Fatalf("attempt %+v %v", stored, err)
+	}
+	review, err := db.GetCard(ctx, "rv-c1")
+	if err != nil || review.Status != model.CardDone {
+		t.Fatalf("review %+v %v", review, err)
+	}
+	subject, err := db.GetCard(ctx, "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if subject.Status != model.CardMergeQueued && subject.Status != model.CardMerged {
+		t.Fatalf("subject %+v", subject)
+	}
+}
+
+func assertPendingReview(t *testing.T, db interface {
+	GetAttempt(context.Context, string) (model.Attempt, error)
+	GetCard(context.Context, string) (model.Card, error)
+}) {
+	t.Helper()
+	ctx := context.Background()
+	stored, err := db.GetAttempt(ctx, "a-rv")
+	if err != nil || stored.Outcome != "" {
+		t.Fatalf("attempt %+v %v", stored, err)
+	}
+	review, err := db.GetCard(ctx, "rv-c1")
+	if err != nil || review.Status != model.CardRunning {
+		t.Fatalf("review %+v %v", review, err)
+	}
+}
+
+func assertNoGeneratedCards(t *testing.T, db interface {
+	ListCards(context.Context, string) ([]model.Card, error)
+}) {
+	t.Helper()
+	cards, err := db.ListCards(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, card := range cards {
+		switch card.Kind {
+		case model.KindDesign, model.KindPlan, model.KindReplan:
+			t.Fatalf("generated %+v", card)
+		}
+	}
+}
+
+func TestWindowSnapshotKeepsItsOwnUsage(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	soon := now.Add(30 * time.Minute)
+	cases := []struct {
+		name    string
+		windows []model.QuotaWindow
+		spent   []spentAttempt
+		check   func(quota.Estimate) error
+	}{
+		{
+			name: "5h 40/100 and daily 400/1000",
+			windows: []model.QuotaWindow{
+				{Name: "5h", ResetRule: "rolling", ResetAt: soon, LimitTokens: 100, UsedTokens: 40, Remaining: 0.6, Confidence: 1},
+				{Name: "daily", ResetRule: "rolling", ResetAt: soon, LimitTokens: 1000, UsedTokens: 400, Remaining: 0.6, Confidence: 1},
+			},
+			check: func(est quota.Estimate) error {
+				if est.Unknown || est.Blocked || est.LimitTokens != 100 || est.UsedTokens != 40 {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				ratio := float64(est.LimitTokens-est.UsedTokens) / float64(est.LimitTokens)
+				if ratio < 0.55 || ratio > 0.65 {
+					return fmt.Errorf("ratio %v estimate %+v", ratio, est)
+				}
+				return nil
+			},
+		},
+		{
+			name: "daily keeps 400 against its own limit",
+			windows: []model.QuotaWindow{
+				{Name: "5h", ResetRule: "rolling", ResetAt: soon, LimitTokens: 100, UsedTokens: 10},
+				{Name: "daily", ResetRule: "rolling", ResetAt: soon.Add(time.Hour), LimitTokens: 1000, UsedTokens: 400},
+			},
+			check: func(est quota.Estimate) error {
+				if est.Unknown || est.Blocked || est.LimitTokens != 1000 || est.UsedTokens != 400 {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				ratio := float64(est.LimitTokens-est.UsedTokens) / float64(est.LimitTokens)
+				if ratio < 0.55 || ratio > 0.65 {
+					return fmt.Errorf("ratio %v estimate %+v", ratio, est)
+				}
+				return nil
+			},
+		},
+		{
+			name: "finished attempt counted once",
+			windows: []model.QuotaWindow{
+				{Name: "5h", ResetRule: "rolling", ResetAt: soon, LimitTokens: 100, UsedTokens: 40},
+				{Name: "daily", ResetRule: "rolling", ResetAt: soon, LimitTokens: 1000, UsedTokens: 400},
+			},
+			spent: []spentAttempt{{tokens: 15, ended: now.Add(-time.Minute)}},
+			check: func(est quota.Estimate) error {
+				if est.Unknown || est.Blocked || est.LimitTokens != 100 || est.UsedTokens != 55 {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, mode := range []string{"dispatch", "fill"} {
+				t.Run(mode, func(t *testing.T) {
+					est, saw, started := runQuotaMode(t, now, tc.windows, 0.2, tc.spent, mode)
+					if !started {
+						t.Fatalf("started false estimate %+v", est)
+					}
+					if !saw {
+						t.Fatal("route did not see the quota")
+					}
+					if err := tc.check(est); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestQuotaHitBlockFollowsResetNotOrder(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	soon := now.Add(30 * time.Minute)
+	future := now.Add(2 * time.Hour)
+	pastReset := now.Add(-time.Hour)
+	eventAt := now.Add(-3 * time.Hour)
+	loose := now.Add(4 * time.Hour)
+	windows := []model.QuotaWindow{{
+		Name: "5h", ResetRule: "rolling", ResetAt: soon, LimitTokens: 1000,
+	}}
+	event := eventAt.UTC().Format(time.RFC3339)
+	resetText := future.UTC().Format(time.RFC3339)
+	both := "event at " + event + " quota hit, reset at " + resetText
+	cases := []struct {
+		name  string
+		spent []spentAttempt
+		start bool
+		check func(quota.Estimate) error
+	}{
+		{
+			name: "a-new future reset outlives z-old",
+			spent: []spentAttempt{
+				{id: "a-new", tokens: 1, ended: now.Add(-2 * time.Minute), quotaHit: true, excerpt: "quota hit, reset at " + resetText},
+				{id: "z-old", tokens: 1, ended: now.Add(-time.Minute), quotaHit: true, excerpt: "quota hit, reset at " + pastReset.UTC().Format(time.RFC3339)},
+			},
+			check: func(est quota.Estimate) error {
+				if !est.Blocked || !est.Reset.Equal(future) {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+		{
+			name: "excerpt uses the reset time",
+			spent: []spentAttempt{{
+				id: "a-excerpt", tokens: 1, ended: now.Add(-time.Minute), quotaHit: true, excerpt: both,
+			}},
+			check: func(est quota.Estimate) error {
+				if !est.Blocked || !est.Reset.Equal(future) || est.Reset.Equal(eventAt) {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+		{
+			name: "output log uses the reset time",
+			spent: []spentAttempt{{
+				id: "a-log", tokens: 1, ended: now.Add(-time.Minute), quotaHit: true,
+				excerpt: "event at " + loose.UTC().Format(time.RFC3339),
+				log:     both,
+			}},
+			check: func(est quota.Estimate) error {
+				if !est.Blocked || !est.Reset.Equal(future) {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+		{
+			name: "unrelated timestamp does not block",
+			spent: []spentAttempt{{
+				id: "a-event", tokens: 1, ended: now.Add(-time.Minute), quotaHit: true,
+				excerpt: "event at " + loose.UTC().Format(time.RFC3339) + " finished",
+			}},
+			start: true,
+			check: func(est quota.Estimate) error {
+				if est.Blocked || est.Reset.Equal(loose) {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, mode := range []string{"dispatch", "fill"} {
+				t.Run(mode, func(t *testing.T) {
+					est, saw, started := runQuotaMode(t, now, windows, 0.2, tc.spent, mode)
+					if started != tc.start {
+						t.Fatalf("started %v want %v estimate %+v", started, tc.start, est)
+					}
+					if !saw {
+						if mode == "dispatch" || tc.start {
+							t.Fatal("route did not see the quota")
+						}
+						return
+					}
+					if err := tc.check(est); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+		})
+	}
 }

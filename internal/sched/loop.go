@@ -3,6 +3,7 @@ package sched
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -10,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -55,11 +55,28 @@ type Runner struct {
 	Notify func(ctx context.Context, msg notify.Message) error
 	Launch func(ctx context.Context, home, attemptID string) (int, error)
 	Script func(card model.Card) ([]byte, bool)
-	// Dispose receives each harvested result. Tests set it. Production leaves
-	// it nil: internal/loop has no disposition entry, and Tick does not invent one.
-	// A nil hook or a hook error leaves the attempt unconsumed.
+	// Dispose receives each harvested result. Tests set it. A nil hook runs the
+	// production review and merge handoff. A hook error leaves the attempt
+	// unconsumed. Outcomes the handoff does not cover stay pending.
 	Dispose func(ctx context.Context, card *model.Card, res harvest.Result) error
 }
+
+// errLeavePending means the production handoff does not cover this result.
+// deliver keeps the attempt unconsumed and Tick continues.
+var errLeavePending = errors.New("sched: harvest left pending")
+
+// reviewHandoffBody is the review card a passed dev attempt hands off to.
+// The result file says pass so a later harvest can enqueue the subject.
+const reviewHandoffBody = `{
+  "attempts": {
+    "0": {
+      "write_files": [
+        {"path": ".cardex-result.md", "content": "## 复核结论\npass\n"}
+      ],
+      "exit_code": 0
+    }
+  }
+}`
 
 // New returns the production runner for home.
 func New(home string) *Runner { return &Runner{Home: home} }
@@ -168,13 +185,20 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 }
 
 // deliver hands the harvested result to the disposition entry. The attempt is
-// stored as consumed only after the hook returns nil. A nil hook leaves the
-// attempt deliverable and does not change the card.
+// stored as consumed only after the hook returns nil. A nil hook runs the
+// production review and merge handoff. A hook error leaves the attempt
+// deliverable and does not change the card.
 func (r *Runner) deliver(ctx context.Context, db *store.Store, card *model.Card, attempt *model.Attempt, res harvest.Result) error {
-	if r.Dispose == nil {
-		return nil
+	fn := r.Dispose
+	if fn == nil {
+		fn = func(ctx context.Context, card *model.Card, res harvest.Result) error {
+			return r.productionDispose(ctx, db, card, res)
+		}
 	}
-	if err := r.Dispose(ctx, card, res); err != nil {
+	if err := fn(ctx, card, res); err != nil {
+		if r.Dispose == nil && errors.Is(err, errLeavePending) {
+			return nil
+		}
 		return err
 	}
 	attempt.Outcome = res.Outcome
@@ -188,6 +212,80 @@ func (r *Runner) deliver(ctx context.Context, db *store.Store, card *model.Card,
 		return err
 	}
 	return db.UpdateAttempt(ctx, attempt)
+}
+
+// productionDispose is the review and merge handoff New and Serve both run.
+// A passed dev card enters review. A passed review whose result says pass
+// enqueues that subject. Anything else stays pending for the loop owner.
+func (r *Runner) productionDispose(ctx context.Context, db *store.Store, card *model.Card, res harvest.Result) error {
+	if card.Kind == model.KindReview {
+		subjectID := ""
+		if len(card.Deps) > 0 {
+			subjectID = strings.TrimSpace(card.Deps[0])
+		}
+		if res.Outcome != model.OutcomePassed || subjectID == "" || reviewVerdictWord(res.ResultText) != "pass" {
+			return errLeavePending
+		}
+		if err := merge.New(db).Enqueue(ctx, subjectID); err != nil {
+			return err
+		}
+		card.Status = model.CardDone
+		return nil
+	}
+	if res.Outcome != model.OutcomePassed || !handoffKind(card.Kind) {
+		return errLeavePending
+	}
+	id := "rv-" + card.ID
+	existing, err := db.GetCard(ctx, id)
+	switch {
+	case err == nil && reviewClosed(existing.Status):
+		return nil
+	case err == nil:
+	case errors.Is(err, sql.ErrNoRows):
+		review := model.Card{
+			ID: id, Objective: card.Objective, Node: card.Node, Kind: model.KindReview,
+			Title: "review " + card.Title, Body: reviewHandoffBody, Tier: model.TierT3,
+			Status: model.CardReady, Deps: []string{card.ID}, AuthorFamily: card.AuthorFamily,
+		}
+		if err := db.CreateCard(ctx, &review); err != nil {
+			return err
+		}
+	default:
+		return err
+	}
+	card.Status = model.CardReviewing
+	return nil
+}
+
+func handoffKind(kind model.CardKind) bool {
+	switch kind {
+	case model.KindDev, model.KindRepair, model.KindRebase, model.KindSkeleton, model.KindBacklog:
+		return true
+	default:
+		return false
+	}
+}
+
+func reviewClosed(status model.CardStatus) bool {
+	switch status {
+	case model.CardDone, model.CardMerged, model.CardCanceled, model.CardFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func reviewVerdictWord(text string) string {
+	for _, field := range strings.Fields(strings.ToLower(text)) {
+		field = strings.Trim(field, "`*_.,;:()[]\"'")
+		if field == "rework" {
+			return "rework"
+		}
+		if field == "pass" {
+			return "pass"
+		}
+	}
+	return ""
 }
 
 func (r *Runner) familyOf(ctx context.Context, db *store.Store, channelID string) string {
@@ -1078,8 +1176,8 @@ func detachHead(ctx context.Context, worktree string) error {
 }
 
 // quotaView is the estimator dispatch and fill both pass to routing.
-// Limited windows use configured caps, snapshot usage that has not reset,
-// finished-attempt usage, and a quota-hit reset read from attempt evidence.
+// Limited windows use configured caps, each unreset snapshot on its own window,
+// finished-attempt usage counted once, and the still-valid quota-hit reset.
 // A window with no token or request limit stays unknown.
 func (r *Runner) quotaView(ctx context.Context, db *store.Store, channels []model.Channel) (route.Quotas, error) {
 	led := quota.New()
@@ -1099,12 +1197,10 @@ func (r *Runner) quotaView(ctx context.Context, db *store.Store, channels []mode
 }
 
 func (r *Runner) seedChannel(ctx context.Context, led *quota.Ledger, ch model.Channel, attempts []model.Attempt, now time.Time) error {
-	if used, ok := snapshotUsage(ch, now); ok {
-		at := now.Add(-time.Millisecond)
-		if err := led.Record(ctx, ch.ID, model.Usage{Tokens: used, Source: "snapshot", Confidence: 1}, at, now); err != nil {
-			return err
-		}
+	if err := recordSnapshot(ctx, led, ch, now); err != nil {
+		return err
 	}
+	var hits []quotaHit
 	for i := range attempts {
 		a := attempts[i]
 		if a.Route.Channel != ch.ID || !attemptFinished(a) {
@@ -1128,38 +1224,22 @@ func (r *Runner) seedChannel(ctx context.Context, led *quota.Ledger, ch model.Ch
 		if !ok {
 			continue
 		}
-		if err := led.ObserveLimit(ctx, ch.ID, reset); err != nil {
-			return err
+		observed := a.EndedAt
+		if observed.IsZero() {
+			observed = a.StartedAt
 		}
+		hits = append(hits, quotaHit{observed: observed, reset: reset})
 	}
-	return nil
-}
-
-// snapshotUsage is the largest limited-window used count that has not reached
-// its reset. One record is shared by every open window, so windows are not added.
-func snapshotUsage(ch model.Channel, now time.Time) (int64, bool) {
-	var used int64
-	ok := false
-	for _, w := range ch.QuotaWindows {
-		if w.LimitTokens <= 0 || w.UsedTokens <= 0 {
-			continue
-		}
-		if !w.ResetAt.IsZero() && !now.Before(w.ResetAt) {
-			continue
-		}
-		ok = true
-		if w.UsedTokens > used {
-			used = w.UsedTokens
-		}
+	reset, ok := effectiveQuotaBlock(hits, now)
+	if !ok {
+		return nil
 	}
-	return used, ok
+	return led.ObserveLimit(ctx, ch.ID, reset)
 }
 
 func attemptFinished(a model.Attempt) bool {
 	return a.Outcome != "" || a.Exit != nil || !a.EndedAt.IsZero()
 }
-
-var resetStamp = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})`)
 
 func quotaReset(home string, a model.Attempt) (time.Time, bool) {
 	if t, ok := findReset(a.ErrorExcerpt); ok {
@@ -1170,15 +1250,6 @@ func quotaReset(home string, a model.Attempt) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return findReset(string(body))
-}
-
-func findReset(text string) (time.Time, bool) {
-	for _, stamp := range resetStamp.FindAllString(text, -1) {
-		if t, err := time.Parse(time.RFC3339, stamp); err == nil {
-			return t, true
-		}
-	}
-	return time.Time{}, false
 }
 
 func cardBranchName(objectiveID, cardID string) string {

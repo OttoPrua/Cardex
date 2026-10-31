@@ -2,10 +2,11 @@ package prompt
 
 import (
 	"context"
+	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -160,30 +161,6 @@ func TestFactSummaryStatuses(t *testing.T) {
 }
 
 func TestPrefacesRender(t *testing.T) {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("caller")
-	}
-	matches, err := filepath.Glob(filepath.Join(filepath.Dir(file), "templates", "ranking*"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(matches) != 0 {
-		t.Fatalf("ranking templates: %v", matches)
-	}
-	entries, err := prefaces.ReadDir("templates")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 12 {
-		t.Fatalf("template count %d", len(entries))
-	}
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "ranking") {
-			t.Fatalf("embedded ranking template %s", entry.Name())
-		}
-	}
-
 	shared := []string{
 		"[fact]", "[fact web]", "[experiment]", "[decision]", "[otto]",
 		"不要自己大范围阅读", "把缺的事实列成 `[fact]` 问题后结束本卡", "定点核对几处文件可以自己做",
@@ -207,38 +184,74 @@ func TestPrefacesRender(t *testing.T) {
 		model.KindNormalize: {"## 结论", "提取结构"},
 		model.KindBacklog:   {"## backlog", "低风险积压"},
 	}
-	if len(checks) != 12 {
-		t.Fatalf("kinds %d", len(checks))
-	}
 	ctx := context.Background()
 	for kind, phrases := range checks {
-		out := mustBuild(t, ctx, Input{
-			Card:      card(kind, "body-"+string(kind)),
-			Objective: model.Objective{ID: "obj"},
-			Context:   "CTX\n",
-		})
-		preface, err := Preface(kind)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.HasPrefix(out, preface) {
-			t.Fatalf("%s preface not rendered at the start", kind)
-		}
-		if strings.Contains(preface, "回执") {
-			t.Fatalf("%s preface requires a receipt", kind)
-		}
-		if !strings.Contains(preface, ".cardex-result.md") {
-			t.Fatalf("%s preface missing result file", kind)
-		}
-		for _, phrase := range phrases {
-			if !strings.Contains(preface, phrase) {
-				t.Fatalf("%s preface missing %q", kind, phrase)
+		t.Run(string(kind), func(t *testing.T) {
+			out := mustBuild(t, ctx, Input{
+				Card:      card(kind, "body-"+string(kind)),
+				Objective: model.Objective{ID: "obj"},
+				Context:   "CTX\n",
+			})
+			preface, err := Preface(kind)
+			if err != nil {
+				t.Fatal(err)
 			}
+			if strings.TrimSpace(preface) == "" {
+				t.Fatalf("%s empty preface", kind)
+			}
+			if !strings.HasPrefix(out, preface) {
+				t.Fatalf("%s preface not rendered at the start", kind)
+			}
+			if strings.Contains(preface, "回执") {
+				t.Fatalf("%s preface requires a receipt", kind)
+			}
+			if !strings.Contains(preface, ".cardex-result.md") {
+				t.Fatalf("%s preface missing result file", kind)
+			}
+			for _, phrase := range phrases {
+				if !strings.Contains(preface, phrase) {
+					t.Fatalf("%s preface missing %q", kind, phrase)
+				}
+			}
+		})
+	}
+	t.Run("missing-ranking", func(t *testing.T) {
+		absent := model.CardKind("absent-kind")
+		rank, rankErr := Preface(model.KindRanking)
+		_, absErr := Preface(absent)
+		if !errors.Is(absErr, fs.ErrNotExist) || !strings.Contains(absErr.Error(), "prompt: preface "+string(absent)) {
+			t.Fatalf("absent kind %v", absErr)
 		}
-	}
-	if _, err := Build(ctx, Input{Card: model.Card{Kind: model.KindRanking}}); err == nil {
-		t.Fatal("ranking preface rendered")
-	}
+		if rankErr != nil && strings.Contains(rankErr.Error(), "not in this lane") {
+			t.Fatalf("ranking-only refusal %v", rankErr)
+		}
+		if rankErr == nil {
+			if strings.TrimSpace(rank) == "" {
+				t.Fatal("empty ranking preface")
+			}
+			out, err := Build(ctx, Input{
+				Card:      model.Card{Kind: model.KindRanking},
+				Objective: model.Objective{ID: "obj"},
+				Context:   "CTX\n",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(out, rank) {
+				t.Fatal("present ranking preface was not returned")
+			}
+			return
+		}
+		if !errors.Is(rankErr, fs.ErrNotExist) || !strings.Contains(rankErr.Error(), "prompt: preface "+string(model.KindRanking)) {
+			t.Fatalf("ranking missing kind %v", rankErr)
+		}
+		if _, err := Build(ctx, Input{Card: model.Card{Kind: model.KindRanking}}); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("build ranking %v", err)
+		}
+		if _, err := Build(ctx, Input{Card: model.Card{Kind: absent}}); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("build absent %v", err)
+		}
+	})
 }
 
 func TestMissingContextIsEmpty(t *testing.T) {

@@ -25,14 +25,19 @@ func ReminderGap(previous time.Duration) time.Duration {
 }
 
 type deliveryState struct {
-	at  time.Time
-	gap time.Duration
+	at        time.Time
+	gap       time.Duration
+	completed map[string]bool // destination key -> that hop succeeded
 }
 
 // Service delivers one question to the origin, then the fallback, then the inbox.
 type Service struct {
 	exec Exec
 	now  func() time.Time
+	// receiveHermes runs after a hermes inbound is written and before the ack
+	// is read. Production leaves it nil and checks once. Tests install the
+	// simulated receiver so the ack lands in the same attempt.
+	receiveHermes func(home, subscriptionID string) error
 
 	mu   sync.Mutex
 	sent map[string]deliveryState
@@ -50,6 +55,8 @@ var _ Deliverer = (*Service)(nil)
 
 // Deliver sends msg once. The same question id is skipped until the clock
 // moves past a reminder gap that is longer than the previous gap.
+// A partial failure still records which destinations completed and arms that
+// gap, so a later call does not resend successes or retry failures early.
 func (s *Service) Deliver(ctx context.Context, msg Message) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -60,12 +67,14 @@ func (s *Service) Deliver(ctx context.Context, msg Message) error {
 	if !s.dueLocked(msg.QuestionID, now) {
 		return nil
 	}
-	if err := s.deliverOnce(ctx, msg, now); err != nil {
-		return err
-	}
+	completed, err := s.deliverOnce(ctx, msg, now)
 	prev := s.sent[msg.QuestionID].gap
-	s.sent[msg.QuestionID] = deliveryState{at: now, gap: ReminderGap(prev)}
-	return nil
+	s.sent[msg.QuestionID] = deliveryState{
+		at:        now,
+		gap:       ReminderGap(prev),
+		completed: completed,
+	}
+	return err
 }
 
 func (s *Service) dueLocked(id string, now time.Time) bool {
@@ -76,15 +85,18 @@ func (s *Service) dueLocked(id string, now time.Time) bool {
 	return now.Sub(state.at) > state.gap
 }
 
-func (s *Service) deliverOnce(ctx context.Context, msg Message, now time.Time) error {
+func (s *Service) deliverOnce(ctx context.Context, msg Message, now time.Time) (map[string]bool, error) {
 	home := msg.Home
 	if home == "" {
 		home = os.Getenv("CARDEX_HOME")
 	}
+	completed := map[string]bool{}
 	var errs []error
 	if kind, id, ok := ParseOrigin(msg.Origin); ok {
 		if err := s.deliverAdapter(ctx, home, kind, id, msg, now); err != nil {
 			errs = append(errs, err)
+		} else {
+			completed["origin"] = true
 		}
 	} else if strings.TrimSpace(msg.Origin) != "" {
 		errs = append(errs, fmt.Errorf("notify: origin %q", msg.Origin))
@@ -92,14 +104,18 @@ func (s *Service) deliverOnce(ctx context.Context, msg Message, now time.Time) e
 	if kind, id, ok := ParseOrigin(msg.Fallback); ok && msg.Fallback != msg.Origin {
 		if err := s.deliverAdapter(ctx, home, kind, id, msg, now); err != nil {
 			errs = append(errs, err)
+		} else {
+			completed["fallback"] = true
 		}
 	} else if strings.TrimSpace(msg.Fallback) != "" && msg.Fallback != msg.Origin {
 		errs = append(errs, fmt.Errorf("notify: fallback %q", msg.Fallback))
 	}
 	if err := writeInbox(home, msg); err != nil {
 		errs = append(errs, err)
+	} else {
+		completed["inbox"] = true
 	}
-	return errors.Join(errs...)
+	return completed, errors.Join(errs...)
 }
 
 func (s *Service) deliverAdapter(ctx context.Context, home, kind, id string, msg Message, now time.Time) error {
@@ -107,7 +123,7 @@ func (s *Service) deliverAdapter(ctx context.Context, home, kind, id string, msg
 	case "codex":
 		return s.execArgv(ctx, codexArgv(id, msg.Text))
 	case "hermes":
-		return deliverHermes(home, id, msg.QuestionID, msg.Text, now)
+		return s.deliverHermes(home, id, msg, now)
 	case "lark":
 		return s.execArgv(ctx, larkArgv(id, msg.Text))
 	case "file":
@@ -145,6 +161,9 @@ func inboxPath(home, questionID string) string {
 	return filepath.Join(home, "inbox", safeQuestionName(questionID)+".txt")
 }
 
+// inboxWrite persists one inbox file. Tests replace it to count attempts.
+var inboxWrite = os.WriteFile
+
 func writeInbox(home string, msg Message) error {
 	if strings.TrimSpace(home) == "" {
 		return errors.New("notify: CARDEX_HOME is empty")
@@ -155,5 +174,5 @@ func writeInbox(home string, msg Message) error {
 	}
 	body := fmt.Sprintf("question_id: %s\nobjective: %s\norigin: %s\n\n%s\n",
 		msg.QuestionID, msg.Objective, msg.Origin, msg.Text)
-	return os.WriteFile(path, []byte(body), 0o644)
+	return inboxWrite(path, []byte(body), 0o644)
 }

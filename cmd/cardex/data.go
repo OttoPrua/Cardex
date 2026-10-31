@@ -9,7 +9,12 @@ import (
 	"strings"
 
 	"cardex/internal/model"
+	"cardex/internal/store"
 )
+
+// objectiveQuestionWrite is nil on the success path. A test may set it so the
+// Question step returns an error after CreateObjective, inside the same WithTx.
+var objectiveQuestionWrite func(ctx context.Context, db *store.Store, q *model.Question) error
 
 func cmdProject(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -221,20 +226,28 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		return 1
 	}
 	defer db.Close()
-	if err := db.CreateObjective(context.Background(), &o); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	if len(reasons) > 0 {
+	err = db.WithTx(context.Background(), func(ctx context.Context) error {
+		if err := db.CreateObjective(ctx, &o); err != nil {
+			return err
+		}
+		if len(reasons) == 0 {
+			return nil
+		}
 		q := model.Question{
 			Objective: o.ID,
 			Kind:      model.QuestionCustom,
 			Text:      strings.Join(reasons, "; "),
 		}
-		if err := db.CreateQuestion(context.Background(), &q); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
+		if objectiveQuestionWrite != nil {
+			if err := objectiveQuestionWrite(ctx, db, &q); err != nil {
+				return err
+			}
 		}
+		return db.CreateQuestion(ctx, &q)
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
 	return emit(stdout, asJSON, o, o.ID+"\t"+o.Title)
 }

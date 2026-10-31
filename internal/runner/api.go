@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 
 	"cardex/internal/model"
 )
@@ -25,8 +26,11 @@ type LaunchSpec struct {
 
 // RunResult is what a fake attempt produced.
 type RunResult struct {
-	ExitCode int    // 脚本要求的退出码。
-	Output   []byte // 执行器输出，可以是残缺事件流或错误文本。
+	ExitCode  int           // 脚本要求的退出码。
+	Output    []byte        // 执行器输出，可以是残缺事件流或错误文本。
+	TailAfter time.Duration // 子进程写完 Output 后再等多久写 Tail。
+	Tail      []byte        // Output 之后才产生的字节。
+	Hold      time.Duration // 写完 Tail 后继续占着进程组的时间。
 }
 
 // Runner is one executor adapter.

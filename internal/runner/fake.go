@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -11,9 +12,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"cardex/internal/model"
@@ -28,17 +31,27 @@ type scriptDoc struct {
 }
 
 type scriptAttempt struct {
-	WriteFiles       []scriptFile `json:"write_files"`
-	ChangeFuncs      []scriptFunc `json:"change_funcs"`
-	Result           *string      `json:"result"`
-	ExitCode         *int         `json:"exit_code"`
-	TruncatedEvents  bool         `json:"truncated_events"`
-	QuotaHit         *scriptQuota `json:"quota_hit"`
-	AuthFailure      bool         `json:"auth_failure"`
-	PermissionDenied bool         `json:"permission_denied"`
-	Refusal          bool         `json:"refusal"`
-	Sleep            string       `json:"sleep"`
-	Silent           bool         `json:"silent"`
+	WriteFiles       []scriptFile      `json:"write_files"`
+	ChangeFuncs      []scriptFunc      `json:"change_funcs"`
+	Result           *string           `json:"result"`
+	ExitCode         *int              `json:"exit_code"`
+	TruncatedEvents  bool              `json:"truncated_events"`
+	QuotaHit         *scriptQuota      `json:"quota_hit"`
+	AuthFailure      bool              `json:"auth_failure"`
+	PermissionDenied bool              `json:"permission_denied"`
+	Refusal          bool              `json:"refusal"`
+	Sleep            string            `json:"sleep"`
+	Silent           bool              `json:"silent"`
+	Output           string            `json:"output"`
+	Stderr           string            `json:"stderr"`
+	OutsideWrite     string            `json:"outside_write"`
+	GrandchildMarker string            `json:"grandchild_marker"`
+	GrandchildAfter  string            `json:"grandchild_after"`
+	GrandchildDetach bool              `json:"grandchild_detach"`
+	TailAfter        string            `json:"tail_after"`
+	Tail             string            `json:"tail"`
+	Hold             string            `json:"hold"`
+	Env              map[string]string `json:"env"`
 }
 
 type scriptFile struct {
@@ -71,46 +84,165 @@ func (Fake) Build(spec LaunchSpec) ([]string, []string, error) {
 	if spec.WorkDir != "" {
 		env = append(env, "CARDEX_FAKE_WORKDIR="+spec.WorkDir)
 	}
+	if spec.PromptPath != "" {
+		env = append(env, "CARDEX_FAKE_PROMPT="+spec.PromptPath)
+	}
+	raw := spec.Script
+	if len(raw) == 0 && spec.ScriptPath != "" {
+		raw, _ = os.ReadFile(spec.ScriptPath)
+	}
+	env = append(env, scriptEnv(raw, spec.AttemptIndex)...)
 	return cmd, env, nil
 }
 
-// Drive does nothing. Fake runs through Run, not a PTY.
-func (Fake) Drive(context.Context, io.ReadWriter) error { return nil }
+func scriptEnv(raw []byte, index int) []string {
+	var doc scriptDoc
+	if json.Unmarshal(raw, &doc) != nil {
+		return nil
+	}
+	step, ok := doc.Attempts[strconv.Itoa(index)]
+	if !ok || len(step.Env) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(step.Env))
+	for k := range step.Env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	env := make([]string, 0, len(keys))
+	for _, k := range keys {
+		env = append(env, k+"="+step.Env[k])
+	}
+	return env
+}
 
-// Classify maps scripted error text onto the §5 error classes.
-func (Fake) Classify(exit int, output []byte) model.ErrorClass {
-	text := string(output)
-	switch {
-	case strings.Contains(text, "quota hit"):
-		return model.ErrorQuotaHit
-	case strings.Contains(text, "authentication failed"):
-		return model.ErrorAuthFailed
-	case strings.Contains(text, "permission denied"):
-		return model.ErrorPermissionDenied
-	case strings.Contains(text, "refusal"):
-		return model.ErrorRefusal
-	default:
-		return ""
+var fakeDriveCount atomic.Uint64
+
+var (
+	fakeDriveMu   sync.Mutex
+	fakeDriveLast []byte
+)
+
+// FakeDriveCount is how many times Fake.Drive has been entered in this process.
+func FakeDriveCount() uint64 { return fakeDriveCount.Load() }
+
+// FakeDriveCapture is the bytes the last Fake.Drive read from its stream.
+func FakeDriveCapture() []byte {
+	fakeDriveMu.Lock()
+	defer fakeDriveMu.Unlock()
+	return append([]byte(nil), fakeDriveLast...)
+}
+
+func rememberDrive(b []byte) {
+	fakeDriveMu.Lock()
+	fakeDriveLast = append([]byte(nil), b...)
+	fakeDriveMu.Unlock()
+}
+
+// Drive reads the executor stream until EOF. A line beginning with
+// "drive_error:" is returned to the host. Prompt, completion, and
+// budget_limited lines stay in FakeDriveCapture.
+func (Fake) Drive(ctx context.Context, rw io.ReadWriter) error {
+	fakeDriveCount.Add(1)
+	var buf bytes.Buffer
+	tmp := make([]byte, 4096)
+	var driveErr error
+	for {
+		if err := ctx.Err(); err != nil {
+			rememberDrive(buf.Bytes())
+			if driveErr != nil {
+				return driveErr
+			}
+			return err
+		}
+		n, err := rw.Read(tmp)
+		if n > 0 {
+			buf.Write(tmp[:n])
+			if driveErr == nil {
+				if msg, ok := driveErrorLine(buf.Bytes()); ok {
+					driveErr = errors.New(msg)
+				}
+			}
+			if driveTerminalReached(buf.Bytes()) {
+				rememberDrive(buf.Bytes())
+				return driveErr
+			}
+		}
+		if err != nil {
+			rememberDrive(buf.Bytes())
+			if driveErr != nil {
+				return driveErr
+			}
+			if errors.Is(err, io.EOF) || errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+				return nil
+			}
+			return err
+		}
 	}
 }
 
-var usagePattern = regexp.MustCompile(`tokens=(\d+)`)
+func driveErrorLine(b []byte) (string, bool) {
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if bytes.HasPrefix(line, []byte("drive_error:")) {
+			return string(line), true
+		}
+	}
+	return "", false
+}
 
-// ParseUsage reads a "tokens=N" marker from the output.
+// driveTerminalReached reports a recognized completion, budget_limited, or
+// error terminal. Drive returns at that point even if the executor keeps
+// writing.
+func driveTerminalReached(b []byte) bool {
+	for _, line := range bytes.Split(b, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		switch string(line) {
+		case "completion", "budget_limited", "drive_return":
+			return true
+		}
+		if bytes.HasPrefix(line, []byte("drive_error:")) || bytes.HasPrefix(line, []byte("drive_return:")) {
+			return true
+		}
+	}
+	return false
+}
+
+// Classify maps structured errors and explicit diagnostics onto §5 classes.
+func (Fake) Classify(exit int, output []byte) model.ErrorClass {
+	return ClassifyAttempt(exit, output)
+}
+
+// ParseUsage honors a tokens=N marker. Real usage documents are not relabeled
+// as fake when that marker is absent.
 func (Fake) ParseUsage(output []byte) model.Usage {
-	m := usagePattern.FindSubmatch(output)
-	if m == nil {
-		return model.Usage{}
+	if u, ok := parseFakeTokens(output); ok {
+		return u
 	}
-	n, err := strconv.ParseInt(string(m[1]), 10, 64)
-	if err != nil {
-		return model.Usage{}
+	return ParseOutputUsage(output)
+}
+
+// NeedsPTYFor reports the script's needs_pty flag. NeedsPTY stays false.
+func (Fake) NeedsPTYFor(spec LaunchSpec) bool {
+	raw := spec.Script
+	if len(raw) == 0 && spec.ScriptPath != "" {
+		raw, _ = os.ReadFile(spec.ScriptPath)
 	}
-	return model.Usage{Tokens: n, Source: "fake", Confidence: 1}
+	var doc struct {
+		NeedsPTY bool `json:"needs_pty"`
+	}
+	if json.Unmarshal(raw, &doc) != nil {
+		return false
+	}
+	return doc.NeedsPTY
 }
 
 // Run applies the script entry for spec.AttemptIndex inside spec.WorkDir.
 func (f Fake) Run(ctx context.Context, spec LaunchSpec) (RunResult, error) {
+	return f.run(ctx, spec, false)
+}
+
+func (f Fake) run(ctx context.Context, spec LaunchSpec, child bool) (RunResult, error) {
 	raw := spec.Script
 	if len(raw) == 0 {
 		if spec.ScriptPath == "" {
@@ -137,8 +269,20 @@ func (f Fake) Run(ctx context.Context, spec LaunchSpec) (RunResult, error) {
 	if err := os.MkdirAll(spec.WorkDir, 0o755); err != nil {
 		return RunResult{}, err
 	}
+	if step.OutsideWrite != "" && !child {
+		if _, err := safeJoin(spec.WorkDir, step.OutsideWrite); err != nil {
+			return RunResult{}, err
+		}
+		return RunResult{}, fmt.Errorf("fake: path %q escapes workdir", step.OutsideWrite)
+	}
 	if step.Silent {
 		return RunResult{ExitCode: 0}, nil
+	}
+	var prelude bytes.Buffer
+	if child {
+		if err := childPrelude(&prelude, spec, step); err != nil {
+			return RunResult{}, err
+		}
 	}
 	if step.Sleep != "" {
 		d, err := time.ParseDuration(step.Sleep)
@@ -193,22 +337,71 @@ func (f Fake) Run(ctx context.Context, spec LaunchSpec) (RunResult, error) {
 		out.WriteString(truncatedEventStream())
 	}
 	if step.QuotaHit != nil {
-		fmt.Fprintf(&out, "error: quota hit, reset at %s\n", step.QuotaHit.Reset)
+		writeDiagnostic(&out, fmt.Sprintf("quota hit, reset at %s", step.QuotaHit.Reset))
 	}
 	if step.AuthFailure {
-		out.WriteString("error: authentication failed\n")
+		writeDiagnostic(&out, "authentication failed")
 	}
 	if step.PermissionDenied {
-		out.WriteString("error: permission denied: operation rejected\n")
+		writeDiagnostic(&out, "permission denied: operation rejected")
 	}
 	if step.Refusal {
-		out.WriteString("error: refusal: the model refused the request\n")
+		writeDiagnostic(&out, "refusal: the model refused the request")
+	}
+	if step.Output != "" {
+		out.WriteString(step.Output)
+	}
+	if step.Stderr != "" {
+		if child {
+			if _, err := os.Stderr.WriteString(step.Stderr); err != nil {
+				return RunResult{}, err
+			}
+		} else {
+			out.WriteString(step.Stderr)
+		}
+	}
+	if prelude.Len() > 0 {
+		var merged bytes.Buffer
+		merged.Write(prelude.Bytes())
+		merged.Write(out.Bytes())
+		out = merged
 	}
 	code := 0
 	if step.ExitCode != nil {
 		code = *step.ExitCode
 	}
-	return RunResult{ExitCode: code, Output: out.Bytes()}, nil
+	result := RunResult{ExitCode: code, Output: out.Bytes()}
+	if step.TailAfter != "" {
+		d, err := time.ParseDuration(step.TailAfter)
+		if err != nil {
+			return RunResult{}, fmt.Errorf("fake tail_after: %w", err)
+		}
+		result.TailAfter = d
+		result.Tail = []byte(step.Tail)
+	} else if step.Tail != "" {
+		result.Tail = []byte(step.Tail)
+	}
+	if step.Hold != "" {
+		d, err := time.ParseDuration(step.Hold)
+		if err != nil {
+			return RunResult{}, fmt.Errorf("fake hold: %w", err)
+		}
+		result.Hold = d
+	}
+	return result, nil
+}
+
+func writeDiagnostic(out *bytes.Buffer, message string) {
+	fmt.Fprintf(out, "error: %s\n", message)
+	encoded, err := json.Marshal(map[string]any{
+		"type":  "error",
+		"error": map[string]string{"message": message},
+	})
+	if err != nil {
+		return
+	}
+	out.Write(encoded)
+	out.WriteByte('\n')
 }
 
 func truncatedEventStream() string {

@@ -1,6 +1,17 @@
 package e2e
 
-import "testing"
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+
+	"cardex/internal/host"
+	"cardex/internal/model"
+)
 
 func TestS01(t *testing.T) {
 	// 单卡闭环，经过复核和合并。
@@ -119,5 +130,114 @@ func TestS23(t *testing.T) {
 
 func TestS24(t *testing.T) {
 	// 执行器写 worktree 以外的地方被沙箱拒绝（只在 macOS 上跑）。
-	t.Skip("R2-A")
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is macOS only")
+	}
+	h := New(t)
+	ctx := context.Background()
+	ch := model.Channel{
+		ID: "ch-s24", Runner: model.RunnerFake, Health: model.HealthOK, Tier: model.TierT2, Family: "fake",
+	}
+	if err := h.DB.CreateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	card := model.Card{
+		ID: "c-s24", Kind: model.KindDev, Status: model.CardReady, Title: "s24", Objective: "o", Node: "n",
+	}
+	if err := h.DB.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	work := filepath.Join(h.Home, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := sandboxOutsideDir(t)
+	target := filepath.Join(outside, "newfile")
+	raw, err := json.Marshal(map[string]any{
+		"attempts": map[string]any{
+			"0": map[string]any{
+				"outside_write": target,
+				"write_files":   []map[string]string{{"path": "inside.txt", "content": "inside"}},
+				"output":        "s24-done\n",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "a-s24"
+	scriptPath := filepath.Join(h.Home, "attempts", id, "script.json")
+	if err := os.MkdirAll(filepath.Dir(scriptPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scriptPath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prompt := filepath.Join(h.Home, "prompt-s24.md")
+	if err := os.WriteFile(prompt, []byte("prompt"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	attempt := model.Attempt{
+		ID: id, Card: card.ID, Index: 0,
+		Route:      model.Route{Channel: ch.ID, Model: "fake"},
+		Worktree:   work,
+		PromptPath: prompt,
+	}
+	if err := h.DB.CreateAttempt(ctx, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(h.Home, "attempts", id, "hard-duration"), []byte("30s"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Run(ctx, h.Home, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("outside file: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(work, "inside.txt"))
+	if err != nil || string(body) != "inside" {
+		t.Fatalf("inside write %q %v", body, err)
+	}
+	logb, err := os.ReadFile(filepath.Join(h.Home, "attempts", id, "output.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.DB.GetAttempt(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evidence := strings.ToLower(string(logb) + "\n" + got.ErrorExcerpt)
+	if !strings.Contains(evidence, "operation not permitted") && !strings.Contains(evidence, "deny file-write") {
+		t.Fatalf("denial missing from evidence: log=%s excerpt=%s class=%s", logb, got.ErrorExcerpt, got.ErrorClass)
+	}
+	if strings.Contains(string(logb), "must be relative") || strings.Contains(string(logb), "escapes workdir") {
+		t.Fatalf("denied by the in-process path guard: %s", logb)
+	}
+	if got.Outcome != "" {
+		t.Fatalf("outcome %q", got.Outcome)
+	}
+	t.Logf("outside file absent; denial in evidence: %s", got.ErrorExcerpt)
+}
+
+// sandboxOutsideDir is outside TMPDIR. The seatbelt profile allows writes under TMPDIR,
+// so a denial target created in t.TempDir would be permitted.
+func sandboxOutsideDir(t *testing.T) string {
+	t.Helper()
+	base := "/tmp"
+	tmpReal, _ := filepath.EvalSymlinks(os.TempDir())
+	baseReal, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		baseReal = base
+	}
+	sep := string(os.PathSeparator)
+	if baseReal == tmpReal || strings.HasPrefix(baseReal, tmpReal+sep) || strings.HasPrefix(tmpReal, baseReal+sep) {
+		base = "/var/tmp"
+	}
+	dir, err := os.MkdirTemp(base, "cardex-s24-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }

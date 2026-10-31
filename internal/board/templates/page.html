@@ -16,7 +16,7 @@
 {{if .History}}{{template "history" .History}}{{end}}
 <script>
 setInterval(function () {
-  fetch({{.PollPath}}, {method: "GET", headers: {"Accept": "application/json"}});
+  location.reload();
 }, 5000);
 </script>
 </body>

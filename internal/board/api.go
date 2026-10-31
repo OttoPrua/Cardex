@@ -93,7 +93,7 @@ func serveCurrent(w http.ResponseWriter, r *http.Request, asJSON bool) {
 		writeJSON(w, view)
 		return
 	}
-	render(w, pageData{Title: "当前工作", PollPath: "/api/work", Current: view})
+	render(w, pageData{Title: "当前工作", Current: view})
 }
 
 func serveChannels(w http.ResponseWriter, r *http.Request, asJSON bool) {
@@ -111,7 +111,7 @@ func serveChannels(w http.ResponseWriter, r *http.Request, asJSON bool) {
 		writeJSON(w, view)
 		return
 	}
-	render(w, pageData{Title: "渠道", PollPath: "/api/channels", Channels: view})
+	render(w, pageData{Title: "渠道", Channels: view})
 }
 
 func serveCard(w http.ResponseWriter, r *http.Request, id string, asJSON bool) {
@@ -133,7 +133,7 @@ func serveCard(w http.ResponseWriter, r *http.Request, id string, asJSON bool) {
 		writeJSON(w, view)
 		return
 	}
-	render(w, pageData{Title: view.Title, PollPath: "/api/cards/" + id, Card: view})
+	render(w, pageData{Title: view.Title, Card: view})
 }
 
 func serveHistory(w http.ResponseWriter, r *http.Request, asJSON bool) {
@@ -149,15 +149,11 @@ func serveHistory(w http.ResponseWriter, r *http.Request, asJSON bool) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	poll := "/api/history"
-	if r.URL.RawQuery != "" {
-		poll += "?" + r.URL.RawQuery
-	}
 	if asJSON {
 		writeJSON(w, view)
 		return
 	}
-	render(w, pageData{Title: "历史", PollPath: poll, History: view})
+	render(w, pageData{Title: "历史", History: view})
 }
 
 func serveLog(w http.ResponseWriter, r *http.Request, id string) {

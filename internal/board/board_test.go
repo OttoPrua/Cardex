@@ -50,7 +50,7 @@ func TestViewsHTMLAndJSON(t *testing.T) {
 		t.Fatalf("json content-type %q", ct)
 	}
 	body := htmlCurrent.Body.String()
-	assertContains(t, body, "setInterval", "fetch(\"/api/work\"", "objective o-live", "node n-mod status frozen open_questions 2",
+	assertContains(t, body, "objective o-live", "node n-mod status frozen open_questions 2",
 		"node n-dir status drafting open_questions 0", "status waiting count 1", "status paused count 0",
 		"waiting c-wait reason blocked by c-merge on calc.go Answer",
 		"attempt a-run", "claim calc.go Answer", "merge c-merge", "question q-open", "freeze the direction?")
@@ -63,6 +63,7 @@ func TestViewsHTMLAndJSON(t *testing.T) {
 	if strings.Contains(body, "<script src") || strings.Contains(body, "https://") || strings.Contains(body, "http://") {
 		t.Fatal("page loads a third-party script URL")
 	}
+	assertPollerReloads(t, body)
 	for _, hidden := range []string{"o-paused", "c-on-paused", "c-paused", "c-held", "c-v1", "o-done", "o-canceled", "o-cand", "q-done", "q-hist", "a-end"} {
 		if strings.Contains(body, hidden) {
 			t.Fatalf("default html contains %s", hidden)
@@ -113,10 +114,11 @@ func TestViewsHTMLAndJSON(t *testing.T) {
 	htmlCh := do(t, http.MethodGet, "/channels")
 	jsonCh := do(t, http.MethodGet, "/api/channels")
 	chBody := htmlCh.Body.String()
-	assertContains(t, chBody, "fetch(\"/api/channels\"", "health degraded", "redline 0.25", "occupied 1 concurrency 4",
+	assertContains(t, chBody, "health degraded", "redline 0.25", "occupied 1 concurrency 4",
 		"window 5h remaining 0.5 confidence 1 reset 2026-10-31T12:00:00Z",
 		"window weekly remaining 0.25 confidence 0.5 reset 2026-11-02T00:00:00Z",
-		"occupied 0 concurrency 2", "setInterval")
+		"occupied 0 concurrency 2")
+	assertPollerReloads(t, chBody)
 	channels := decode[channelsView](t, jsonCh)
 	main := channelByID(channels.Channels, "ch-main")
 	if main.Health != "degraded" || main.Redline != 0.25 || main.Occupied != 1 || main.Concurrency != 4 {
@@ -156,14 +158,13 @@ func TestViewsHTMLAndJSON(t *testing.T) {
 	if !strings.Contains(logBody, "MARKER_END_PRESENT") || strings.Contains(logBody, "MARKER_EARLY_NOT_IN_TAIL") {
 		t.Fatalf("log tail missing end or containing early marker, len=%d", len(logBody))
 	}
-	if !strings.Contains(cardBody, "setInterval") {
-		t.Fatal("card page missing poller")
-	}
+	assertPollerReloads(t, cardBody)
 
 	htmlHist := do(t, http.MethodGet, "/history")
 	jsonHist := do(t, http.MethodGet, "/api/history")
 	histBody := htmlHist.Body.String()
-	assertContains(t, histBody, "history objective o-done", "history objective o-canceled", "history card c-v1", "history card c-held", "setInterval")
+	assertContains(t, histBody, "history objective o-done", "history objective o-canceled", "history card c-v1", "history card c-held")
+	assertPollerReloads(t, histBody)
 	for _, hidden := range []string{"c-run", "o-live", "o-cand", "c-ready"} {
 		if strings.Contains(histBody, hidden) {
 			t.Fatalf("history html contains %s", hidden)
@@ -566,6 +567,24 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// assertPollerReloads checks the inline script reloads the HTML document.
+// A fetch that ignores its response leaves the server-rendered page stale.
+func assertPollerReloads(t *testing.T, body string) {
+	t.Helper()
+	start := strings.Index(body, "<script>")
+	end := strings.Index(body, "</script>")
+	if start < 0 || end < start {
+		t.Fatal("missing inline poller")
+	}
+	script := body[start:end]
+	if !strings.Contains(script, "setInterval") || !strings.Contains(script, "location.reload()") {
+		t.Fatalf("poller does not reload the visible document: %s", script)
+	}
+	if strings.Contains(script, "fetch(") {
+		t.Fatalf("poller fetches without applying the response: %s", script)
 	}
 }
 

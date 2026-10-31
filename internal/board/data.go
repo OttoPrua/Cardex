@@ -18,7 +18,6 @@ const historyPageSize = 50
 
 type pageData struct {
 	Title    string
-	PollPath string
 	Current  *currentView
 	Channels *channelsView
 	Card     *cardView

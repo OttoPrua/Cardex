@@ -3,6 +3,8 @@ package loop
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -34,6 +36,7 @@ const (
 type History struct {
 	NoOutput           int
 	SameChannelRetries int
+	BudgetLimited      int
 }
 
 // Decision is the pure disposition for one attempt. Applying it is DevStep's job.
@@ -65,10 +68,9 @@ func Decide(card model.Card, outcome model.Outcome, excerpt string, reworkLimit,
 	}
 	switch outcome {
 	case model.OutcomePassed:
-		if card.Kind == model.KindDev {
-			return Decision{Action: ActionReview}
-		}
 		switch card.Kind {
+		case model.KindDev, model.KindSkeleton, model.KindRepair, model.KindRebase, model.KindBacklog:
+			return Decision{Action: ActionReview}
 		case model.KindPlan, model.KindReview, model.KindNormalize, model.KindReplan:
 			return Decision{Action: ActionAbsorb}
 		default:
@@ -115,13 +117,17 @@ func Decide(card model.Card, outcome model.Outcome, excerpt string, reworkLimit,
 			NeedsInput:   true,
 		}
 	case model.OutcomeBudgetLimited:
-		if budgetLeft {
+		if hist.BudgetLimited == 0 && budgetLeft {
 			return Decision{Action: ActionContinue, SameChannel: true, UseBranch: true}
+		}
+		text := "card budget exhausted and the objective budget has no remaining capacity"
+		if budgetLeft {
+			text = "card budget exhausted after one continuation"
 		}
 		return Decision{
 			Action:       ActionQuestion,
 			QuestionKind: model.QuestionBudget,
-			QuestionText: "card budget exhausted and the objective budget has no remaining capacity",
+			QuestionText: text,
 			NeedsInput:   true,
 		}
 	case model.OutcomeViolation:
@@ -184,6 +190,7 @@ type ListedCard struct {
 	Node       string
 	Op         string
 	Outside    bool
+	ID         string
 }
 
 // ListEvent is a fact recorded while normalizing a card list.
@@ -427,6 +434,63 @@ func PlanReplan(existing []model.Card, started map[string]bool, scope string, li
 		ch.Edit = append(ch.Edit, d)
 	}
 	return ch
+}
+
+// bindCreatedCards gives every new card an id that is not in taken and rewrites
+// dependencies that name a key in this create list to that card's id.
+// The first create with a repeated key keeps the name; later copies still get their own ids.
+func bindCreatedCards(creates, edits []ListedCard, taken map[string]bool) ([]ListedCard, []ListedCard, error) {
+	if taken == nil {
+		taken = map[string]bool{}
+	}
+	keyToID := map[string]string{}
+	for i := range creates {
+		id, err := mintCardID(taken)
+		if err != nil {
+			return nil, nil, err
+		}
+		taken[id] = true
+		creates[i].ID = id
+		if _, ok := keyToID[creates[i].Key]; !ok {
+			keyToID[creates[i].Key] = id
+		}
+	}
+	for i := range creates {
+		creates[i].Deps = remapListDeps(creates[i].Deps, keyToID)
+	}
+	for i := range edits {
+		edits[i].Deps = remapListDeps(edits[i].Deps, keyToID)
+	}
+	return creates, edits, nil
+}
+
+func remapListDeps(deps []string, keyToID map[string]string) []string {
+	if len(deps) == 0 {
+		return deps
+	}
+	out := make([]string, len(deps))
+	for i, dep := range deps {
+		if id, ok := keyToID[dep]; ok {
+			out[i] = id
+			continue
+		}
+		out[i] = dep
+	}
+	return out
+}
+
+func mintCardID(taken map[string]bool) (string, error) {
+	for n := 0; n < 8; n++ {
+		var buf [8]byte
+		if _, err := rand.Read(buf[:]); err != nil {
+			return "", err
+		}
+		id := "c" + hex.EncodeToString(buf[:])
+		if !taken[id] {
+			return id, nil
+		}
+	}
+	return "", fmt.Errorf("card id collision")
 }
 
 func notYetStarted(card model.Card, started map[string]bool) bool {

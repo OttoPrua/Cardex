@@ -236,10 +236,10 @@ func TestDevStepReplan(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.step()
-		if kindCount(f.cards(), model.KindReplan) != 0 || f.mustCard("child").Status != model.CardReady || f.mustCard("plan").Status != model.CardDone {
+		child := cardByTitle(f, "Child")
+		if kindCount(f.cards(), model.KindReplan) != 0 || child.Status != model.CardReady || child.ID == "child" || f.mustCard("plan").Status != model.CardDone {
 			t.Fatalf("cards %+v", f.cards())
 		}
-		child := f.mustCard("child")
 		child.Status = model.CardMerged
 		if err := f.db.UpdateCard(f.ctx, &child); err != nil {
 			t.Fatal(err)
@@ -266,7 +266,7 @@ func TestDevStepReplan(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.step()
-		child := f.mustCard("child")
+		child := cardByTitle(f, "Child")
 		child.Status = model.CardMerged
 		if err := f.db.UpdateCard(f.ctx, &child); err != nil {
 			t.Fatal(err)
@@ -338,8 +338,8 @@ func TestDevStepReplan(t *testing.T) {
 		if f.mustCard("foreign").Title != "foreign" || f.mustCard("foreign").Node != other.ID {
 			t.Fatalf("foreign %+v", f.mustCard("foreign"))
 		}
-		fresh := f.mustCard("fresh")
-		if fresh.Node != f.node.ID || fresh.Kind != model.KindSpike || fresh.Status != model.CardReady {
+		fresh := cardByTitle(f, "Fresh")
+		if fresh.ID == "fresh" || fresh.Node != f.node.ID || fresh.Kind != model.KindSpike || fresh.Status != model.CardReady {
 			t.Fatalf("fresh %+v", fresh)
 		}
 		if f.mustCard("replan").Status != model.CardDone {

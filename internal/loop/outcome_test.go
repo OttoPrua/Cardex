@@ -741,21 +741,21 @@ func TestDevStepAbsorption(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.step()
-		bare := f.mustCard("bare")
-		if bare.Kind != model.KindDev || bare.Title != "bare" || bare.Tier != model.TierT2 || bare.Body != "" || len(bare.Deps) != 0 || bare.Status != model.CardReady || bare.Node != f.node.ID {
+		bare := cardByTitle(f, "bare")
+		if bare.Kind != model.KindDev || bare.Title != "bare" || bare.Tier != model.TierT2 || bare.Body != "" || len(bare.Deps) != 0 || bare.Status != model.CardReady || bare.Node != f.node.ID || bare.ID == "bare" {
 			t.Fatalf("defaults %+v", bare)
 		}
-		a := f.mustCard("a")
-		b := f.mustCard("b")
-		keep := f.mustCard("keep")
+		a := cardByTitle(f, "A")
+		b := cardByTitle(f, "B")
+		keep := cardByTitle(f, "Keep")
 		edges := 0
-		if hasDepID(a, "b") {
+		if hasDepID(a, b.ID) {
 			edges++
 		}
-		if hasDepID(b, "a") {
+		if hasDepID(b, a.ID) {
 			edges++
 		}
-		if edges != 1 || hasDepID(a, "ghost") || !hasDepID(keep, "a") {
+		if edges != 1 || hasDepID(a, "ghost") || !hasDepID(keep, a.ID) {
 			t.Fatalf("deps a=%v b=%v keep=%v", a.Deps, b.Deps, keep.Deps)
 		}
 		if _, err := f.db.GetCard(f.ctx, "out"); err == nil {
@@ -939,6 +939,22 @@ func TestDevStepAbsorption(t *testing.T) {
 			t.Fatal("second step wrote the result again")
 		}
 	})
+}
+
+func cardByTitle(f *fx, title string) model.Card {
+	f.t.Helper()
+	var found model.Card
+	n := 0
+	for _, card := range f.cards() {
+		if card.Title == title {
+			found = card
+			n++
+		}
+	}
+	if n != 1 {
+		f.t.Fatalf("title %q matched %d cards", title, n)
+	}
+	return found
 }
 
 func openText(node model.DesignNode, text string) bool {

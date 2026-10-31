@@ -14,6 +14,7 @@ import (
 
 	"cardex/internal/model"
 	"cardex/internal/quota"
+	"cardex/internal/route"
 )
 
 var clockRE = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})`)
@@ -175,6 +176,9 @@ func historyBefore(attempts []model.Attempt, cur model.Attempt) History {
 		if attempt.Outcome == model.OutcomeNoOutput {
 			hist.NoOutput++
 		}
+		if attempt.Outcome == model.OutcomeBudgetLimited {
+			hist.BudgetLimited++
+		}
 	}
 	for i := len(earlier) - 1; i >= 0; i-- {
 		attempt := earlier[i]
@@ -273,7 +277,10 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 		return st.saveCard(card)
 	}
 	if dec.OtherChannel {
-		ch, ok := st.nextChannel(attempt.Route.Channel)
+		channelID, modelName, ok, err := st.nextRoute(card, attempt.Route.Channel)
+		if err != nil {
+			return err
+		}
 		if !ok {
 			card.Status = model.CardNeedsInput
 			if err := st.saveCard(card); err != nil {
@@ -281,10 +288,8 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 			}
 			return st.openQuestion(model.QuestionCustom, card.ID, "card", "no other channel is available", true)
 		}
-		card.Channel = ch.ID
-		if len(ch.Models) > 0 {
-			card.Model = ch.Models[0]
-		}
+		card.Channel = channelID
+		card.Model = modelName
 		card.Status = model.CardReady
 		return st.saveCard(card)
 	}
@@ -292,63 +297,122 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 	return st.saveCard(card)
 }
 
-func (st *step) nextChannel(current string) (model.Channel, bool) {
-	ids := make([]string, 0, len(st.snap.channels))
+func (st *step) nextRoute(card model.Card, failed string) (string, string, bool, error) {
+	channels := make([]model.Channel, 0, len(st.snap.channels))
 	for _, ch := range st.snap.channels {
-		if ch.ID == current || ch.Health != model.HealthOK || st.quotaBlocked(ch) {
+		if ch.ID == failed {
 			continue
 		}
-		ids = append(ids, ch.ID)
+		channels = append(channels, ch)
 	}
-	sort.Strings(ids)
-	if len(ids) == 0 {
-		return model.Channel{}, false
+	rows, err := st.db.ListPositioning(st.ctx)
+	if err != nil {
+		return "", "", false, err
 	}
-	return st.snap.channel(ids[0])
+	rows = rowsWithModel(rows)
+	if len(rows) == 0 {
+		rows = fallbackPositioning(card, channels)
+	}
+	led := quota.New()
+	led.SetClock(func() time.Time { return st.now })
+	for _, ch := range st.snap.channels {
+		led.Configure(ch)
+		for _, window := range ch.QuotaWindows {
+			if window.UsedTokens <= 0 {
+				continue
+			}
+			if err := led.Record(st.ctx, ch.ID, model.Usage{Tokens: window.UsedTokens, Source: "window"}, st.now, st.now); err != nil {
+				return "", "", false, err
+			}
+		}
+	}
+	for _, attempts := range st.snap.attempts {
+		for _, attempt := range attempts {
+			if attempt.Route.Channel == "" || attempt.Usage.Tokens <= 0 {
+				continue
+			}
+			ended := attempt.EndedAt
+			if ended.IsZero() {
+				ended = st.now
+			}
+			started := attempt.StartedAt
+			if started.IsZero() {
+				started = ended
+			}
+			if err := led.Record(st.ctx, attempt.Route.Channel, attempt.Usage, started, ended); err != nil {
+				return "", "", false, err
+			}
+		}
+	}
+	if err := RestoreQuota(st.ctx, led, st.snap.events); err != nil {
+		return "", "", false, err
+	}
+	probe := card
+	probe.Channel = ""
+	probe.Model = ""
+	obj := st.snap.obj
+	obj.Channel = ""
+	obj.Model = ""
+	picked, _, err := route.Select(st.ctx, route.Request{
+		Card:         probe,
+		Objective:    obj,
+		AuthorFamily: card.AuthorFamily,
+		Channels:     channels,
+		Positioning:  rows,
+		InUse:        st.channelInUse(),
+		Quota:        led,
+		Now:          st.now,
+	})
+	if err != nil || picked.Channel == "" || picked.Channel == failed {
+		return "", "", false, nil
+	}
+	return picked.Channel, picked.Model, true, nil
 }
 
-// quotaBlocked reports a channel that stays healthy but cannot be selected
-// until a recorded quota reset. route.Select would reject it as blocked, and
-// a pinned card.Channel would skip that check, so reschedule must not pin it.
-func (st *step) quotaBlocked(ch model.Channel) bool {
-	if reset, ok := st.quotaBlockReset(ch.ID); ok && reset.After(st.now) {
-		return true
-	}
-	for _, window := range ch.QuotaWindows {
-		if window.Remaining == 0 && window.ResetAt.After(st.now) {
-			return true
+func rowsWithModel(rows []model.Positioning) []model.Positioning {
+	out := make([]model.Positioning, 0, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row.Model) == "" {
+			continue
 		}
+		out = append(out, row)
 	}
-	return false
+	return out
 }
 
-func (st *step) quotaBlockReset(channelID string) (time.Time, bool) {
-	var until time.Time
-	found := false
-	for _, event := range st.snap.events {
-		if event.Type != "quota_block" {
-			continue
-		}
-		var data struct {
-			Channel string `json:"channel"`
-			Reset   string `json:"reset"`
-		}
-		if err := json.Unmarshal(event.Data, &data); err != nil {
-			continue
-		}
-		if data.Channel != channelID && event.Entity != "channel:"+channelID {
-			continue
-		}
-		reset, err := time.Parse(time.RFC3339Nano, data.Reset)
-		if err != nil {
-			continue
-		}
-		if !found || reset.After(until) {
-			until = reset
-			found = true
+func fallbackPositioning(card model.Card, channels []model.Channel) []model.Positioning {
+	tier := card.Tier
+	if !tier.Valid() || tier == model.TierNone {
+		tier = model.DefaultTier(card.Kind)
+	}
+	var rows []model.Positioning
+	seen := map[string]bool{}
+	for _, ch := range channels {
+		for _, name := range ch.Models {
+			name = strings.TrimSpace(name)
+			if name == "" || seen[name] {
+				continue
+			}
+			seen[name] = true
+			rows = append(rows, model.Positioning{
+				Model:      name,
+				Tiers:      []model.Tier{tier},
+				Preference: 1,
+			})
 		}
 	}
-	return until, found
+	return rows
+}
+
+func (st *step) channelInUse() map[string]int {
+	inUse := map[string]int{}
+	for _, card := range st.snap.cards {
+		if card.Status != model.CardRunning || card.Channel == "" {
+			continue
+		}
+		inUse[card.Channel]++
+	}
+	return inUse
 }
 
 func (st *step) blockQuota(ch model.Channel, excerpt string) error {
@@ -504,10 +568,25 @@ func (st *step) absorbPlan(card model.Card, attempt model.Attempt) error {
 	if err := st.hangQuestions(list.Questions); err != nil {
 		return err
 	}
-	ids := make([]string, 0, len(list.Cards))
+	taken := map[string]bool{}
+	for _, existing := range st.snap.cards {
+		taken[existing.ID] = true
+	}
+	creates := make([]ListedCard, 0, len(list.Cards))
 	for _, draft := range list.Cards {
 		if draft.Op == "delete" {
 			continue
+		}
+		creates = append(creates, draft)
+	}
+	creates, _, err := bindCreatedCards(creates, nil, taken)
+	if err != nil {
+		return err
+	}
+	ids := make([]string, 0, len(creates))
+	for _, draft := range creates {
+		if draft.ID == "" {
+			return fmt.Errorf("new card %q has no id", draft.Key)
 		}
 		created, err := st.createCard(cardFromDraft(st.snap.obj.ID, card.Node, draft))
 		if err != nil {
@@ -629,12 +708,23 @@ func (st *step) absorbReplan(card model.Card, attempt model.Attempt) error {
 	if err := st.hangQuestions(change.Questions); err != nil {
 		return err
 	}
-	for _, draft := range change.Create {
+	taken := map[string]bool{}
+	for _, existing := range st.snap.cards {
+		taken[existing.ID] = true
+	}
+	creates, edits, err := bindCreatedCards(change.Create, change.Edit, taken)
+	if err != nil {
+		return err
+	}
+	for _, draft := range creates {
+		if draft.ID == "" {
+			return fmt.Errorf("new card %q has no id", draft.Key)
+		}
 		if _, err := st.createCard(cardFromDraft(st.snap.obj.ID, card.Node, draft)); err != nil {
 			return err
 		}
 	}
-	for _, draft := range change.Edit {
+	for _, draft := range edits {
 		current, ok := st.snap.card(draft.Key)
 		if !ok {
 			continue
@@ -666,7 +756,7 @@ func cardFromDraft(objective, node string, draft ListedCard) model.Card {
 		target = draft.Node
 	}
 	return model.Card{
-		ID:         draft.Key,
+		ID:         draft.ID,
 		Objective:  objective,
 		Node:       target,
 		Kind:       draft.Kind,
@@ -748,6 +838,11 @@ func readResult(attempt model.Attempt) string {
 	return string(body)
 }
 
+type replanTrigger struct {
+	Kind string
+	Key  string
+}
+
 func (st *step) advance() error {
 	if st.snap.obj.Mode != model.ModeAuto {
 		return nil
@@ -755,6 +850,9 @@ func (st *step) advance() error {
 	fired := map[string]string{}
 	nodes := append([]model.DesignNode{}, st.snap.nodes...)
 	for _, node := range nodes {
+		if err := st.noteReopenGap(node); err != nil {
+			return err
+		}
 		reason, ok := EvaluateBreaker(st.breakerInput(node.ID))
 		if !ok {
 			continue
@@ -772,8 +870,23 @@ func (st *step) advance() error {
 			continue
 		}
 		split := st.completedSplit(node.ID)
-		need := node.Status == model.NodeReopened || fired[node.ID] != "" || split != ""
-		if !need {
+		var triggers []replanTrigger
+		if split != "" {
+			triggers = append(triggers, replanTrigger{Kind: "split", Key: split})
+		}
+		if node.Status == model.NodeReopened {
+			key := st.reopenKey(node.ID)
+			if !st.triggerConsumed(node.ID, "reopen", key) {
+				triggers = append(triggers, replanTrigger{Kind: "reopen", Key: key})
+			}
+		}
+		if reason := fired[node.ID]; reason != "" {
+			key := st.breakerKey(node.ID, reason)
+			if !st.triggerConsumed(node.ID, "breaker", key) {
+				triggers = append(triggers, replanTrigger{Kind: "breaker", Key: key})
+			}
+		}
+		if len(triggers) == 0 {
 			continue
 		}
 		if _, err := st.createCard(model.Card{
@@ -787,8 +900,93 @@ func (st *step) advance() error {
 		}); err != nil {
 			return err
 		}
+		for _, trigger := range triggers {
+			if trigger.Kind == "split" {
+				continue
+			}
+			if err := st.event("node:"+node.ID, "replan_consumed", map[string]string{
+				"node": node.ID,
+				"kind": trigger.Kind,
+				"key":  trigger.Key,
+			}); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func (st *step) noteReopenGap(node model.DesignNode) error {
+	if node.Status == model.NodeReopened || !st.reopenConsumedSinceGap(node.ID) {
+		return nil
+	}
+	return st.event("node:"+node.ID, "reopen_gap", map[string]string{"node": node.ID})
+}
+
+func (st *step) reopenKey(nodeID string) string {
+	n := 0
+	for _, event := range st.snap.events {
+		if event.Type == "reopen_gap" && event.Entity == "node:"+nodeID {
+			n++
+		}
+	}
+	return strconvReopen(n)
+}
+
+func strconvReopen(n int) string {
+	return fmt.Sprintf("%d", n)
+}
+
+func (st *step) reopenConsumedSinceGap(nodeID string) bool {
+	consumed := false
+	for _, event := range st.snap.events {
+		if event.Entity != "node:"+nodeID {
+			continue
+		}
+		switch event.Type {
+		case "reopen_gap":
+			consumed = false
+		case "replan_consumed":
+			var data struct {
+				Kind string `json:"kind"`
+			}
+			if json.Unmarshal(event.Data, &data) == nil && data.Kind == "reopen" {
+				consumed = true
+			}
+		}
+	}
+	return consumed
+}
+
+func (st *step) breakerKey(nodeID, reason string) string {
+	in := st.breakerInput(nodeID)
+	ids := make([]string, 0, len(in.Attempts))
+	for _, fact := range in.Attempts {
+		if fact.ID != "" {
+			ids = append(ids, fact.ID)
+		}
+	}
+	sort.Strings(ids)
+	return reason + "\n" + strings.Join(ids, ",")
+}
+
+func (st *step) triggerConsumed(nodeID, kind, key string) bool {
+	for _, event := range st.snap.events {
+		if event.Type != "replan_consumed" || event.Entity != "node:"+nodeID {
+			continue
+		}
+		var data struct {
+			Kind string `json:"kind"`
+			Key  string `json:"key"`
+		}
+		if json.Unmarshal(event.Data, &data) != nil {
+			continue
+		}
+		if data.Kind == kind && data.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func replanDeps(split string) []string {

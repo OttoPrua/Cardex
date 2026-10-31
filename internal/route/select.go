@@ -101,14 +101,20 @@ func rankTier(ctx context.Context, req Request, tier model.Tier, now time.Time) 
 		if a.pref != b.pref {
 			return a.pref < b.pref
 		}
+		if a.tier != b.tier {
+			return a.tier < b.tier
+		}
 		if a.known != b.known {
 			return a.known
 		}
-		if a.demoted != b.demoted {
-			return !a.demoted
-		}
-		if a.pace != b.pace {
-			return a.pace > b.pace
+		// Pace and the 90% demotion compare only inside one source group.
+		if a.ch.SourceGroup == b.ch.SourceGroup {
+			if a.demoted != b.demoted {
+				return !a.demoted
+			}
+			if a.pace != b.pace {
+				return a.pace > b.pace
+			}
 		}
 		if a.ch.ID != b.ch.ID {
 			return a.ch.ID < b.ch.ID

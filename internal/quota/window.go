@@ -169,18 +169,39 @@ func rollingBounds(name string, anchor, now time.Time) (time.Time, time.Time) {
 }
 
 func rollingMonthly(anchor, now time.Time) (time.Time, time.Time) {
-	end := anchor
-	for i := 0; i < 4800 && !now.Before(end); i++ {
-		next := end.AddDate(0, 1, 0)
-		if !next.After(end) {
-			break
-		}
-		end = next
+	months := (now.Year()-anchor.Year())*12 + int(now.Month()-anchor.Month())
+	start := monthFromAnchor(anchor, months)
+	if now.Before(start) {
+		months--
+		start = monthFromAnchor(anchor, months)
+	} else if !now.Before(monthFromAnchor(anchor, months+1)) {
+		months++
+		start = monthFromAnchor(anchor, months)
 	}
-	start := end.AddDate(0, -1, 0)
-	for i := 0; i < 4800 && now.Before(start); i++ {
+	end := monthFromAnchor(anchor, months+1)
+	for i := 0; i < 8 && !now.Before(end); i++ {
+		months++
+		start = end
+		end = monthFromAnchor(anchor, months+1)
+	}
+	for i := 0; i < 8 && now.Before(start); i++ {
+		months--
 		end = start
-		start = end.AddDate(0, -1, 0)
+		start = monthFromAnchor(anchor, months)
 	}
 	return start, end
+}
+
+// monthFromAnchor steps delta months from the original anchor day and clamps
+// that day to the last valid day of the target month. It does not add months
+// onto a date that has already overflowed.
+func monthFromAnchor(anchor time.Time, delta int) time.Time {
+	idx := int(anchor.Month()) - 1 + delta
+	year := anchor.Year() + idx/12
+	month := idx % 12
+	if month < 0 {
+		month += 12
+		year--
+	}
+	return monthlyPoint(year, time.Month(month+1), anchor)
 }

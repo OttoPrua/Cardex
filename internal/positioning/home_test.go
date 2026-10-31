@@ -3,9 +3,11 @@ package positioning
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -322,5 +324,204 @@ func TestApprovePersistentLockConflict(t *testing.T) {
 	}
 	if saved.Status != "approved" {
 		t.Fatalf("status %s", saved.Status)
+	}
+}
+
+func TestProposalDiffIncludesTierAndCapability(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name  string
+		cfg   string
+		next  model.Positioning
+		want  []string
+		empty bool
+	}{
+		{
+			name: "tier only",
+			cfg:  `{"positioning":[{"model":"opus","family":"anthropic","tiers":["T2"],"capabilities":[],"preference":1}]}`,
+			next: model.Positioning{Model: "opus", Family: "anthropic", Tiers: []model.Tier{model.TierT3}, Capabilities: []string{}, Preference: 1},
+			want: []string{"opus", "tier", "T2", "T3"},
+		},
+		{
+			name: "add web",
+			cfg:  `{"positioning":[{"model":"opus","family":"anthropic","tiers":["T2"],"preference":1}]}`,
+			next: model.Positioning{Model: "opus", Family: "anthropic", Tiers: []model.Tier{model.TierT2}, Capabilities: []string{"web"}, Preference: 1},
+			want: []string{"opus", "capability", "web"},
+		},
+		{
+			name: "remove web",
+			cfg:  `{"positioning":[{"model":"opus","family":"anthropic","tiers":["T2"],"capabilities":["web"],"preference":1}]}`,
+			next: model.Positioning{Model: "opus", Family: "anthropic", Tiers: []model.Tier{model.TierT2}, Capabilities: []string{}, Preference: 1},
+			want: []string{"opus", "capability", "web"},
+		},
+		{
+			name: "family only",
+			cfg:  `{"positioning":[{"model":"opus","family":"anthropic","tiers":["T2"],"preference":1}]}`,
+			next: model.Positioning{Model: "opus", Family: "openai", Tiers: []model.Tier{model.TierT2}, Preference: 1},
+			want: []string{"opus", "family"},
+		},
+		{
+			name: "preference only",
+			cfg:  `{"positioning":[{"model":"opus","family":"anthropic","tiers":["T2"],"preference":1}]}`,
+			next: model.Positioning{Model: "opus", Family: "anthropic", Tiers: []model.Tier{model.TierT2}, Preference: 4},
+			want: []string{"opus", "preference"},
+		},
+		{
+			name:  "unchanged",
+			cfg:   `{"positioning":[{"model":"opus","family":"anthropic","tiers":["T2"],"capabilities":["web"],"preference":1}]}`,
+			next:  model.Positioning{Model: "opus", Family: "anthropic", Tiers: []model.Tier{model.TierT2}, Capabilities: []string{"web"}, Preference: 1},
+			empty: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openPositioning(t, tc.cfg)
+			prop, err := st.Propose(ctx, []model.Positioning{tc.next})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.empty {
+				if prop.Diff != "" {
+					t.Fatalf("diff %q", prop.Diff)
+				}
+				return
+			}
+			if prop.Diff == "" {
+				t.Fatal("empty diff")
+			}
+			for _, part := range tc.want {
+				if !strings.Contains(prop.Diff, part) {
+					t.Fatalf("diff %q missing %q", prop.Diff, part)
+				}
+			}
+		})
+	}
+}
+
+func TestApproveNormalizesTierAndMarksUnknown(t *testing.T) {
+	ctx := context.Background()
+	st := openPositioning(t, `{"positioning":[]}`)
+	lower, err := st.Propose(ctx, []model.Positioning{{
+		Model: "opus", Family: "anthropic", Tiers: []model.Tier{"t2"}, Preference: 1,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Approve(ctx, lower.ID); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := st.Current(ctx)
+	if err != nil || len(cur) != 1 || len(cur[0].Tiers) != 1 || cur[0].Tiers[0] != model.TierT2 {
+		t.Fatalf("t2 approved %+v err %v", cur, err)
+	}
+
+	spaced, err := st.Propose(ctx, []model.Positioning{{
+		Model: "opus", Family: "anthropic", Tiers: []model.Tier{" t2 "}, Preference: 1,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Approve(ctx, spaced.ID); err != nil {
+		t.Fatal(err)
+	}
+	cur, err = st.Current(ctx)
+	if err != nil || len(cur) != 1 || len(cur[0].Tiers) != 1 || cur[0].Tiers[0] != model.TierT2 {
+		t.Fatalf("spaced t2 %+v err %v", cur, err)
+	}
+
+	bad, err := st.Propose(ctx, []model.Positioning{{
+		Model: "opus", Family: "anthropic", Tiers: []model.Tier{"t2", "not-a-tier"}, Preference: 1,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Approve(ctx, bad.ID); err != nil {
+		t.Fatalf("unknown tier aborted approve: %v", err)
+	}
+	saved, err := st.readProposal(bad.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != "待复核" || !strings.Contains(saved.Diff, "待复核") {
+		t.Fatalf("proposal not marked %+v", saved)
+	}
+	cur, err = st.Current(ctx)
+	if err != nil || len(cur) != 1 || len(cur[0].Tiers) != 1 || cur[0].Tiers[0] != model.TierT2 {
+		t.Fatalf("published raw tier %+v err %v", cur, err)
+	}
+	for _, tier := range cur[0].Tiers {
+		if string(tier) == "not-a-tier" || string(tier) == "t2" {
+			t.Fatalf("raw tier published %s", tier)
+		}
+	}
+}
+
+func TestEmptyPublishHidesVersionRow(t *testing.T) {
+	ctx := context.Background()
+	st := openPositioning(t, `{"positioning":[{"model":"opus","family":"anthropic","tiers":["T3"],"preference":1}]}`)
+	seed, err := st.Current(ctx)
+	if err != nil || len(seed) != 1 || seed[0].Model != "opus" {
+		t.Fatalf("seed %+v err %v", seed, err)
+	}
+	empty, err := st.Propose(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Approve(ctx, empty.ID); err != nil {
+		t.Fatal(err)
+	}
+	published, ok, err := st.db.PositioningPublishedVersion(ctx)
+	if err != nil || !ok || published <= seed[0].Version {
+		t.Fatalf("empty version %d ok %v err %v seed %d", published, ok, err, seed[0].Version)
+	}
+	cleared, err := st.Current(ctx)
+	if err != nil || len(cleared) != 0 {
+		t.Fatalf("empty current %+v err %v", cleared, err)
+	}
+	assertNoVersionRow(t, st)
+	nextProp, err := st.Propose(ctx, []model.Positioning{{
+		Model: "opus", Family: "anthropic", Tiers: []model.Tier{model.TierT2}, Preference: 1,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Approve(ctx, nextProp.ID); err != nil {
+		t.Fatal(err)
+	}
+	next, err := st.Current(ctx)
+	if err != nil || len(next) != 1 || next[0].Model != "opus" || next[0].Version <= published {
+		t.Fatalf("later version %+v empty was %d err %v", next, published, err)
+	}
+	assertNoVersionRow(t, st)
+}
+
+func openPositioning(t *testing.T, cfg string) *Home {
+	t.Helper()
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+func assertNoVersionRow(t *testing.T, st *Home) {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := st.db.ListPositioning(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range rows {
+		if row.ID == versionRowID || row.Model == versionRowID {
+			t.Fatalf("version row %+v", row)
+		}
+	}
+	if _, err := st.db.GetPositioning(ctx, versionRowID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("get version row %v", err)
 	}
 }

@@ -93,6 +93,80 @@ func TestResetStylesAndWindowNames(t *testing.T) {
 	})
 }
 
+func TestRollingMonthlyKeepsAnchorDay(t *testing.T) {
+	type tc struct {
+		name            string
+		anchor, query   time.Time
+		inside, outside time.Time
+		wantEnd         time.Time
+	}
+	cases := []tc{
+		{
+			name:    "2026-01-31 query 2026-02-04 keeps jan 31 and ends feb 28",
+			anchor:  time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC),
+			query:   time.Date(2026, 2, 4, 12, 0, 0, 0, time.UTC),
+			inside:  time.Date(2026, 1, 31, 0, 0, 0, 0, time.UTC),
+			outside: time.Date(2026, 1, 30, 0, 0, 0, 0, time.UTC),
+			wantEnd: time.Date(2026, 2, 28, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:    "anchor day 29 non-leap february",
+			anchor:  time.Date(2026, 1, 29, 0, 0, 0, 0, time.UTC),
+			query:   time.Date(2026, 2, 10, 0, 0, 0, 0, time.UTC),
+			inside:  time.Date(2026, 1, 29, 0, 0, 0, 0, time.UTC),
+			outside: time.Date(2026, 1, 28, 0, 0, 0, 0, time.UTC),
+			wantEnd: time.Date(2026, 2, 28, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:    "anchor day 30",
+			anchor:  time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC),
+			query:   time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC),
+			inside:  time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC),
+			outside: time.Date(2026, 3, 29, 0, 0, 0, 0, time.UTC),
+			wantEnd: time.Date(2026, 4, 30, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:    "anchor day 31 clamps to a 30-day month",
+			anchor:  time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC),
+			query:   time.Date(2026, 4, 10, 0, 0, 0, 0, time.UTC),
+			inside:  time.Date(2026, 3, 31, 0, 0, 0, 0, time.UTC),
+			outside: time.Date(2026, 3, 30, 0, 0, 0, 0, time.UTC),
+			wantEnd: time.Date(2026, 4, 30, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:    "leap day 2024-02-29 from anchor 31",
+			anchor:  time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC),
+			query:   time.Date(2024, 2, 15, 0, 0, 0, 0, time.UTC),
+			inside:  time.Date(2024, 1, 31, 0, 0, 0, 0, time.UTC),
+			outside: time.Date(2024, 1, 30, 0, 0, 0, 0, time.UTC),
+			wantEnd: time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC),
+		},
+		{
+			name:    "leap day 2024-02-29 from anchor 29",
+			anchor:  time.Date(2024, 1, 29, 0, 0, 0, 0, time.UTC),
+			query:   time.Date(2024, 2, 15, 0, 0, 0, 0, time.UTC),
+			inside:  time.Date(2024, 1, 29, 0, 0, 0, 0, time.UTC),
+			outside: time.Date(2024, 1, 28, 0, 0, 0, 0, time.UTC),
+			wantEnd: time.Date(2024, 2, 29, 0, 0, 0, 0, time.UTC),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l, _ := clocked(tc.query)
+			l.Configure(channel("c", "monthly", "rolling", tc.anchor, 100))
+			record(t, l, "c", 3, 1, tc.outside, tc.outside)
+			record(t, l, "c", 11, 1, tc.inside, tc.inside)
+			est := mustRemaining(t, l, "c")
+			if est.Unknown || est.UsedTokens != 11 || !est.Reset.Equal(tc.wantEnd) {
+				t.Fatalf("window %+v want end %s used 11", est, tc.wantEnd.Format(time.RFC3339))
+			}
+			if est.Reset.Equal(time.Date(2026, 3, 3, 0, 0, 0, 0, time.UTC)) || est.Reset.Equal(time.Date(2026, 2, 3, 0, 0, 0, 0, time.UTC)) {
+				t.Fatalf("overflowed window %+v", est)
+			}
+		})
+	}
+}
+
 func TestRecordKnownUnknownAndSeveralWindows(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 10, 30, 10, 0, 0, 0, time.UTC)

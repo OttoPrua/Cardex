@@ -16,8 +16,8 @@ import (
 	"cardex/internal/store"
 )
 
-// versionRowID stores the published table version when the approved table has
-// no model rows. Current leaves it out. The positioning table has no version of its own.
+// versionRowID was the model-row carrier for an empty table version. New publishes
+// store that version in positioning_meta. List and Get do not return this id.
 const versionRowID = "cardex.positioning.version"
 
 // publishAfterRead runs inside the publish transaction after the stored version
@@ -102,14 +102,22 @@ func (h *Home) currentLocked(ctx context.Context) ([]model.Positioning, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(rows) == 0 {
-		return h.seedLocked()
+	published, ok, err := h.db.PositioningPublishedVersion(ctx)
+	if err != nil {
+		return nil, err
 	}
 	visible := withoutVersionRow(rows)
 	if len(visible) == 0 {
-		return []model.Positioning{}, nil
+		if ok || len(rows) > 0 {
+			return []model.Positioning{}, nil
+		}
+		return h.seedLocked()
 	}
-	return stampVersion(visible, maxVersion(visible)), nil
+	ver := maxVersion(visible)
+	if ok && published > ver {
+		ver = published
+	}
+	return stampVersion(visible, ver), nil
 }
 
 func (h *Home) seedLocked() ([]model.Positioning, error) {
@@ -182,10 +190,21 @@ func (h *Home) Approve(ctx context.Context, proposalID string) error {
 	if p.Status != "proposed" && p.Status != "" {
 		return fmt.Errorf("proposal %s is %s", proposalID, p.Status)
 	}
-	if err := h.publish(ctx, cloneEntries(p.Entries)); err != nil {
+	softened, review := softenPositioningTiers(cloneEntries(p.Entries))
+	if err := h.publish(ctx, softened); err != nil {
 		return err
 	}
-	p.Status = "approved"
+	if review {
+		p.Status = "待复核"
+		if !strings.Contains(p.Diff, "待复核") {
+			if p.Diff != "" && !strings.HasSuffix(p.Diff, "\n") {
+				p.Diff += "\n"
+			}
+			p.Diff += "待复核\n"
+		}
+	} else {
+		p.Status = "approved"
+	}
 	return h.writeProposal(p)
 }
 
@@ -214,10 +233,18 @@ func (h *Home) publishOnce(ctx context.Context, entries []model.Positioning) err
 	if err != nil {
 		return err
 	}
+	published, ok, err := h.db.PositioningPublishedVersion(ctx)
+	if err != nil {
+		return err
+	}
 	prev := 0
-	if len(rows) > 0 {
-		prev = maxVersion(rows)
-	} else {
+	if ok {
+		prev = published
+	}
+	if v := maxVersion(rows); v > prev {
+		prev = v
+	}
+	if prev == 0 {
 		seed, err := h.seedLocked()
 		if err != nil {
 			return err
@@ -235,9 +262,8 @@ func (h *Home) publishOnce(ctx context.Context, entries []model.Positioning) err
 			return err
 		}
 	}
-	if len(entries) == 0 {
-		carrier := model.Positioning{ID: versionRowID, Version: next}
-		return h.db.CreatePositioning(ctx, &carrier)
+	if err := h.db.SetPositioningPublishedVersion(ctx, next); err != nil {
+		return err
 	}
 	for i := range entries {
 		entries[i].Version = next
@@ -337,6 +363,60 @@ func maxVersion(entries []model.Positioning) int {
 	return v
 }
 
+func softenPositioningTiers(entries []model.Positioning) ([]model.Positioning, bool) {
+	review := false
+	for i := range entries {
+		var tiers []model.Tier
+		for _, tier := range entries[i].Tiers {
+			canon, ok := model.CanonicalTier(tier)
+			if ok {
+				tiers = append(tiers, canon)
+				continue
+			}
+			if strings.TrimSpace(string(tier)) != "" {
+				review = true
+			}
+		}
+		if tiers == nil {
+			tiers = []model.Tier{}
+		}
+		entries[i].Tiers = tiers
+	}
+	return entries, review
+}
+
+func sameTiers(a, b []model.Tier) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func joinTiers(tiers []model.Tier) string {
+	parts := make([]string, len(tiers))
+	for i, tier := range tiers {
+		parts[i] = string(tier)
+	}
+	return strings.Join(parts, ",")
+}
+
 func cloneEntries(in []model.Positioning) []model.Positioning {
 	if in == nil {
 		return nil
@@ -364,8 +444,17 @@ func summarize(cur, next []model.Positioning) string {
 			fmt.Fprintf(&b, "+ %s\n", e.Model)
 			continue
 		}
-		if old.Family != e.Family || old.Preference != e.Preference {
-			fmt.Fprintf(&b, "~ %s\n", e.Model)
+		if old.Family != e.Family {
+			fmt.Fprintf(&b, "~ %s family %s -> %s\n", e.Model, old.Family, e.Family)
+		}
+		if old.Preference != e.Preference {
+			fmt.Fprintf(&b, "~ %s preference %d -> %d\n", e.Model, old.Preference, e.Preference)
+		}
+		if !sameTiers(old.Tiers, e.Tiers) {
+			fmt.Fprintf(&b, "~ %s tier %s -> %s\n", e.Model, joinTiers(old.Tiers), joinTiers(e.Tiers))
+		}
+		if !sameStrings(old.Capabilities, e.Capabilities) {
+			fmt.Fprintf(&b, "~ %s capability %s -> %s\n", e.Model, strings.Join(old.Capabilities, ","), strings.Join(e.Capabilities, ","))
 		}
 	}
 	for _, e := range cur {

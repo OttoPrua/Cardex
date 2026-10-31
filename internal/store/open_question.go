@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 
 	"cardex/internal/model"
 )
@@ -56,9 +57,11 @@ func migrateOpenQuestions(ctx context.Context, conn *sql.Conn) error {
 // ListOpenQuestions returns questions limited to nodeID and status.
 // An empty nodeID searches every node. An empty status does not filter by status.
 func (s *Store) ListOpenQuestions(ctx context.Context, nodeID string, status model.OpenQuestionStatus) ([]model.OpenQuestion, error) {
-	if status != "" && !status.Valid() {
-		return nil, invalid("open question status", status)
+	var filter model.OpenQuestionStatus
+	if strings.TrimSpace(string(status)) != "" {
+		filter = model.CanonicalOpenQuestionStatus(status)
 	}
+	status = filter
 	var nodes []model.DesignNode
 	if nodeID != "" {
 		n, err := s.GetNode(ctx, nodeID)

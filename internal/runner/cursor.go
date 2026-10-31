@@ -50,7 +50,7 @@ func cursorPrivilegeWidening(args []string) bool {
 }
 
 func (Cursor) Classify(_ int, output []byte) model.ErrorClass {
-	return classifyScanned(output, cursorQuotaRe, func(text string) model.ErrorClass {
+	return classifyScanned(output, "", cursorQuotaRe, func(text string) model.ErrorClass {
 		if cursorPolicyRe.MatchString(text) {
 			return model.ErrorPermissionDenied
 		}

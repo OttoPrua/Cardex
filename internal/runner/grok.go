@@ -226,11 +226,11 @@ func readGoalChunk(ctx context.Context, r io.Reader, buf []byte, sessionDir stri
 	}
 }
 
-func (Grok) Classify(_ int, output []byte) model.ErrorClass {
+func (g Grok) Classify(_ int, output []byte) model.ErrorClass {
 	if grokBudgetLimited(output) {
 		return model.ErrorBudgetLimited
 	}
-	return classifyScanned(output, grokQuotaRe, func(text string) model.ErrorClass {
+	return classifyScanned(output, g.Prompt, grokQuotaRe, func(text string) model.ErrorClass {
 		if strings.Contains(text, acceptedBootstrapBeforeProviderRefusal) {
 			return model.ErrorRefusal
 		}
@@ -289,8 +289,8 @@ func userPath(name string) []string {
 	return []string{filepath.Join(home, name)}
 }
 
-func classifyScanned(output []byte, quota *regexp.Regexp, before func(string) model.ErrorClass) model.ErrorClass {
-	text := errorScan(output)
+func classifyScanned(output []byte, prompt string, quota *regexp.Regexp, before func(string) model.ErrorClass) model.ErrorClass {
+	text := errorScan(output, prompt)
 	if before != nil {
 		if cls := before(text); cls != "" {
 			return cls
@@ -313,16 +313,20 @@ func classifyScanned(output []byte, quota *regexp.Regexp, before func(string) mo
 }
 
 // errorScan collects explicit error-record fields and whole-line diagnostics.
-// Body, a /goal echo plus the following echo line, assistant JSON, and an
-// unfinished record are not error facts. The caller passes the whole capture,
-// so the last line is at EOF even without a newline. Nested fields are not walked.
-func errorScan(output []byte) string {
-	return scanOutput(output)
+// Body and the /goal echo are not error facts. The echo is Grok.Prompt when
+// that text is present, otherwise the /goal line and the plain lines after it.
+// A blank line does not end that span, and neither does a fixed line count.
+// A complete JSON error record is its own source and is still scanned.
+// Assistant JSON and an unfinished record are not error facts. The caller
+// passes the whole capture, so the last line is at EOF even without a newline.
+// Nested fields are not walked.
+func errorScan(output []byte, prompt string) string {
+	return scanOutput(output, prompt)
 }
 
-func scanOutput(output []byte) string {
+func scanOutput(output []byte, prompt string) string {
 	var parts []string
-	walkNonEchoLines(output, func(line string) {
+	walkNonEchoLines(output, prompt, func(line string) {
 		if heldJSONRecord(line) {
 			return
 		}
@@ -338,11 +342,48 @@ func scanOutput(output []byte) string {
 	return strings.Join(parts, "\n")
 }
 
-// walkNonEchoLines yields finished lines. A /goal echo and the single
-// following line (the rest of that echo) are not yielded. A blank line ends
-// the echo. The last line of output is finished: Classify sees the whole capture.
-func walkNonEchoLines(output []byte, fn func(line string)) {
-	echo := false
+// goalPromptEchoLines is the echo Drive writes for a known prompt:
+// "/goal" or "/goal " plus the prompt, with internal newlines kept.
+// An empty prompt is not a span; the caller then uses the /goal line itself.
+func goalPromptEchoLines(prompt string) []string {
+	if prompt == "" {
+		return nil
+	}
+	written := "/goal " + strings.TrimRight(prompt, "\r\n")
+	written = strings.ReplaceAll(written, "\r\n", "\n")
+	written = strings.TrimRight(written, "\r")
+	parts := strings.Split(written, "\n")
+	for i, p := range parts {
+		parts[i] = strings.TrimSpace(p)
+	}
+	return parts
+}
+
+// jsonErrorRecord is one complete JSON object that carries an error field.
+// It is a diagnostic source, not prompt text.
+func jsonErrorRecord(line string) bool {
+	if line == "" || line[0] != '{' || !json.Valid([]byte(line)) {
+		return false
+	}
+	var obj map[string]any
+	if json.Unmarshal([]byte(line), &obj) != nil || len(obj) == 0 {
+		return false
+	}
+	return errorObject(obj)
+}
+
+// walkNonEchoLines yields finished lines that are not the echo.
+// When prompt is the text Drive wrote, that span is the echo, including
+// blank lines inside it. Otherwise a /goal line opens an echo that runs
+// through later plain lines; a blank line does not close it, and the walk
+// does not stop after a fixed number of lines. A complete JSON error record
+// is yielded wherever it sits. The last line is finished: Classify sees the
+// whole capture.
+func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
+	echoLines := goalPromptEchoLines(prompt)
+	echoIdx := 0
+	matchedPrompt := false
+	inEcho := false
 	rest := output
 	for len(rest) > 0 {
 		raw := rest
@@ -353,16 +394,28 @@ func walkNonEchoLines(output []byte, fn func(line string)) {
 			rest = nil
 		}
 		line := strings.TrimSpace(strings.TrimRight(string(raw), "\r"))
+		if echoIdx < len(echoLines) && line == echoLines[echoIdx] {
+			echoIdx++
+			if jsonErrorRecord(line) {
+				fn(line)
+			}
+			inEcho = echoIdx < len(echoLines)
+			matchedPrompt = echoIdx == len(echoLines)
+			continue
+		}
+		if !matchedPrompt && echoIdx == 0 && goalEchoLine(line) {
+			inEcho = true
+			continue
+		}
+		if jsonErrorRecord(line) {
+			inEcho = false
+			fn(line)
+			continue
+		}
+		if inEcho && !matchedPrompt {
+			continue
+		}
 		if line == "" {
-			echo = false
-			continue
-		}
-		if goalEchoLine(line) {
-			echo = true
-			continue
-		}
-		if echo {
-			echo = false
 			continue
 		}
 		fn(line)
@@ -405,11 +458,19 @@ func allowedLabelPrefix(s string) bool {
 	if strings.TrimSpace(s) == "" {
 		return true
 	}
-	if !strings.Contains(s, ":") {
+	return knownDiagnosticLabel(s)
+}
+
+// knownDiagnosticLabel is a source label v1 already emits on a diagnostic
+// line. An arbitrary token such as 示例 is body text.
+func knownDiagnosticLabel(s string) bool {
+	s = strings.TrimSpace(strings.TrimRight(strings.TrimSpace(s), ":"))
+	switch strings.ToLower(s) {
+	case "error", "grok_build_process_error", "codex_error", "remote_codex_error", "认证错误":
+		return true
+	default:
 		return false
 	}
-	label := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(s), ":"))
-	return label != "" && !strings.ContainsAny(label, " \t")
 }
 
 func whitelistedLabel(s string) bool {

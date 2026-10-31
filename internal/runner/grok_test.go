@@ -1115,6 +1115,82 @@ func TestBodyEchoNestedAreNotFacts(t *testing.T) {
 	}
 }
 
+// TestSourceEchoAndLabels locks the B3 source rule. The echo is not a fixed
+// number of lines after /goal and does not end on a blank line. An arbitrary
+// colon label is not a diagnostic. A complete JSON error record still is.
+func TestSourceEchoAndLabels(t *testing.T) {
+	const phrase = "Antigravity 需要交互：动作被拒绝且没有可验收产物"
+	const quotaJSON = `{"type":"error","message":"HTTP 429: usage limit reached"}`
+	adapters := []struct {
+		name string
+		cl   runner.Runner
+	}{
+		{"grok", runner.Grok{}},
+		{"cursor", runner.Cursor{}},
+		{"kimi", runner.Kimi{}},
+		{"agy", runner.AGY{}},
+	}
+	type row struct {
+		name string
+		out  string
+		want model.ErrorClass
+		agy  model.ErrorClass
+	}
+	rows := []row{
+		{name: "echo_multiline_quota", out: "/goal 解释\n第一项\nquota exceeded\n"},
+		{name: "echo_blank_quota", out: "/goal 解释\n\nquota exceeded\n"},
+		{name: "label_example_permission", out: "示例: permission denied\n"},
+		{name: "label_example_relogin", out: "示例: 请重新登录\n"},
+		{name: "json_after_goal", out: "/goal\n" + quotaJSON + "\n", want: model.ErrorQuotaHit},
+		{name: "json_after_multiline_blank_echo", out: "/goal 解释\n第一项\n\n" + quotaJSON + "\n", want: model.ErrorQuotaHit},
+		{name: "json_after_blank_echo", out: "/goal 解释\n\n" + quotaJSON + "\n", want: model.ErrorQuotaHit},
+		{name: "quota_line", out: "quota exceeded\n", want: model.ErrorQuotaHit},
+		{name: "relogin", out: "认证错误: 请重新登录\n", want: model.ErrorAuthFailed},
+		{name: "timeout_codex_error", out: "codex_error: 步骤超时(60 分钟)\n", want: model.ErrorTimeout},
+		{name: "timeout_error_prefix", out: "error: context deadline exceeded\n", want: model.ErrorTimeout},
+		{name: "agy_phrase", out: phrase + "\n", agy: model.ErrorPermissionDenied},
+		{name: "agy_phrase_in_multiline_echo", out: "/goal 解释\n第一项\n" + phrase + "\n"},
+		{name: "agy_phrase_in_blank_echo", out: "/goal 解释\n\n" + phrase + "\n"},
+	}
+	for _, ad := range adapters {
+		for _, row := range rows {
+			t.Run(ad.name+"/"+row.name, func(t *testing.T) {
+				want := row.want
+				if ad.name == "agy" && row.agy != "" {
+					want = row.agy
+				}
+				if got := ad.cl.Classify(0, []byte(row.out)); got != want {
+					t.Fatalf("class %q want %q", got, want)
+				}
+			})
+		}
+	}
+
+	// Provenance: the echo span is Grok.Prompt, the text Drive writes after /goal.
+	prompted := []struct {
+		name   string
+		prompt string
+		out    string
+		want   model.ErrorClass
+	}{
+		{name: "prompt_holds_multiline_quota", prompt: "解释\n第一项\nquota exceeded", out: "/goal 解释\n第一项\nquota exceeded\n"},
+		{name: "prompt_holds_blank_quota", prompt: "解释\n\nquota exceeded", out: "/goal 解释\n\nquota exceeded\n"},
+		{name: "prompt_holds_agy_phrase", prompt: "解释\n第一项\n" + phrase, out: "/goal 解释\n第一项\n" + phrase + "\n"},
+		{name: "after_prompt_quota", prompt: "解释", out: "/goal 解释\nquota exceeded\n", want: model.ErrorQuotaHit},
+		{name: "after_prompt_relogin", prompt: "解释", out: "/goal 解释\n认证错误: 请重新登录\n", want: model.ErrorAuthFailed},
+		{name: "after_prompt_timeout", prompt: "解释", out: "/goal 解释\ncodex_error: 步骤超时(60 分钟)\n", want: model.ErrorTimeout},
+		{name: "after_prompt_json", prompt: "解释\n\n第一项", out: "/goal 解释\n\n第一项\n" + quotaJSON + "\n", want: model.ErrorQuotaHit},
+	}
+	for _, row := range prompted {
+		t.Run("grok/"+row.name, func(t *testing.T) {
+			got := (runner.Grok{Prompt: row.prompt}).Classify(0, []byte(row.out))
+			if got != row.want {
+				t.Fatalf("class %q want %q", got, row.want)
+			}
+		})
+	}
+}
+
 type chunkRW struct {
 	wrote  bytes.Buffer
 	chunks [][]byte

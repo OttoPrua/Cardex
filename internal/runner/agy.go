@@ -42,7 +42,7 @@ func (AGY) Build(spec LaunchSpec) ([]string, []string, error) {
 }
 
 func (AGY) Classify(_ int, output []byte) model.ErrorClass {
-	cls := classifyScanned(output, nil, func(text string) model.ErrorClass {
+	cls := classifyScanned(output, "", nil, func(text string) model.ErrorClass {
 		if limitRe.MatchString(text) || strings.Contains(strings.ToLower(text), "quota exceeded") || strings.Contains(strings.ToLower(text), "quota exhausted") {
 			return model.ErrorQuotaHit
 		}
@@ -108,7 +108,7 @@ func agyNeedsInteraction(output []byte) bool {
 func agyPermissionPhrase(output []byte) bool {
 	const phrase = "Antigravity 需要交互：动作被拒绝且没有可验收产物"
 	found := false
-	walkNonEchoLines(output, func(line string) {
+	walkNonEchoLines(output, "", func(line string) {
 		if line == phrase {
 			found = true
 		}

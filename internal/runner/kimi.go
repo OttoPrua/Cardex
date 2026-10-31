@@ -110,7 +110,7 @@ func overlayKimiPermissionConfig(raw string) string {
 }
 
 func (Kimi) Classify(_ int, output []byte) model.ErrorClass {
-	return classifyScanned(output, nil, func(text string) model.ErrorClass {
+	return classifyScanned(output, "", nil, func(text string) model.ErrorClass {
 		if limitRe.MatchString(text) || engineQuotaRe.MatchString(text) || kimiQuotaRe.MatchString(text) {
 			return model.ErrorQuotaHit
 		}

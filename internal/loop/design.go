@@ -101,6 +101,9 @@ func (d Deps) absorbTerminal(ctx context.Context, obj model.Objective) (map[stri
 			return nil, err
 		}
 		if consumed {
+			if err := d.backfillSkippedResearch(ctx, obj, card); err != nil {
+				return nil, err
+			}
 			continue
 		}
 		if err := d.absorbOne(ctx, obj, card, researched); err != nil {
@@ -159,7 +162,19 @@ func (d Deps) absorbInventory(ctx context.Context, obj model.Objective, card mod
 	if err != nil {
 		return err
 	}
-	return d.markAbsorbed(ctx, card.ID, raw)
+	// A card-level absorb is normally written once. A later passed attempt
+	// still has to replace an earlier empty Q0, so an answered record is appended.
+	seen, err := d.hasEvent(ctx, "card:"+card.ID, evAbsorbed)
+	if err != nil {
+		return err
+	}
+	if !seen {
+		return d.markAbsorbed(ctx, card.ID, raw)
+	}
+	if q.Status != model.OQAnswered {
+		return nil
+	}
+	return d.Store.AppendEvent(ctx, &model.Event{Entity: "card:" + card.ID, Type: evAbsorbed, Data: raw})
 }
 
 func (d Deps) applyDesign(ctx context.Context, obj model.Objective, card model.Card, result string) error {
@@ -727,6 +742,8 @@ func (d Deps) inventoryQ0(ctx context.Context, cardID string) (model.OpenQuestio
 	if err != nil {
 		return model.OpenQuestion{}, false, err
 	}
+	var found model.OpenQuestion
+	ok := false
 	for _, e := range ev {
 		if e.Type != evAbsorbed || len(e.Data) == 0 {
 			continue
@@ -735,14 +752,16 @@ func (d Deps) inventoryQ0(ctx context.Context, cardID string) (model.OpenQuestio
 		if err := json.Unmarshal(e.Data, &q); err != nil {
 			return model.OpenQuestion{}, false, err
 		}
-		if q.ID == "Q0" {
-			if q.CitedPaths == nil {
-				q.CitedPaths = []string{}
-			}
-			return q, true, nil
+		if q.ID != "Q0" {
+			continue
 		}
+		if q.CitedPaths == nil {
+			q.CitedPaths = []string{}
+		}
+		found = q
+		ok = true
 	}
-	return model.OpenQuestion{}, false, nil
+	return found, ok, nil
 }
 
 func (d Deps) createWorkCard(ctx context.Context, obj model.Objective, node model.DesignNode, kind model.CardKind, title string) error {
@@ -1201,8 +1220,9 @@ func (d Deps) currentAttemptConsumed(ctx context.Context, card model.Card) (bool
 	return d.continuationSettled(ctx, card)
 }
 
-// recordSkippedResearch keeps the 未能核实 record for a terminal research card
-// that has no valid answer, and does not store the voided result text.
+// recordSkippedResearch keeps the 未能核实 record for a research card that is
+// already terminal and has no valid answer. It does not store the voided text.
+// A skip while the card can still retry must not call this.
 func (d Deps) recordSkippedResearch(ctx context.Context, obj model.Objective, card model.Card, base string) error {
 	if card.Node == "" {
 		return d.absorbInventory(ctx, obj, card, "", base)
@@ -1232,8 +1252,9 @@ func (d Deps) recordSkippedResearch(ctx context.Context, obj model.Objective, ca
 }
 
 // applyNormalize restores Deps[0] from this normalize attempt. A usable pass applies
-// the normalize text to the source and leaves the source status alone. A failed,
-// canceled, or unusable normalize sets the source to needs_input.
+// the normalize text and finishes the source the same way a passed design, plan,
+// or replan absorb does. A failed, canceled, or unusable normalize sets the source
+// to needs_input and does not apply the text.
 func (d Deps) applyNormalize(ctx context.Context, obj model.Objective, card model.Card, text string, outcome model.Outcome) error {
 	if len(card.Deps) == 0 || strings.TrimSpace(card.Deps[0]) == "" {
 		return nil
@@ -1250,7 +1271,59 @@ func (d Deps) applyNormalize(ctx context.Context, obj model.Objective, card mode
 	if card.Status == model.CardFailed || card.Status == model.CardCanceled || skippedOutcome(outcome, card.Status) || designUnusable(text, outcome) {
 		return d.markNeedsInput(ctx, source.ID)
 	}
-	return d.applyDesign(ctx, obj, source, text)
+	return d.finishNormalizedSource(ctx, obj, source, text)
+}
+
+// finishNormalizedSource applies a usable normalize extraction and closes the
+// source. No recorded design-file change becomes done; merge_queued and merged
+// stay as they are. The source attempt is consumed without reading its result.
+func (d Deps) finishNormalizedSource(ctx context.Context, obj model.Objective, source model.Card, text string) error {
+	if err := d.applyDesign(ctx, obj, source, text); err != nil {
+		return err
+	}
+	if err := d.markPassedDone(ctx, source, model.OutcomePassed); err != nil {
+		return err
+	}
+	if err := d.markAbsorbed(ctx, source.ID, nil); err != nil {
+		return err
+	}
+	attemptID, err := d.currentAttemptID(ctx, source.ID)
+	if err != nil {
+		return err
+	}
+	return d.markAttempt(ctx, attemptID)
+}
+
+// currentAttemptID is the latest attempt id. It does not read the result file.
+func (d Deps) currentAttemptID(ctx context.Context, cardID string) (string, error) {
+	if d.Store == nil {
+		return "", nil
+	}
+	attempts, err := d.Store.ListAttempts(ctx, cardID)
+	if err != nil {
+		return "", err
+	}
+	cur := currentAttempt(attempts)
+	if cur == nil {
+		return "", nil
+	}
+	return cur.ID, nil
+}
+
+// backfillSkippedResearch records unanswered when a research card is terminal
+// and its latest attempt was already handled as a skip. The voided text is not stored.
+func (d Deps) backfillSkippedResearch(ctx context.Context, obj model.Objective, card model.Card) error {
+	if card.Kind != model.KindResearch || !terminalCard(card.Status) {
+		return nil
+	}
+	_, base, outcome, _, err := d.harvested(ctx, card)
+	if err != nil {
+		return err
+	}
+	if !skippedOutcome(outcome, card.Status) {
+		return nil
+	}
+	return d.recordSkippedResearch(ctx, obj, card, base)
 }
 
 // recoverUnparsed keeps one normalize card tied to the source.
@@ -1282,13 +1355,10 @@ func (d Deps) recoverUnparsed(ctx context.Context, obj model.Objective, card mod
 	if existing.Status == model.CardFailed || skippedOutcome(outcome, existing.Status) || designUnusable(text, outcome) {
 		return true, d.markNeedsInput(ctx, card.ID)
 	}
-	if err := d.applyDesign(ctx, obj, card, text); err != nil {
+	if err := d.finishNormalizedSource(ctx, obj, card, text); err != nil {
 		return false, err
 	}
-	if err := d.markPassedDone(ctx, card, model.OutcomePassed); err != nil {
-		return false, err
-	}
-	return true, d.markAbsorbed(ctx, card.ID, nil)
+	return true, nil
 }
 
 func (d Deps) normalizeFor(ctx context.Context, objective, cardID string) (*model.Card, error) {
@@ -1430,11 +1500,16 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 			return err
 		}
 		if handled {
+			if card.Kind == model.KindResearch && terminalCard(card.Status) && skippedOutcome(outcome, card.Status) {
+				if err := d.recordSkippedResearch(ctx, obj, card, base); err != nil {
+					return err
+				}
+			}
 			return d.settleFrozenResearch(ctx, obj)
 		}
 	}
 	if skippedOutcome(outcome, card.Status) {
-		if card.Kind == model.KindResearch {
+		if card.Kind == model.KindResearch && terminalCard(card.Status) {
 			if err := d.recordSkippedResearch(ctx, obj, card, base); err != nil {
 				return err
 			}

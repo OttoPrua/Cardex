@@ -38,3 +38,5 @@ B8 两个吸收入口都先看当前尝试，卡级 loop.absorbed 不能封死�
 B9 依赖设计文档的后继 plan 只在文档合入之后生成；每条冻结入口都等这次合入，未改文档则立刻派 → `internal/loop/design.go:358` `design.go:643` `design.go:1560` → `TestFreezeWaitsForMergedDesign`
 B10 只收割一次整理卡就把结果写回仍处于 harvesting 的 Deps[0] 源卡；通过施加设计效果，失败、取消或不可用则 needs_input，不重收源尝试、不把源卡预设为终态 → `internal/loop/design.go:1237` `design.go:1443` `design.go:1499` → `TestNormalizeHarvestRestoresSource`
 B12 研究真正终态且没有有效答案时仍记下 unanswered（盘点为 Q0）并不写入作废文本，随后继续推进 → `internal/loop/design.go:1206` `design.go:1438` → `TestTerminalResearchWithoutAnswerContinues`
+B10 整理成功后按普通吸收收尾源卡：无文档改动置 done，merge_queued 与 merged 保持，并消费源尝试且不回读作废原文；失败、取消或不可用则 needs_input 且不写入 → `internal/loop/design.go:1274` `design.go:1280` `design.go:1358` → `TestNormalizeHarvestRestoresSource`
+B13 研究卡未终态的跳过不封存 Q0、不结束 researching、不让已有可冻结生效；真正终态且无有效答案才记 unanswered 且不写作废文本，后来的 passed 覆盖空 Q0 → `internal/loop/design.go:104` `design.go:165` `design.go:761` `design.go:1315` `design.go:1503` `design.go:1512` → `TestResearchRetryWaitsForPassedAnswer` `TestTerminalResearchWithoutAnswerContinues`

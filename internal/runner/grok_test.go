@@ -665,8 +665,11 @@ func TestGrokQuotaAndCrashChannels(t *testing.T) {
 }
 
 // TestGrokInteractiveQuota keeps completion, budget_limited, and the host
-// exit crash distinct. quota exceeded is v1 headless stderr, not an interactive
-// transcript, so Drive does not accept it as the quota terminal.
+// exit crash distinct. v1 observeNativeGrokGoal reads grokNativeGoalStateFile.Status
+// (workflow_goal.go); that field is not a quota status. quota exceeded is the
+// line fakeGrokBuildCounted writes to headless stderr, and the HTTP 429 object
+// is fakeGrokBuild's streaming-json error. grokBuildLimitScanText scans those
+// headless lines. Drive does not accept either as the quota terminal.
 func TestGrokInteractiveQuota(t *testing.T) {
 	const prompt = "finish the card\n"
 	const written = "/goal finish the card\r"
@@ -1121,6 +1124,9 @@ func TestBodyEchoNestedAreNotFacts(t *testing.T) {
 func TestSourceEchoAndLabels(t *testing.T) {
 	const phrase = "Antigravity 需要交互：动作被拒绝且没有可验收产物"
 	const quotaJSON = `{"type":"error","message":"HTTP 429: usage limit reached"}`
+	const permJSON = `{"type":"error","message":"permission denied"}`
+	const authJSON = `{"type":"error","message":"authentication failed"}`
+	const goalBudget = `{"method":"_x.ai/session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"goal_updated","status":"budget_limited","goal_id":"g1"}}}`
 	adapters := []struct {
 		name string
 		cl   runner.Runner
@@ -1142,6 +1148,8 @@ func TestSourceEchoAndLabels(t *testing.T) {
 		{name: "label_example_permission", out: "示例: permission denied\n"},
 		{name: "label_example_relogin", out: "示例: 请重新登录\n"},
 		{name: "json_after_goal", out: "/goal\n" + quotaJSON + "\n", want: model.ErrorQuotaHit},
+		{name: "perm_json_after_goal", out: "/goal\n" + permJSON + "\n", want: model.ErrorPermissionDenied},
+		{name: "auth_json_after_goal", out: "/goal\n" + authJSON + "\n", want: model.ErrorAuthFailed},
 		{name: "json_after_multiline_blank_echo", out: "/goal 解释\n第一项\n\n" + quotaJSON + "\n", want: model.ErrorQuotaHit},
 		{name: "json_after_blank_echo", out: "/goal 解释\n\n" + quotaJSON + "\n", want: model.ErrorQuotaHit},
 		{name: "quota_line", out: "quota exceeded\n", want: model.ErrorQuotaHit},
@@ -1180,6 +1188,17 @@ func TestSourceEchoAndLabels(t *testing.T) {
 		{name: "after_prompt_relogin", prompt: "解释", out: "/goal 解释\n认证错误: 请重新登录\n", want: model.ErrorAuthFailed},
 		{name: "after_prompt_timeout", prompt: "解释", out: "/goal 解释\ncodex_error: 步骤超时(60 分钟)\n", want: model.ErrorTimeout},
 		{name: "after_prompt_json", prompt: "解释\n\n第一项", out: "/goal 解释\n\n第一项\n" + quotaJSON + "\n", want: model.ErrorQuotaHit},
+		// A known prompt line is not a diagnostic, even when that line is a
+		// complete JSON error object or a goal_updated record. The same JSON
+		// after the echo still classifies.
+		{name: "prompt_json_quota", prompt: "解释\n" + quotaJSON, out: "/goal 解释\n" + quotaJSON + "\n"},
+		{name: "prompt_json_permission", prompt: "解释\n" + permJSON, out: "/goal 解释\n" + permJSON + "\n"},
+		{name: "prompt_json_auth", prompt: "解释\n" + authJSON, out: "/goal 解释\n" + authJSON + "\n"},
+		{name: "prompt_json_goal_updated", prompt: "解释\n" + goalBudget, out: "/goal 解释\n" + goalBudget + "\n"},
+		{name: "after_echo_json_quota", prompt: "解释", out: "/goal 解释\n" + quotaJSON + "\n", want: model.ErrorQuotaHit},
+		{name: "after_echo_json_permission", prompt: "解释", out: "/goal 解释\n" + permJSON + "\n", want: model.ErrorPermissionDenied},
+		{name: "after_echo_json_auth", prompt: "解释", out: "/goal 解释\n" + authJSON + "\n", want: model.ErrorAuthFailed},
+		{name: "after_echo_json_goal_updated", prompt: "解释", out: "/goal 解释\n" + goalBudget + "\n", want: model.ErrorBudgetLimited},
 	}
 	for _, row := range prompted {
 		t.Run("grok/"+row.name, func(t *testing.T) {

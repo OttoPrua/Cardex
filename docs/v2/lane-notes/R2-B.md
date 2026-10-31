@@ -11,7 +11,7 @@ LaunchSpec 缺 goal_mode/requires：用 Grok.GoalMode；Drive 无 prompt 参数�
 
 ## 已知问题
 N2：AGY 嵌套错误 {"error":{"message":"quota exceeded"}} 与多行 JSON 的 usage 仍未按 v1 完整文档提取，不在本次 findings。
-B2 准则 1 仍未完成：没有可引用的交互额度转录或会话额度字段，Drive 与 ReadGrokGoalSession 没有 ErrGrokQuotaHit 路径，没有伪造样本。无头 stderr 的 quota exceeded、headless HTTP 429 错误记录和 PTY 正文 signal: killed 都不是额度终态。
+B2 仍未完成：v1 observeNativeGrokGoal 只读 grokNativeGoalStateFile.Status（workflow_goal.go），375 份真实 goal/state.json 的 status 只有 complete/active/budget_limited/user_paused/no_progress_paused/infra_paused/blocked/back_off_paused，history 的 budget_exceeded 无 detail 且仍是 budget_limited。grokBuildLimitScanText 的 quota exceeded 与 HTTP 429 错误记录是无头样本，贴到 PTY 上不是额度终态。Drive 与 ReadGrokGoalSession 没有 ErrGrokQuotaHit 路径，没有伪造样本。
 
 ## 修复记录
 接收 prompt 正文的参数必须是文件内容，不能是路径 → internal/runner/grok.go:78、cursor.go:34、kimi.go:45、agy.go:40 → TestPromptFileBody
@@ -28,3 +28,5 @@ goal 的完成和 budget_limited 只从会话文件读取，PTY Read 阻塞时�
 整行诊断仍按已有类匹配器映射：dial/i/o timeout/error sending request 为 transport，认证错误: 请重新登录 为 auth_failed；同一措辞在正文或回显里不分类 → internal/runner/grok.go:264、grok.go:267、grok.go:268、grok.go:372、grok.go:385、grok.go:404（cursor.go:52、kimi.go:112、agy.go:44 经 classifyScanned） → TestRecordBoundaryDiagnostics
 额度终态只接受可追溯的交互转录或已有会话额度字段；372 份真实 goal/state.json 的 status 只有 complete/active/budget_limited/user_paused/no_progress_paused/infra_paused/blocked/back_off_paused，history 的 budget_exceeded 仍是 budget_limited，无额度终态，B2 仍未完成 → internal/runner/grok.go:162、grok.go:598 → TestGrokInteractiveQuota
 正文、/goal 回显和真实诊断按来源区分：回显是已知 prompt，或无 prompt 时从 /goal 延续到完整 JSON 错误记录，不以空行或固定行数截断；冒号标签只认已知诊断来源 → internal/runner/grok.go:229、grok.go:348、grok.go:364、grok.go:382、grok.go:457、grok.go:466（cursor.go:52、kimi.go:112、agy.go:44、agy.go:108 经 classifyScanned） → TestSourceEchoAndLabels
+已确认的 prompt 回显行不是诊断，包括 JSON 错误记录和其他 JSON；回显之后的同一记录仍分类 → internal/runner/grok.go:399、grok.go:573（cursor.go:52、kimi.go:112、agy.go:44 经 classifyScanned） → TestSourceEchoAndLabels
+额度终态只接受可追溯的交互转录或 v1 已写会话额度字段；v1 observeNativeGrokGoal 的 Status 与 375 份 goal/state.json 没有额度状态，grokBuildLimitScanText 的无头样本不是该终态，Drive 与 ReadGrokGoalSession 不返回 ErrGrokQuotaHit → internal/runner/grok.go:162、grok.go:198、grok.go:640 → TestGrokInteractiveQuota

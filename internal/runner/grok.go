@@ -23,8 +23,8 @@ import (
 // SessionDir is the grok session directory that holds goal/state.json and
 // updates.jsonl. Completion and budget_limited are read from those files.
 // The PTY ReadWriter does not carry them: goal-mode Build is an interactive TUI.
-// Interactive quota is a whole-line pre-stream/stderr diagnostic on that PTY
-// (v1 grokBuildLimitScanText's non-JSON line), not a streaming-json error record.
+// v1 observeNativeGrokGoal reads goal/state.json status and does not write a
+// quota status. Headless quota text is grokBuildLimitScanText, not this PTY.
 // Crash is GrokProcessExit, supplied by the host after Wait; Drive cannot see it.
 type Grok struct {
 	GoalMode   bool
@@ -227,7 +227,7 @@ func readGoalChunk(ctx context.Context, r io.Reader, buf []byte, sessionDir stri
 }
 
 func (g Grok) Classify(_ int, output []byte) model.ErrorClass {
-	if grokBudgetLimited(output) {
+	if grokBudgetLimited(output, g.Prompt) {
 		return model.ErrorBudgetLimited
 	}
 	return classifyScanned(output, g.Prompt, grokQuotaRe, func(text string) model.ErrorClass {
@@ -316,7 +316,8 @@ func classifyScanned(output []byte, prompt string, quota *regexp.Regexp, before 
 // Body and the /goal echo are not error facts. The echo is Grok.Prompt when
 // that text is present, otherwise the /goal line and the plain lines after it.
 // A blank line does not end that span, and neither does a fixed line count.
-// A complete JSON error record is its own source and is still scanned.
+// A line already consumed as that known prompt is never a diagnostic, JSON
+// included. A complete JSON error record outside that span is still scanned.
 // Assistant JSON and an unfinished record are not error facts. The caller
 // passes the whole capture, so the last line is at EOF even without a newline.
 // Nested fields are not walked.
@@ -376,9 +377,10 @@ func jsonErrorRecord(line string) bool {
 // When prompt is the text Drive wrote, that span is the echo, including
 // blank lines inside it. Otherwise a /goal line opens an echo that runs
 // through later plain lines; a blank line does not close it, and the walk
-// does not stop after a fixed number of lines. A complete JSON error record
-// is yielded wherever it sits. The last line is finished: Classify sees the
-// whole capture.
+// does not stop after a fixed number of lines. A line consumed as the known
+// prompt is not yielded, even when it is a JSON error record or any other
+// JSON object. A complete JSON error record outside that span is yielded.
+// The last line is finished: Classify sees the whole capture.
 func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
 	echoLines := goalPromptEchoLines(prompt)
 	echoIdx := 0
@@ -396,9 +398,6 @@ func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
 		line := strings.TrimSpace(strings.TrimRight(string(raw), "\r"))
 		if echoIdx < len(echoLines) && line == echoLines[echoIdx] {
 			echoIdx++
-			if jsonErrorRecord(line) {
-				fn(line)
-			}
 			inEcho = echoIdx < len(echoLines)
 			matchedPrompt = echoIdx == len(echoLines)
 			continue
@@ -552,22 +551,29 @@ func stringValue(v any) (string, bool) {
 	return s, ok
 }
 
-func grokBudgetLimited(output []byte) bool {
-	status, ok := goalUpdatedStatus(output)
+func grokBudgetLimited(output []byte, prompt string) bool {
+	status, ok := goalUpdatedStatus(output, prompt)
 	return ok && strings.EqualFold(strings.TrimSpace(status), "budget_limited")
 }
 
 // goalUpdatedStatus reads status only from a complete session update whose
 // sessionUpdate is goal_updated, at params.update.status. An arbitrary or
 // nested status field is not that position. An unfinished record is not read.
-func goalUpdatedStatus(output []byte) (string, bool) {
+// A line consumed as the known prompt is not that update, JSON included.
+func goalUpdatedStatus(output []byte, prompt string) (string, bool) {
+	echoLines := goalPromptEchoLines(prompt)
+	echoIdx := 0
 	rest := output
 	var status string
 	found := false
 	for len(rest) > 0 {
 		line, next, _ := cutScanLine(rest)
 		rest = next
-		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if echoIdx < len(echoLines) && line == echoLines[echoIdx] {
+			echoIdx++
+			continue
+		}
 		if line == "" || heldJSONRecord(line) || line[0] != '{' {
 			continue
 		}

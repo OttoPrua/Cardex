@@ -54,15 +54,49 @@ type Runner struct {
 	Notify func(ctx context.Context, msg notify.Message) error
 	Launch func(ctx context.Context, home, attemptID string) (int, error)
 	Script func(card model.Card) ([]byte, bool)
-	// Dispose receives each harvested result. The loop owner installs it.
+	// Dispose receives each harvested result. New installs loop.Dispose.
 	// A nil hook leaves the attempt pending. A hook error leaves the attempt
 	// unconsumed and does not change the card. Sched does not create a review,
 	// enqueue a merge, or read pass/rework out of the result body.
 	Dispose func(ctx context.Context, card *model.Card, res harvest.Result) error
 }
 
+type disposeDBKey struct{}
+
+func withDisposeDB(ctx context.Context, db *store.Store) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, disposeDBKey{}, db)
+}
+
 // New returns the production runner for home.
-func New(home string) *Runner { return &Runner{Home: home} }
+// Its disposition hook is the loop entry, so Serve and CLI serve inherit it.
+func New(home string) *Runner {
+	r := &Runner{Home: home}
+	r.Dispose = func(ctx context.Context, card *model.Card, res harvest.Result) error {
+		db, owned, err := disposeStore(ctx, home)
+		if err != nil {
+			return err
+		}
+		if owned {
+			defer db.Close()
+		}
+		return loop.Dispose(ctx, db, card, res)
+	}
+	return r
+}
+
+func disposeStore(ctx context.Context, home string) (*store.Store, bool, error) {
+	if db, ok := ctx.Value(disposeDBKey{}).(*store.Store); ok && db != nil {
+		return db, false, nil
+	}
+	db, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		return nil, false, err
+	}
+	return db, true, nil
+}
 
 func (r *Runner) now() time.Time {
 	if r != nil && r.Now != nil {
@@ -176,7 +210,7 @@ func (r *Runner) deliver(ctx context.Context, db *store.Store, card *model.Card,
 	if r.Dispose == nil {
 		return nil
 	}
-	if err := r.Dispose(ctx, card, res); err != nil {
+	if err := r.Dispose(withDisposeDB(ctx, db), card, res); err != nil {
 		return err
 	}
 	attempt.Outcome = res.Outcome

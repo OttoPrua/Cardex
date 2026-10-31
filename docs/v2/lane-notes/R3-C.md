@@ -45,3 +45,4 @@ runServe 只改调度器构造那一行，整段替换交给集成 → cmd/carde
 零用量和已刷新窗口不吸收其他窗口的快照，无法单独落点的用量不记在 now → internal/sched/quota_seed.go:40,50,122 internal/sched/loop.go:1104 → TestWindowSnapshotKeepsItsOwnUsage
 窗口快照保留各自已用量，不把最大用量广播到每个窗口 → internal/sched/quota_seed.go:37,122 internal/sched/loop.go:1104 → TestWindowSnapshotKeepsItsOwnUsage
 仍有效的撞线封锁按观测时间保留，只取与 reset 关联的时间 → internal/sched/quota_seed.go:160,180 internal/sched/loop.go:1233,1237 → TestQuotaHitBlockFollowsResetNotOrder
+默认生产调度把每次收割交给 loop 处置入口，成功返回后才消费 → internal/loop/dispose.go:20 internal/sched/loop.go:75,77 internal/sched/serve.go:65 cmd/cardex/main.go:178 → TestDefaultHarvestDisposition

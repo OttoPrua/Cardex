@@ -1,10 +1,13 @@
 package loop
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"cardex/internal/model"
+	"cardex/internal/route"
 )
 
 func TestPassedCardsEnterReview(t *testing.T) {
@@ -68,8 +71,14 @@ func TestAutomaticReassignmentUsesRoute(t *testing.T) {
 		{name: "auth_failed concurrency", outcome: model.OutcomeAuthFailed, block: "concurrency", want: "ch-c"},
 		{name: "transport family", outcome: model.OutcomeTransport, priors: 2, block: "family", want: "ch-c"},
 		{name: "timeout tier", outcome: model.OutcomeTimeout, priors: 2, block: "tier", want: "ch-c"},
+		{name: "timeout stays once", outcome: model.OutcomeTimeout, priors: 1, block: "tier", want: "ch-a"},
 		{name: "transport stays once", outcome: model.OutcomeTransport, priors: 1, block: "tier", want: "ch-a"},
 		{name: "no_output no candidate", outcome: model.OutcomeNoOutput, block: "none", want: ""},
+		{name: "empty positioning", outcome: model.OutcomeNoOutput, block: "empty", want: ""},
+		{name: "overlap windows", outcome: model.OutcomeNoOutput, block: "overlap", want: "ch-b"},
+		{name: "window and attempt once", outcome: model.OutcomeQuotaHit, block: "dedup", want: "ch-b"},
+		{name: "other objective usage", outcome: model.OutcomeNoOutput, block: "other-usage", want: "ch-c"},
+		{name: "other objective running", outcome: model.OutcomeAuthFailed, block: "other-run", want: "ch-c"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -77,7 +86,7 @@ func TestAutomaticReassignmentUsesRoute(t *testing.T) {
 			a := f.channel("ch-a", "fam-a", "ma")
 			b := f.channel("ch-b", "fam-b", "mb")
 			var c model.Channel
-			if tc.block != "none" {
+			if tc.block != "none" && tc.block != "empty" && tc.block != "overlap" && tc.block != "dedup" {
 				c = f.channel("ch-c", "fam-c", "mc")
 			}
 			kind := model.KindDev
@@ -112,6 +121,42 @@ func TestAutomaticReassignmentUsesRoute(t *testing.T) {
 				family = "fam-b"
 				f.position("mb", "fam-b", model.TierT3)
 				f.position("mc", "fam-c", model.TierT3)
+			case "empty":
+				tier = model.TierT2
+			case "overlap":
+				tier = model.TierT2
+				reset := time.Now().Add(2 * time.Hour).UTC()
+				b.QuotaWindows = []model.QuotaWindow{
+					{Name: "5h", ResetRule: "rolling", LimitTokens: 100, UsedTokens: 20, ResetAt: reset, Remaining: 1},
+					{Name: "daily", ResetRule: "rolling", LimitTokens: 5000, UsedTokens: 300, ResetAt: reset, Remaining: 1},
+				}
+				f.saveChannel(b)
+				f.position("mb", "fam-b", model.TierT2)
+			case "dedup":
+				tier = model.TierT2
+				reset := time.Now().Add(2 * time.Hour).UTC()
+				b.QuotaWindows = []model.QuotaWindow{{
+					Name: "5h", ResetRule: "rolling", LimitTokens: 30, UsedTokens: 20, ResetAt: reset, Remaining: 1,
+				}}
+				f.saveChannel(b)
+				f.otherUsage(b.ID, 20)
+				f.position("mb", "fam-b", model.TierT2)
+			case "other-usage":
+				tier = model.TierT2
+				b.Redline = 0.5
+				f.saveChannel(b)
+				f.otherUsage(b.ID, 90)
+				f.position("mb", "fam-b", model.TierT2)
+				f.position("mc", "fam-c", model.TierT2)
+			case "other-run":
+				tier = model.TierT2
+				b.Concurrency = 1
+				f.saveChannel(b)
+				c.Concurrency = 1
+				f.saveChannel(c)
+				f.otherRunning(b.ID)
+				f.position("mb", "fam-b", model.TierT2)
+				f.position("mc", "fam-c", model.TierT2)
 			}
 			card := f.card(model.Card{
 				ID: "c", Kind: kind, Tier: tier, Channel: a.ID, AuthorFamily: family, Status: model.CardHarvesting,
@@ -123,29 +168,40 @@ func TestAutomaticReassignmentUsesRoute(t *testing.T) {
 			f.step()
 			got := f.mustCard("c")
 			if tc.want == "" {
-				if got.Status != model.CardNeedsInput || got.Channel == b.ID || got.Model == "mb" || len(f.questions()) != 1 {
-					t.Fatalf("card %+v questions %+v", got, f.questions())
+				if got.Status != model.CardNeedsInput || got.Channel != a.ID || got.Model != "" || len(f.questions()) != 1 || latestAuto(f, "c").ok {
+					t.Fatalf("card %+v questions %+v route %+v", got, f.questions(), latestAuto(f, "c"))
 				}
 				if !strings.Contains(f.questions()[0].Text, "no other channel") {
 					t.Fatalf("question %+v", f.questions()[0])
 				}
 				f.step()
-				if len(f.questions()) != 1 || f.mustCard("c").Channel == b.ID {
-					t.Fatal("second step assigned a filtered channel")
+				if len(f.questions()) != 1 || latestAuto(f, "c").ok || f.mustCard("c").Channel != a.ID {
+					t.Fatal("second step assigned a channel")
 				}
 				return
 			}
-			if got.Channel != tc.want || got.Status != model.CardReady {
-				t.Fatalf("card %+v", got)
+			if tc.want == a.ID {
+				if got.Status != model.CardReady || got.Channel != a.ID || latestAuto(f, "c").ok {
+					t.Fatalf("stayed %+v route %+v", got, latestAuto(f, "c"))
+				}
+				f.step()
+				if f.mustCard("c").Channel != a.ID || latestAuto(f, "c").ok {
+					t.Fatal("second step left the channel")
+				}
+				return
 			}
-			if tc.want == c.ID && got.Model != "mc" {
-				t.Fatalf("model %s card %+v", got.Model, got)
+			routed := latestAuto(f, "c")
+			if got.Status != model.CardReady || got.Channel != a.ID || got.Model != "" || !routed.ok || routed.channel != tc.want || routed.exclude != a.ID {
+				t.Fatalf("card %+v route %+v", got, routed)
 			}
-			if tc.want == a.ID && got.Channel == b.ID {
-				t.Fatalf("retried on %s", got.Channel)
+			if tc.want == c.ID && routed.model != "mc" {
+				t.Fatalf("model %s route %+v", routed.model, routed)
+			}
+			if tc.want == b.ID && routed.model != "mb" {
+				t.Fatalf("model %s route %+v", routed.model, routed)
 			}
 			if tc.outcome == model.OutcomeQuotaHit || tc.outcome == model.OutcomeAuthFailed || tc.outcome == model.OutcomeTransport || tc.outcome == model.OutcomeTimeout {
-				if tc.want != a.ID && got.Base != current.Branch {
+				if got.Base != current.Branch {
 					t.Fatalf("base %s", got.Base)
 				}
 			}
@@ -162,11 +218,139 @@ func TestAutomaticReassignmentUsesRoute(t *testing.T) {
 				t.Fatalf("quota events %+v", f.events("quota_block"))
 			}
 			f.step()
-			if f.mustCard("c").Channel != tc.want {
-				t.Fatal("second step switched again")
+			again := latestAuto(f, "c")
+			if again != routed || f.mustCard("c").Channel != a.ID || f.mustCard("c").Model != "" {
+				t.Fatalf("second step card %+v route %+v", f.mustCard("c"), again)
 			}
 		})
 	}
+}
+
+func TestAutomaticRouteIsNotAnExplicitPin(t *testing.T) {
+	t.Run("chosen channel is filtered once it is over the redline", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		a := f.channel("ch-a", "fam-a", "ma")
+		b := f.channel("ch-b", "fam-b", "mb")
+		c := f.channel("ch-c", "fam-c", "mc")
+		d := f.channel("ch-d", "fam-d", "md")
+		f.position("mb", "fam-b", model.TierT2)
+		f.position("mc", "fam-c", model.TierT2)
+		f.position("md", "fam-d", model.TierT2)
+		card := f.card(model.Card{ID: "c", Kind: model.KindDev, Tier: model.TierT2, Status: model.CardHarvesting})
+		f.attempt(card, 0, model.OutcomeNoOutput, a.ID, "")
+		f.step()
+		got := f.mustCard("c")
+		routed := latestAuto(f, "c")
+		if got.Channel != "" || got.Model != "" || !routed.ok || routed.channel != b.ID || routed.model != "mb" || routed.exclude != a.ID {
+			t.Fatalf("card %+v route %+v", got, routed)
+		}
+		b.Redline = 0.5
+		b.QuotaWindows[0].UsedTokens = 90
+		f.saveChannel(b)
+		req, err := routeRequestFrom(f.ctx, f.db, got, f.objective(), time.Now().UTC(), "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.Card.Channel != "" || req.Card.Model != "" || req.Objective.Channel != "" || req.Objective.Model != "" {
+			t.Fatalf("stored pin changed: card %q/%q objective %q/%q", req.Card.Channel, req.Card.Model, req.Objective.Channel, req.Objective.Model)
+		}
+		for _, ch := range req.Channels {
+			if ch.ID == a.ID {
+				t.Fatal("failed channel was still offered")
+			}
+		}
+		picked, reason, err := route.Select(f.ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if picked.Channel == b.ID || picked.Channel == a.ID || picked.Channel == d.ID || picked.Channel != c.ID {
+			t.Fatalf("picked %+v filtered %+v scores %+v", picked, reason.Filtered, reason.Scores)
+		}
+		if len(reason.Scores) == 1 && reason.Scores[0].Score == 0 && len(reason.Filtered) == 0 {
+			t.Fatalf("explicit pin path %+v", reason)
+		}
+	})
+
+	t.Run("a user channel stays a pin when it is over the redline", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		a := f.channel("ch-a", "fam-a", "ma")
+		b := f.channel("ch-b", "fam-b", "mb")
+		c := f.channel("ch-c", "fam-c", "mc")
+		b.Redline = 0.5
+		b.QuotaWindows[0].UsedTokens = 90
+		f.saveChannel(b)
+		f.position("mb", "fam-b", model.TierT2)
+		f.position("mc", "fam-c", model.TierT2)
+		card := f.card(model.Card{ID: "c", Channel: b.ID, Tier: model.TierT2, Status: model.CardHarvesting})
+		f.attempt(card, 0, model.OutcomeNoOutput, a.ID, "")
+		f.step()
+		got := f.mustCard("c")
+		routed := latestAuto(f, "c")
+		if got.Channel != b.ID || got.Model != "" || !routed.ok || routed.channel != c.ID || routed.exclude != a.ID {
+			t.Fatalf("card %+v route %+v", got, routed)
+		}
+		req, err := routeRequestFrom(f.ctx, f.db, got, f.objective(), time.Now().UTC(), "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.Card.Channel != b.ID || req.Card.Model != "" {
+			t.Fatalf("request cleared the user pin: %+v", req.Card)
+		}
+		dropped := true
+		for _, ch := range req.Channels {
+			if ch.ID == a.ID {
+				dropped = false
+			}
+		}
+		if !dropped {
+			t.Fatal("failed channel was still offered")
+		}
+		picked, reason, err := route.Select(f.ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if picked.Channel != b.ID || len(reason.Scores) != 1 || reason.Scores[0].Score != 0 || len(reason.Filtered) != 0 {
+			t.Fatalf("picked %+v reason %+v", picked, reason)
+		}
+	})
+
+	t.Run("a user pin on the failed channel is kept", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		a := f.channel("ch-a", "fam-a", "ma")
+		b := f.channel("ch-b", "fam-b", "mb")
+		f.position("mb", "fam-b", model.TierT2)
+		card := f.card(model.Card{ID: "c", Channel: a.ID, Tier: model.TierT2, Status: model.CardHarvesting})
+		f.attempt(card, 0, model.OutcomeNoOutput, a.ID, "")
+		f.step()
+		got := f.mustCard("c")
+		routed := latestAuto(f, "c")
+		if got.Channel != a.ID || got.Model != "" || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
+			t.Fatalf("card %+v route %+v", got, routed)
+		}
+		req, err := routeRequestFrom(f.ctx, f.db, got, f.objective(), time.Now().UTC(), "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if req.Card.Channel != a.ID {
+			t.Fatalf("request cleared the user pin %q", req.Card.Channel)
+		}
+		kept := false
+		for _, ch := range req.Channels {
+			if ch.ID == a.ID {
+				kept = true
+			}
+		}
+		if !kept {
+			t.Fatal("user pin was dropped from the request")
+		}
+		picked, reason, err := route.Select(f.ctx, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if picked.Channel != a.ID || len(reason.Scores) != 1 || reason.Scores[0].Score != 0 || len(reason.Filtered) != 0 {
+			t.Fatalf("picked %+v reason %+v", picked, reason)
+		}
+	})
 }
 
 func TestListKeysDoNotCollide(t *testing.T) {
@@ -417,6 +601,81 @@ func finishReplan(t *testing.T, f *fx) {
 	if err := f.db.UpdateCard(f.ctx, &replans[0]); err != nil {
 		t.Fatal(err)
 	}
+}
+
+type autoRoute struct {
+	ok      bool
+	channel string
+	model   string
+	exclude string
+}
+
+func latestAuto(f *fx, cardID string) autoRoute {
+	f.t.Helper()
+	var last autoRoute
+	for _, event := range f.events("auto_route") {
+		if event.Entity != "card:"+cardID {
+			continue
+		}
+		var data struct {
+			Channel string `json:"channel"`
+			Model   string `json:"model"`
+			Exclude string `json:"exclude"`
+		}
+		if json.Unmarshal(event.Data, &data) != nil {
+			continue
+		}
+		last = autoRoute{ok: true, channel: data.Channel, model: data.Model, exclude: data.Exclude}
+	}
+	return last
+}
+
+func (f *fx) otherObjective(id string) model.Objective {
+	f.t.Helper()
+	obj := &model.Objective{
+		ID: id, Project: f.obj.Project, Title: id,
+		Mode: model.ModeManual, FreezeMode: model.FreezeSafe, Status: model.ObjectiveActive,
+		Origin: "file:" + id, IntegrationBranch: "integration-" + id,
+	}
+	if err := f.db.CreateObjective(f.ctx, obj); err != nil {
+		f.t.Fatal(err)
+	}
+	return *obj
+}
+
+func (f *fx) otherNode(objectiveID, id string) model.DesignNode {
+	f.t.Helper()
+	node := &model.DesignNode{ID: id, Objective: objectiveID, Layer: model.LayerDetail, Status: model.NodeFrozen}
+	if err := f.db.CreateNode(f.ctx, node); err != nil {
+		f.t.Fatal(err)
+	}
+	return *node
+}
+
+func (f *fx) otherUsage(channelID string, tokens int64) {
+	f.t.Helper()
+	obj := f.otherObjective("obj-usage-" + channelID)
+	node := f.otherNode(obj.ID, "node-usage-"+channelID)
+	card := f.card(model.Card{
+		ID: "usage-" + channelID, Objective: obj.ID, Node: node.ID,
+		Status: model.CardDone, Channel: channelID,
+	})
+	attempt := f.attempt(card, 0, model.OutcomePassed, channelID, "")
+	attempt.Usage.Tokens = tokens
+	attempt.EndedAt = time.Now().UTC()
+	if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *fx) otherRunning(channelID string) {
+	f.t.Helper()
+	obj := f.otherObjective("obj-run-" + channelID)
+	node := f.otherNode(obj.ID, "node-run-"+channelID)
+	f.card(model.Card{
+		ID: "run-" + channelID, Objective: obj.ID, Node: node.ID,
+		Status: model.CardRunning, Channel: channelID,
+	})
 }
 
 func (f *fx) position(modelName, family string, tiers ...model.Tier) {

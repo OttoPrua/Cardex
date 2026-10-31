@@ -116,6 +116,78 @@ func TestDevStepBreaker(t *testing.T) {
 	})
 }
 
+func TestBreakerReplanAbsorbed(t *testing.T) {
+	t.Run("repeated signature stays consumed after the replan attempt is absorbed", func(t *testing.T) {
+		f, ch := breakerWorld(t)
+		card := f.card(model.Card{ID: "dev", Channel: ch.ID})
+		f.attempt(card, 0, model.OutcomeTestsFailed, ch.ID, "boom")
+		f.attempt(card, 1, model.OutcomeTestsFailed, ch.ID, "boom")
+		f.step()
+		if len(cardsKind(f, model.KindReplan)) != 1 {
+			t.Fatalf("replans %+v", cardsKind(f, model.KindReplan))
+		}
+		absorbReplan(t, f)
+		if len(cardsKind(f, model.KindReplan)) != 1 || cardsKind(f, model.KindReplan)[0].Status != model.CardDone {
+			t.Fatalf("absorbed %+v", cardsKind(f, model.KindReplan))
+		}
+		f.step()
+		if len(cardsKind(f, model.KindReplan)) != 1 || len(questionsKind(f, model.QuestionBreaker)) != 1 {
+			t.Fatal("the same signature dispatched again with no new evidence")
+		}
+		f.attempt(f.mustCard("dev"), 2, model.OutcomeTestsFailed, ch.ID, "boom")
+		f.step()
+		if len(cardsKind(f, model.KindReplan)) != 2 || len(questionsKind(f, model.QuestionBreaker)) != 1 {
+			t.Fatalf("new signature replans %d questions %+v", len(cardsKind(f, model.KindReplan)), f.questions())
+		}
+	})
+
+	t.Run("stall stays consumed after the replan attempt is absorbed", func(t *testing.T) {
+		f, ch := breakerWorld(t)
+		f.writeConfig(`{"loop":{"breaker_spend_tokens":10}}`)
+		card := f.card(model.Card{ID: "spike", Kind: model.KindSpike, Tier: model.TierT2, Channel: ch.ID})
+		f.backdate(f.attempt(card, 0, model.OutcomePassed, ch.ID, ""), time.Now().Add(-7*time.Hour), 11)
+		f.step()
+		questions := questionsKind(f, model.QuestionBreaker)
+		if len(cardsKind(f, model.KindReplan)) != 1 || len(questions) != 1 || !strings.Contains(questions[0].Text, "no merge within stall window") {
+			t.Fatalf("replans %+v questions %+v", cardsKind(f, model.KindReplan), f.questions())
+		}
+		absorbReplan(t, f)
+		if len(cardsKind(f, model.KindReplan)) != 1 || cardsKind(f, model.KindReplan)[0].Status != model.CardDone {
+			t.Fatalf("absorbed %+v", cardsKind(f, model.KindReplan))
+		}
+		f.step()
+		if len(cardsKind(f, model.KindReplan)) != 1 || len(questionsKind(f, model.QuestionBreaker)) != 1 {
+			t.Fatal("the same stall dispatched again with no new evidence")
+		}
+		sib := f.mustCard("sib")
+		f.attempt(sib, 0, model.OutcomeTestsFailed, ch.ID, "fresh")
+		f.attempt(sib, 1, model.OutcomeTestsFailed, ch.ID, "fresh")
+		f.step()
+		if len(cardsKind(f, model.KindReplan)) != 2 || len(questionsKind(f, model.QuestionBreaker)) != 1 {
+			t.Fatalf("new breaker replans %d questions %+v", len(cardsKind(f, model.KindReplan)), f.questions())
+		}
+		f.step()
+		if len(cardsKind(f, model.KindReplan)) != 2 {
+			t.Fatal("second step dispatched the new breaker again")
+		}
+	})
+}
+
+func absorbReplan(t *testing.T, f *fx) {
+	t.Helper()
+	replans := cardsKind(f, model.KindReplan)
+	if len(replans) != 1 || TerminalCard(replans[0].Status) {
+		t.Fatalf("replan %+v", replans)
+	}
+	attempt := f.attempt(replans[0], 0, model.OutcomePassed, "", "")
+	attempt.Worktree = writeResult(t, "[]")
+	attempt.EndedAt = time.Now().UTC()
+	if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	f.step()
+}
+
 func TestDevStepBudget(t *testing.T) {
 	t.Run("under 80 percent does not remind", func(t *testing.T) {
 		f := spendWorld(t, 100, 1000, 79)

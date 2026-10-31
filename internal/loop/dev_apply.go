@@ -288,81 +288,29 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 			}
 			return st.openQuestion(model.QuestionCustom, card.ID, "card", "no other channel is available", true)
 		}
-		card.Channel = channelID
-		card.Model = modelName
 		card.Status = model.CardReady
-		return st.saveCard(card)
+		if err := st.saveCard(card); err != nil {
+			return err
+		}
+		return st.event("card:"+card.ID, "auto_route", map[string]string{
+			"channel": channelID,
+			"model":   modelName,
+			"exclude": attempt.Route.Channel,
+		})
 	}
 	card.Status = model.CardReady
 	return st.saveCard(card)
 }
 
 func (st *step) nextRoute(card model.Card, failed string) (string, string, bool, error) {
-	channels := make([]model.Channel, 0, len(st.snap.channels))
-	for _, ch := range st.snap.channels {
-		if ch.ID == failed {
-			continue
-		}
-		channels = append(channels, ch)
-	}
-	rows, err := st.db.ListPositioning(st.ctx)
+	req, err := routeRequestFrom(st.ctx, st.db, card, st.snap.obj, st.now, failed, true)
 	if err != nil {
 		return "", "", false, err
 	}
-	rows = rowsWithModel(rows)
-	if len(rows) == 0 {
-		rows = fallbackPositioning(card, channels)
+	if len(req.Positioning) == 0 {
+		return "", "", false, nil
 	}
-	led := quota.New()
-	led.SetClock(func() time.Time { return st.now })
-	for _, ch := range st.snap.channels {
-		led.Configure(ch)
-		for _, window := range ch.QuotaWindows {
-			if window.UsedTokens <= 0 {
-				continue
-			}
-			if err := led.Record(st.ctx, ch.ID, model.Usage{Tokens: window.UsedTokens, Source: "window"}, st.now, st.now); err != nil {
-				return "", "", false, err
-			}
-		}
-	}
-	for _, attempts := range st.snap.attempts {
-		for _, attempt := range attempts {
-			if attempt.Route.Channel == "" || attempt.Usage.Tokens <= 0 {
-				continue
-			}
-			ended := attempt.EndedAt
-			if ended.IsZero() {
-				ended = st.now
-			}
-			started := attempt.StartedAt
-			if started.IsZero() {
-				started = ended
-			}
-			if err := led.Record(st.ctx, attempt.Route.Channel, attempt.Usage, started, ended); err != nil {
-				return "", "", false, err
-			}
-		}
-	}
-	if err := RestoreQuota(st.ctx, led, st.snap.events); err != nil {
-		return "", "", false, err
-	}
-	probe := card
-	probe.Channel = ""
-	probe.Model = ""
-	obj := st.snap.obj
-	obj.Channel = ""
-	obj.Model = ""
-	picked, _, err := route.Select(st.ctx, route.Request{
-		Card:         probe,
-		Objective:    obj,
-		AuthorFamily: card.AuthorFamily,
-		Channels:     channels,
-		Positioning:  rows,
-		InUse:        st.channelInUse(),
-		Quota:        led,
-		Now:          st.now,
-	})
+	picked, _, err := route.Select(st.ctx, req)
 	if err != nil || picked.Channel == "" || picked.Channel == failed {
 		return "", "", false, nil
 	}
@@ -378,41 +326,6 @@ func rowsWithModel(rows []model.Positioning) []model.Positioning {
 		out = append(out, row)
 	}
 	return out
-}
-
-func fallbackPositioning(card model.Card, channels []model.Channel) []model.Positioning {
-	tier := card.Tier
-	if !tier.Valid() || tier == model.TierNone {
-		tier = model.DefaultTier(card.Kind)
-	}
-	var rows []model.Positioning
-	seen := map[string]bool{}
-	for _, ch := range channels {
-		for _, name := range ch.Models {
-			name = strings.TrimSpace(name)
-			if name == "" || seen[name] {
-				continue
-			}
-			seen[name] = true
-			rows = append(rows, model.Positioning{
-				Model:      name,
-				Tiers:      []model.Tier{tier},
-				Preference: 1,
-			})
-		}
-	}
-	return rows
-}
-
-func (st *step) channelInUse() map[string]int {
-	inUse := map[string]int{}
-	for _, card := range st.snap.cards {
-		if card.Status != model.CardRunning || card.Channel == "" {
-			continue
-		}
-		inUse[card.Channel]++
-	}
-	return inUse
 }
 
 func (st *step) blockQuota(ch model.Channel, excerpt string) error {
@@ -960,14 +873,141 @@ func (st *step) reopenConsumedSinceGap(nodeID string) bool {
 
 func (st *step) breakerKey(nodeID, reason string) string {
 	in := st.breakerInput(nodeID)
-	ids := make([]string, 0, len(in.Attempts))
-	for _, fact := range in.Attempts {
-		if fact.ID != "" {
-			ids = append(ids, fact.ID)
-		}
+	facts := withoutReplanFacts(in.Attempts)
+	if reason == "no merge within stall window" {
+		return reason + "\n" + stallAnchorKey(in, facts)
 	}
+	ids := breakerEvidenceIDs(facts, reason)
 	sort.Strings(ids)
 	return reason + "\n" + strings.Join(ids, ",")
+}
+
+func withoutReplanFacts(facts []AttemptFact) []AttemptFact {
+	out := make([]AttemptFact, 0, len(facts))
+	for _, fact := range facts {
+		if fact.Kind == model.KindReplan {
+			continue
+		}
+		out = append(out, fact)
+	}
+	return out
+}
+
+// breakerEvidenceIDs is the attempts that make this breaker true.
+// Attempts on the replan that handled it are already removed, so absorbing
+// that replan does not change the key.
+func breakerEvidenceIDs(facts []AttemptFact, reason string) []string {
+	switch {
+	case strings.HasPrefix(reason, "repeated error "):
+		return signatureIDs(facts, strings.TrimPrefix(reason, "repeated error "))
+	case strings.HasPrefix(reason, "consecutive failures"):
+		return trailingFailureIDs(facts)
+	case strings.HasPrefix(reason, "repair streak "):
+		return repairEvidenceIDs(facts, reason)
+	default:
+		ids := make([]string, 0, len(facts))
+		for _, fact := range facts {
+			if fact.ID != "" {
+				ids = append(ids, fact.ID)
+			}
+		}
+		return ids
+	}
+}
+
+func signatureIDs(facts []AttemptFact, sig string) []string {
+	var ids []string
+	for _, fact := range facts {
+		if fact.ID == "" || fact.Outcome == "" || fact.Outcome == model.OutcomePassed {
+			continue
+		}
+		if signature(fact) != sig {
+			continue
+		}
+		ids = append(ids, fact.ID)
+	}
+	return ids
+}
+
+func trailingFailureIDs(facts []AttemptFact) []string {
+	ordered := append([]AttemptFact(nil), facts...)
+	sortFacts(ordered)
+	var ids []string
+	for i := len(ordered) - 1; i >= 0; i-- {
+		if !countsAsFailure(ordered[i].Outcome) {
+			if ordered[i].Outcome == model.OutcomePassed {
+				break
+			}
+			continue
+		}
+		if ordered[i].ID != "" {
+			ids = append(ids, ordered[i].ID)
+		}
+	}
+	return ids
+}
+
+func repairEvidenceIDs(facts []AttemptFact, reason string) []string {
+	parent := reason
+	if i := strings.LastIndex(reason, " on "); i >= 0 {
+		parent = reason[i+len(" on "):]
+	}
+	var list []AttemptFact
+	for _, fact := range facts {
+		if fact.Kind != model.KindRepair {
+			continue
+		}
+		owner := fact.RepairOf
+		if owner == "" {
+			owner = fact.Card
+		}
+		if owner == parent {
+			list = append(list, fact)
+		}
+	}
+	sortFacts(list)
+	var ids []string
+	for i := len(list) - 1; i >= 0; i-- {
+		if list[i].Outcome == model.OutcomePassed {
+			break
+		}
+		if list[i].Outcome != model.OutcomeTestsFailed || list[i].ID == "" {
+			continue
+		}
+		ids = append(ids, list[i].ID)
+	}
+	return ids
+}
+
+func stallAnchorKey(in BreakerInput, facts []AttemptFact) string {
+	var first time.Time
+	for _, fact := range facts {
+		if fact.At.IsZero() {
+			continue
+		}
+		if first.IsZero() || fact.At.Before(first) {
+			first = fact.At
+		}
+	}
+	anchor := first
+	merged := false
+	var lastMerge time.Time
+	for _, card := range in.Cards {
+		if card.Status != model.CardMerged {
+			continue
+		}
+		merged = true
+		if card.Latest.After(lastMerge) {
+			lastMerge = card.Latest
+		}
+	}
+	if merged && !lastMerge.IsZero() {
+		anchor = lastMerge
+	}
+	if anchor.IsZero() {
+		return "none"
+	}
+	return anchor.UTC().Format(time.RFC3339Nano)
 }
 
 func (st *step) triggerConsumed(nodeID, kind, key string) bool {

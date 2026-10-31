@@ -41,3 +41,4 @@ B12 研究真正终态且没有有效答案时仍记下 unanswered（盘点为 Q
 B10 整理成功后按普通吸收收尾源卡：无文档改动置 done，merge_queued 与 merged 保持，并消费源尝试且不回读作废原文；失败、取消或不可用则 needs_input 且不写入 → `internal/loop/design.go:1274` `design.go:1280` `design.go:1358` → `TestNormalizeHarvestRestoresSource`
 B13 研究卡未终态的跳过不封存 Q0、不结束 researching、不让已有可冻结生效；真正终态且无有效答案才记 unanswered 且不写作废文本，后来的 passed 覆盖空 Q0 → `internal/loop/design.go:104` `design.go:165` `design.go:761` `design.go:1315` `design.go:1503` `design.go:1512` → `TestResearchRetryWaitsForPassedAnswer` `TestTerminalResearchWithoutAnswerContinues`
 终态 unanswered 回填对一次研究尝试幂等，只处置一次，不得覆盖后续复查的 researching → `internal/loop/design.go:1316` `design.go:1333` `design.go:1527` `design.go:1536` `design_parse.go:13` → `TestTerminalUnansweredBackfillIsOneShot`
+终态 unanswered 回填只针对该研究卡的当前尝试；已被后续尝试取代的历史回调，无论已消费还是迟到未消费，都不得改写当前复查状态。 → `internal/loop/design.go:1244` `design.go:1339` `design.go:1347` `design.go:1535` `design.go:1544` → `TestSupersededAttemptDoesNotRewriteRecheck`

@@ -1327,10 +1327,18 @@ func (d Deps) backfillSkippedResearch(ctx context.Context, obj model.Objective, 
 	return d.disposeSkippedResearch(ctx, obj, card, attemptID, base)
 }
 
-// disposeSkippedResearch applies the terminal unanswered write once per attempt.
-// A repeat leaves question status alone, so a later recheck can stay researching.
+// disposeSkippedResearch applies the terminal unanswered write once, and only
+// for this card's current attempt. A historical callback, whether already
+// consumed or still late, returns without changing question status.
 // A skip that is not yet terminal must not call this.
 func (d Deps) disposeSkippedResearch(ctx context.Context, obj model.Objective, card model.Card, attemptID, base string) error {
+	current, err := d.currentAttemptID(ctx, card.ID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(attemptID) != strings.TrimSpace(current) {
+		return nil
+	}
 	key := skippedResearchKey(card, attemptID)
 	done, err := d.hasEvent(ctx, key, evUnanswered)
 	if err != nil || done {

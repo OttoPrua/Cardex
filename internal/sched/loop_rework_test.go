@@ -890,16 +890,18 @@ func TestHarvestStaysPendingUntilDisposition(t *testing.T) {
 					t.Fatalf("card %+v %v", card, err)
 				}
 			}
+			if err := New(home).Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			pending()
+			serveOnce(t, home)
+			pending()
 			hook := New(home)
 			hook.Dispose = func(context.Context, *model.Card, harvest.Result) error {
 				return errors.New("dispose down")
 			}
 			if err := hook.Tick(ctx); err == nil {
 				t.Fatal("dispose error was stored")
-			}
-			pending()
-			if err := hook.Tick(ctx); err == nil {
-				t.Fatal("retry stored the error")
 			}
 			pending()
 			var calls int
@@ -1462,7 +1464,7 @@ func TestWorkspaceExistsBeforeAttemptResumes(t *testing.T) {
 	})
 }
 
-func TestDefaultHarvestDisposition(t *testing.T) {
+func TestProductionHarvestLeavesDispositionPending(t *testing.T) {
 	cli, err := os.ReadFile(filepath.Join("..", "..", "cmd", "cardex", "main.go"))
 	if err != nil {
 		t.Fatal(err)
@@ -1483,12 +1485,12 @@ func TestDefaultHarvestDisposition(t *testing.T) {
 		designText = "## 结论\nship the design\n"
 	)
 	cases := []struct {
-		name   string
-		kind   string
-		serve  bool
-		rework bool
-		text   string
-		want   model.Outcome
+		name    string
+		kind    string
+		serve   bool
+		consume bool
+		text    string
+		want    model.Outcome
 	}{
 		{name: "passed dev", kind: "dev", want: model.OutcomePassed},
 		{name: "passed dev via serve", kind: "dev", serve: true, want: model.OutcomePassed},
@@ -1496,10 +1498,12 @@ func TestDefaultHarvestDisposition(t *testing.T) {
 		{name: "non-passed dev via serve", kind: "failed", serve: true, want: model.OutcomeNoOutput},
 		{name: "design", kind: "design", text: designText, want: model.OutcomePassed},
 		{name: "design via serve", kind: "design", serve: true, text: designText, want: model.OutcomePassed},
-		{name: "review rework", kind: "review", rework: true, text: reworkText, want: model.OutcomePassed},
-		{name: "review rework via serve", kind: "review", serve: true, rework: true, text: reworkText, want: model.OutcomePassed},
+		{name: "review rework", kind: "review", text: reworkText, want: model.OutcomePassed},
+		{name: "review rework via serve", kind: "review", serve: true, text: reworkText, want: model.OutcomePassed},
 		{name: "review pass", kind: "review", text: passText, want: model.OutcomePassed},
 		{name: "review pass via serve", kind: "review", serve: true, text: passText, want: model.OutcomePassed},
+		{name: "collaborator error", kind: "dev", want: model.OutcomePassed},
+		{name: "collaborator consumes on success", kind: "dev", consume: true, want: model.OutcomePassed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1508,140 +1512,80 @@ func TestDefaultHarvestDisposition(t *testing.T) {
 			_, obj := seedRepo(t, db, repo, "true")
 			cardID := plantHarvest(t, db, repo, obj, tc.kind, tc.text)
 			before := snapshotCards(t, db)
+			r := New(home)
+			if r.Dispose != nil {
+				t.Fatal("production runner installed Dispose")
+			}
 			tick := func() error {
 				if tc.serve {
 					serveOnce(t, home)
 					return nil
 				}
-				return New(home).Tick(ctx)
+				return r.Tick(ctx)
 			}
 			if err := tick(); err != nil {
 				t.Fatal(err)
 			}
-			if err := tick(); err != nil {
+			assertHeld(t, db, before, cardID)
+			if err := New(home).Tick(ctx); err != nil {
 				t.Fatal(err)
 			}
-			assertDefaultDisposition(t, db, before, cardID, tc.kind, tc.want, tc.rework)
+			assertHeld(t, db, before, cardID)
+
+			var calls int
+			var saw harvest.Result
+			hook := New(home)
+			hook.Dispose = func(_ context.Context, card *model.Card, res harvest.Result) error {
+				calls++
+				saw = res
+				card.Status = model.CardDone
+				if !tc.consume || calls == 1 {
+					return errors.New("dispose down")
+				}
+				return nil
+			}
+			if err := hook.Tick(ctx); err == nil {
+				t.Fatal("dispose error was stored")
+			}
+			if calls != 1 || saw.Outcome != tc.want {
+				t.Fatalf("calls %d outcome %s want %s text %q", calls, saw.Outcome, tc.want, saw.ResultText)
+			}
+			if tc.kind == "review" && !strings.Contains(saw.ResultText, "## 复核结论") {
+				t.Fatalf("result %q", saw.ResultText)
+			}
+			assertHeld(t, db, before, cardID)
+			if !tc.consume {
+				if err := hook.Tick(ctx); err == nil {
+					t.Fatal("second tick stored the error")
+				}
+				if calls != 2 {
+					t.Fatalf("second tick calls %d", calls)
+				}
+				assertHeld(t, db, before, cardID)
+				return
+			}
+			if err := hook.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 || saw.Outcome != tc.want {
+				t.Fatalf("success calls %d outcome %s", calls, saw.Outcome)
+			}
+			stored, err := db.GetAttempt(ctx, "a-"+cardID)
+			if err != nil || stored.Outcome != tc.want {
+				t.Fatalf("stored %+v %v", stored, err)
+			}
+			got, err := db.GetCard(ctx, cardID)
+			if err != nil || got.Status != model.CardDone {
+				t.Fatalf("card %+v %v", got, err)
+			}
+			if err := hook.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 2 {
+				t.Fatalf("delivered again, calls %d", calls)
+			}
 		})
 	}
-
-	t.Run("collaborator error retries", func(t *testing.T) {
-		ctx := context.Background()
-		home, db, repo := newHome(t)
-		_, obj := seedRepo(t, db, repo, "true")
-		cardID := plantHarvest(t, db, repo, obj, "dev", "")
-		before := snapshotCards(t, db)
-		var calls int
-		hook := New(home)
-		hook.Dispose = func(context.Context, *model.Card, harvest.Result) error {
-			calls++
-			return errors.New("dispose down")
-		}
-		if err := hook.Tick(ctx); err == nil {
-			t.Fatal("dispose error was stored")
-		}
-		if err := hook.Tick(ctx); err == nil {
-			t.Fatal("retry stored the error")
-		}
-		if calls != 2 {
-			t.Fatalf("calls %d", calls)
-		}
-		assertHeld(t, db, before, cardID)
-		hook.Dispose = func(_ context.Context, card *model.Card, res harvest.Result) error {
-			calls++
-			if res.Outcome != model.OutcomePassed {
-				t.Fatalf("outcome %s", res.Outcome)
-			}
-			card.Status = model.CardDone
-			return nil
-		}
-		if err := hook.Tick(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if calls != 3 {
-			t.Fatalf("success calls %d", calls)
-		}
-		stored, err := db.GetAttempt(ctx, "a-"+cardID)
-		if err != nil || stored.Outcome != model.OutcomePassed {
-			t.Fatalf("stored %+v %v", stored, err)
-		}
-	})
-}
-
-func assertDefaultDisposition(t *testing.T, db interface {
-	GetAttempt(context.Context, string) (model.Attempt, error)
-	GetCard(context.Context, string) (model.Card, error)
-	ListCards(context.Context, string) ([]model.Card, error)
-}, before map[string]model.Card, cardID, kind string, want model.Outcome, rework bool) {
-	t.Helper()
-	ctx := context.Background()
-	stored, err := db.GetAttempt(ctx, "a-"+cardID)
-	if err != nil || stored.Outcome != want {
-		t.Fatalf("outcome %+v %v", stored, err)
-	}
-	cards, err := db.ListCards(ctx, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var reviews []model.Card
-	for _, card := range cards {
-		if strings.Contains(card.Body, "attempts") && strings.Contains(card.Body, "复核结论") {
-			t.Fatalf("fixed pass body %+v", card)
-		}
-		if card.Kind == model.KindReview && card.ID != cardID {
-			reviews = append(reviews, card)
-		}
-	}
-	switch kind {
-	case "dev":
-		if len(reviews) != 1 || !reviewDepends(reviews[0], cardID) {
-			t.Fatalf("reviews %+v", reviews)
-		}
-		got, err := db.GetCard(ctx, cardID)
-		if err != nil || got.Status != model.CardReviewing {
-			t.Fatalf("dev %+v %v", got, err)
-		}
-	case "failed", "design":
-		if len(cards) != len(before) {
-			t.Fatalf("cards %d before %d", len(cards), len(before))
-		}
-		got, err := db.GetCard(ctx, cardID)
-		if err != nil || got.Status == model.CardMergeQueued || got.Status == model.CardMerged {
-			t.Fatalf("card %+v %v", got, err)
-		}
-		if len(reviews) != 0 {
-			t.Fatalf("spawned reviews %+v", reviews)
-		}
-	case "review":
-		subject, err := db.GetCard(ctx, "c1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		review, err := db.GetCard(ctx, cardID)
-		if err != nil || review.Status != model.CardDone {
-			t.Fatalf("review %+v %v", review, err)
-		}
-		if rework {
-			if subject.ReworkCount != 1 || subject.Status != model.CardReady {
-				t.Fatalf("rework subject %+v", subject)
-			}
-			return
-		}
-		if subject.ReworkCount != 0 || (subject.Status != model.CardMergeQueued && subject.Status != model.CardMerged) {
-			t.Fatalf("pass subject %+v", subject)
-		}
-	default:
-		t.Fatalf("kind %s", kind)
-	}
-}
-
-func reviewDepends(card model.Card, id string) bool {
-	for _, dep := range card.Deps {
-		if dep == id {
-			return true
-		}
-	}
-	return false
 }
 
 func plantHarvest(t *testing.T, db interface {

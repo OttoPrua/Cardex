@@ -664,14 +664,197 @@ func TestGrokQuotaAndCrashChannels(t *testing.T) {
 	})
 }
 
-// TestGrokInteractiveQuota keeps completion, budget_limited, and the host
-// exit crash distinct. Finding B2 stays 未完成: v1 observeNativeGrokGoal reads
-// grokNativeGoalStateFile.Status (workflow_goal.go), and that field is not a
-// quota status. isLimitHitGrokBuild / grokBuildLimitScanText scan headless
-// output only. quota exceeded is the line fakeGrokBuildCounted writes to
-// headless stderr, and the HTTP 429 object is fakeGrokBuild's streaming-json
-// error. Drive does not accept either as the quota terminal, and this test
-// does not invent one.
+// TestGrokGoalQuotaTerminal is the B2 table. The positive row is the grok TUI
+// rate-limit card in testdata/grok_goal_quota_pty.txt. Those bytes are the
+// pager sentence "You've hit the rate limit for your plan." from the grok CLI
+// string table (crates/codegen/xai-grok-pager/src/app/mod.rs, immediately
+// before the short title "Rate limited"). v1 runHostedGrokGoal
+// (workflow_goal_host_unix.go) places that TUI on the PTY. The longer rows are
+// the shell billing sentences in the same binary, with U+2019 apostrophes.
+// They are not testdata/grok_goal_quota_stderr.txt and not the headless
+// {"type":"error"} record pasted on the PTY. 377 goal/state.json files have
+// no quota status; ReadGrokGoalSession does not invent one.
+func TestGrokGoalQuotaTerminal(t *testing.T) {
+	const prompt = "finish the card\n"
+	const written = "/goal finish the card\r"
+	card := string(readFixture(t, "grok_goal_quota_pty.txt"))
+	if strings.TrimSpace(card) != "You've hit the rate limit for your plan." {
+		t.Fatalf("fixture %q is not the pager card", card)
+	}
+	sameCard := []string{
+		"You\u2019ve hit the rate limit for your plan. Upgrade your account or try again later.",
+		"You\u2019ve hit your team\u2019s API rate limit. Ask a team admin to purchase more credits for higher limits, or try again later. See https://docs.x.ai/developers/rate-limits#rate-limit-tiers",
+		"You\u2019ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits, or try again later: https://grok.com/supergrok?referrer=grok-build",
+		"You\u2019ve hit the credit limit for your plan.",
+		"You\u2019ve hit your spending cap.",
+		"You hit your free usage limit.",
+		"You hit your weekly limit.",
+		"out of credits or over your spending limit. Add credits and retry.",
+	}
+
+	t.Run("pager_card", func(t *testing.T) {
+		dir := t.TempDir()
+		got, wrote := driveSession(t, prompt, dir, []byte(card))
+		if string(wrote) != written {
+			t.Fatalf("wrote %q", wrote)
+		}
+		if !errors.Is(got, runner.ErrGrokQuotaHit) {
+			t.Fatalf("pager card %v", got)
+		}
+		if _, ok := runner.ReadGrokGoalSession(dir); ok {
+			t.Fatal("pty card invented a session status")
+		}
+		g := runner.Grok{GoalMode: true, Prompt: prompt}
+		if g.Classify(0, []byte(card)) != model.ErrorQuotaHit {
+			t.Fatal("classify pager card")
+		}
+		if g.Classify(0, []byte(strings.TrimSpace(card))) != model.ErrorQuotaHit {
+			t.Fatal("classify pager card at eof")
+		}
+	})
+
+	for _, line := range sameCard {
+		t.Run("shell_card/"+line[:12], func(t *testing.T) {
+			dir := t.TempDir()
+			got, _ := driveSession(t, prompt, dir, []byte(line+"\n"))
+			if !errors.Is(got, runner.ErrGrokQuotaHit) {
+				t.Fatalf("%v", got)
+			}
+			if got := (runner.Grok{GoalMode: true, Prompt: prompt}).Classify(0, []byte(line+"\n")); got != model.ErrorQuotaHit {
+				t.Fatalf("class %q", got)
+			}
+		})
+	}
+
+	t.Run("card_after_echo", func(t *testing.T) {
+		pty := "/goal finish the card\n" + card
+		got, _ := driveSession(t, prompt, t.TempDir(), []byte(pty))
+		if !errors.Is(got, runner.ErrGrokQuotaHit) {
+			t.Fatalf("%v", got)
+		}
+	})
+
+	t.Run("card_split_across_reads", func(t *testing.T) {
+		line := strings.TrimSpace(card)
+		cut := len(line) / 2
+		rw := &chunkRW{chunks: [][]byte{[]byte(line[:cut]), []byte(line[cut:] + "\n")}}
+		err := runner.Grok{GoalMode: true, Prompt: prompt, SessionDir: t.TempDir()}.Drive(context.Background(), rw)
+		if rw.reads != 2 {
+			t.Fatalf("reads %d", rw.reads)
+		}
+		if !errors.Is(err, runner.ErrGrokQuotaHit) {
+			t.Fatalf("%v", err)
+		}
+	})
+
+	type neg struct {
+		name   string
+		prompt string
+		pty    string
+		chunks []string
+	}
+	negative := []neg{
+		{name: "headless_stderr", pty: "quota exceeded\n"},
+		{name: "headless_json", pty: "{\"type\":\"error\",\"message\":\"HTTP 429: usage limit reached\"}\n"},
+		{name: "prompt_echo", pty: "/goal 解释\nquota exceeded\n", prompt: "解释"},
+		{name: "card_as_prompt_echo", prompt: strings.TrimSpace(card), pty: "/goal " + strings.TrimSpace(card) + "\n"},
+		{name: "card_inside_prompt", prompt: "finish the card\n" + strings.TrimSpace(card), pty: "/goal finish the card\n" + strings.TrimSpace(card) + "\n"},
+		{name: "body", pty: "You've hit the rate limit for your plan is only an example\n"},
+		{name: "body_quota_exceeded", pty: "quota exceeded is only an example\n"},
+		{name: "prefix", pty: "You've hit the rate"},
+		{name: "prefix_newline", pty: "You've hit the rate\n"},
+		{name: "split_body", chunks: []string{"quota exceeded", " is only an example\n"}},
+		{name: "signal_killed", pty: "signal: killed\n"},
+	}
+	for _, row := range negative {
+		t.Run(row.name, func(t *testing.T) {
+			p := prompt
+			if row.prompt != "" {
+				p = row.prompt
+			}
+			var err error
+			if row.chunks != nil {
+				parts := make([][]byte, len(row.chunks))
+				for i, c := range row.chunks {
+					parts[i] = []byte(c)
+				}
+				rw := &chunkRW{chunks: parts}
+				err = runner.Grok{GoalMode: true, Prompt: p, SessionDir: t.TempDir()}.Drive(context.Background(), rw)
+				if row.name == "split_body" && rw.reads != 2 {
+					t.Fatalf("split body fired early: reads %d", rw.reads)
+				}
+			} else {
+				err, _ = driveSession(t, p, t.TempDir(), []byte(row.pty))
+			}
+			if err == nil || errors.Is(err, runner.ErrGrokQuotaHit) || errors.Is(err, runner.ErrGrokBudgetLimited) || errors.Is(err, runner.ErrGrokCrash) {
+				t.Fatalf("%v", err)
+			}
+		})
+	}
+	// The card sentence inside the prompt echo, in body text, or as a prefix
+	// is not the terminal. Headless "quota exceeded" stays a Classify fact and
+	// is still not this terminal; that row is asserted above on Drive only.
+	for _, row := range []neg{
+		{name: "card_as_prompt_echo", prompt: strings.TrimSpace(card), pty: "/goal " + strings.TrimSpace(card) + "\n"},
+		{name: "card_inside_prompt", prompt: "finish the card\n" + strings.TrimSpace(card), pty: "/goal finish the card\n" + strings.TrimSpace(card) + "\n"},
+		{name: "body", pty: "You've hit the rate limit for your plan is only an example\n"},
+		{name: "prefix", pty: "You've hit the rate"},
+		{name: "prefix_newline", pty: "You've hit the rate\n"},
+	} {
+		t.Run("classify/"+row.name, func(t *testing.T) {
+			p := prompt
+			if row.prompt != "" {
+				p = row.prompt
+			}
+			if got := (runner.Grok{GoalMode: true, Prompt: p}).Classify(0, []byte(row.pty)); got == model.ErrorQuotaHit || got == model.ErrorBudgetLimited {
+				t.Fatalf("class %q", got)
+			}
+		})
+	}
+
+	t.Run("complete_session", func(t *testing.T) {
+		dir := installSessionFixture(t, "grok_goal_complete.jsonl")
+		got, _ := driveSession(t, prompt, dir, []byte(card))
+		if got != nil {
+			t.Fatalf("completion %v", got)
+		}
+		if term, ok := runner.ReadGrokGoalSession(dir); !ok || term != nil {
+			t.Fatalf("reader complete ok=%v err=%v", ok, term)
+		}
+	})
+	t.Run("budget_limited_session", func(t *testing.T) {
+		dir := installSessionFixture(t, "grok_goal_budget_limited.jsonl")
+		got, _ := driveSession(t, prompt, dir, []byte(card))
+		if !errors.Is(got, runner.ErrGrokBudgetLimited) || errors.Is(got, runner.ErrGrokQuotaHit) {
+			t.Fatalf("budget_limited %v", got)
+		}
+		if term, ok := runner.ReadGrokGoalSession(dir); !ok || !errors.Is(term, runner.ErrGrokBudgetLimited) || errors.Is(term, runner.ErrGrokQuotaHit) {
+			t.Fatalf("reader budget ok=%v err=%v", ok, term)
+		}
+	})
+	t.Run("crash_signals", func(t *testing.T) {
+		for _, sig := range []int{3, 6, 9, 10, 11} {
+			crash, ok := runner.ConsumeGrokProcessExit(runner.GrokProcessExit{Signaled: true, Signal: sig})
+			if !ok || !errors.Is(crash, runner.ErrGrokCrash) || errors.Is(crash, runner.ErrGrokQuotaHit) {
+				t.Fatalf("signal %d %v ok=%v", sig, crash, ok)
+			}
+		}
+		for _, exit := range []runner.GrokProcessExit{{Signaled: true, Signal: 15}, {Signal: 9}, {}} {
+			if _, ok := runner.ConsumeGrokProcessExit(exit); ok {
+				t.Fatalf("not a crash fact %+v", exit)
+			}
+		}
+		killed, _ := driveGrok(t, prompt, "grok_goal_crash.txt")
+		if killed == nil || errors.Is(killed, runner.ErrGrokQuotaHit) || errors.Is(killed, runner.ErrGrokCrash) {
+			t.Fatalf("signal: killed on the PTY %v", killed)
+		}
+	})
+}
+
+// TestGrokInteractiveQuota keeps the headless stderr line and the headless
+// error JSON off the interactive quota terminal. Completion, budget_limited,
+// and the host exit crash stay on their own channels. The positive card is
+// TestGrokGoalQuotaTerminal.
 func TestGrokInteractiveQuota(t *testing.T) {
 	const prompt = "finish the card\n"
 	const written = "/goal finish the card\r"

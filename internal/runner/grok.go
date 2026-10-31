@@ -22,10 +22,12 @@ import (
 // Prompt is the goal text Drive writes after the literal /goal.
 // SessionDir is the grok session directory that holds goal/state.json and
 // updates.jsonl. Completion and budget_limited are read from those files.
-// The PTY ReadWriter does not carry them: goal-mode Build is an interactive TUI.
-// v1 observeNativeGrokGoal reads goal/state.json status and does not write a
-// quota status. Headless quota text is grokBuildLimitScanText, not this PTY.
-// Crash is GrokProcessExit, supplied by the host after Wait; Drive cannot see it.
+// The PTY ReadWriter does not carry completion or budget_limited: goal-mode
+// Build is an interactive TUI. v1 observeNativeGrokGoal reads goal/state.json
+// status and does not name a quota status. The quota terminal is the TUI's own
+// rate-limit card, which v1 runHostedGrokGoal places on this PTY. Headless
+// quota text is grokBuildLimitScanText, not that card. Crash is
+// GrokProcessExit, supplied by the host after Wait; Drive cannot see it.
 type Grok struct {
 	GoalMode   bool
 	Prompt     string
@@ -157,8 +159,9 @@ const grokGoalObserveEvery = 100 * time.Millisecond
 // Drive writes the literal /goal and the prompt. Completion and budget_limited
 // come from SessionDir, because goal-mode Build does not emit session JSON on
 // the PTY. The session is polled while Read is blocked and checked again after
-// EOF. v1 has no interactive transcript for a quota line on this channel, so
-// PTY bytes are not ErrGrokQuotaHit. Crash is ConsumeGrokProcessExit.
+// EOF. A finished PTY line that is the interactive rate-limit card is
+// ErrGrokQuotaHit. Headless stderr and headless error JSON are not that card.
+// Crash is ConsumeGrokProcessExit.
 func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 	if !g.GoalMode {
 		return nil
@@ -173,6 +176,7 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 	if _, err := io.WriteString(rw, line+"\r"); err != nil {
 		return err
 	}
+	var pty []byte
 	tmp := make([]byte, 32*1024)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -181,9 +185,15 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 		if term, ok := ReadGrokGoalSession(g.SessionDir); ok {
 			return term
 		}
-		_, err, term, termOK := readGoalChunk(ctx, rw, tmp, g.SessionDir)
+		n, err, term, termOK := readGoalChunk(ctx, rw, tmp, g.SessionDir)
 		if termOK {
 			return term
+		}
+		if n > 0 {
+			pty = append(pty, tmp[:n]...)
+			if grokInteractiveQuotaTerminal(pty, g.Prompt, errors.Is(err, io.EOF)) {
+				return ErrGrokQuotaHit
+			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -229,6 +239,9 @@ func readGoalChunk(ctx context.Context, r io.Reader, buf []byte, sessionDir stri
 func (g Grok) Classify(_ int, output []byte) model.ErrorClass {
 	if grokBudgetLimited(output, g.Prompt) {
 		return model.ErrorBudgetLimited
+	}
+	if grokInteractiveQuotaTerminal(output, g.Prompt, true) {
+		return model.ErrorQuotaHit
 	}
 	return classifyScanned(output, g.Prompt, grokQuotaRe, func(text string) model.ErrorClass {
 		if strings.Contains(text, acceptedBootstrapBeforeProviderRefusal) {
@@ -554,6 +567,48 @@ func stringValue(v any) (string, bool) {
 func grokBudgetLimited(output []byte, prompt string) bool {
 	status, ok := goalUpdatedStatus(output, prompt)
 	return ok && strings.EqualFold(strings.TrimSpace(status), "budget_limited")
+}
+
+// grokInteractiveQuotaLine is the grok TUI rate-limit card, not a headless
+// stderr line. The sentences are the pager and shell string table in the grok
+// CLI (crates/codegen/xai-grok-pager/src/app/mod.rs next to "Rate limited",
+// and the shell billing sentences beside it). v1 runHostedGrokGoal puts that
+// TUI on the PTY. Apostrophes in the longer sentences are U+2019.
+func grokInteractiveQuotaLine(line string) bool {
+	switch strings.TrimSpace(line) {
+	case "You've hit the rate limit for your plan.",
+		"You\u2019ve hit the rate limit for your plan. Upgrade your account or try again later.",
+		"You\u2019ve hit your team\u2019s API rate limit. Ask a team admin to purchase more credits for higher limits, or try again later. See https://docs.x.ai/developers/rate-limits#rate-limit-tiers",
+		"You\u2019ve reached your free Grok Build usage limit for now. Get SuperGrok for much higher limits, or try again later: https://grok.com/supergrok?referrer=grok-build",
+		"You\u2019ve hit the credit limit for your plan.",
+		"You\u2019ve hit your spending cap.",
+		"You hit your free usage limit.",
+		"You hit your weekly limit.",
+		"out of credits or over your spending limit. Add credits and retry.":
+		return true
+	default:
+		return false
+	}
+}
+
+// grokInteractiveQuotaTerminal reports the interactive card on a finished
+// line that is not the known prompt echo. finishTail treats a capture's last
+// line as finished; a streaming read leaves an unfinished tail unmatched.
+func grokInteractiveQuotaTerminal(output []byte, prompt string, finishTail bool) bool {
+	if !finishTail {
+		i := bytes.LastIndexByte(output, '\n')
+		if i < 0 {
+			return false
+		}
+		output = output[:i+1]
+	}
+	hit := false
+	walkNonEchoLines(output, prompt, func(line string) {
+		if grokInteractiveQuotaLine(line) {
+			hit = true
+		}
+	})
+	return hit
 }
 
 // goalUpdatedStatus reads status only from a complete session update whose

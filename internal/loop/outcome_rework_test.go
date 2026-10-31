@@ -361,7 +361,7 @@ func TestAutomaticRouteIsNotAnExplicitPin(t *testing.T) {
 		}
 	})
 
-	t.Run("a user pin on the failed channel is kept", func(t *testing.T) {
+	t.Run("a user pin on the failed channel is not restored", func(t *testing.T) {
 		f := newFx(t, model.ModeManual)
 		a := f.channel("ch-a", "fam-a", "ma")
 		b := f.channel("ch-b", "fam-b", "mb")
@@ -378,23 +378,19 @@ func TestAutomaticRouteIsNotAnExplicitPin(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if req.Card.Channel != a.ID {
-			t.Fatalf("request cleared the user pin %q", req.Card.Channel)
+		if req.Card.Channel != "" || req.Objective.Channel != "" {
+			t.Fatalf("failed pin restored card %q objective %q", req.Card.Channel, req.Objective.Channel)
 		}
-		kept := false
 		for _, ch := range req.Channels {
 			if ch.ID == a.ID {
-				kept = true
+				t.Fatal("failed channel was still offered")
 			}
-		}
-		if !kept {
-			t.Fatal("user pin was dropped from the request")
 		}
 		picked, reason, err := route.Select(f.ctx, req)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if picked.Channel != a.ID || len(reason.Scores) != 1 || reason.Scores[0].Score != 0 || len(reason.Filtered) != 0 {
+		if picked.Channel != b.ID || picked.Model == "" || explicitPinResult(reason) {
 			t.Fatalf("picked %+v reason %+v", picked, reason)
 		}
 	})
@@ -445,6 +441,133 @@ func TestAutomaticRouteIsNotAnExplicitPin(t *testing.T) {
 			t.Fatalf("explicit pin path %+v", reason)
 		}
 	})
+}
+
+func explicitPinResult(reason model.RouteReason) bool {
+	return len(reason.Scores) == 1 && reason.Scores[0].Score == 0 && len(reason.Filtered) == 0
+}
+
+func TestFailedChannelStaysExcluded(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome model.Outcome
+		priors  int
+		pin     string
+		redline bool
+	}{
+		{name: "no_output card pin is the failed channel", outcome: model.OutcomeNoOutput, pin: "card-failed"},
+		{name: "quota_hit card pin is the failed channel", outcome: model.OutcomeQuotaHit, pin: "card-failed"},
+		{name: "auth_failed card pin is the failed channel", outcome: model.OutcomeAuthFailed, pin: "card-failed"},
+		{name: "transport switches and drops the failed pin", outcome: model.OutcomeTransport, priors: 2, pin: "card-failed"},
+		{name: "timeout switches and drops the failed pin", outcome: model.OutcomeTimeout, priors: 2, pin: "card-failed"},
+		{name: "objective pin on the failed channel is not restored", outcome: model.OutcomeNoOutput, pin: "objective-failed"},
+		{name: "a different card pin stays explicit over the redline", outcome: model.OutcomeNoOutput, pin: "card-other"},
+		{name: "a different objective pin stays explicit over the redline", outcome: model.OutcomeQuotaHit, pin: "objective-other"},
+		{name: "automatic channel over the redline is not a pin", outcome: model.OutcomeNoOutput, pin: "none", redline: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFx(t, model.ModeManual)
+			a := f.channel("ch-a", "fam-a", "ma")
+			b := f.channel("ch-b", "fam-b", "mb")
+			c := f.channel("ch-c", "fam-c", "mc")
+			f.position("ma", "fam-a", model.TierT2)
+			f.position("mb", "fam-b", model.TierT2)
+			f.position("mc", "fam-c", model.TierT2)
+			if tc.pin == "card-other" || tc.pin == "objective-other" {
+				c.Redline = 0.5
+				c.QuotaWindows[0].UsedTokens = 90
+				f.saveChannel(c)
+			}
+			cardPin := ""
+			if tc.pin == "card-failed" {
+				cardPin = a.ID
+			}
+			if tc.pin == "card-other" {
+				cardPin = c.ID
+			}
+			card := f.card(model.Card{ID: "c", Channel: cardPin, Tier: model.TierT2, Status: model.CardHarvesting})
+			if tc.pin == "objective-failed" || tc.pin == "objective-other" {
+				obj := f.objective()
+				obj.Channel = a.ID
+				if tc.pin == "objective-other" {
+					obj.Channel = c.ID
+				}
+				if err := f.db.UpdateObjective(f.ctx, &obj); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := 0; i < tc.priors; i++ {
+				f.attempt(card, i, tc.outcome, a.ID, "")
+			}
+			f.attempt(card, tc.priors, tc.outcome, a.ID, "")
+			f.step()
+			got := f.mustCard("c")
+			routed := latestAuto(f, "c")
+			if got.Status != model.CardReady || got.Channel != b.ID || got.Model != "" || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
+				t.Fatalf("card %+v route %+v", got, routed)
+			}
+			if tc.outcome == model.OutcomeQuotaHit && len(f.events("quota_block")) != 1 {
+				t.Fatalf("quota events %+v", f.events("quota_block"))
+			}
+			if tc.outcome == model.OutcomeAuthFailed {
+				stored, err := f.db.GetChannel(f.ctx, a.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stored.Health != model.HealthAuthFailed {
+					t.Fatalf("health %s", stored.Health)
+				}
+			}
+			if tc.redline {
+				b.Redline = 0.5
+				b.QuotaWindows[0].UsedTokens = 90
+				f.saveChannel(b)
+			}
+			req, err := routeRequestFrom(f.ctx, f.db, got, f.objective(), time.Now().UTC(), "", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, ch := range req.Channels {
+				if ch.ID == a.ID {
+					t.Fatal("failed channel was still offered")
+				}
+			}
+			wantPin := ""
+			if tc.pin == "card-other" || tc.pin == "objective-other" {
+				wantPin = c.ID
+			}
+			if tc.pin == "card-other" && (req.Card.Channel != wantPin || req.Objective.Channel != "") {
+				t.Fatalf("card pin %q objective %q", req.Card.Channel, req.Objective.Channel)
+			}
+			if tc.pin == "objective-other" && (req.Objective.Channel != wantPin || req.Card.Channel != "") {
+				t.Fatalf("card pin %q objective %q", req.Card.Channel, req.Objective.Channel)
+			}
+			if wantPin == "" && (req.Card.Channel != "" || req.Card.Model != "" || req.Objective.Channel != "" || req.Objective.Model != "") {
+				t.Fatalf("pin leaked card %q/%q objective %q/%q", req.Card.Channel, req.Card.Model, req.Objective.Channel, req.Objective.Model)
+			}
+			picked, reason, err := route.Select(f.ctx, req)
+			if err != nil {
+				t.Fatalf("select %v reason %+v", err, reason)
+			}
+			if picked.Channel == a.ID || picked.Model == "" {
+				t.Fatalf("picked %+v reason %+v", picked, reason)
+			}
+			if wantPin != "" {
+				if picked.Channel != wantPin || !explicitPinResult(reason) {
+					t.Fatalf("picked %+v reason %+v", picked, reason)
+				}
+				return
+			}
+			want := b.ID
+			if tc.redline {
+				want = c.ID
+			}
+			if picked.Channel != want || explicitPinResult(reason) {
+				t.Fatalf("picked %+v reason %+v", picked, reason)
+			}
+		})
+	}
 }
 
 func TestScenarioSwitchShapes(t *testing.T) {

@@ -173,6 +173,82 @@ func TestBreakerReplanAbsorbed(t *testing.T) {
 	})
 }
 
+func TestConsumedFailureBatchDoesNotReplan(t *testing.T) {
+	cases := []struct {
+		name  string
+		add   func(f *fx, ch model.Channel)
+		fresh func(f *fx, ch model.Channel)
+	}{
+		{
+			name: "three identical failures change from consecutive to repeated",
+			add: func(f *fx, ch model.Channel) {
+				card := f.card(model.Card{ID: "dev", Channel: ch.ID})
+				f.attempt(card, 0, model.OutcomeTestsFailed, ch.ID, "same")
+				f.attempt(card, 1, model.OutcomeTestsFailed, ch.ID, "same")
+				f.attempt(card, 2, model.OutcomeTestsFailed, ch.ID, "same")
+			},
+			fresh: func(f *fx, ch model.Channel) {
+				f.attempt(f.mustCard("dev"), 3, model.OutcomeTestsFailed, ch.ID, "same")
+			},
+		},
+		{
+			name: "three different repair failures change from consecutive to repair streak",
+			add: func(f *fx, ch model.Channel) {
+				f.card(model.Card{ID: "parent", Status: model.CardReady, Channel: ch.ID})
+				repair := f.card(model.Card{ID: "fix", Kind: model.KindRepair, Channel: ch.ID, Deps: []string{"parent"}})
+				f.attempt(repair, 0, model.OutcomeTestsFailed, ch.ID, "alpha")
+				f.attempt(repair, 1, model.OutcomeTestsFailed, ch.ID, "beta")
+				f.attempt(repair, 2, model.OutcomeTestsFailed, ch.ID, "gamma")
+			},
+			fresh: func(f *fx, ch model.Channel) {
+				f.attempt(f.mustCard("fix"), 3, model.OutcomeTestsFailed, ch.ID, "delta")
+			},
+		},
+		{
+			name: "repair streak evidence is a subset of the consumed consecutive batch",
+			add: func(f *fx, ch model.Channel) {
+				f.card(model.Card{ID: "parent", Status: model.CardReady, Channel: ch.ID})
+				dev := f.card(model.Card{ID: "dev", Channel: ch.ID})
+				f.attempt(dev, 0, model.OutcomeTestsFailed, ch.ID, "alpha")
+				repair := f.card(model.Card{ID: "fix", Kind: model.KindRepair, Channel: ch.ID, Deps: []string{"parent"}})
+				f.attempt(repair, 0, model.OutcomeTestsFailed, ch.ID, "beta")
+				f.attempt(repair, 1, model.OutcomeTestsFailed, ch.ID, "gamma")
+			},
+			fresh: func(f *fx, ch model.Channel) {
+				f.attempt(f.mustCard("fix"), 2, model.OutcomeTestsFailed, ch.ID, "delta")
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, ch := breakerWorld(t)
+			tc.add(f, ch)
+			f.step()
+			questions := questionsKind(f, model.QuestionBreaker)
+			if len(cardsKind(f, model.KindReplan)) != 1 || len(questions) != 1 || !strings.Contains(questions[0].Text, "consecutive failures") {
+				t.Fatalf("replans %+v questions %+v", cardsKind(f, model.KindReplan), f.questions())
+			}
+			absorbReplan(t, f)
+			if len(cardsKind(f, model.KindReplan)) != 1 || cardsKind(f, model.KindReplan)[0].Status != model.CardDone {
+				t.Fatalf("absorbed %+v", cardsKind(f, model.KindReplan))
+			}
+			f.step()
+			if len(cardsKind(f, model.KindReplan)) != 1 || len(questionsKind(f, model.QuestionBreaker)) != 1 {
+				t.Fatalf("reason change replanned %+v questions %+v", cardsKind(f, model.KindReplan), f.questions())
+			}
+			tc.fresh(f, ch)
+			f.step()
+			if len(cardsKind(f, model.KindReplan)) != 2 || len(questionsKind(f, model.QuestionBreaker)) != 1 {
+				t.Fatalf("new failure replans %d questions %+v", len(cardsKind(f, model.KindReplan)), f.questions())
+			}
+			f.step()
+			if len(cardsKind(f, model.KindReplan)) != 2 {
+				t.Fatal("second step dispatched the new failure again")
+			}
+		})
+	}
+}
+
 func absorbReplan(t *testing.T, f *fx) {
 	t.Helper()
 	replans := cardsKind(f, model.KindReplan)

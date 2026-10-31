@@ -871,6 +871,10 @@ func (st *step) reopenConsumedSinceGap(nodeID string) bool {
 	return consumed
 }
 
+// breakerKey names the evidence a breaker replan already handled. A failure
+// batch is the attempt ids only, so a later reason for that same batch is
+// not a new trigger. A stall keeps its own anchor because its evidence is
+// the window, not those attempts.
 func (st *step) breakerKey(nodeID, reason string) string {
 	in := st.breakerInput(nodeID)
 	facts := withoutReplanFacts(in.Attempts)
@@ -879,7 +883,7 @@ func (st *step) breakerKey(nodeID, reason string) string {
 	}
 	ids := breakerEvidenceIDs(facts, reason)
 	sort.Strings(ids)
-	return reason + "\n" + strings.Join(ids, ",")
+	return strings.Join(ids, ",")
 }
 
 func withoutReplanFacts(facts []AttemptFact) []AttemptFact {
@@ -1011,6 +1015,7 @@ func stallAnchorKey(in BreakerInput, facts []AttemptFact) string {
 }
 
 func (st *step) triggerConsumed(nodeID, kind, key string) bool {
+	var batches []string
 	for _, event := range st.snap.events {
 		if event.Type != "replan_consumed" || event.Entity != "node:"+nodeID {
 			continue
@@ -1022,7 +1027,44 @@ func (st *step) triggerConsumed(nodeID, kind, key string) bool {
 		if json.Unmarshal(event.Data, &data) != nil {
 			continue
 		}
-		if data.Kind == kind && data.Key == key {
+		if data.Kind != kind {
+			continue
+		}
+		if data.Key == key {
+			return true
+		}
+		if kind == "breaker" && failureBatchKey(data.Key) {
+			batches = append(batches, data.Key)
+		}
+	}
+	return kind == "breaker" && failureBatchKey(key) && batchCovered(key, batches)
+}
+
+// failureBatchKey is a breaker consumption key made of attempt ids. Stall
+// keys carry the reason and an anchor, so they stay on exact match.
+func failureBatchKey(key string) bool {
+	return key != "" && !strings.Contains(key, "\n")
+}
+
+// batchCovered reports whether every id in key already belongs to one
+// consumed failure batch. An id outside that batch is a new trigger.
+func batchCovered(key string, batches []string) bool {
+	want := strings.Split(key, ",")
+	for _, batch := range batches {
+		have := map[string]bool{}
+		for _, id := range strings.Split(batch, ",") {
+			if id != "" {
+				have[id] = true
+			}
+		}
+		covered := true
+		for _, id := range want {
+			if id == "" || !have[id] {
+				covered = false
+				break
+			}
+		}
+		if covered {
 			return true
 		}
 	}

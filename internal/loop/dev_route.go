@@ -14,11 +14,12 @@ import (
 
 // routeRequestFrom assembles the facts DevStep uses for an automatic channel
 // choice. deciding clears card and objective pins on the probe so the choice
-// itself is not an explicit pin. A later call clears a channel this lane just
-// stored when it matches the latest auto_route, puts back a user pin saved on
-// that event, and drops the failed channel unless the pin names it. An empty
-// positioning table supplies unsaved rows from each channel's own tier and
-// models; those rows are not written to the store.
+// itself is not an explicit pin. A later call is what dispatch reads back
+// after DevStep has stored the chosen channel: that stored channel is
+// not a pin, a user pin is put back only when it names some other channel,
+// and the channel this switch failed is omitted. An empty positioning table
+// supplies unsaved rows from each channel's own tier and models; those rows
+// are not written to the store.
 func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, objective model.Objective, now time.Time, failed string, deciding bool) (route.Request, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -62,19 +63,27 @@ func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, obj
 		if failed == "" {
 			failed = auto.exclude
 		}
+		// The channel written by this switch is the automatic choice. Put a
+		// user pin back only when it names a different channel, so the pin
+		// that just failed cannot cancel the exclusion.
 		if auto.channel != "" && probe.Channel == auto.channel {
-			probe.Channel = auto.pin
+			probe.Channel = ""
+			if auto.pin != "" && auto.pin != failed {
+				probe.Channel = auto.pin
+			}
 		}
-	}
-	pin := probe.Channel
-	if pin == "" {
-		pin = obj.Channel
+		if failed != "" && probe.Channel == failed {
+			probe.Channel = ""
+		}
+		if failed != "" && obj.Channel == failed {
+			obj.Channel = ""
+		}
 	}
 	return route.Request{
 		Card:         probe,
 		Objective:    obj,
 		AuthorFamily: card.AuthorFamily,
-		Channels:     withoutChannel(channels, failed, pin),
+		Channels:     withoutChannel(channels, failed),
 		Positioning:  rows,
 		InUse:        inUse,
 		Quota:        led,
@@ -109,11 +118,11 @@ func globalOccupancy(ctx context.Context, db *store.Store) (map[string]int, []mo
 	return inUse, attempts, nil
 }
 
-// withoutChannel drops failed unless the stored pin is that channel.
-// route.Select has no exclude field; omitting it from Channels is the
-// exclusion the current request type can express.
-func withoutChannel(channels []model.Channel, failed, pin string) []model.Channel {
-	if failed == "" || failed == pin {
+// withoutChannel drops failed. A pin that names that channel does not put
+// it back. route.Select has no exclude field; omitting it from Channels is
+// the exclusion the current request type can express.
+func withoutChannel(channels []model.Channel, failed string) []model.Channel {
+	if failed == "" {
 		out := append([]model.Channel(nil), channels...)
 		return out
 	}

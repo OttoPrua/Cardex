@@ -1312,18 +1312,41 @@ func (d Deps) currentAttemptID(ctx context.Context, cardID string) (string, erro
 
 // backfillSkippedResearch records unanswered when a research card is terminal
 // and its latest attempt was already handled as a skip. The voided text is not stored.
+// The write is one-shot for that attempt: a later recheck may use the same question id.
 func (d Deps) backfillSkippedResearch(ctx context.Context, obj model.Objective, card model.Card) error {
 	if card.Kind != model.KindResearch || !terminalCard(card.Status) {
 		return nil
 	}
-	_, base, outcome, _, err := d.harvested(ctx, card)
+	_, base, outcome, attemptID, err := d.harvested(ctx, card)
 	if err != nil {
 		return err
 	}
 	if !skippedOutcome(outcome, card.Status) {
 		return nil
 	}
-	return d.recordSkippedResearch(ctx, obj, card, base)
+	return d.disposeSkippedResearch(ctx, obj, card, attemptID, base)
+}
+
+// disposeSkippedResearch applies the terminal unanswered write once per attempt.
+// A repeat leaves question status alone, so a later recheck can stay researching.
+// A skip that is not yet terminal must not call this.
+func (d Deps) disposeSkippedResearch(ctx context.Context, obj model.Objective, card model.Card, attemptID, base string) error {
+	key := skippedResearchKey(card, attemptID)
+	done, err := d.hasEvent(ctx, key, evUnanswered)
+	if err != nil || done {
+		return err
+	}
+	if err := d.recordSkippedResearch(ctx, obj, card, base); err != nil {
+		return err
+	}
+	return d.noteEvent(ctx, key, evUnanswered, nil)
+}
+
+func skippedResearchKey(card model.Card, attemptID string) string {
+	if id := strings.TrimSpace(attemptID); id != "" {
+		return attemptKey(id)
+	}
+	return "card:" + card.ID
 }
 
 // recoverUnparsed keeps one normalize card tied to the source.
@@ -1501,7 +1524,7 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 		}
 		if handled {
 			if card.Kind == model.KindResearch && terminalCard(card.Status) && skippedOutcome(outcome, card.Status) {
-				if err := d.recordSkippedResearch(ctx, obj, card, base); err != nil {
+				if err := d.disposeSkippedResearch(ctx, obj, card, attemptID, base); err != nil {
 					return err
 				}
 			}
@@ -1510,7 +1533,7 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 	}
 	if skippedOutcome(outcome, card.Status) {
 		if card.Kind == model.KindResearch && terminalCard(card.Status) {
-			if err := d.recordSkippedResearch(ctx, obj, card, base); err != nil {
+			if err := d.disposeSkippedResearch(ctx, obj, card, attemptID, base); err != nil {
 				return err
 			}
 		}

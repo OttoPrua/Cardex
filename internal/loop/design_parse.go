@@ -10,6 +10,7 @@ import (
 
 const (
 	evAbsorbed   = "loop.absorbed"
+	evUnanswered = "loop.unanswered" // one-shot terminal research backfill for an attempt
 	evContinued  = "loop.continued"
 	evResearch   = "loop.research"
 	evFreezable  = "loop.freezable"

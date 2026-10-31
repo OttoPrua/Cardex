@@ -202,11 +202,15 @@ func (Git) Remove(ctx context.Context, worktree string) error {
 // Cardex reject-all hook, and sets every remote pushurl to an invalid
 // address. Inherited pushurls stay in the effective list, and --no-verify
 // skips the hook. A push that names a URL directly, including "." and a
-// relative path, is rewritten by an empty pushInsteadOf. That rewrite is
-// ignored when a remote already has a pushurl, and http(s) ignores
-// receivepack, so those pushurls are rewritten with insteadOf. insteadOf
-// does not apply to a local fetch URL. protocol.allow is left unset.
-// Push-related keys in the main repository config are left alone.
+// relative path, is rewritten by an empty pushInsteadOf. A longer inherited
+// or process-level pushInsteadOf outranks that empty prefix, and a direct
+// URL has no receivepack, so the worktree also requires a signed push: a
+// local receive-pack does not advertise push certificates, and gpg.program
+// cannot sign when it does. Fetch and ls-remote do not sign. The empty
+// rewrite is ignored when a remote already has a pushurl, and http(s)
+// ignores receivepack, so those pushurls are rewritten with insteadOf.
+// insteadOf does not apply to a local fetch URL. protocol.allow is left
+// unset. Push-related keys in the main repository config are left alone.
 func (Git) BlockPush(ctx context.Context, worktree string) error {
 	if strings.TrimSpace(worktree) == "" {
 		return fmt.Errorf("workspace: block push worktree required")
@@ -228,7 +232,8 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 		return err
 	}
 	// An empty prefix matches every push URL, including "." and "nested/bare.git".
-	// Fetch does not consult pushInsteadOf.
+	// Fetch does not consult pushInsteadOf. A longer prefix wins; the signed
+	// push below still refuses that destination.
 	if _, err := runGit(ctx, worktree, "config", "--worktree", "--add", "url."+blockedPushURL+"/.pushInsteadOf", ""); err != nil {
 		return err
 	}
@@ -244,6 +249,18 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 	reject, err := exec.LookPath("false")
 	if err != nil {
 		return fmt.Errorf("workspace: push reject command: %w", err)
+	}
+	// Worktree values override an inherited push.gpgSign=false. They do not
+	// change the main repository config. gpg.format pins OpenPGP so an
+	// inherited ssh signer is not used.
+	if _, err := runGit(ctx, worktree, "config", "--worktree", "push.gpgSign", "true"); err != nil {
+		return err
+	}
+	if _, err := runGit(ctx, worktree, "config", "--worktree", "gpg.format", "openpgp"); err != nil {
+		return err
+	}
+	if _, err := runGit(ctx, worktree, "config", "--worktree", "gpg.program", reject); err != nil {
+		return err
 	}
 	raw, err := runGit(ctx, worktree, "remote")
 	if err != nil {

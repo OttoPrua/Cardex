@@ -13,5 +13,5 @@
 无。
 
 ## 修复记录
-按 C 然后 D 做 no-ff 合并，冲突保留双方已落地场景，不用后合入的 skip 盖掉先合入的实现。 → internal/e2e/scenarios_test.go:14,74,173,182,189,204,224,266 → TestS06, TestS17, TestS18, TestS24
-本 worktree 的 build、vet、test 必须通过且改动已提交；合并后没有红测，因此不另改行为。 → internal/e2e/scenarios_test.go:74,173,204,325 → TestS06, TestS17, TestS18, TestS24
+按顺序 no-ff 合入时，冲突保留双方已落地场景，不用后合入的 skip 盖掉先合入的实现。 → internal/e2e/scenarios_test.go:14, internal/e2e/scenarios_test.go:74, internal/e2e/scenarios_test.go:173, internal/e2e/scenarios_test.go:182, internal/e2e/scenarios_test.go:189, internal/e2e/scenarios_test.go:204, internal/e2e/scenarios_test.go:224, internal/e2e/scenarios_test.go:266 → TestS06, TestS17, TestS18, TestS24
+本 worktree 的 build、vet、test 必须通过且改动已提交。 → internal/e2e/scenarios_test.go:74, internal/e2e/scenarios_test.go:173, internal/e2e/scenarios_test.go:204, internal/e2e/scenarios_test.go:325 → TestS06, TestS17, TestS18, TestS24

@@ -13,6 +13,6 @@ model.Claim 仍无种类字段。空 symbol 只表示整文件，不能表示新
 acceptance 无 deadline 时默认 2 分钟。linked worktree 不读自己的 info/exclude，仍改用 core.excludesFile。extensions.worktreeConfig 写在公共 config。
 
 ## 修复记录
-文件内容不变不能据此忽略 Git 已记录的模式变化。 → internal/claims/symbols.go:166 → TestModeOnlyChangeIsClaim
+文件内容不变不能据此忽略 Git 已记录的模式变化。 → internal/claims/symbols.go:170 → TestModeOnlyChangeIsClaim
 目录声明只能覆盖新建文件，不能阻塞已有文件的文件级声明。 → internal/claims/conflicts.go:108 → TestConflictsDirectoryOnlyNewFiles
 防推送措施不应连带禁止正常的 Git 读取。 → internal/workspace/git.go:232, internal/workspace/git.go:252 → TestBlockPushBlocksInheritedPushURLs

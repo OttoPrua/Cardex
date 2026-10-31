@@ -570,6 +570,152 @@ func TestFailedChannelStaysExcluded(t *testing.T) {
 	}
 }
 
+func TestSuccessiveFailedPinsStaySuppressed(t *testing.T) {
+	cases := []struct {
+		name    string
+		outcome model.Outcome
+		pin     string
+		once    bool
+	}{
+		{name: "quota_hit card pin", outcome: model.OutcomeQuotaHit, pin: "card"},
+		{name: "auth_failed card pin", outcome: model.OutcomeAuthFailed, pin: "card"},
+		{name: "quota_hit objective pin", outcome: model.OutcomeQuotaHit, pin: "objective"},
+		{name: "auth_failed objective pin", outcome: model.OutcomeAuthFailed, pin: "objective"},
+		{name: "a card pin that did not fail stays", outcome: model.OutcomeQuotaHit, pin: "card-other"},
+		{name: "an objective pin that did not fail stays", outcome: model.OutcomeQuotaHit, pin: "objective-other"},
+		{name: "a single switch still excludes the failed channel", outcome: model.OutcomeQuotaHit, pin: "card", once: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFx(t, model.ModeManual)
+			a := f.channel("ch-a", "fam-a", "ma")
+			b := f.channel("ch-b", "fam-b", "mb")
+			c := f.channel("ch-c", "fam-c", "mc")
+			var d model.Channel
+			other := tc.pin == "card-other" || tc.pin == "objective-other"
+			if other {
+				d = f.channel("ch-d", "fam-d", "md")
+				d.Redline = 0.5
+				d.QuotaWindows[0].UsedTokens = 90
+				f.saveChannel(d)
+			}
+			f.position("ma", "fam-a", model.TierT2)
+			f.position("mb", "fam-b", model.TierT2)
+			f.position("mc", "fam-c", model.TierT2)
+			if other {
+				f.position("md", "fam-d", model.TierT2)
+			}
+			cardPin := ""
+			if tc.pin == "card" {
+				cardPin = a.ID
+			}
+			if tc.pin == "card-other" {
+				cardPin = d.ID
+			}
+			card := f.card(model.Card{ID: "c", Channel: cardPin, Tier: model.TierT2, Status: model.CardHarvesting})
+			if tc.pin == "objective" || tc.pin == "objective-other" {
+				obj := f.objective()
+				obj.Channel = a.ID
+				if tc.pin == "objective-other" {
+					obj.Channel = d.ID
+				}
+				if err := f.db.UpdateObjective(f.ctx, &obj); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.attempt(card, 0, tc.outcome, a.ID, "")
+			f.step()
+			got := f.mustCard("c")
+			if got.Channel != b.ID || got.Status != model.CardReady {
+				t.Fatalf("first switch %+v", got)
+			}
+			wantCard := b.ID
+			if !tc.once {
+				f.attempt(got, 1, model.OutcomeNoOutput, b.ID, "")
+				f.step()
+				got = f.mustCard("c")
+				wantCard = c.ID
+				if got.Channel != c.ID || got.Status != model.CardReady || got.Model != "" {
+					t.Fatalf("second switch %+v", got)
+				}
+			}
+			routed := latestAuto(f, "c")
+			if !routed.ok || routed.channel != wantCard {
+				t.Fatalf("route %+v card %s events %+v", routed, got.Channel, f.events("auto_route"))
+			}
+			if tc.pin == "card" && !tc.once && routed.pin == a.ID {
+				t.Fatalf("later switch kept failed pin %+v", routed)
+			}
+			if tc.pin == "card-other" && routed.pin != d.ID {
+				t.Fatalf("later switch dropped a live pin %+v", routed)
+			}
+			storedObj := f.objective()
+			req, err := routeRequestFrom(f.ctx, f.db, got, storedObj, time.Now().UTC(), "", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.mustCard("c").Channel != wantCard || f.objective().Channel != storedObj.Channel {
+				t.Fatalf("readback wrote card %s objective %s", f.mustCard("c").Channel, f.objective().Channel)
+			}
+			failed := a.ID
+			if !tc.once {
+				failed = b.ID
+			}
+			for _, ch := range req.Channels {
+				if ch.ID == failed {
+					t.Fatalf("latest failed channel %s was still offered", failed)
+				}
+			}
+			switch tc.pin {
+			case "card-other":
+				if req.Card.Channel != d.ID || req.Objective.Channel != "" {
+					t.Fatalf("card pin %q objective %q", req.Card.Channel, req.Objective.Channel)
+				}
+			case "objective-other":
+				if req.Objective.Channel != d.ID || req.Card.Channel != "" {
+					t.Fatalf("card pin %q objective %q", req.Card.Channel, req.Objective.Channel)
+				}
+			default:
+				if req.Card.Channel != "" || req.Card.Model != "" || req.Objective.Channel != "" || req.Objective.Model != "" {
+					t.Fatalf("failed pin restored card %q/%q objective %q/%q", req.Card.Channel, req.Card.Model, req.Objective.Channel, req.Objective.Model)
+				}
+			}
+			picked, reason, err := route.Select(f.ctx, req)
+			if err != nil {
+				t.Fatalf("select %v reason %+v", err, reason)
+			}
+			if other {
+				if picked.Channel != d.ID || picked.Model == "" || !explicitPinResult(reason) {
+					t.Fatalf("picked %+v reason %+v", picked, reason)
+				}
+				return
+			}
+			if picked.Channel != wantCard || picked.Channel == a.ID || picked.Model == "" || explicitPinResult(reason) {
+				t.Fatalf("picked %+v reason %+v", picked, reason)
+			}
+			if tc.once {
+				return
+			}
+			wantFilter := route.ReasonBlocked
+			if tc.outcome == model.OutcomeAuthFailed {
+				wantFilter = route.ReasonHealth
+			}
+			if got := filteredReason(reason, a.ID); got != wantFilter {
+				t.Fatalf("filter %q reason %+v", got, reason)
+			}
+		})
+	}
+}
+
+func filteredReason(reason model.RouteReason, channelID string) string {
+	for _, item := range reason.Filtered {
+		if item.Channel == channelID {
+			return item.Reason
+		}
+	}
+	return ""
+}
+
 func TestScenarioSwitchShapes(t *testing.T) {
 	t.Run("no_output", func(t *testing.T) {
 		f := newFx(t, model.ModeManual)
@@ -951,6 +1097,7 @@ type autoRoute struct {
 	channel string
 	model   string
 	exclude string
+	pin     string
 }
 
 func latestAuto(f *fx, cardID string) autoRoute {
@@ -964,11 +1111,12 @@ func latestAuto(f *fx, cardID string) autoRoute {
 			Channel string `json:"channel"`
 			Model   string `json:"model"`
 			Exclude string `json:"exclude"`
+			Pin     string `json:"pin"`
 		}
 		if json.Unmarshal(event.Data, &data) != nil {
 			continue
 		}
-		last = autoRoute{ok: true, channel: data.Channel, model: data.Model, exclude: data.Exclude}
+		last = autoRoute{ok: true, channel: data.Channel, model: data.Model, exclude: data.Exclude, pin: data.Pin}
 	}
 	return last
 }

@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -247,6 +248,124 @@ func TestConsumedFailureBatchDoesNotReplan(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFailureIDsStayConsumedAcrossBatches(t *testing.T) {
+	t.Run("two batches then repeated signature", func(t *testing.T) {
+		f, ch := breakerWorld(t)
+		base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+		dev := f.card(model.Card{ID: "dev", Channel: ch.ID})
+		f.backdate(f.attempt(dev, 0, model.OutcomeTestsFailed, ch.ID, "boom"), base, 0)
+		f.backdate(f.attempt(dev, 1, model.OutcomeTestsFailed, ch.ID, "boom"), base.Add(time.Minute), 0)
+		f.step()
+		questions := questionsKind(f, model.QuestionBreaker)
+		if len(cardsKind(f, model.KindReplan)) != 1 || len(questions) != 1 || !strings.Contains(questions[0].Text, "repeated error boom") {
+			t.Fatalf("replans %+v questions %+v", cardsKind(f, model.KindReplan), f.questions())
+		}
+		absorbOutstandingReplan(t, f, base.Add(2*time.Minute))
+		if len(cardsKind(f, model.KindReplan)) != 1 || cardsKind(f, model.KindReplan)[0].Status != model.CardDone {
+			t.Fatalf("absorbed %+v", cardsKind(f, model.KindReplan))
+		}
+		ok := f.card(model.Card{ID: "ok", Kind: model.KindSpike, Channel: ch.ID})
+		f.backdate(f.attempt(ok, 0, model.OutcomePassed, ch.ID, ""), base.Add(3*time.Minute), 0)
+		f.backdate(f.attempt(dev, 2, model.OutcomeTestsFailed, ch.ID, "boom"), base.Add(4*time.Minute), 0)
+		f.backdate(f.attempt(dev, 3, model.OutcomeTestsFailed, ch.ID, "boom"), base.Add(5*time.Minute), 0)
+		f.backdate(f.attempt(dev, 4, model.OutcomeTestsFailed, ch.ID, "boom"), base.Add(6*time.Minute), 0)
+		f.step()
+		if len(cardsKind(f, model.KindReplan)) != 2 {
+			t.Fatalf("second batch replans %+v questions %+v", cardsKind(f, model.KindReplan), f.questions())
+		}
+		keys := breakerConsumedKeys(t, f)
+		if len(keys) != 2 || keys[0] != "dev-0,dev-1" || keys[1] != "dev-2,dev-3,dev-4" {
+			t.Fatalf("batches %v", keys)
+		}
+		absorbOutstandingReplan(t, f, base.Add(7*time.Minute))
+		keys = breakerConsumedKeys(t, f)
+		if len(cardsKind(f, model.KindReplan)) != 2 || len(keys) != 2 {
+			t.Fatalf("union replanned %+v keys %v questions %+v", cardsKind(f, model.KindReplan), keys, f.questions())
+		}
+		for _, card := range cardsKind(f, model.KindReplan) {
+			if !TerminalCard(card.Status) {
+				t.Fatalf("open replan after consumed union %+v", card)
+			}
+		}
+		f.backdate(f.attempt(dev, 5, model.OutcomeTestsFailed, ch.ID, "boom"), base.Add(8*time.Minute), 0)
+		f.step()
+		keys = breakerConsumedKeys(t, f)
+		if len(cardsKind(f, model.KindReplan)) != 3 || len(keys) != 3 || keys[2] != "dev-0,dev-1,dev-2,dev-3,dev-4,dev-5" {
+			t.Fatalf("new failure replans %+v keys %v", cardsKind(f, model.KindReplan), keys)
+		}
+		f.step()
+		if len(cardsKind(f, model.KindReplan)) != 3 || len(breakerConsumedKeys(t, f)) != 3 {
+			t.Fatal("second step dispatched the new failure again")
+		}
+	})
+
+	t.Run("stall anchor is not a failure batch", func(t *testing.T) {
+		f, ch := breakerWorld(t)
+		f.writeConfig(`{"loop":{"breaker_spend_tokens":10}}`)
+		card := f.card(model.Card{ID: "spike", Kind: model.KindSpike, Tier: model.TierT2, Channel: ch.ID})
+		f.backdate(f.attempt(card, 0, model.OutcomePassed, ch.ID, ""), time.Now().Add(-7*time.Hour), 11)
+		f.step()
+		questions := questionsKind(f, model.QuestionBreaker)
+		if len(cardsKind(f, model.KindReplan)) != 1 || len(questions) != 1 || !strings.Contains(questions[0].Text, "no merge within stall window") {
+			t.Fatalf("replans %+v questions %+v", cardsKind(f, model.KindReplan), f.questions())
+		}
+		keys := breakerConsumedKeys(t, f)
+		if len(keys) != 1 || !strings.Contains(keys[0], "\n") {
+			t.Fatalf("stall key %v", keys)
+		}
+		absorbReplan(t, f)
+		f.step()
+		if len(cardsKind(f, model.KindReplan)) != 1 || len(breakerConsumedKeys(t, f)) != 1 {
+			t.Fatal("the same stall anchor dispatched again")
+		}
+		dev := f.card(model.Card{ID: "dev", Channel: ch.ID})
+		f.attempt(dev, 0, model.OutcomeTestsFailed, ch.ID, "boom")
+		f.attempt(dev, 1, model.OutcomeTestsFailed, ch.ID, "boom")
+		f.step()
+		keys = breakerConsumedKeys(t, f)
+		if len(cardsKind(f, model.KindReplan)) != 2 || len(keys) != 2 || strings.Contains(keys[1], "\n") {
+			t.Fatalf("stall covered a failure batch %+v keys %v", cardsKind(f, model.KindReplan), keys)
+		}
+		f.step()
+		if len(cardsKind(f, model.KindReplan)) != 2 {
+			t.Fatal("second step dispatched the failure batch again")
+		}
+	})
+}
+
+func absorbOutstandingReplan(t *testing.T, f *fx, at time.Time) {
+	t.Helper()
+	var open []model.Card
+	for _, card := range cardsKind(f, model.KindReplan) {
+		if !TerminalCard(card.Status) {
+			open = append(open, card)
+		}
+	}
+	if len(open) != 1 {
+		t.Fatalf("open replan %+v", cardsKind(f, model.KindReplan))
+	}
+	attempt := f.attempt(open[0], 0, model.OutcomePassed, "", "")
+	attempt.Worktree = writeResult(t, "[]")
+	f.backdate(attempt, at, 0)
+	f.step()
+}
+
+func breakerConsumedKeys(t *testing.T, f *fx) []string {
+	t.Helper()
+	var keys []string
+	for _, event := range f.events("replan_consumed") {
+		var data struct {
+			Kind string `json:"kind"`
+			Key  string `json:"key"`
+		}
+		if json.Unmarshal(event.Data, &data) != nil || data.Kind != "breaker" {
+			continue
+		}
+		keys = append(keys, data.Key)
+	}
+	return keys
 }
 
 func absorbReplan(t *testing.T, f *fx) {

@@ -1046,29 +1046,28 @@ func failureBatchKey(key string) bool {
 	return key != "" && !strings.Contains(key, "\n")
 }
 
-// batchCovered reports whether every id in key already belongs to one
-// consumed failure batch. An id outside that batch is a new trigger.
+// batchCovered reports whether every id in key already belongs to the union
+// of consumed failure batches. One record does not have to hold every id.
+// An id outside that union is a new trigger.
 func batchCovered(key string, batches []string) bool {
-	want := strings.Split(key, ",")
+	have := map[string]bool{}
 	for _, batch := range batches {
-		have := map[string]bool{}
 		for _, id := range strings.Split(batch, ",") {
 			if id != "" {
 				have[id] = true
 			}
 		}
-		covered := true
-		for _, id := range want {
-			if id == "" || !have[id] {
-				covered = false
-				break
-			}
-		}
-		if covered {
-			return true
+	}
+	want := strings.Split(key, ",")
+	if len(want) == 0 || len(have) == 0 {
+		return false
+	}
+	for _, id := range want {
+		if id == "" || !have[id] {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
 func replanDeps(split string) []string {

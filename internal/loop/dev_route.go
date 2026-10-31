@@ -16,10 +16,11 @@ import (
 // choice. deciding clears card and objective pins on the probe so the choice
 // itself is not an explicit pin. A later call is what dispatch reads back
 // after DevStep has stored the chosen channel: that stored channel is
-// not a pin, a user pin is put back only when it names some other channel,
-// and the channel this switch failed is omitted. An empty positioning table
-// supplies unsaved rows from each channel's own tier and models; those rows
-// are not written to the store.
+// not a pin. A user pin is put back only when it names a channel this card
+// has not already failed, including a channel replaced by an earlier
+// automatic switch. The channel the latest switch failed is omitted.
+// An empty positioning table supplies unsaved rows from each channel's own
+// tier and models; those rows are not written to the store.
 func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, objective model.Objective, now time.Time, failed string, deciding bool) (route.Request, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -60,22 +61,26 @@ func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, obj
 		obj.Channel = ""
 		obj.Model = ""
 	} else {
+		excluded := autoExcluded(events, card.ID)
 		if failed == "" {
 			failed = auto.exclude
 		}
+		if failed != "" {
+			excluded[failed] = true
+		}
 		// The channel written by this switch is the automatic choice. Put a
-		// user pin back only when it names a different channel, so the pin
-		// that just failed cannot cancel the exclusion.
+		// user pin back only when that channel has not failed on this card,
+		// including a failure from an earlier automatic switch.
 		if auto.channel != "" && probe.Channel == auto.channel {
 			probe.Channel = ""
-			if auto.pin != "" && auto.pin != failed {
+			if auto.pin != "" && !excluded[auto.pin] {
 				probe.Channel = auto.pin
 			}
 		}
-		if failed != "" && probe.Channel == failed {
+		if excluded[probe.Channel] {
 			probe.Channel = ""
 		}
-		if failed != "" && obj.Channel == failed {
+		if excluded[obj.Channel] {
 			obj.Channel = ""
 		}
 	}
@@ -161,14 +166,39 @@ func latestAutoChoice(events []model.Event, cardID string) autoChoice {
 	return last
 }
 
+// autoExcluded is every channel an automatic switch on this card already
+// replaced because that channel failed. Later switches keep suppressing a
+// pin that names one of them, not only the latest exclude.
+func autoExcluded(events []model.Event, cardID string) map[string]bool {
+	out := map[string]bool{}
+	for _, event := range events {
+		if event.Type != "auto_route" || event.Entity != "card:"+cardID {
+			continue
+		}
+		var data struct {
+			Exclude string `json:"exclude"`
+		}
+		if json.Unmarshal(event.Data, &data) != nil || data.Exclude == "" {
+			continue
+		}
+		out[data.Exclude] = true
+	}
+	return out
+}
+
 // keptPin is the user pin to remember across an automatic write. A channel
-// stored by the previous auto_route is not itself a user pin.
+// stored by the previous auto_route is not itself a user pin. A pin that
+// names a channel an earlier automatic switch already failed is not kept.
 func keptPin(events []model.Event, card model.Card) string {
 	auto := latestAutoChoice(events, card.ID)
+	pin := card.Channel
 	if auto.channel != "" && card.Channel == auto.channel {
-		return auto.pin
+		pin = auto.pin
 	}
-	return card.Channel
+	if autoExcluded(events, card.ID)[pin] {
+		return ""
+	}
+	return pin
 }
 
 // modelChannelSep aliases a model name that several channels offer, so one

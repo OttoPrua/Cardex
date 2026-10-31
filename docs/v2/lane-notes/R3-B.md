@@ -13,7 +13,7 @@ plan、review、normalize、replan 的 `passed` 在同一次调用里吸收。�
 设计期、`DesignStep`、研究卡事实流和冻结是 R3-A。合并队列、派发、`sched.Loop`、宿主启动和声明冲突等待是 R3-C。prompt 模板和真正的 notify 包是 R3-D。S09 与 S15 使用 loop 内的 file 通知，不调用 `notify.Stub` 或 `question.Stub`。没有改 `internal/model`，也没有做骨架卡门禁、认证失败后的渠道恢复、backlog、看板、成绩单、真实 CLI、`~/.cardex` 或 push。
 
 ## 接口请求
-R3-C 调用 `loop.DevStep(ctx, objectiveID)`，进程需已设置 `CARDEX_HOME`。通知用 `loop.WithNotifier` 注入；未注入时写到 `$CARDEX_HOME/notifications`。配额封锁用 `loop.RestoreQuota` 重放。自动换渠道把选出的 channel 写进卡，model 只记在 `auto_route`。`route.Select` 仍把非空 Channel 当成显式 pin 并跳过红线和健康检查。派发读回这张卡后若再次选择，用与 `routeRequestFrom(..., deciding=false)` 相同的请求：失败渠道（最近一条 `auto_route.exclude`）从候选里去掉；卡 channel 等于该条 `auto_route.channel` 时清掉，它不是显式 pin；卡 `pin` 或目标 channel 只有指向别的渠道时才放回，等于失败渠道的不恢复。`route.Request` 仍没有 Exclude 字段，不改 `internal/route` 或 `internal/model`。
+R3-C 调用 `loop.DevStep(ctx, objectiveID)`，进程需已设置 `CARDEX_HOME`。通知用 `loop.WithNotifier` 注入；未注入时写到 `$CARDEX_HOME/notifications`。配额封锁用 `loop.RestoreQuota` 重放。自动换渠道把选出的 channel 写进卡，model 只记在 `auto_route`。`route.Select` 仍把非空 Channel 当成显式 pin 并跳过红线和健康检查。派发读回这张卡后若再次选择，用与 `routeRequestFrom(..., deciding=false)` 相同的请求：最近一条 `auto_route.exclude` 从候选里去掉；卡 channel 等于该条 `auto_route.channel` 时清掉，它不是显式 pin；卡 `pin` 或目标 channel 只要被该卡任何一条 `auto_route.exclude` 点过就不再放回，更早因失败换掉的 pin 也继续抑制，没失败的 pin 仍放回。`route.Request` 仍没有 Exclude 字段，不改 `internal/route` 或 `internal/model`。
 
 定位表为空时，本 lane 只在当次请求里用各渠道自己的 tier 和模型造候选，不写入定位表，也不把卡的 tier 盖到每个模型上。
 
@@ -36,3 +36,5 @@ budget_limited 的自动续做只限一次，再次出现即使硬预算未设�
 换渠道必须把选出的渠道写入卡并标为 ready；定位表为空时用各渠道自己的 tier 和模型作未保存候选，自动写入的渠道在下次路由请求里不是用户 pin → internal/loop/dev_apply.go:292、internal/loop/dev_route.go:66、internal/loop/dev_route.go:171 → TestS09
 失败渠道在后续路由必须继续排除，等于该渠道的卡 pin 或目标 pin 不能恢复成显式指定，自动写入的渠道本身也不是显式 pin → internal/loop/dev_route.go:69、internal/loop/dev_route.go:78、internal/loop/dev_route.go:124 → TestFailedChannelStaysExcluded
 同批已消费的失败不能因熔断理由从连续失败改成重复错误或修复连续失败而再次派 replan，新失败 id 仍能再派一次 → internal/loop/dev_apply.go:886、internal/loop/dev_apply.go:1040、internal/loop/dev_apply.go:1051 → TestConsumedFailureBatchDoesNotReplan
+连续自动换渠道后，已经因失败被替换的卡 pin 和目标 pin 都要继续抑制，不能只排除最近一次失败的渠道 → internal/loop/dev_route.go:64、internal/loop/dev_route.go:83、internal/loop/dev_route.go:172、internal/loop/dev_route.go:192、internal/loop/dev_apply.go:291 → TestSuccessiveFailedPinsStaySuppressed
+分属不同消费记录的失败尝试合并后仍算已消费，没有新失败 id 就不能因熔断理由切换再派 replan，停滞窗口仍按原锚点精确匹配 → internal/loop/dev_apply.go:1040、internal/loop/dev_apply.go:1052 → TestFailureIDsStayConsumedAcrossBatches

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"cardex/internal/harvest"
 	"cardex/internal/host"
 	"cardex/internal/model"
 )
@@ -40,7 +42,48 @@ func TestS05(t *testing.T) {
 
 func TestS06(t *testing.T) {
 	// 事件流不完整，但工作区有改动且测试通过，按 passed 处理。
-	t.Skip("R2-C")
+	dir := t.TempDir()
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	git("init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package a\n\nfunc A() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git("-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "add", "a.go")
+	git("-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "init")
+	headCmd := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
+	headOut, err := headCmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.go"), []byte("package a\n\nfunc B() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := harvest.Harvest(context.Background(), harvest.Input{
+		Attempt: model.Attempt{
+			ID: "s06", Card: "card", Worktree: dir, BaseCommit: strings.TrimSpace(string(headOut)),
+		},
+		Card: model.Card{
+			ID: "card", Kind: model.KindDev, Acceptance: []string{"true"},
+		},
+		Exit:   1,
+		Output: []byte("{\"type\":\"assistant\",\"text\":\"hel"),
+		Repo:   dir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != model.OutcomePassed {
+		t.Fatalf("outcome %s evidence %s", res.Outcome, res.Evidence)
+	}
 }
 
 func TestS07(t *testing.T) {

@@ -2,7 +2,6 @@
 package harvest
 
 import (
-	"context"
 	"errors"
 
 	"cardex/internal/model"
@@ -32,6 +31,4 @@ type Result struct {
 }
 
 // Harvest reads the exit code, the event stream, the diff, acceptance, and the result file.
-func Harvest(ctx context.Context, in Input) (Result, error) {
-	return Result{}, ErrNotImplemented
-}
+// The implementation lives in harvest.go.

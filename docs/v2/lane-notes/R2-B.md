@@ -11,7 +11,7 @@ LaunchSpec 缺 goal_mode/requires：用 Grok.GoalMode；Drive 无 prompt 参数�
 
 ## 已知问题
 N2：AGY 嵌套错误 {"error":{"message":"quota exceeded"}} 与多行 JSON 的 usage 仍未按 v1 完整文档提取，不在本次 findings。
-B2 仍未完成：v1 observeNativeGrokGoal 只读 grokNativeGoalStateFile.Status（workflow_goal.go），375 份真实 goal/state.json 的 status 只有 complete/active/budget_limited/user_paused/no_progress_paused/infra_paused/blocked/back_off_paused，history 的 budget_exceeded 无 detail 且仍是 budget_limited。grokBuildLimitScanText 的 quota exceeded 与 HTTP 429 错误记录是无头样本，贴到 PTY 上不是额度终态。Drive 与 ReadGrokGoalSession 没有 ErrGrokQuotaHit 路径，没有伪造样本。
+B2 验收准则 2 放弃（acceptance criterion 2 is waived）：没有可引用的交互额度转录或会话额度字段。v1 observeNativeGrokGoal 只读 grokNativeGoalStateFile.Status；writeGrokGoalFixture 只写 active/complete/budget_limited/paused/needs-input/failed；375 份真实 goal/state.json 无额度状态，history 的 budget_exceeded 仍是 budget_limited。isLimitHitGrokBuild 与 grokBuildLimitScanText 只扫无头样本。testdata/grok_goal_quota_stderr.txt 的 quota exceeded 与 testdata/grok_goal_quota.jsonl 的 HTTP 429 错误记录贴到 PTY 上不是 ErrGrokQuotaHit，前缀、分片和 signal: killed 也不是。不新增伪造样本，Drive 与 ReadGrokGoalSession 不返回 ErrGrokQuotaHit。
 
 ## 修复记录
 接收 prompt 正文的参数必须是文件内容，不能是路径 → internal/runner/grok.go:78、cursor.go:34、kimi.go:45、agy.go:40 → TestPromptFileBody
@@ -30,4 +30,4 @@ goal 的完成和 budget_limited 只从会话文件读取，PTY Read 阻塞时�
 正文、/goal 回显和真实诊断按来源区分：回显是已知 prompt，或无 prompt 时从 /goal 延续到完整 JSON 错误记录，不以空行或固定行数截断；冒号标签只认已知诊断来源 → internal/runner/grok.go:229、grok.go:348、grok.go:364、grok.go:382、grok.go:457、grok.go:466（cursor.go:52、kimi.go:112、agy.go:44、agy.go:108 经 classifyScanned） → TestSourceEchoAndLabels
 已确认的 prompt 回显行不是诊断，包括 JSON 错误记录和其他 JSON；回显之后的同一记录仍分类 → internal/runner/grok.go:399、grok.go:573（cursor.go:52、kimi.go:112、agy.go:44 经 classifyScanned） → TestSourceEchoAndLabels
 额度终态只接受可追溯的交互转录或 v1 已写会话额度字段；v1 observeNativeGrokGoal 的 Status 与 375 份 goal/state.json 没有额度状态，grokBuildLimitScanText 的无头样本不是该终态，Drive 与 ReadGrokGoalSession 不返回 ErrGrokQuotaHit → internal/runner/grok.go:162、grok.go:198、grok.go:640 → TestGrokInteractiveQuota
-二次核对仍无额度终态：v1 observeNativeGrokGoal 只读 grokNativeGoalStateFile.Status，writeGrokGoalFixture 只写 active/complete/budget_limited/paused/needs-input/failed；isLimitHitGrokBuild 只扫无头样本，testdata/grok_goal_quota_stderr.txt 的 quota exceeded 与 testdata/grok_goal_quota.jsonl 的 HTTP 429 错误记录贴到 PTY 上不是 ErrGrokQuotaHit，没有伪造样本 → internal/runner/grok.go:162、grok.go:198、grok.go:640 → TestGrokInteractiveQuota
+验收准则 2 放弃：observeNativeGrokGoal 只读 grokNativeGoalStateFile.Status，isLimitHitGrokBuild 只扫无头样本；quota exceeded stderr 与 HTTP 429 错误记录贴到 PTY 上不是 ErrGrokQuotaHit，不伪造 fixture → internal/runner/grok.go:162、grok.go:198、grok.go:640 → TestGrokInteractiveQuota

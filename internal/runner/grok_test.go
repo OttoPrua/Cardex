@@ -665,11 +665,13 @@ func TestGrokQuotaAndCrashChannels(t *testing.T) {
 }
 
 // TestGrokInteractiveQuota keeps completion, budget_limited, and the host
-// exit crash distinct. v1 observeNativeGrokGoal reads grokNativeGoalStateFile.Status
-// (workflow_goal.go); that field is not a quota status. quota exceeded is the
-// line fakeGrokBuildCounted writes to headless stderr, and the HTTP 429 object
-// is fakeGrokBuild's streaming-json error. grokBuildLimitScanText scans those
-// headless lines. Drive does not accept either as the quota terminal.
+// exit crash distinct. Acceptance criterion 2 is waived: v1 observeNativeGrokGoal
+// reads grokNativeGoalStateFile.Status (workflow_goal.go), and that field is not
+// a quota status. isLimitHitGrokBuild / grokBuildLimitScanText scan headless
+// output only. quota exceeded is the line fakeGrokBuildCounted writes to headless
+// stderr, and the HTTP 429 object is fakeGrokBuild's streaming-json error.
+// Drive does not accept either as the quota terminal, and this test does not
+// invent one.
 func TestGrokInteractiveQuota(t *testing.T) {
 	const prompt = "finish the card\n"
 	const written = "/goal finish the card\r"

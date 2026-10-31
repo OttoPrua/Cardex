@@ -278,23 +278,33 @@ func TestBlockPushBlocksInheritedPushURLs(t *testing.T) {
 
 func TestBlockPushRefusesLongerPushInsteadOf(t *testing.T) {
 	tests := []struct {
-		name string
-		kind string
+		name       string
+		kind       string
+		configArgs []string
+		pushArgs   []string
 	}{
 		{name: "long prefix direct address", kind: "long-prefix"},
+		{name: "long prefix --signed=false", kind: "long-prefix", pushArgs: []string{"--signed=false"}},
+		{name: "long prefix --no-signed", kind: "long-prefix", pushArgs: []string{"--no-signed"}},
+		{name: "long prefix --signed=if-asked", kind: "long-prefix", pushArgs: []string{"--signed=if-asked"}},
+		{name: "long prefix -c push.gpgSign=false", kind: "long-prefix", configArgs: []string{"-c", "push.gpgSign=false"}},
 		{name: "different long prefix", kind: "other-prefix"},
+		{name: "different long prefix --signed=false", kind: "other-prefix", pushArgs: []string{"--signed=false"}},
+		{name: "different long prefix --no-signed", kind: "other-prefix", pushArgs: []string{"--no-signed"}},
+		{name: "different long prefix --signed=if-asked", kind: "other-prefix", pushArgs: []string{"--signed=if-asked"}},
+		{name: "different long prefix -c push.gpgSign=false", kind: "other-prefix", configArgs: []string{"-c", "push.gpgSign=false"}},
 		{name: "direct bare path", kind: "direct"},
 		{name: "dot", kind: "dot"},
 		{name: "relative path", kind: "relative"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assertLongerPushInsteadOfRefused(t, tc.kind)
+			assertLongerPushInsteadOfRefused(t, tc.kind, tc.configArgs, tc.pushArgs)
 		})
 	}
 }
 
-func assertLongerPushInsteadOfRefused(t *testing.T, kind string) {
+func assertLongerPushInsteadOfRefused(t *testing.T, kind string, configArgs, pushArgs []string) {
 	t.Helper()
 	repo := initRepo(t)
 	bare := filepath.Join(t.TempDir(), "target.git")
@@ -342,6 +352,7 @@ func assertLongerPushInsteadOfRefused(t *testing.T, kind string) {
 	dest := bare
 	newRef := "refs/heads/blocked-new"
 	args := []string{"push", "--no-verify"}
+	args = append(args, pushArgs...)
 	switch kind {
 	case "long-prefix":
 		args = append([]string{"-c", "url." + bare + "/.pushInsteadOf=review-local:"}, args...)
@@ -364,6 +375,11 @@ func assertLongerPushInsteadOfRefused(t *testing.T, kind string) {
 		args = append(args, "nested/bare.git", "HEAD:"+newRef)
 	default:
 		t.Fatalf("unknown kind %s", kind)
+	}
+	if len(configArgs) > 0 {
+		front := make([]string, 0, len(configArgs)+len(args))
+		front = append(front, configArgs...)
+		args = append(front, args...)
 	}
 	if strings.Contains(strings.Join(args, " "), "--dry-run") {
 		t.Fatal("push refusal must be a real push")

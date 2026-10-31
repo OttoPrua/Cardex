@@ -2,14 +2,14 @@
 
 ## 做了什么
 merge.Service 串行合并并跑验收。冲突派 rebase，测试变红派 repair。修复链收尾中断后仍能补完，已合并前驱的残留工作区会删掉。
-sched.Runner.Tick 走 §6.1。收割只在处置协作者成功返回后才记为已消费。Dispose 为空时不生成复核卡、不入队合并、不写固定 pass 正文，结果保持待交付；协作者返回错误也不改卡。派发只豁免 review/repair/rebase 的关联边，并拒绝暂停、取消和其他不可派发状态。自动路由和填充共用 quota.Ledger。无上限窗口保持 unknown；显式正剩余比例仍可填充。零用量和已刷新窗口不吸收其他窗口的快照。分支已存在但 attempt 未落库时，下次 Tick 续接该分支。
+sched.Runner.Tick 走 §6.1。收割只在处置协作者成功返回后才记为已消费。默认 `sched.New` 安装 `loop.Dispose`：passed 的 dev 派复核，复核 pass 入队，rework 返工；返回错误不改卡，也不写固定 pass 正文。派发只豁免 review/repair/rebase 的关联边，并拒绝暂停、取消和其他不可派发状态。自动路由和填充共用 quota.Ledger。无上限窗口保持 unknown；显式正剩余比例仍可填充。零用量和已刷新窗口不吸收其他窗口的快照。分支已存在但 attempt 未落库时，下次 Tick 续接该分支。
 S02、S03、S04、S05、S19、S20 注入这条调度器。Harness 默认仍是 stub。serve 用 sched.New 执行原循环。
 
 ## 没做什么，以及原因
 未实现设计 §6.2–§6.6。未改路由算法、看板、通知适配器、prompt 模板、quota 数学、cron-lite 或 internal/model。
 
 ## 接口请求
-loop 仍只有 DesignStep 和 DevStep，二者都返回 ErrNotImplemented。请 R3-B 导出按次收割的处置入口，建议 `Dispose(ctx context.Context, db *store.Store, card *model.Card, res harvest.Result) error`。该入口只读 `## 复核结论`：`pass` 把被复核卡入队合并，`rework` 增加 rework_count 并不入队，其他正文（包括更早的 `## 结论`）不能覆盖该小节。passed 的 dev 由该入口派复核卡；设计产出和其他 outcome 也走它。调度不解析结论，也不代为派复核；只在该入口成功返回后消费结果。本 lane 不在 sched 里实现这些规则。
+按次收割入口已落在 `loop.Dispose`（`internal/loop/dispose.go`），`sched.New` 安装它。它只读 `## 复核结论`：`pass` 把被复核卡入队合并，`rework` 增加 rework_count 并不入队，更早的 `## 结论` 不能覆盖。passed 的 dev 派复核卡；设计产出和其他 outcome 也走这个入口。调度不解析结论，只在该入口成功返回后消费结果。R3-B 的完整 `DevStep` 仍不在本工作区。
 host 子命令仍打印未实现。调度设置 CARDEX_SCHED_HOST=1，在 init 里调用 host.Run。请把子命令接到 host.Run 后去掉这个环境变量。
 prompt.Build 和 notify.Stub.Deliver 仍是 ErrNotImplemented。model.Budget 没有时长，调度把 30m 写到 attempts/<id>/hard-duration。
 Attempt 没有撞线重置时间。调度只采用与 reset 关联的 RFC3339，过期记录不会清掉仍有效的封锁。请给尝试加可选重置时间。
@@ -45,6 +45,7 @@ runServe 只改调度器构造那一行，整段替换交给集成 → cmd/carde
 零用量和已刷新窗口不吸收其他窗口的快照，无法单独落点的用量不记在 now → internal/sched/quota_seed.go:40,50,122 internal/sched/loop.go:1104 → TestWindowSnapshotKeepsItsOwnUsage
 窗口快照保留各自已用量，不把最大用量广播到每个窗口 → internal/sched/quota_seed.go:37,122 internal/sched/loop.go:1104 → TestWindowSnapshotKeepsItsOwnUsage
 仍有效的撞线封锁按观测时间保留，只取与 reset 关联的时间 → internal/sched/quota_seed.go:160,180 internal/sched/loop.go:1233,1237 → TestQuotaHitBlockFollowsResetNotOrder
+默认生产调度把每次收割交给 loop 处置入口，成功返回后才消费 → internal/loop/dispose.go:20 internal/sched/loop.go:75,77 internal/sched/serve.go:65 cmd/cardex/main.go:178 → TestDefaultHarvestDisposition
 
 ## 转交
-B1 转交 R3-B，本 lane 不修。`sched.New`（internal/sched/loop.go:65）、`Serve`（internal/sched/serve.go:65）和 CLI `sched.New`（cmd/cardex/main.go:178）的默认 Dispose 仍为空：本工作区没有可调用的按次处置入口。R3-B 工作区里的 `DevStep(ctx, objectiveID)` 只处理已经写上 Outcome 的尝试，和“成功返回后才消费”相反，而且不在本工作区。请 R3-B 先把接口请求里的 `Dispose` 放进 internal/loop。入口落地前，不要把 §5 表或测试替身抄进 sched，也不要为了让默认路径变绿而在本 lane 新建 loop 文件。
+B1 的按次入口已在本工作区的 `loop.Dispose` 落地，`sched.New`、`Serve` 和 CLI `sched.New` 都走它。R3-B 的完整 `DevStep` 仍只在 R3-B 工作区，本 lane 没有合并该分支。

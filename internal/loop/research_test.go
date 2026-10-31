@@ -198,6 +198,42 @@ func TestStaleUsesWorkspaceDiff(t *testing.T) {
 	if !find(summary, "可能过期") {
 		t.Fatalf("summary %s", summary)
 	}
+
+	dir := seedNode(t, st, obj.ID, "", model.LayerDirection)
+	dir.OpenQuestions = model.OpenQuestionList{{
+		ID: "Q0", Text: "盘点 目标", Type: model.OQFact, Status: model.OQAnswered,
+		Answer: "旧盘点", Evidence: "file.go:1", Confidence: "高",
+		Commit: base, CitedPaths: []string{"file.go"},
+	}}
+	if err := st.UpdateNode(t.Context(), &dir); err != nil {
+		t.Fatal(err)
+	}
+	seedCard(t, st, obj.ID, dir.ID, model.KindDesign, model.CardDone, "## 子节点\n- [module] 账单\n")
+	if err := designStep(t.Context(), d, obj.ID); err != nil {
+		t.Fatal(err)
+	}
+	dir = nodeOf(t, st, dir.ID)
+	if q := findQ(dir, "Q0"); q.Status != model.OQStale {
+		t.Fatalf("stored Q0 %+v", q)
+	}
+	nodes, err := st.ListNodes(t.Context(), obj.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var childBody string
+	for _, n := range nodes {
+		if n.Parent != dir.ID || n.Layer != model.LayerModule {
+			continue
+		}
+		for _, c := range cardsOf(t, st, obj.ID) {
+			if c.Node == n.ID && c.Kind == model.KindDesign && c.Status == model.CardReady {
+				childBody = c.Body
+			}
+		}
+	}
+	if !find(childBody, "可能过期") || !find(childBody, "盘点 目标") {
+		t.Fatalf("child summary %s", childBody)
+	}
 }
 
 func TestRecheckThenDecision(t *testing.T) {

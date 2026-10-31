@@ -346,14 +346,8 @@ func (d Deps) followResearch(ctx context.Context, obj model.Objective, nodes map
 		switch kind {
 		case model.KindPlan:
 			title = "拆卡"
-			if hasKind(cards, id, model.KindPlan) {
-				continue
-			}
 		case model.KindReplan:
 			title = "重规划"
-			if hasKind(cards, id, model.KindReplan) {
-				continue
-			}
 		}
 		if err := d.createWorkCard(ctx, obj, node, kind, title); err != nil {
 			return err
@@ -428,8 +422,12 @@ func (d Deps) advanceNode(ctx context.Context, obj model.Objective, nodeID strin
 	if node.Status != model.NodeFreezable {
 		return nil
 	}
+	blocked := nodeBlocked(node)
 	switch decideFreeze(node.Layer, obj.FreezeMode) {
 	case freezeNow:
+		if blocked {
+			return nil
+		}
 		return d.freezeNode(ctx, obj, node)
 	case freezeAsk:
 		q, ok := freezeQuestion(questions, node.ID)
@@ -447,10 +445,10 @@ func (d Deps) advanceNode(ctx context.Context, obj model.Objective, nodeID strin
 			}
 			q = created
 		}
-		if consented(q) {
-			return d.freezeNode(ctx, obj, node)
+		if blocked || !consented(q) {
+			return nil
 		}
-		return nil
+		return d.freezeNode(ctx, obj, node)
 	case freezeReview:
 		if !hasKind(cards, node.ID, model.KindReview) {
 			if err := d.addCard(ctx, obj, &model.Card{
@@ -469,10 +467,10 @@ func (d Deps) advanceNode(ctx context.Context, obj model.Objective, nodeID strin
 		if err != nil {
 			return err
 		}
-		if ok {
-			return d.freezeNode(ctx, obj, node)
+		if blocked || !ok {
+			return nil
 		}
-		return nil
+		return d.freezeNode(ctx, obj, node)
 	default:
 		return nil
 	}

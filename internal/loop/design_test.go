@@ -578,3 +578,155 @@ func TestTagsSpikeAndReopen(t *testing.T) {
 		t.Fatal("missing replan")
 	}
 }
+
+func TestFollowResearchDeliversFactSummary(t *testing.T) {
+	for _, tc := range []struct {
+		status model.NodeStatus
+		kind   model.CardKind
+		fact   string
+	}{
+		{model.NodeFrozen, model.KindPlan, "拆卡后才发现的事实"},
+		{model.NodeReopened, model.KindReplan, "重规划后才发现的事实"},
+	} {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			st := openLoop(t)
+			obj := seedObjective(t, st, "", model.ModeAuto, model.FreezeSafe)
+			node := seedNode(t, st, obj.ID, "", model.LayerModule)
+			node.Status = tc.status
+			if err := st.UpdateNode(t.Context(), &node); err != nil {
+				t.Fatal(err)
+			}
+			first := seedCard(t, st, obj.ID, node.ID, tc.kind, model.CardDone, "## 开放问题\n- [fact] "+tc.fact+"\n")
+			if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+				t.Fatal(err)
+			}
+			researchID := readyKind(t, st, obj.ID, node.ID, model.KindResearch)
+			finishCard(t, st, researchID, "## 事实\n### Q1\n结论：已核实\n证据：keep.go:1\n把握：高\n")
+			if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+				t.Fatal(err)
+			}
+			var follow model.Card
+			n := 0
+			for _, c := range cardsOf(t, st, obj.ID) {
+				if c.Node != node.ID || c.Kind != tc.kind || c.Status != model.CardReady {
+					continue
+				}
+				n++
+				follow = c
+			}
+			if n != 1 || follow.ID == first.ID || !find(follow.Body, "## 事实摘要") || !find(follow.Body, tc.fact) {
+				t.Fatalf("follow-up %+v count %d", follow, n)
+			}
+			if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+				t.Fatal(err)
+			}
+			again := 0
+			for _, c := range cardsOf(t, st, obj.ID) {
+				if c.Node == node.ID && c.Kind == tc.kind && c.Status == model.CardReady {
+					again++
+				}
+			}
+			if again != 1 {
+				t.Fatalf("ready %s cards %d", tc.kind, again)
+			}
+		})
+	}
+}
+
+func TestConsentDoesNotFreezeWhileBlocked(t *testing.T) {
+	t.Run("consent", func(t *testing.T) {
+		st := openLoop(t)
+		obj := seedObjective(t, st, "", model.ModeAuto, model.FreezeSafe)
+		node := seedNode(t, st, obj.ID, "", model.LayerModule)
+		seedCard(t, st, obj.ID, node.ID, model.KindDesign, model.CardDone, "## 可冻结\n是\n")
+		if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		if nodeOf(t, st, node.ID).Status != model.NodeFreezable {
+			t.Fatal("module did not become freezable")
+		}
+		var fq model.Question
+		for _, q := range questionsOf(t, st, obj.ID) {
+			if q.Kind == model.QuestionFreeze && q.Scope == node.ID {
+				fq = q
+			}
+		}
+		if fq.ID == "" || len(fq.Options) == 0 {
+			t.Fatal("missing freeze question")
+		}
+		seedCard(t, st, obj.ID, node.ID, model.KindDesign, model.CardDone, "## 开放问题\n- 接口要不要改\n")
+		if _, err := question.New(st, nil).Answer(t.Context(), fq.ID, fq.Options[0]); err != nil {
+			t.Fatal(err)
+		}
+		if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		got := nodeOf(t, st, node.ID)
+		if got.Status == model.NodeFrozen {
+			t.Fatal("froze while a decision was open")
+		}
+		open := false
+		for _, q := range got.OpenQuestions {
+			if q.Type == model.OQDecision && q.Status == model.OQOpen {
+				open = true
+			}
+		}
+		if !open {
+			t.Fatalf("decision missing %+v", got.OpenQuestions)
+		}
+	})
+	t.Run("fast", func(t *testing.T) {
+		st := openLoop(t)
+		obj := seedObjective(t, st, "", model.ModeAuto, model.FreezeSafe)
+		node := seedNode(t, st, obj.ID, "", model.LayerModule)
+		seedCard(t, st, obj.ID, node.ID, model.KindDesign, model.CardDone, "## 可冻结\n是\n")
+		if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		if nodeOf(t, st, node.ID).Status != model.NodeFreezable {
+			t.Fatal("module did not become freezable")
+		}
+		seedCard(t, st, obj.ID, node.ID, model.KindDesign, model.CardDone, "## 开放问题\n- [fact] 还在查的事实\n")
+		obj.FreezeMode = model.FreezeFast
+		if err := st.UpdateObjective(t.Context(), &obj); err != nil {
+			t.Fatal(err)
+		}
+		if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		got := nodeOf(t, st, node.ID)
+		if got.Status == model.NodeFrozen {
+			t.Fatal("fast froze while a fact was researching")
+		}
+		researching := false
+		for _, q := range got.OpenQuestions {
+			if q.Type == model.OQFact && q.Status == model.OQResearching {
+				researching = true
+			}
+		}
+		if !researching {
+			t.Fatalf("fact not researching %+v", got.OpenQuestions)
+		}
+	})
+	t.Run("review", func(t *testing.T) {
+		st := openLoop(t)
+		obj := seedObjective(t, st, "", model.ModeAuto, model.FreezeSafe)
+		node := seedNode(t, st, obj.ID, "", model.LayerDetail)
+		seedCard(t, st, obj.ID, node.ID, model.KindDesign, model.CardDone, "## 可冻结\n是\n")
+		if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		if nodeOf(t, st, node.ID).Status != model.NodeFreezable {
+			t.Fatal("detail did not become freezable")
+		}
+		reviewID := readyKind(t, st, obj.ID, node.ID, model.KindReview)
+		seedCard(t, st, obj.ID, node.ID, model.KindDesign, model.CardDone, "## 开放问题\n- 接口要不要改\n")
+		finishCard(t, st, reviewID, "## 复核结论\npass\n")
+		if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		if nodeOf(t, st, node.ID).Status == model.NodeFrozen {
+			t.Fatal("review pass froze while a decision was open")
+		}
+	})
+}

@@ -203,6 +203,12 @@ func (d Deps) factList(ctx context.Context, obj model.Objective, node model.Desi
 		out = append(out, q)
 	}
 	if ok {
+		if err := d.markStale(ctx, obj, &dir); err != nil {
+			return nil, err
+		}
+		if err := d.Store.UpdateNode(ctx, &dir); err != nil {
+			return nil, err
+		}
 		for _, q := range dir.OpenQuestions {
 			if q.ID == "Q0" {
 				add(q)

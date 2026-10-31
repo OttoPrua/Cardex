@@ -688,7 +688,7 @@ func unfinishedResearch(cards []model.Card, nodeID string) bool {
 
 func activeWork(cards []model.Card, nodeID string) bool {
 	for _, c := range cards {
-		if c.Node != nodeID || terminalCard(c.Status) {
+		if c.Node != nodeID || terminalCard(c.Status) || c.Status == model.CardPaused {
 			continue
 		}
 		switch c.Kind {

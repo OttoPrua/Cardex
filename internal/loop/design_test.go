@@ -633,6 +633,89 @@ func TestFollowResearchDeliversFactSummary(t *testing.T) {
 	}
 }
 
+func TestPausedPlanDoesNotBlockReplanSummary(t *testing.T) {
+	st := openLoop(t)
+	obj := seedObjective(t, st, "", model.ModeAuto, model.FreezeSafe)
+	node := seedNode(t, st, obj.ID, "", model.LayerModule)
+	seedCard(t, st, obj.ID, node.ID, model.KindDesign, model.CardDone, "## 可冻结\n是\n")
+	if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+		t.Fatal(err)
+	}
+	var fq model.Question
+	for _, q := range questionsOf(t, st, obj.ID) {
+		if q.Kind == model.QuestionFreeze && q.Scope == node.ID {
+			fq = q
+		}
+	}
+	if fq.ID == "" || len(fq.Options) == 0 {
+		t.Fatal("missing freeze question")
+	}
+	if _, err := question.New(st, nil).Answer(t.Context(), fq.ID, fq.Options[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+		t.Fatal(err)
+	}
+	if nodeOf(t, st, node.ID).Status != model.NodeFrozen {
+		t.Fatal("module did not freeze")
+	}
+	planID := readyKind(t, st, obj.ID, node.ID, model.KindPlan)
+	seedCard(t, st, obj.ID, node.ID, model.KindDev, model.CardDone, "## 设计问题\n接口不一致\n")
+	if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+		t.Fatal(err)
+	}
+	if nodeOf(t, st, node.ID).Status == model.NodeReopened {
+		t.Fatal("reopened before consent")
+	}
+	var reopen model.Question
+	for _, q := range questionsOf(t, st, obj.ID) {
+		if q.Kind == model.QuestionReopen && q.Scope == node.ID {
+			reopen = q
+		}
+	}
+	if reopen.ID == "" || len(reopen.Options) == 0 {
+		t.Fatal("missing reopen question")
+	}
+	if _, err := question.New(st, nil).Answer(t.Context(), reopen.ID, reopen.Options[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+		t.Fatal(err)
+	}
+	if nodeOf(t, st, node.ID).Status != model.NodeReopened {
+		t.Fatal("not reopened")
+	}
+	if got, err := st.GetCard(t.Context(), planID); err != nil || got.Status != model.CardPaused {
+		t.Fatalf("plan not paused %+v %v", got, err)
+	}
+	replanID := readyKind(t, st, obj.ID, node.ID, model.KindReplan)
+	const fact = "重开后要核实的事实"
+	finishCard(t, st, replanID, "## 开放问题\n- [fact] "+fact+"\n")
+	if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+		t.Fatal(err)
+	}
+	researchID := readyKind(t, st, obj.ID, node.ID, model.KindResearch)
+	finishCard(t, st, researchID, "## 事实\n### Q1\n结论：已核实\n证据：keep.go:1\n把握：高\n")
+	if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
+		t.Fatal(err)
+	}
+	var follow model.Card
+	n := 0
+	for _, c := range cardsOf(t, st, obj.ID) {
+		if c.Node != node.ID || c.Kind != model.KindReplan || c.Status != model.CardReady {
+			continue
+		}
+		n++
+		follow = c
+	}
+	if n != 1 || follow.ID == replanID || !find(follow.Body, "## 事实摘要") || !find(follow.Body, fact) {
+		t.Fatalf("replan summary %+v count %d", follow, n)
+	}
+	if got, err := st.GetCard(t.Context(), planID); err != nil || got.Status != model.CardPaused {
+		t.Fatalf("paused plan changed %+v %v", got, err)
+	}
+}
+
 func TestConsentDoesNotFreezeWhileBlocked(t *testing.T) {
 	t.Run("consent", func(t *testing.T) {
 		st := openLoop(t)

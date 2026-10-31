@@ -201,10 +201,11 @@ func (Git) Remove(ctx context.Context, worktree string) error {
 // BlockPush turns on per-worktree config, points core.hooksPath at the
 // Cardex reject-all hook, and sets every remote pushurl to an invalid
 // address. Inherited pushurls stay in the effective list, and --no-verify
-// skips the hook. Those pushes are rejected by this worktree's receivepack.
-// Push URLs that are not an explicit pushurl are rewritten with
-// pushInsteadOf, which does not apply to fetch or ls-remote. protocol.allow
-// is left unset: denying a transport also rejects reads.
+// skips the hook. A push that names a URL directly, including "." and a
+// relative path, is rewritten by an empty pushInsteadOf. That rewrite is
+// ignored when a remote already has a pushurl, and http(s) ignores
+// receivepack, so those pushurls are rewritten with insteadOf. insteadOf
+// does not apply to a local fetch URL. protocol.allow is left unset.
 // Push-related keys in the main repository config are left alone.
 func (Git) BlockPush(ctx context.Context, worktree string) error {
 	if strings.TrimSpace(worktree) == "" {
@@ -226,11 +227,17 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 	if _, err := runGit(ctx, worktree, "config", "--worktree", "core.hooksPath", abs); err != nil {
 		return err
 	}
-	// pushInsteadOf is ignored for a remote that already has a pushurl, so it
-	// only covers a push that names a URL directly. It does not rewrite fetches.
-	for _, prefix := range pushOnlyPrefixes {
-		key := "url." + blockedPushURL + "/.pushInsteadOf"
-		if _, err := runGit(ctx, worktree, "config", "--worktree", "--add", key, prefix); err != nil {
+	// An empty prefix matches every push URL, including "." and "nested/bare.git".
+	// Fetch does not consult pushInsteadOf.
+	if _, err := runGit(ctx, worktree, "config", "--worktree", "--add", "url."+blockedPushURL+"/.pushInsteadOf", ""); err != nil {
+		return err
+	}
+	// pushInsteadOf does not apply to an explicit pushurl. http(s) also
+	// ignores receivepack, so rewrite those schemes on every operation that
+	// uses the URL. Local paths are not in this list, so fetch and ls-remote
+	// of a local remote stay intact.
+	for _, prefix := range httpPushSchemes {
+		if _, err := runGit(ctx, worktree, "config", "--worktree", "--add", "url."+blockedPushURL+"/.insteadOf", prefix); err != nil {
 			return err
 		}
 	}
@@ -258,17 +265,13 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 
 const blockedPushURL = "invalid://cardex.blocked/push"
 
-// pushOnlyPrefixes are URL forms rewritten only when pushing.
-var pushOnlyPrefixes = []string{
-	"/",
-	"file://",
-	"git://",
-	"ssh://",
-	"http://",
+// httpPushSchemes ignore remote.<name>.receivepack. Rewriting them stops an
+// inherited pushurl of that scheme from being contacted.
+var httpPushSchemes = []string{
 	"https://",
+	"http://",
 	"ftp://",
 	"ftps://",
-	"git@",
 }
 
 func excludeResultFile(ctx context.Context, worktree string) error {

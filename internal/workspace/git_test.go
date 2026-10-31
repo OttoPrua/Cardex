@@ -2,10 +2,12 @@ package workspace
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -281,6 +283,23 @@ func assertInheritedPushBlocked(t *testing.T, pushCounts []int) {
 	if len(pushCounts) > len(names) {
 		t.Fatalf("too many remotes")
 	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var httpsHits atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			httpsHits.Add(1)
+			c.Close()
+		}
+	}()
+	httpsPush := "https://" + ln.Addr().String() + "/repo.git"
 	type target struct {
 		remote string
 		bares  []string
@@ -296,6 +315,7 @@ func assertInheritedPushBlocked(t *testing.T, pushCounts []int) {
 			tg.bares = append(tg.bares, bare)
 		}
 		gitRun(t, repo, "remote", "add", name, tg.bares[0])
+		gitRun(t, repo, "config", "--local", "--add", "remote."+name+".pushurl", httpsPush)
 		for _, bare := range tg.bares {
 			gitRun(t, repo, "config", "--local", "--add", "remote."+name+".pushurl", bare)
 			gitRun(t, repo, "push", bare, "HEAD:refs/heads/probe")
@@ -371,6 +391,24 @@ func assertInheritedPushBlocked(t *testing.T, pushCounts []int) {
 			t.Fatalf("%s created direct-new\n%s", tg.bares[0], out)
 		}
 	}
+	assertDirectPushRefused(t, wt.Path, ".", "refs/heads/from-dot")
+	relBare := filepath.Join(wt.Path, "nested", "bare.git")
+	gitRun(t, "", "init", "--bare", relBare)
+	// The worktree rewrites every push. Seed this bare from the main repo,
+	// which does not carry that rewrite.
+	head := gitOut(t, wt.Path, "rev-parse", "HEAD")
+	gitRun(t, repo, "push", relBare, head+":refs/heads/probe")
+	relSeed := gitOut(t, relBare, "rev-parse", "refs/heads/probe")
+	assertDirectPushRefused(t, wt.Path, "nested/bare.git", "refs/heads/from-rel")
+	if got := gitOut(t, relBare, "rev-parse", "refs/heads/probe"); got != relSeed {
+		t.Fatalf("relative bare probe moved %s -> %s", relSeed, got)
+	}
+	if _, missing := gitOptional(relBare, "rev-parse", "--verify", "refs/heads/from-rel"); missing == nil {
+		t.Fatal("relative bare created from-rel")
+	}
+	if hits := httpsHits.Load(); hits != 0 {
+		t.Fatalf("https pushurl was contacted %d times", hits)
+	}
 
 	for _, tg := range targets {
 		urlAfter := gitOut(t, repo, "config", "--local", "--get", "remote."+tg.remote+".url")
@@ -389,6 +427,22 @@ func assertInheritedPushBlocked(t *testing.T, pushCounts []int) {
 		if _, err := gitOptional(repo, "config", "--local", "--get", key); err == nil {
 			t.Fatalf("main repo %s was set", key)
 		}
+	}
+}
+
+func assertDirectPushRefused(t *testing.T, dir, url, ref string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "push", "--no-verify", url, "HEAD:"+ref)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("git push %s succeeded:\n%s", url, out)
+	}
+	if strings.Contains(string(out), "not allowed") {
+		t.Fatalf("git push %s protocol denial:\n%s", url, out)
+	}
+	if _, missing := gitOptional(dir, "rev-parse", "--verify", ref); missing == nil {
+		t.Fatalf("push %s created %s\n%s", url, ref, out)
 	}
 }
 

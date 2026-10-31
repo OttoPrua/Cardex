@@ -10,6 +10,7 @@ import (
 
 const (
 	evAbsorbed   = "loop.absorbed"
+	evContinued  = "loop.continued"
 	evResearch   = "loop.research"
 	evFreezable  = "loop.freezable"
 	evReviewPass = "loop.review_pass"
@@ -519,14 +520,11 @@ func passedReview(section string) bool {
 	return strings.EqualFold(first, "pass") || first == "通过"
 }
 
-// freezePassAllowed is the freeze-pass gate. A failed or canceled review,
-// and any attempt outcome other than passed, cannot freeze the node.
-// An empty outcome still counts only for an already done or merged card,
-// which is how existing terminal absorption records a pass.
+// freezePassAllowed is the freeze-pass gate. The attempt outcome decides.
+// A later passed attempt may freeze even when the card is still failed or
+// canceled. An empty outcome counts only for an already done or merged card.
+// Every other outcome cannot freeze the node.
 func freezePassAllowed(status model.CardStatus, outcome model.Outcome) bool {
-	if status == model.CardFailed || status == model.CardCanceled {
-		return false
-	}
 	switch outcome {
 	case model.OutcomePassed:
 		return true

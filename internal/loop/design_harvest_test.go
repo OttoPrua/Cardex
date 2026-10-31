@@ -295,7 +295,7 @@ func TestAbsorbBindsDisposedAttempt(t *testing.T) {
 		}
 	})
 
-	t.Run("design unparsable becomes needs_input", func(t *testing.T) {
+	t.Run("ready normalize waits", func(t *testing.T) {
 		st, obj, node, card := designWithOlderFile(t)
 		if err := st.CreateCard(t.Context(), &model.Card{
 			Objective: obj.ID, Node: node.ID, Kind: model.KindNormalize, Title: "整理",
@@ -312,8 +312,11 @@ func TestAbsorbBindsDisposedAttempt(t *testing.T) {
 		if questionText(n, "旧问题不该出现") || questionText(n, "解析失败的问题") {
 			t.Fatalf("absorbed unparsable design %+v", n.OpenQuestions)
 		}
-		if got := cardStatus(t, st, card.ID); got != model.CardNeedsInput {
+		if got := cardStatus(t, st, card.ID); got == model.CardNeedsInput || got == model.CardDone {
 			t.Fatalf("status %s", got)
+		}
+		if hasAbsorbed(t, st, card.ID) {
+			t.Fatal("consumed while normalize is still ready")
 		}
 	})
 
@@ -506,12 +509,22 @@ func cardStatus(t *testing.T, st *store.Store, id string) model.CardStatus {
 
 func hasReviewPass(t *testing.T, st *store.Store, cardID string) bool {
 	t.Helper()
-	ev, err := st.ListEvents(t.Context(), "card:"+cardID)
+	return hasEventType(t, st, "card:"+cardID, evReviewPass)
+}
+
+func hasAbsorbed(t *testing.T, st *store.Store, cardID string) bool {
+	t.Helper()
+	return hasEventType(t, st, "card:"+cardID, evAbsorbed)
+}
+
+func hasEventType(t *testing.T, st *store.Store, entity, typ string) bool {
+	t.Helper()
+	ev, err := st.ListEvents(t.Context(), entity)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, e := range ev {
-		if e.Type == evReviewPass {
+		if e.Type == typ {
 			return true
 		}
 	}

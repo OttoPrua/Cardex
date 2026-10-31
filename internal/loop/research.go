@@ -34,6 +34,9 @@ func (d Deps) repoPath(ctx context.Context, obj model.Objective) (string, error)
 }
 
 func (d Deps) dispatchResearch(ctx context.Context, obj model.Objective) error {
+	if obj.Mode != model.ModeAuto {
+		return nil
+	}
 	nodes, err := d.Store.ListNodes(ctx, obj.ID)
 	if err != nil {
 		return err
@@ -120,11 +123,18 @@ func (d Deps) absorbResearch(ctx context.Context, obj model.Objective, card mode
 	if err := d.Store.UpdateNode(ctx, &node); err != nil {
 		return err
 	}
-	if card.Status != model.CardDone {
-		card.Status = model.CardDone
-		if err := d.Store.UpdateCard(ctx, &card); err != nil {
+	fresh, err := d.Store.GetCard(ctx, card.ID)
+	if err != nil {
+		return err
+	}
+	if fresh.Status != model.CardDone && fresh.Status != model.CardMerged && fresh.Status != model.CardMergeQueued {
+		fresh.Status = model.CardDone
+		if err := d.Store.UpdateCard(ctx, &fresh); err != nil {
 			return err
 		}
+	}
+	if node.Status == model.NodeFrozen {
+		return nil
 	}
 	return d.markAbsorbed(ctx, card.ID, nil)
 }
@@ -194,23 +204,23 @@ func (d Deps) markStale(ctx context.Context, obj model.Objective, n *model.Desig
 	return nil
 }
 
-func (d Deps) harvested(ctx context.Context, card model.Card) (string, string, model.Outcome, error) {
+func (d Deps) harvested(ctx context.Context, card model.Card) (string, string, model.Outcome, string, error) {
 	if d.Store == nil {
-		return "", "", "", nil
+		return "", "", "", "", nil
 	}
 	attempts, err := d.Store.ListAttempts(ctx, card.ID)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	cur := currentAttempt(attempts)
 	if cur == nil {
-		return "", "", "", nil
+		return "", "", "", "", nil
 	}
 	text, err := attemptResult(cur.Worktree)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
-	return text, cur.BaseCommit, cur.Outcome, nil
+	return text, cur.BaseCommit, cur.Outcome, cur.ID, nil
 }
 
 // currentAttempt is the attempt under disposal: the highest index.

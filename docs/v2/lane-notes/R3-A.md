@@ -28,8 +28,8 @@ B1 收割原文在清理前按本次尝试吸收，盘点不必先变成终态�
 B6 safe/detail 复核卡 Deps[0] 指向当前设计卡，AuthorFamily 取该设计，非本版本通过不冻结 → `internal/loop/design.go:534` → `TestReviewTracksCurrentDesign`
 B7 撤回 api.go，DesignStep 与 DevStep 保持 ErrNotImplemented，设计期走 New 的 Step → `internal/loop/api.go:24` `design.go:32` → `TestDesignStepNeedsStoreAndDevStaysOpen`
 B8 只读被处置的尝试；缺失或不完整的设计改为整理或 needs_input；失败、取消、violation 不记冻结通过 → `internal/loop/research.go:218` `design.go:1139` `design.go:1152` `design.go:273` `design_parse.go:526` → `TestAbsorbBindsDisposedAttempt`
-B1 冻结节点的研究全部结束后才建一张带事实摘要的拆卡，拆卡存在后才消费研究完成，收割把研究卡写成 done → `internal/loop/design.go:54` `design.go:106` `design.go:1289` `design.go:1381` `research.go:130` `research.go:136` `design_parse.go:13` → `TestFrozenResearchSuccessorPlan`
+B1 冻结节点的研究全部结束且每个终态尝试已处理或跳过后才建一张带事实摘要的拆卡，作废的最后一次收割也建这张卡且不写入作废结果 → `internal/loop/design.go:54` `design.go:1325` `design.go:1381` `design.go:1409` `design.go:1461` `research.go:130` `research.go:136` `design_parse.go:13` → `TestFrozenResearchSuccessorPlan`
 B8 消费按尝试而不是按卡；transport、失败、取消、violation 不产生成功副作用，后来的 passed 仍生效，同一尝试不重复施加 → `internal/loop/design.go:1231` `design.go:1311` `design_parse.go:527` → `TestAttemptScopedConsumption`
-B9 可解析的 design、plan、replan 不等于已合入；merge_queued 和 merged 保持不变，节点文档或上下文包未合入时不标 done、不派下一张 → `internal/loop/design.go:363` `design.go:1196` `design.go:1490` → `TestParsedOutputWaitsForMerge`
-B10 空或 result_unparsable 的 design、plan、replan 只建一张整理卡；未结束不标 needs_input、不消费，失败后才 needs_input，通过的提取吸收到源卡 → `internal/loop/design.go:1143` `design.go:1339` → `TestNormalizeRecovery`
+B9 可解析的 design、plan、replan 不等于已合入；merge_queued 和 merged 保持不变，节点文档或上下文包未合入时不标 done、不派下一张 → `internal/loop/design.go:363` `design.go:1196` `design.go:1524` → `TestParsedOutputWaitsForMerge`
+B10 空或 result_unparsable 的 design、plan、replan 只建一张整理卡；未结束不标 needs_input、不消费，失败后才 needs_input，通过的提取吸收到源卡 → `internal/loop/design.go:1143` `design.go:1342` → `TestNormalizeRecovery`
 B11 mode=manual 时收割和 Step 都不创建设计期节点或 design、plan、replan、research、spike 卡 → `internal/loop/research.go:37` `design.go:286` `design.go:311` `design.go:645` `design.go:696` `design.go:734` `design.go:774` → `TestManualHarvestRefusesDesignPhase`

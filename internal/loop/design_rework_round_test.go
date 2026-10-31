@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -32,7 +33,7 @@ func TestFrozenResearchSuccessorPlan(t *testing.T) {
 				t.Fatalf("stored status %s", cardStatus(t, st, research.ID))
 			}
 			plans := readyCards(t, st, obj.ID, node.ID, model.KindPlan)
-			if len(plans) != 1 || !strings.Contains(plans[0].Body, "## 事实摘要") || !strings.Contains(plans[0].Body, fact) || !strings.Contains(plans[0].Body, "8787") {
+			if len(plans) != 1 || summaryAnswers(t, plans[0].Body)["Q1"] != "8787" {
 				t.Fatalf("plans %+v", plans)
 			}
 			if !hasEventType(t, st, "card:"+research.ID, evContinued) {
@@ -57,7 +58,11 @@ func TestFrozenResearchSuccessorPlan(t *testing.T) {
 			t.Fatal(err)
 		}
 		plans := readyCards(t, st, obj.ID, node.ID, model.KindPlan)
-		if len(plans) != 1 || !strings.Contains(plans[0].Body, "第一件事实") || !strings.Contains(plans[0].Body, "第二件事实") {
+		answers := map[string]string{}
+		if len(plans) == 1 {
+			answers = summaryAnswers(t, plans[0].Body)
+		}
+		if len(plans) != 1 || answers["Q1"] != "甲" || answers["Q2"] != "乙" {
 			t.Fatalf("plans %+v", plans)
 		}
 		if !hasEventType(t, st, "card:"+first.ID, evContinued) || !hasEventType(t, st, "card:"+second.ID, evContinued) {
@@ -70,6 +75,62 @@ func TestFrozenResearchSuccessorPlan(t *testing.T) {
 			t.Fatal("step created a second plan")
 		}
 	})
+
+	t.Run("step waits until every done research is absorbed", func(t *testing.T) {
+		st, obj, node := frozenNode(t)
+		first := seedFactResearch(t, st, obj.ID, node.ID, "Q1", "第一件事实")
+		second := seedFactResearch(t, st, obj.ID, node.ID, "Q2", "第二件事实")
+		finishCard(t, st, first.ID, "## 事实\n### Q1\n结论：甲\n证据：a.go:1\n把握：高\n")
+		finishCard(t, st, second.ID, "## 事实\n### Q2\n结论：乙\n证据：b.go:1\n把握：高\n")
+		if err := loopStep(t, depsOf(st), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		plans := readyCards(t, st, obj.ID, node.ID, model.KindPlan)
+		answers := map[string]string{}
+		if len(plans) == 1 {
+			answers = summaryAnswers(t, plans[0].Body)
+		}
+		if len(plans) != 1 || answers["Q1"] != "甲" || answers["Q2"] != "乙" {
+			t.Fatalf("plans %+v", plans)
+		}
+	})
+
+	for _, tc := range []struct {
+		name    string
+		status  model.CardStatus
+		outcome model.Outcome
+	}{
+		{name: "canceled", status: model.CardCanceled},
+		{name: "failed", status: model.CardFailed, outcome: model.OutcomeTestsFailed},
+	} {
+		t.Run("void harvest finishes research/"+tc.name, func(t *testing.T) {
+			st, obj, node := frozenNode(t)
+			first := seedFactResearch(t, st, obj.ID, node.ID, "Q1", "第一件事实")
+			second := seedFactResearch(t, st, obj.ID, node.ID, "Q2", "第二件事实")
+			absorbText(t, st, first.ID, 0, model.OutcomePassed, "## 事实\n### Q1\n结论：甲\n证据：a.go:1\n把握：高\n")
+			if readyCards(t, st, obj.ID, node.ID, model.KindPlan) != nil {
+				t.Fatal("plan before the last research attempt was harvested")
+			}
+			if err := setCardStatus(t, st, second.ID, tc.status); err != nil {
+				t.Fatal(err)
+			}
+			absorbText(t, st, second.ID, 0, tc.outcome, "## 事实\n### Q2\n结论：不该写入\n证据：b.go:1\n把握：高\n")
+			plans := readyCards(t, st, obj.ID, node.ID, model.KindPlan)
+			answers := map[string]string{}
+			if len(plans) == 1 {
+				answers = summaryAnswers(t, plans[0].Body)
+			}
+			if len(plans) != 1 || answers["Q1"] != "甲" || answers["Q2"] == "不该写入" {
+				t.Fatalf("plans %+v", plans)
+			}
+			if findQ(nodeOf(t, st, node.ID), "Q2").Answer != "" {
+				t.Fatal("void attempt wrote a fact answer")
+			}
+			if !hasEventType(t, st, "card:"+first.ID, evContinued) || !hasEventType(t, st, "card:"+second.ID, evContinued) {
+				t.Fatal("research completion was not consumed after the plan existed")
+			}
+		})
+	}
 }
 
 func TestAttemptScopedConsumption(t *testing.T) {
@@ -638,6 +699,24 @@ func setCardStatus(t *testing.T, st *store.Store, id string, status model.CardSt
 	}
 	card.Status = status
 	return st.UpdateCard(t.Context(), &card)
+}
+
+func summaryAnswers(t *testing.T, body string) map[string]string {
+	t.Helper()
+	const heading = "## 事实摘要\n"
+	i := strings.Index(body, heading)
+	if i < 0 {
+		t.Fatalf("no fact summary in %s", body)
+	}
+	var facts []model.OpenQuestion
+	if err := json.Unmarshal([]byte(strings.TrimSpace(body[i+len(heading):])), &facts); err != nil {
+		t.Fatalf("summary json: %v\n%s", err, body)
+	}
+	out := map[string]string{}
+	for _, q := range facts {
+		out[q.ID] = q.Answer
+	}
+	return out
 }
 
 func readyCards(t *testing.T, st *store.Store, objective, node string, kind model.CardKind) []model.Card {

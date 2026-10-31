@@ -1319,7 +1319,10 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 		}
 	}
 	if skippedOutcome(outcome, card.Status) {
-		return d.markAttempt(ctx, attemptID)
+		if err := d.markAttempt(ctx, attemptID); err != nil {
+			return err
+		}
+		return d.settleFrozenResearch(ctx, obj)
 	}
 	switch card.Kind {
 	case model.KindResearch:
@@ -1403,6 +1406,13 @@ func (d Deps) settleFrozenResearch(ctx context.Context, obj model.Objective) err
 		if len(research) == 0 || unfinishedResearch(cards, node.ID) {
 			continue
 		}
+		settled, err := d.researchSettled(ctx, research)
+		if err != nil {
+			return err
+		}
+		if !settled {
+			continue
+		}
 		pending := false
 		for _, c := range research {
 			continued, err := d.hasEvent(ctx, "card:"+c.ID, evContinued)
@@ -1443,6 +1453,30 @@ func (d Deps) settleFrozenResearch(ctx context.Context, obj model.Objective) err
 		}
 	}
 	return nil
+}
+
+// researchSettled is true once every terminal research card's current attempt
+// has been handled or skipped. The successor plan waits for that, so its fact
+// summary includes every sibling result. A card with no attempt has nothing left to apply.
+func (d Deps) researchSettled(ctx context.Context, cards []model.Card) (bool, error) {
+	for _, c := range cards {
+		_, _, outcome, attemptID, err := d.harvested(ctx, c)
+		if err != nil {
+			return false, err
+		}
+		if strings.TrimSpace(attemptID) == "" {
+			continue
+		}
+		handled, err := d.attemptHandled(ctx, attemptID)
+		if err != nil {
+			return false, err
+		}
+		if handled || skippedOutcome(outcome, c.Status) {
+			continue
+		}
+		return false, nil
+	}
+	return true, nil
 }
 
 func readyFollow(cards []model.Card, nodeID string, kind model.CardKind) bool {

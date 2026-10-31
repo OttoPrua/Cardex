@@ -24,4 +24,10 @@ func (Stub) Step(context.Context, string) error { return ErrNotImplemented }
 func DesignStep(ctx context.Context, objectiveID string) error { return ErrNotImplemented }
 
 // DevStep is the development-phase entry R3-B owns.
-func DevStep(ctx context.Context, objectiveID string) error { return ErrNotImplemented }
+// DevStep is the development-phase entry R3-B owns.
+// One call disposes the objective's harvested attempts. A second call on the
+// same stored state does not create another card, question, notification, or
+// channel change. The store is $CARDEX_HOME/cardex.db.
+func DevStep(ctx context.Context, objectiveID string) error {
+	return devStep(ctx, objectiveID)
+}

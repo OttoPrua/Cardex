@@ -21,7 +21,7 @@ goal 的完成和 budget_limited 只从会话文件读取，PTY Read 阻塞时�
 终态只认该模式实际提供的通道：完成和 budget_limited 只认会话文件，额度不把无头 error JSON 当交互样本，崩溃只认宿主 WaitStatus，PTY 正文 signal: killed 不算 → internal/runner/grok.go:56、grok.go:163 → TestGrokQuotaAndCrashChannels、TestGrokDriveSessionAfterReadStarts
 正文、任务回显和嵌套业务字段不是终态或错误类，goal status 只读 goal_updated 的 params.update.status → internal/runner/grok.go:240、grok.go:340、grok.go:524（cursor.go:52、kimi.go:112、agy.go:44 经 classifyScanned） → TestBodyEchoNestedAreNotFacts
 自动权限只覆盖顶层 default_permission_mode 与 default_plan_mode，保留宿主已写入的其余 config.toml → internal/runner/kimi.go:62、kimi.go:77 → TestKimiAutoPermissionConfig
-交互 grok 额度是整行预流/stderr 诊断 quota exceeded，Drive 认成 ErrGrokQuotaHit；完成仍是一致会话的 nil，budget_limited 仍是另一种会话错误，崩溃仍只认信号 3、6、9、10、11 → internal/runner/grok.go:192、grok.go:206、grok.go:335、grok.go:559、grok.go:56 → TestGrokInteractiveQuota
+准则 1 仍未完成：没有可引用的交互额度事实，Drive 与 ReadGrokGoalSession 不返回 ErrGrokQuotaHit，没有伪造样本；完成仍是一致会话的 nil，budget_limited 仍是另一种会话错误，崩溃仍只认信号 3、6、9、10、11 → internal/runner/grok.go:162、grok.go:598、grok.go:56 → TestGrokInteractiveQuota
 正文和多行 /goal 回显及其分片不是 quota_hit 或 budget_limited，只认 JSON 错误记录字段和整行诊断 → internal/runner/grok.go:340、grok.go:457、grok.go:240（cursor.go:52、kimi.go:112、agy.go:44 经 classifyScanned） → TestBodyEchoNestedAreNotFacts
 交互额度只接受能追溯到交互通道的样本；v1 无该转录，Drive 不把无头 stderr 的 quota exceeded 当成额度终态，完成、budget_limited 和宿主信号崩溃仍各走各的通道 → internal/runner/grok.go:162、grok.go:198 → TestGrokInteractiveQuota、TestGrokQuotaAndCrashChannels
 正文、/goal 回显及其下一行、以及尚未换行的分片不能只因错误措辞成为错误事实，EOF 的末行才是完整记录 → internal/runner/grok.go:323、grok.go:344、agy.go:54、agy.go:108（cursor.go:52、kimi.go:112、agy.go:44 经 classifyScanned） → TestBodyEchoNestedAreNotFacts、TestRecordBoundaryDiagnostics、TestGrokInteractiveQuota

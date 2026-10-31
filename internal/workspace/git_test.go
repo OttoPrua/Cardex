@@ -219,6 +219,7 @@ func TestBlockPushIsolatesMainRepo(t *testing.T) {
 	if _, err := m.Commit(ctx, wt.Path, "should not land"); err != nil {
 		t.Fatal(err)
 	}
+	assertPushReadsWork(t, wt.Path, bare, "origin")
 
 	push := exec.Command("git", "-C", wt.Path, "push", "origin", "HEAD:refs/heads/from-worktree")
 	push.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
@@ -334,20 +335,40 @@ func assertInheritedPushBlocked(t *testing.T, pushCounts []int) {
 	}
 
 	for _, tg := range targets {
-		push := exec.Command("git", "-C", wt.Path, "push", "--no-verify", tg.remote, "HEAD:refs/heads/probe", "HEAD:refs/heads/probe-new")
-		push.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-		out, err := push.CombinedOutput()
-		if err == nil {
-			t.Fatalf("push %s succeeded:\n%s", tg.remote, out)
+		assertPushReadsWork(t, wt.Path, tg.bares[0], tg.remote)
+		for _, verify := range []bool{false, true} {
+			args := []string{"-C", wt.Path, "push"}
+			if verify {
+				args = append(args, "--no-verify")
+			}
+			args = append(args, tg.remote, "HEAD:refs/heads/probe", "HEAD:refs/heads/probe-new")
+			push := exec.Command("git", args...)
+			push.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			out, err := push.CombinedOutput()
+			if err == nil {
+				t.Fatalf("push %s no-verify=%t succeeded:\n%s", tg.remote, verify, out)
+			}
+			if strings.Contains(string(out), "not allowed") {
+				t.Fatalf("push %s failed by protocol denial:\n%s", tg.remote, out)
+			}
+			for _, bare := range tg.bares {
+				got := gitOut(t, bare, "rev-parse", "refs/heads/probe")
+				if got != tg.seed[bare] {
+					t.Fatalf("%s probe moved %s -> %s\n%s", bare, tg.seed[bare], got, out)
+				}
+				if _, missing := gitOptional(bare, "rev-parse", "--verify", "refs/heads/probe-new"); missing == nil {
+					t.Fatalf("%s created probe-new\n%s", bare, out)
+				}
+			}
 		}
-		for _, bare := range tg.bares {
-			got := gitOut(t, bare, "rev-parse", "refs/heads/probe")
-			if got != tg.seed[bare] {
-				t.Fatalf("%s probe moved %s -> %s\n%s", bare, tg.seed[bare], got, out)
-			}
-			if _, missing := gitOptional(bare, "rev-parse", "--verify", "refs/heads/probe-new"); missing == nil {
-				t.Fatalf("%s created probe-new\n%s", bare, out)
-			}
+		direct := exec.Command("git", "-C", wt.Path, "push", "--no-verify", tg.bares[0], "HEAD:refs/heads/direct-new")
+		direct.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		out, err := direct.CombinedOutput()
+		if err == nil {
+			t.Fatalf("direct push %s succeeded:\n%s", tg.bares[0], out)
+		}
+		if _, missing := gitOptional(tg.bares[0], "rev-parse", "--verify", "refs/heads/direct-new"); missing == nil {
+			t.Fatalf("%s created direct-new\n%s", tg.bares[0], out)
 		}
 	}
 
@@ -367,6 +388,25 @@ func assertInheritedPushBlocked(t *testing.T, pushCounts []int) {
 	for _, key := range []string{"protocol.allow", "protocol.file.allow", "protocol.https.allow", "protocol.ssh.allow", "protocol.http.allow", "protocol.git.allow"} {
 		if _, err := gitOptional(repo, "config", "--local", "--get", key); err == nil {
 			t.Fatalf("main repo %s was set", key)
+		}
+	}
+}
+
+func assertPushReadsWork(t *testing.T, worktree, bare, remote string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"ls-remote", bare},
+		{"ls-remote", ".", "HEAD"},
+		{"fetch", remote},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", worktree}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		if strings.Contains(string(out), "not allowed") {
+			t.Fatalf("git %s protocol denial:\n%s", strings.Join(args, " "), out)
 		}
 	}
 }

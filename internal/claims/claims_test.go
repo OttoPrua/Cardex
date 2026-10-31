@@ -91,7 +91,7 @@ func TestConflictsFourCases(t *testing.T) {
 		got, err := Conflicts([]model.Card{
 			{ID: "X", Kind: dev, Claims: []model.Claim{{Path: "f.go", Symbol: "Foo"}}},
 			{ID: "Y", Kind: dev, Claims: []model.Claim{{Path: "f.go", Symbol: "Bar"}}},
-		})
+		}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -104,7 +104,7 @@ func TestConflictsFourCases(t *testing.T) {
 		got, err := Conflicts([]model.Card{
 			{ID: "X", Kind: dev, Claims: []model.Claim{{Path: "f.go", Symbol: "Foo"}}},
 			{ID: "Y", Kind: dev, Claims: []model.Claim{{Path: "f.go", Symbol: "Foo"}}},
-		})
+		}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -123,7 +123,7 @@ func TestConflictsFourCases(t *testing.T) {
 		got, err := Conflicts([]model.Card{
 			{ID: "X", Kind: dev, Claims: []model.Claim{{Path: "f.go"}}},
 			{ID: "Y", Kind: dev, Claims: []model.Claim{{Path: "f.go", Symbol: "Foo"}}},
-		})
+		}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -136,7 +136,7 @@ func TestConflictsFourCases(t *testing.T) {
 		got, err := Conflicts([]model.Card{
 			{ID: "X", Kind: dev, Claims: []model.Claim{{Path: "new.go"}}},
 			{ID: "Y", Kind: dev, Claims: []model.Claim{{Path: "new.go"}}},
-		})
+		}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -148,6 +148,7 @@ func TestConflictsFourCases(t *testing.T) {
 
 func TestConflictsDirectoryReviewAndEmpty(t *testing.T) {
 	dev := model.KindDev
+	exists := func(path string) bool { return path == "pkg/exist.go" }
 	got, err := Conflicts([]model.Card{
 		{ID: "dir", Kind: dev, Claims: []model.Claim{{Path: "pkg/"}}},
 		{ID: "sym", Kind: dev, Claims: []model.Claim{{Path: "pkg/exist.go", Symbol: "Foo"}}},
@@ -155,7 +156,7 @@ func TestConflictsDirectoryReviewAndEmpty(t *testing.T) {
 		{ID: "review", Kind: model.KindReview, Claims: []model.Claim{{Path: "pkg/new.go"}}},
 		{ID: "empty", Kind: dev},
 		{ID: "other", Kind: dev, Claims: []model.Claim{{Path: "pkg/exist.go", Symbol: "Bar"}}},
-	})
+	}, exists)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,12 +169,233 @@ func TestConflictsDirectoryReviewAndEmpty(t *testing.T) {
 	outside, err := Conflicts([]model.Card{
 		{ID: "dir", Kind: dev, Claims: []model.Claim{{Path: "pkg/"}}},
 		{ID: "out", Kind: dev, Claims: []model.Claim{{Path: "other/new.go"}}},
-	})
+	}, exists)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(outside) != 0 {
 		t.Fatalf("outside %#v", outside)
+	}
+}
+
+func TestModeOnlyChangeIsClaim(t *testing.T) {
+	tests := []struct {
+		name     string
+		worktree bool
+		file     string
+		before   string
+		after    string
+		want     []model.Claim
+	}{
+		{
+			name: "check.sh commit",
+			file: "check.sh", before: "#!/bin/sh\necho hi\n",
+			want: []model.Claim{{Path: "check.sh"}},
+		},
+		{
+			name: "check.sh worktree", worktree: true,
+			file: "check.sh", before: "#!/bin/sh\necho hi\n",
+			want: []model.Claim{{Path: "check.sh"}},
+		},
+		{
+			name: "go commit",
+			file: "p.go", before: "package p\n\nfunc Foo() {}\n",
+			want: []model.Claim{{Path: "p.go"}},
+		},
+		{
+			name: "go worktree", worktree: true,
+			file: "p.go", before: "package p\n\nfunc Foo() {}\n",
+			want: []model.Claim{{Path: "p.go"}},
+		},
+		{
+			name:   "go content commit",
+			file:   "p.go",
+			before: "package p\n\nfunc Foo() {}\n",
+			after:  "package p\n\nfunc Foo() { println(1) }\n",
+			want:   []model.Claim{{Path: "p.go", Symbol: "Foo"}},
+		},
+		{
+			name: "go content worktree", worktree: true,
+			file:   "p.go",
+			before: "package p\n\nfunc Foo() {}\n",
+			after:  "package p\n\nfunc Foo() { println(1) }\n",
+			want:   []model.Claim{{Path: "p.go", Symbol: "Foo"}},
+		},
+		{
+			name: "text content commit",
+			file: "note.txt", before: "one\n", after: "two\n",
+			want: []model.Claim{{Path: "note.txt"}},
+		},
+		{
+			name: "text content worktree", worktree: true,
+			file: "note.txt", before: "one\n", after: "two\n",
+			want: []model.Claim{{Path: "note.txt"}},
+		},
+		{
+			name: "result file commit",
+			file: ".cardex-result.md", before: "secret\n",
+		},
+		{
+			name: "result file worktree", worktree: true,
+			file: ".cardex-result.md", before: "secret\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := initClaimsRepo(t)
+			gitClaims(t, repo, "config", "core.filemode", "true")
+			writeFile(t, repo, tc.file, tc.before)
+			gitClaims(t, repo, "add", tc.file)
+			gitClaims(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "base")
+			before := gitClaimsOut(t, repo, "rev-parse", "HEAD")
+			if tc.after != "" {
+				writeFile(t, repo, tc.file, tc.after)
+			} else if err := os.Chmod(filepath.Join(repo, filepath.FromSlash(tc.file)), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			var got []model.Claim
+			var err error
+			if tc.worktree {
+				if tc.after == "" {
+					raw := gitClaimsOut(t, repo, "diff", "--raw", before)
+					if !strings.Contains(raw, "100644 100755") || !strings.Contains(raw, tc.file) {
+						t.Fatalf("fixture not mode-only:\n%s", raw)
+					}
+				}
+				got, err = WorktreeSymbols(context.Background(), repo, before)
+			} else {
+				gitClaims(t, repo, "add", "--", tc.file)
+				gitClaims(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "edit")
+				after := gitClaimsOut(t, repo, "rev-parse", "HEAD")
+				if tc.after == "" {
+					raw := gitClaimsOut(t, repo, "diff", "--raw", before, after)
+					if !strings.Contains(raw, "100644 100755") || !strings.Contains(raw, tc.file) {
+						t.Fatalf("fixture not mode-only:\n%s", raw)
+					}
+				}
+				got, err = ChangedSymbols(repo, before, after)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !sameClaims(got, tc.want) {
+				t.Fatalf("claims %#v want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConflictsDirectoryOnlyNewFiles(t *testing.T) {
+	dev := model.KindDev
+	exists := func(path string) bool {
+		switch path {
+		case "pkg/config.json", "pkg/exist.go", "f.go":
+			return true
+		default:
+			return false
+		}
+	}
+	pair := func(id, path, symbol string) model.Card {
+		return model.Card{ID: id, Kind: dev, Claims: []model.Claim{{Path: path, Symbol: symbol}}}
+	}
+	tests := []struct {
+		name   string
+		cards  []model.Card
+		want   int
+		card   string
+		other  string
+		path   string
+		symbol string
+	}{
+		{
+			name:  "different funcs",
+			cards: []model.Card{pair("X", "f.go", "Foo"), pair("Y", "f.go", "Bar")},
+		},
+		{
+			name:  "same func",
+			cards: []model.Card{pair("X", "f.go", "Foo"), pair("Y", "f.go", "Foo")},
+			want:  1, card: "Y", other: "X", path: "f.go", symbol: "Foo",
+		},
+		{
+			name:  "file level",
+			cards: []model.Card{pair("X", "f.go", ""), pair("Y", "f.go", "Foo")},
+			want:  1, card: "Y", other: "X", path: "f.go", symbol: "Foo",
+		},
+		{
+			name:  "same new path",
+			cards: []model.Card{pair("X", "new.go", ""), pair("Y", "new.go", "")},
+			want:  1, card: "Y", other: "X", path: "new.go",
+		},
+		{
+			name:  "existing config.json",
+			cards: []model.Card{pair("dir", "pkg/", ""), pair("cfg", "pkg/config.json", "")},
+		},
+		{
+			name:  "existing go file level",
+			cards: []model.Card{pair("dir", "pkg/", ""), pair("gof", "pkg/exist.go", "")},
+		},
+		{
+			name:  "existing symbol",
+			cards: []model.Card{pair("dir", "pkg/", ""), pair("sym", "pkg/exist.go", "Foo")},
+		},
+		{
+			name:  "new file under directory",
+			cards: []model.Card{pair("dir", "pkg/", ""), pair("fresh", "pkg/new.go", "")},
+			want:  1, card: "fresh", other: "dir", path: "pkg/new.go",
+		},
+		{
+			name: "review occupies nothing",
+			cards: []model.Card{
+				{ID: "rev", Kind: model.KindReview, Claims: []model.Claim{{Path: "pkg/new.go"}}},
+				pair("fresh", "pkg/new.go", ""),
+			},
+		},
+		{
+			name: "no claims occupy nothing",
+			cards: []model.Card{
+				{ID: "empty", Kind: dev},
+				pair("fresh", "pkg/new.go", ""),
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := Conflicts(tc.cards, exists)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != tc.want {
+				t.Fatalf("conflicts %#v", got)
+			}
+			if tc.want == 0 {
+				return
+			}
+			if got[0].Card != tc.card || got[0].Other != tc.other || got[0].Path != tc.path || got[0].Symbol != tc.symbol {
+				t.Fatalf("conflict %+v", got[0])
+			}
+		})
+	}
+
+	got, err := Conflicts([]model.Card{
+		pair("dir", "pkg/", ""),
+		pair("cfg", "pkg/config.json", ""),
+		pair("gof", "pkg/exist.go", ""),
+		pair("sym", "pkg/exist.go", "Foo"),
+		{ID: "review", Kind: model.KindReview, Claims: []model.Claim{{Path: "pkg/new.go"}}},
+		{ID: "empty", Kind: dev},
+		pair("fresh", "pkg/new.go", ""),
+	}, exists)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("conflicts %#v", got)
+	}
+	if got[0].Card != "sym" || got[0].Other != "gof" || got[0].Path != "pkg/exist.go" || got[0].Symbol != "Foo" {
+		t.Fatalf("file-level conflict %+v", got[0])
+	}
+	if got[1].Card != "fresh" || got[1].Other != "dir" || got[1].Path != "pkg/new.go" || got[1].Symbol != "" {
+		t.Fatalf("new-file conflict %+v", got[1])
 	}
 }
 

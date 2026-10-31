@@ -164,6 +164,10 @@ func claimsFromStatus(ctx context.Context, repo, before, after string, status []
 				return nil, err
 			}
 			if bytes.Equal(beforeSrc, afterSrc) {
+				// Git recorded this path, but the blob bytes match: a mode
+				// or type change. That is one file-level claim. Do not drop
+				// it, and do not invent symbols from the unchanged text.
+				out = append(out, model.Claim{Path: path})
 				continue
 			}
 			out = append(out, modifiedClaims(path, beforeSrc, afterSrc, true)...)

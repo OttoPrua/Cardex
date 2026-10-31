@@ -190,6 +190,34 @@ func TestHarvestOutcomes(t *testing.T) {
 	})
 }
 
+func TestHarvestModeOnlyCheckScriptPasses(t *testing.T) {
+	dir, _ := newRepo(t)
+	runGit(t, dir, "config", "core.filemode", "true")
+	write(t, dir, "check.sh", "#!/bin/sh\necho hi\n")
+	runGit(t, dir, "add", "check.sh")
+	runGit(t, dir, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "check")
+	head := strings.TrimSpace(runGitOut(t, dir, "rev-parse", "HEAD"))
+	if err := os.Chmod(filepath.Join(dir, "check.sh"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := runGitOut(t, dir, "diff", "--raw", head)
+	if !strings.Contains(raw, "100644 100755") {
+		t.Fatalf("fixture not mode-only:\n%s", raw)
+	}
+	res, err := Harvest(context.Background(), harvestInput(dir, head, model.Card{
+		ID: "c", Kind: model.KindDev, Acceptance: []string{"true"},
+	}, 0, nil, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != model.OutcomePassed {
+		t.Fatalf("outcome %s evidence %s", res.Outcome, res.Evidence)
+	}
+	if len(res.Claims) != 1 || res.Claims[0].Path != "check.sh" || res.Claims[0].Symbol != "" {
+		t.Fatalf("claims %#v", res.Claims)
+	}
+}
+
 func TestHarvestClaimUpdateIsNotFailure(t *testing.T) {
 	dir, head := newRepo(t)
 	write(t, dir, "a.go", "package a\n\nfunc Foo() {}\n\nfunc Bar() { println(1) }\n")

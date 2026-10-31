@@ -199,9 +199,12 @@ func (Git) Remove(ctx context.Context, worktree string) error {
 }
 
 // BlockPush turns on per-worktree config, points core.hooksPath at the
-// Cardex reject-all hook, sets every remote pushurl to an invalid address,
-// and denies every push transport in this worktree. Inherited pushurl values
-// stay in the effective list, so the transport denial is what stops them.
+// Cardex reject-all hook, and sets every remote pushurl to an invalid
+// address. Inherited pushurls stay in the effective list, and --no-verify
+// skips the hook. Those pushes are rejected by this worktree's receivepack.
+// Push URLs that are not an explicit pushurl are rewritten with
+// pushInsteadOf, which does not apply to fetch or ls-remote. protocol.allow
+// is left unset: denying a transport also rejects reads.
 // Push-related keys in the main repository config are left alone.
 func (Git) BlockPush(ctx context.Context, worktree string) error {
 	if strings.TrimSpace(worktree) == "" {
@@ -223,26 +226,30 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 	if _, err := runGit(ctx, worktree, "config", "--worktree", "core.hooksPath", abs); err != nil {
 		return err
 	}
-	// Appending an invalid pushurl leaves inherited remote.*.pushurl values
-	// in effect, and --no-verify skips the pre-push hook. A specific
-	// protocol.<name>.allow in the main repo also outranks protocol.allow,
-	// so each transport is denied in this worktree only.
-	for _, proto := range []string{"file", "git", "ssh", "http", "https", "ftp", "ftps", "ext"} {
-		key := "protocol." + proto + ".allow"
-		if _, err := runGit(ctx, worktree, "config", "--worktree", key, "never"); err != nil {
+	// pushInsteadOf is ignored for a remote that already has a pushurl, so it
+	// only covers a push that names a URL directly. It does not rewrite fetches.
+	for _, prefix := range pushOnlyPrefixes {
+		key := "url." + blockedPushURL + "/.pushInsteadOf"
+		if _, err := runGit(ctx, worktree, "config", "--worktree", "--add", key, prefix); err != nil {
 			return err
 		}
 	}
-	if _, err := runGit(ctx, worktree, "config", "--worktree", "protocol.allow", "never"); err != nil {
-		return err
+	reject, err := exec.LookPath("false")
+	if err != nil {
+		return fmt.Errorf("workspace: push reject command: %w", err)
 	}
 	raw, err := runGit(ctx, worktree, "remote")
 	if err != nil {
 		return err
 	}
 	for _, name := range splitLines(raw) {
-		key := "remote." + name + ".pushurl"
-		if _, err := runGit(ctx, worktree, "config", "--worktree", key, blockedPushURL); err != nil {
+		if _, err := runGit(ctx, worktree, "config", "--worktree", "remote."+name+".pushurl", blockedPushURL); err != nil {
+			return err
+		}
+		// receivepack runs for local, git, and ssh pushes, including each
+		// inherited pushurl, and --no-verify does not skip it. Fetch uses
+		// upload-pack and is left alone.
+		if _, err := runGit(ctx, worktree, "config", "--worktree", "remote."+name+".receivepack", reject); err != nil {
 			return err
 		}
 	}
@@ -250,6 +257,19 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 }
 
 const blockedPushURL = "invalid://cardex.blocked/push"
+
+// pushOnlyPrefixes are URL forms rewritten only when pushing.
+var pushOnlyPrefixes = []string{
+	"/",
+	"file://",
+	"git://",
+	"ssh://",
+	"http://",
+	"https://",
+	"ftp://",
+	"ftps://",
+	"git@",
+}
 
 func excludeResultFile(ctx context.Context, worktree string) error {
 	gitDir, err := runGit(ctx, worktree, "rev-parse", "--absolute-git-dir")

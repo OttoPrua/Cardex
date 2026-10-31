@@ -15,6 +15,7 @@ import (
 	"cardex/internal/model"
 	"cardex/internal/notify"
 	"cardex/internal/prompt"
+	"cardex/internal/quota"
 	"cardex/internal/route"
 )
 
@@ -336,9 +337,10 @@ func TestQuotaWindowsKeepTheirOwnRatio(t *testing.T) {
 			home, db, repo := newHome(t)
 			_, obj := seedRepo(t, db, repo, "true")
 			wins := make([]model.QuotaWindow, windows)
+			names := []string{"5h", "daily"}
 			for i := range wins {
 				wins[i] = model.QuotaWindow{
-					Name: "w" + fmt.Sprint(i), ResetRule: "rolling", ResetAt: now.Add(30 * time.Minute),
+					Name: names[i], ResetRule: "rolling", ResetAt: now.Add(30 * time.Minute),
 					LimitTokens: 100, UsedTokens: 40, Remaining: 0.6, Confidence: 1,
 				}
 			}
@@ -833,4 +835,609 @@ func branchExists(repo, name string) bool {
 	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+name)
 	cmd.Dir = repo
 	return cmd.Run() == nil
+}
+
+func TestHarvestStaysPendingUntilDisposition(t *testing.T) {
+	cases := []struct {
+		name    string
+		missing bool
+		fail    bool
+		want    model.Outcome
+	}{
+		{name: "success", want: model.OutcomePassed},
+		{name: "failure", fail: true, want: model.OutcomeNoOutput},
+		{name: "missing worktree", missing: true, want: model.OutcomeNoOutput},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			home, db, repo := newHome(t)
+			_, obj := seedRepo(t, db, repo, "true")
+			card := model.Card{
+				ID: "c", Objective: obj, Kind: model.KindDev, Title: "c", Tier: model.TierT2,
+				Status: model.CardRunning,
+			}
+			if err := db.CreateCard(ctx, &card); err != nil {
+				t.Fatal(err)
+			}
+			wt := plantWorktree(t, repo, !tc.fail && !tc.missing)
+			if tc.missing {
+				wt = filepath.Join(t.TempDir(), "gone")
+			}
+			exit := 0
+			base := rev(t, repo, "HEAD")
+			if !tc.missing && !tc.fail {
+				base = rev(t, repo, "HEAD~1")
+			}
+			attempt := model.Attempt{
+				ID: "a-c", Card: "c", Worktree: wt, BaseCommit: base,
+				Exit: &exit, EndedAt: time.Now().UTC(),
+			}
+			if err := db.CreateAttempt(ctx, &attempt); err != nil {
+				t.Fatal(err)
+			}
+			pending := func() {
+				t.Helper()
+				got, err := db.GetAttempt(ctx, "a-c")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Outcome != "" {
+					t.Fatalf("consumed outcome %s", got.Outcome)
+				}
+				card, err := db.GetCard(ctx, "c")
+				if err != nil || card.Status != model.CardRunning {
+					t.Fatalf("card %+v %v", card, err)
+				}
+			}
+			if err := New(home).Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			pending()
+			serveOnce(t, home)
+			pending()
+			hook := New(home)
+			hook.Dispose = func(context.Context, *model.Card, harvest.Result) error {
+				return errors.New("dispose down")
+			}
+			if err := hook.Tick(ctx); err == nil {
+				t.Fatal("dispose error was stored")
+			}
+			pending()
+			var calls int
+			var got harvest.Result
+			hook = New(home)
+			hook.Dispose = func(_ context.Context, seen *model.Card, res harvest.Result) error {
+				calls++
+				got = res
+				if seen.Status != model.CardRunning {
+					t.Fatalf("status %s before disposition returned", seen.Status)
+				}
+				return nil
+			}
+			if err := hook.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 || got.Outcome != tc.want {
+				t.Fatalf("calls %d outcome %s", calls, got.Outcome)
+			}
+			stored, err := db.GetAttempt(ctx, "a-c")
+			if err != nil || stored.Outcome != tc.want {
+				t.Fatalf("stored %+v %v", stored, err)
+			}
+			if err := hook.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("delivered again, calls %d", calls)
+			}
+		})
+	}
+}
+
+func serveOnce(t *testing.T, home string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() {
+		errc <- Serve(ctx, home, "127.0.0.1:0")
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		body, _ := os.ReadFile(filepath.Join(home, "serve-loop.log"))
+		if strings.Contains(string(body), "iteration") {
+			break
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			t.Fatalf("serve did not tick: %s", body)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not return")
+	}
+}
+
+func TestQuotaEstimateDrivesDispatchAndFill(t *testing.T) {
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	soon := base.Add(30 * time.Minute)
+	hit := base.Add(10 * time.Minute)
+	cases := []struct {
+		name     string
+		now      time.Time
+		windows  []model.QuotaWindow
+		redline  float64
+		spent    []spentAttempt
+		dispatch bool
+		fill     bool
+		check    func(quota.Estimate) error
+	}{
+		{
+			name: "finished attempt usage",
+			now:  base,
+			windows: []model.QuotaWindow{{
+				Name: "5h", ResetRule: "rolling", ResetAt: soon, LimitTokens: 100,
+			}},
+			redline: 0.2,
+			spent:   []spentAttempt{{tokens: 80, ended: base.Add(-time.Minute)}},
+			check: func(est quota.Estimate) error {
+				if est.Unknown || est.UsedTokens < 80 || est.Ratio > 0.2 {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+		{
+			name: "usage before reset",
+			now:  base,
+			windows: []model.QuotaWindow{{
+				Name: "5h", ResetRule: "rolling", ResetAt: soon, LimitTokens: 100,
+			}},
+			redline:  0.2,
+			spent:    []spentAttempt{{tokens: 90, ended: base.Add(-6 * time.Hour)}},
+			dispatch: true,
+			fill:     true,
+			check: func(est quota.Estimate) error {
+				if est.Unknown || est.UsedTokens != 0 || est.Ratio <= 0.5 {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+		{
+			name: "request limit",
+			now:  base,
+			windows: []model.QuotaWindow{{
+				Name: "5h", ResetRule: "rolling", ResetAt: soon,
+				LimitTokens: 1000, LimitRequests: 1,
+			}},
+			redline: 0.2,
+			spent:   []spentAttempt{{tokens: 1, ended: base.Add(-time.Minute)}},
+			check: func(est quota.Estimate) error {
+				if est.Unknown || est.LimitRequests != 1 || est.UsedRequests < 1 || est.LimitTokens != 1000 {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+		{
+			name: "quota hit before reset",
+			now:  base,
+			windows: []model.QuotaWindow{
+				{Name: "5h", ResetRule: "rolling", ResetAt: soon, LimitTokens: 1000},
+				{Name: "daily", ResetRule: "rolling", ResetAt: base.Add(3 * time.Hour), LimitTokens: 1000},
+			},
+			redline: 0.2,
+			spent:   []spentAttempt{{tokens: 1, ended: base.Add(-time.Minute), hit: hit}},
+			check: func(est quota.Estimate) error {
+				if !est.Blocked || !est.Reset.Equal(hit.UTC()) {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+		{
+			name: "quota hit after reset",
+			now:  hit.Add(time.Minute),
+			windows: []model.QuotaWindow{
+				{Name: "5h", ResetRule: "rolling", ResetAt: soon, LimitTokens: 1000},
+				{Name: "daily", ResetRule: "rolling", ResetAt: base.Add(3 * time.Hour), LimitTokens: 1000},
+			},
+			redline:  0.2,
+			spent:    []spentAttempt{{tokens: 1, ended: base.Add(-time.Minute), hit: hit}},
+			dispatch: true,
+			fill:     true,
+			check: func(est quota.Estimate) error {
+				if est.Blocked || est.Unknown || est.Ratio <= 0.5 {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+		{
+			name: "name only zero remaining",
+			now:  base,
+			windows: []model.QuotaWindow{{
+				Name: "daily", ResetRule: "rolling", ResetAt: soon, Remaining: 0,
+			}},
+			redline:  0.2,
+			dispatch: true,
+			check: func(est quota.Estimate) error {
+				if !est.Unknown || est.LimitTokens != 0 || est.LimitRequests != 0 || est.Blocked {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+		{
+			name: "snapshot ample attempt at redline",
+			now:  base,
+			windows: []model.QuotaWindow{{
+				Name: "5h", ResetRule: "rolling", ResetAt: soon,
+				LimitTokens: 100, UsedTokens: 10, Remaining: 0.9,
+			}},
+			redline: 0.2,
+			spent:   []spentAttempt{{tokens: 70, ended: base.Add(-time.Minute)}},
+			check: func(est quota.Estimate) error {
+				if est.Unknown || est.LimitTokens != 100 || est.UsedTokens < 80 || est.Ratio > 0.2 {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+		{
+			name: "positive remaining without a limit",
+			now:  base,
+			windows: []model.QuotaWindow{{
+				Name: "5h", ResetRule: "rolling", ResetAt: soon, Remaining: 0.9,
+			}},
+			dispatch: true,
+			fill:     true,
+			check: func(est quota.Estimate) error {
+				if !est.Unknown || est.LimitTokens != 0 || est.LimitRequests != 0 {
+					return fmt.Errorf("estimate %+v", est)
+				}
+				return nil
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, mode := range []string{"dispatch", "fill"} {
+				t.Run(mode, func(t *testing.T) {
+					est, saw, started := runQuotaMode(t, tc.now, tc.windows, tc.redline, tc.spent, mode)
+					want := tc.dispatch
+					if mode == "fill" {
+						want = tc.fill
+					}
+					if started != want {
+						t.Fatalf("started %v want %v estimate %+v", started, want, est)
+					}
+					if !saw {
+						if mode == "dispatch" || want {
+							t.Fatal("route did not see the quota")
+						}
+						return
+					}
+					if err := tc.check(est); err != nil {
+						t.Fatal(err)
+					}
+				})
+			}
+		})
+	}
+}
+
+type spentAttempt struct {
+	tokens int64
+	ended  time.Time
+	hit    time.Time
+}
+
+func runQuotaMode(t *testing.T, now time.Time, windows []model.QuotaWindow, redline float64, spent []spentAttempt, mode string) (quota.Estimate, bool, bool) {
+	t.Helper()
+	ctx := context.Background()
+	home, db, repo := newHome(t)
+	_, obj := seedRepo(t, db, repo, "true")
+	ch := model.Channel{
+		ID: "ch", Runner: model.RunnerFake, Family: "alpha", Models: []string{"model-a"},
+		Concurrency: 4, Health: model.HealthOK, Tier: model.TierT2, Redline: redline,
+		QuotaWindows: windows,
+	}
+	if err := db.CreateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	pos := model.Positioning{
+		ID: "pos-ch", Model: "model-a", Family: "alpha",
+		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+	}
+	if err := db.CreatePositioning(ctx, &pos); err != nil {
+		t.Fatal(err)
+	}
+	if len(spent) > 0 {
+		done := model.Card{
+			ID: "spent", Objective: obj, Kind: model.KindDev, Title: "spent",
+			Tier: model.TierT2, Status: model.CardDone,
+		}
+		if err := db.CreateCard(ctx, &done); err != nil {
+			t.Fatal(err)
+		}
+		exit := 0
+		for i, item := range spent {
+			att := model.Attempt{
+				ID: fmt.Sprintf("spent-%d", i), Card: "spent",
+				Route:     model.Route{Channel: "ch", Model: "model-a"},
+				StartedAt: item.ended.Add(-time.Minute), EndedAt: item.ended, Exit: &exit,
+				Usage:   model.Usage{Tokens: item.tokens, Source: "event", Confidence: 1},
+				Outcome: model.OutcomePassed,
+			}
+			if !item.hit.IsZero() {
+				att.Outcome = model.OutcomeQuotaHit
+				att.ErrorClass = model.ErrorQuotaHit
+				att.ErrorExcerpt = "quota hit, reset at " + item.hit.UTC().Format(time.RFC3339)
+			}
+			if err := db.CreateAttempt(ctx, &att); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	cardID := "c"
+	card := model.Card{
+		ID: cardID, Objective: obj, Kind: model.KindDev, Title: "c",
+		Tier: model.TierT2, Status: model.CardReady,
+	}
+	if mode == "fill" {
+		cardID = "back"
+		card = model.Card{
+			ID: cardID, Objective: obj, Kind: model.KindBacklog, Title: "back",
+			Tier: model.TierT1, Status: model.CardReady,
+		}
+	}
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	prev := chooseRoute
+	defer func() { chooseRoute = prev }()
+	var est quota.Estimate
+	saw := false
+	chooseRoute = func(ctx context.Context, req route.Request) (model.Route, model.RouteReason, error) {
+		got, err := req.Quota.Remaining(ctx, "ch")
+		if err != nil {
+			t.Errorf("remaining %v", err)
+		}
+		est = got
+		saw = true
+		return prev(ctx, req)
+	}
+	r := New(home)
+	r.Now = func() time.Time { return now }
+	r.Launch = func(context.Context, string, string) (int, error) { return 91, nil }
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := db.ListAttempts(ctx, cardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return est, saw, len(attempts) > 0
+}
+
+func TestDispatchChecksAssociationEdgeAndStopState(t *testing.T) {
+	cases := []struct {
+		name   string
+		kind   model.CardKind
+		status model.CardStatus
+		reason string
+		deps   string
+		open   bool
+		start  bool
+	}{
+		{name: "review association", kind: model.KindReview, status: model.CardReady, deps: "edge", start: true},
+		{name: "repair association", kind: model.KindRepair, status: model.CardReady, deps: "edge", start: true},
+		{name: "rebase association", kind: model.KindRebase, status: model.CardReady, deps: "edge", start: true},
+		{name: "review plus skeleton", kind: model.KindReview, status: model.CardReady, deps: "skel"},
+		{name: "repair plus skeleton", kind: model.KindRepair, status: model.CardReady, deps: "skel"},
+		{name: "rebase plus skeleton", kind: model.KindRebase, status: model.CardReady, deps: "skel"},
+		{name: "review plus merged skeleton", kind: model.KindReview, status: model.CardReady, deps: "done", start: true},
+		{name: "repair plus done skeleton", kind: model.KindRepair, status: model.CardReady, deps: "done", start: true},
+		{name: "rebase plus canceled skeleton", kind: model.KindRebase, status: model.CardReady, deps: "canceled", start: true},
+		{name: "paused", status: model.CardPaused, open: true},
+		{name: "canceled", status: model.CardCanceled, open: true},
+		{name: "failed", status: model.CardFailed, open: true},
+		{name: "merged", status: model.CardMerged, open: true},
+		{name: "done", status: model.CardDone, open: true},
+		{name: "needs input", status: model.CardNeedsInput, open: true},
+		{name: "harvesting", status: model.CardHarvesting, open: true},
+		{name: "reviewing", status: model.CardReviewing, open: true},
+		{name: "waiting", status: model.CardWaiting, open: true},
+		{name: "ready", status: model.CardReady, start: true},
+		{name: "interrupted running", status: model.CardRunning, open: true, start: true},
+		{name: "claim wait", status: model.CardWaiting, reason: "f.go Foo 占用", start: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			home, db, repo := newHome(t)
+			_, obj := seedRepo(t, db, repo, "true")
+			seedRoutes(t, db)
+			kind := tc.kind
+			if kind == "" {
+				kind = model.KindDev
+			}
+			var deps []string
+			if tc.deps != "" {
+				parent := model.Card{
+					ID: "dep", Objective: obj, Kind: model.KindDev, Title: "dep",
+					Tier: model.TierT2, Status: model.CardWaiting,
+				}
+				if err := db.CreateCard(ctx, &parent); err != nil {
+					t.Fatal(err)
+				}
+				branch(t, repo, obj, "dep", "dep.txt", "parent\n")
+				deps = append(deps, "dep")
+				skelStatus := model.CardReady
+				switch tc.deps {
+				case "done":
+					skelStatus = model.CardMerged
+				case "canceled":
+					skelStatus = model.CardCanceled
+				}
+				if tc.deps != "edge" {
+					skel := model.Card{
+						ID: "skel", Objective: obj, Kind: model.KindSkeleton, Title: "skel",
+						Tier: model.TierT3, Status: skelStatus,
+					}
+					if err := db.CreateCard(ctx, &skel); err != nil {
+						t.Fatal(err)
+					}
+					deps = append(deps, "skel")
+				}
+			}
+			card := model.Card{
+				ID: "c", Objective: obj, Kind: kind, Title: "c", Tier: model.TierT2,
+				Status: tc.status, WaitReason: tc.reason, Deps: deps,
+			}
+			if err := db.CreateCard(ctx, &card); err != nil {
+				t.Fatal(err)
+			}
+			if tc.open {
+				open := model.Attempt{
+					ID: "a-c", Card: "c", PID: 0, Worktree: repo,
+					Branch: "cardex/" + obj + "/c/c", StartedAt: time.Now().UTC(),
+				}
+				if err := db.CreateAttempt(ctx, &open); err != nil {
+					t.Fatal(err)
+				}
+			}
+			launches := 0
+			r := New(home)
+			r.Launch = func(context.Context, string, string) (int, error) {
+				launches++
+				return 93, nil
+			}
+			if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			attempts, err := db.ListAttempts(ctx, "c")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := db.GetCard(ctx, "c")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !tc.start {
+				if len(attempts) != boolCount(tc.open) {
+					t.Fatalf("attempts %+v", attempts)
+				}
+				if got.Status != tc.status {
+					t.Fatalf("status %s", got.Status)
+				}
+				if tc.open && (attempts[0].PID != 0 || launches != 0) {
+					t.Fatalf("resumed pid %d launches %d", attempts[0].PID, launches)
+				}
+				return
+			}
+			if launches != 1 || len(attempts) != 1 || attempts[0].PID != 93 {
+				t.Fatalf("launches %d attempts %+v", launches, attempts)
+			}
+			if tc.open && attempts[0].ID != "a-c" {
+				t.Fatalf("new attempt %+v", attempts[0])
+			}
+			if tc.status == model.CardRunning && got.Status != model.CardRunning {
+				t.Fatalf("status %s", got.Status)
+			}
+		})
+	}
+}
+
+func boolCount(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+func TestWorkspaceExistsBeforeAttemptResumes(t *testing.T) {
+	ctx := context.Background()
+	t.Run("attempts directory fails after the branch exists", func(t *testing.T) {
+		home, db, repo := newHome(t)
+		_, obj := seedRepo(t, db, repo, "true")
+		seedRoutes(t, db)
+		card := model.Card{
+			ID: "c", Objective: obj, Kind: model.KindDev, Title: "c",
+			Tier: model.TierT2, Status: model.CardReady,
+		}
+		if err := db.CreateCard(ctx, &card); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, "attempts"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		r := New(home)
+		r.Launch = func(context.Context, string, string) (int, error) { return 94, nil }
+		if err := r.Tick(ctx); err == nil {
+			t.Fatal("tick succeeded before the attempt row existed")
+		}
+		first, err := db.ListAttempts(ctx, "c")
+		if err != nil || len(first) != 0 {
+			t.Fatalf("attempt stored early %+v %v", first, err)
+		}
+		name := "cardex/" + obj + "/c/c"
+		if !branchExists(repo, name) {
+			t.Fatal("branch was not created")
+		}
+		if err := os.Remove(filepath.Join(home, "attempts")); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		again, err := db.ListAttempts(ctx, "c")
+		if err != nil || len(again) != 1 || again[0].Branch != name || again[0].PID != 94 {
+			t.Fatalf("resume %+v %v", again, err)
+		}
+		if !branchExists(repo, name) {
+			t.Fatal("branch lost")
+		}
+	})
+	t.Run("pre-existing branch and worktree", func(t *testing.T) {
+		home, db, repo := newHome(t)
+		_, obj := seedRepo(t, db, repo, "true")
+		seedRoutes(t, db)
+		branch(t, repo, obj, "c", "keep.txt", "kept\n")
+		wt := filepath.Join(t.TempDir(), "existing")
+		git(t, repo, "worktree", "add", wt, "cardex/"+obj+"/c/c")
+		card := model.Card{
+			ID: "c", Objective: obj, Kind: model.KindDev, Title: "c",
+			Tier: model.TierT2, Status: model.CardReady,
+		}
+		if err := db.CreateCard(ctx, &card); err != nil {
+			t.Fatal(err)
+		}
+		r := New(home)
+		r.Launch = func(context.Context, string, string) (int, error) { return 95, nil }
+		if err := r.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		attempts, err := db.ListAttempts(ctx, "c")
+		if err != nil || len(attempts) != 1 || attempts[0].PID != 95 {
+			t.Fatalf("attempts %+v %v", attempts, err)
+		}
+		name := "cardex/" + obj + "/c/c"
+		if attempts[0].Branch != name {
+			t.Fatalf("branch %s", attempts[0].Branch)
+		}
+		body, err := os.ReadFile(filepath.Join(attempts[0].Worktree, "keep.txt"))
+		if err != nil || !strings.Contains(string(body), "kept") {
+			t.Fatalf("worktree %q %v", body, err)
+		}
+	})
 }

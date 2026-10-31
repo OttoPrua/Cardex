@@ -65,17 +65,17 @@ func (q *Service) Step(ctx context.Context, objectiveID string) error {
 	if err != nil {
 		return err
 	}
-	var card *model.Card
 	for i := range cards {
 		if cards[i].Status == model.CardMergeQueued {
-			card = &cards[i]
-			break
+			return q.mergeOne(ctx, &cards[i])
 		}
 	}
-	if card == nil {
-		return nil
+	// A closeout that stopped after the tail was marked merged has no queued
+	// card. Keep the chain selectable until every predecessor is closed.
+	if tail := q.interruptedTail(ctx, cards); tail != nil {
+		return q.closePredecessors(ctx, tail)
 	}
-	return q.mergeOne(ctx, card)
+	return nil
 }
 
 func (q *Service) mergeOne(ctx context.Context, card *model.Card) error {
@@ -174,13 +174,17 @@ func (q *Service) rootID(ctx context.Context, card *model.Card) (string, error) 
 }
 
 // closePredecessors marks every completed repair/rebase predecessor, and the
-// original card, merged, and removes their worktrees. An ordinary unfinished
-// dependency is left alone. A second call changes nothing.
+// original card, merged, and removes their worktrees. An already merged card
+// still has its leftover worktree removed. An ordinary unfinished dependency
+// is left alone. A second call changes nothing.
 func (q *Service) closePredecessors(ctx context.Context, card *model.Card) error {
 	if card.Kind != model.KindRepair && card.Kind != model.KindRebase {
 		return nil
 	}
-	cur := card
+	if err := q.removeWorktrees(ctx, card); err != nil {
+		return err
+	}
+	cur := *card
 	seen := map[string]bool{card.ID: true}
 	for len(cur.Deps) > 0 {
 		id := strings.TrimSpace(cur.Deps[0])
@@ -201,16 +205,92 @@ func (q *Service) closePredecessors(ctx context.Context, card *model.Card) error
 			if err := q.DB.UpdateCard(ctx, &parent); err != nil {
 				return err
 			}
-			if err := q.removeWorktrees(ctx, &parent); err != nil {
-				return err
-			}
+		}
+		if err := q.removeWorktrees(ctx, &parent); err != nil {
+			return err
 		}
 		if parent.Kind != model.KindRepair && parent.Kind != model.KindRebase {
 			return nil
 		}
-		cur = &parent
+		cur = parent
 	}
 	return nil
+}
+
+// interruptedTail is a merged repair or rebase whose chain is not closed and
+// which no later repair still points at. Step uses it when nothing is queued.
+func (q *Service) interruptedTail(ctx context.Context, cards []model.Card) *model.Card {
+	referenced := map[string]bool{}
+	for _, c := range cards {
+		if c.Kind != model.KindRepair && c.Kind != model.KindRebase {
+			continue
+		}
+		if len(c.Deps) == 0 {
+			continue
+		}
+		referenced[strings.TrimSpace(c.Deps[0])] = true
+	}
+	for i := range cards {
+		c := cards[i]
+		if c.Status != model.CardMerged || (c.Kind != model.KindRepair && c.Kind != model.KindRebase) {
+			continue
+		}
+		if referenced[c.ID] {
+			continue
+		}
+		if q.chainNeedsClose(ctx, &c) {
+			return &cards[i]
+		}
+	}
+	return nil
+}
+
+func (q *Service) chainNeedsClose(ctx context.Context, card *model.Card) bool {
+	if q.worktreeLeft(ctx, card.ID) {
+		return true
+	}
+	cur := *card
+	seen := map[string]bool{card.ID: true}
+	for len(cur.Deps) > 0 {
+		id := strings.TrimSpace(cur.Deps[0])
+		if id == "" || seen[id] {
+			return false
+		}
+		seen[id] = true
+		parent, err := q.DB.GetCard(ctx, id)
+		if err != nil {
+			return true
+		}
+		if !chainCompleted(parent.Status) {
+			return false
+		}
+		if parent.Status != model.CardMerged || q.worktreeLeft(ctx, parent.ID) {
+			return true
+		}
+		if parent.Kind != model.KindRepair && parent.Kind != model.KindRebase {
+			return false
+		}
+		cur = parent
+	}
+	return false
+}
+
+func (q *Service) worktreeLeft(ctx context.Context, cardID string) bool {
+	attempts, err := q.DB.ListAttempts(ctx, cardID)
+	if err != nil {
+		return true
+	}
+	for _, attempt := range attempts {
+		path := strings.TrimSpace(attempt.Worktree)
+		if path == "" {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
 }
 
 func chainCompleted(status model.CardStatus) bool {

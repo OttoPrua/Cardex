@@ -444,6 +444,98 @@ func TestRepairOfRepairLinksImmediatePredecessor(t *testing.T) {
 	}
 }
 
+func TestInterruptedRepairChainStillCloses(t *testing.T) {
+	cases := []struct {
+		name     string
+		original model.CardStatus
+	}{
+		{name: "original waiting", original: model.CardWaiting},
+		{name: "predecessor already merged", original: model.CardMerged},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			db, repo := openFixture(t)
+			proj := seedProject(t, db, repo, "p", "true")
+			obj := seedObjective(t, db, repo, proj, "o", "main")
+			skel := model.Card{
+				ID: "skel", Objective: obj, Kind: model.KindSkeleton, Title: "skel",
+				Tier: model.TierT2, Status: model.CardReady,
+			}
+			if err := db.CreateCard(ctx, &skel); err != nil {
+				t.Fatal(err)
+			}
+			c := commitCard(t, db, repo, obj, "main", "c", "a.txt", "shipped\n")
+			c.Card.Status = tc.original
+			c.Card.Deps = []string{"skel"}
+			if err := db.UpdateCard(ctx, &c.Card); err != nil {
+				t.Fatal(err)
+			}
+			rpWT := filepath.Join(t.TempDir(), "rp")
+			rp2WT := filepath.Join(t.TempDir(), "rp2")
+			detachWorktree(t, c.Worktree)
+			addWorktree(t, repo, CardBranch(obj, "c"), rpWT)
+			detachWorktree(t, rpWT)
+			addWorktree(t, repo, CardBranch(obj, "c"), rp2WT)
+			for _, item := range []struct {
+				id, path, dep string
+			}{
+				{id: "rp-c", path: rpWT, dep: "c"},
+				{id: "rp-rp-c", path: rp2WT, dep: "rp-c"},
+			} {
+				card := model.Card{
+					ID: item.id, Objective: obj, Kind: model.KindRepair, Title: item.id,
+					Tier: model.TierT2, Status: model.CardMerged, Deps: []string{item.dep},
+				}
+				if err := db.CreateCard(ctx, &card); err != nil {
+					t.Fatal(err)
+				}
+				attempt := model.Attempt{
+					ID: "a-" + item.id, Card: item.id, Worktree: item.path,
+					Branch: CardBranch(obj, "c"),
+				}
+				if err := db.CreateAttempt(ctx, &attempt); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := gitRev(repo, "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			q := New(db)
+			if err := q.Step(ctx, obj); err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{"c", "rp-c", "rp-rp-c"} {
+				got, err := db.GetCard(ctx, id)
+				if err != nil || got.Status != model.CardMerged {
+					t.Fatalf("%s %+v %v", id, got, err)
+				}
+			}
+			left, err := db.GetCard(ctx, "skel")
+			if err != nil || left.Status != model.CardReady {
+				t.Fatalf("ordinary dep %+v %v", left, err)
+			}
+			for _, path := range []string{c.Worktree, rpWT, rp2WT} {
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("worktree %s still present (%v)", path, err)
+				}
+			}
+			head, err := gitRev(repo, "main")
+			if err != nil || head != before {
+				t.Fatalf("closeout moved HEAD %s -> %s", before, head)
+			}
+			if err := q.Step(ctx, obj); err != nil {
+				t.Fatal(err)
+			}
+			again, err := gitRev(repo, "main")
+			if err != nil || again != head {
+				t.Fatalf("second step moved HEAD %s -> %s", head, again)
+			}
+		})
+	}
+}
+
 func detachWorktree(t *testing.T, path string) {
 	t.Helper()
 	cmd := exec.Command("git", "-C", path, "checkout", "--detach")

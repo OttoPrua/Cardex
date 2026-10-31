@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -57,6 +57,7 @@ type Runner struct {
 	Script func(card model.Card) ([]byte, bool)
 	// Dispose receives each harvested result. Tests set it. Production leaves
 	// it nil: internal/loop has no disposition entry, and Tick does not invent one.
+	// A nil hook or a hook error leaves the attempt unconsumed.
 	Dispose func(ctx context.Context, card *model.Card, res harvest.Result) error
 }
 
@@ -120,11 +121,11 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			return err
 		}
 		if info, statErr := os.Stat(attempt.Worktree); statErr != nil || !info.IsDir() {
-			attempt.Outcome = model.OutcomeNoOutput
-			if attempt.ErrorExcerpt == "" {
-				attempt.ErrorExcerpt = "host lost"
+			excerpt := attempt.ErrorExcerpt
+			if excerpt == "" {
+				excerpt = "host lost"
 			}
-			res := harvest.Result{Outcome: model.OutcomeNoOutput, Excerpt: attempt.ErrorExcerpt}
+			res := harvest.Result{Outcome: model.OutcomeNoOutput, Excerpt: excerpt}
 			if err := r.deliver(ctx, db, &card, &attempt, res); err != nil {
 				return err
 			}
@@ -146,13 +147,6 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 		if err != nil {
 			return err
 		}
-		attempt.Outcome = res.Outcome
-		if res.ErrorClass != "" {
-			attempt.ErrorClass = res.ErrorClass
-		}
-		if attempt.ErrorExcerpt == "" {
-			attempt.ErrorExcerpt = res.Excerpt
-		}
 		if fam := r.familyOf(ctx, db, attempt.Route.Channel); fam != "" && card.AuthorFamily == "" {
 			card.AuthorFamily = fam
 		}
@@ -173,13 +167,22 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 	return nil
 }
 
-// deliver hands the harvested result to the disposition entry, then stores the
-// attempt. Card status is whatever the entry left; Tick does not set it first.
+// deliver hands the harvested result to the disposition entry. The attempt is
+// stored as consumed only after the hook returns nil. A nil hook leaves the
+// attempt deliverable and does not change the card.
 func (r *Runner) deliver(ctx context.Context, db *store.Store, card *model.Card, attempt *model.Attempt, res harvest.Result) error {
-	if r.Dispose != nil {
-		if err := r.Dispose(ctx, card, res); err != nil {
-			return err
-		}
+	if r.Dispose == nil {
+		return nil
+	}
+	if err := r.Dispose(ctx, card, res); err != nil {
+		return err
+	}
+	attempt.Outcome = res.Outcome
+	if res.ErrorClass != "" {
+		attempt.ErrorClass = res.ErrorClass
+	}
+	if attempt.ErrorExcerpt == "" {
+		attempt.ErrorExcerpt = res.Excerpt
 	}
 	if err := db.UpdateCard(ctx, card); err != nil {
 		return err
@@ -274,6 +277,11 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 		if card.Status == model.CardRunning || card.Status == model.CardHarvesting {
 			occupy = append(occupy, card)
 		}
+		// Paused, canceled, and other stopped cards stay put even when an
+		// open attempt has no PID. A claim wait is still dispatchable.
+		if !canDispatch(card) {
+			continue
+		}
 		// A ready backlog waits for fill. One already running with no PID is an
 		// interrupted start and resumes here, the same way as any other card.
 		if card.Kind == model.KindBacklog && !resumable(card, attempts) {
@@ -292,7 +300,10 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 	if err != nil {
 		return nil, err
 	}
-	quotas := r.quotaView(channels)
+	quotas, err := r.quotaView(ctx, db, channels)
+	if err != nil {
+		return nil, err
+	}
 	for _, card := range ready {
 		if live[card.ID] {
 			continue
@@ -365,6 +376,9 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if open, err := openAttempt(ctx, db, card.ID); err != nil {
 		return "", err
 	} else if open != nil {
+		if !canDispatch(card) {
+			return "", nil
+		}
 		return r.resumeAttempt(ctx, db, card, obj, open)
 	}
 	project, err := db.GetProject(ctx, obj.Project)
@@ -395,6 +409,11 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	wsCard, cont, readOnly, err := r.workspaceTarget(ctx, db, card)
 	if err != nil {
 		return "", err
+	}
+	// The branch and worktree can exist before the attempt row is stored.
+	// Continue that branch instead of creating it again.
+	if !cont && gitRefExists(ctx, project.RepoPath, "refs/heads/"+cardBranchName(obj.ID, wsCard)) {
+		cont = true
 	}
 	root := project.WorktreeRoot
 	if strings.TrimSpace(root) == "" {
@@ -455,6 +474,9 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 }
 
 func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, attempt *model.Attempt) (string, error) {
+	if !canDispatch(card) {
+		return "", nil
+	}
 	project, err := db.GetProject(ctx, obj.Project)
 	if err != nil {
 		return "", err
@@ -578,7 +600,11 @@ func (r *Runner) fill(ctx context.Context, db *store.Store, used map[string]bool
 	}
 	now := r.now()
 	for _, ch := range channels {
-		if used[ch.ID] || !windowFills(ch, now) || readyNeeds(cards, ch.ID) {
+		est, err := quotas.Remaining(ctx, ch.ID)
+		if err != nil {
+			return err
+		}
+		if used[ch.ID] || !windowFills(ch, est, now) || readyNeeds(cards, ch.ID) {
 			continue
 		}
 		var card model.Card
@@ -637,42 +663,47 @@ func readyNeeds(cards []model.Card, channelID string) bool {
 	return false
 }
 
-func windowFills(ch model.Channel, now time.Time) bool {
+func windowFills(ch model.Channel, est quota.Estimate, now time.Time) bool {
+	if est.Blocked && !est.Reset.IsZero() && now.Before(est.Reset) {
+		return false
+	}
 	margin := ch.Redline + fillMargin
-	near := false
-	for _, w := range ch.QuotaWindows {
-		ratio, known := windowRatio(w)
-		if !known {
-			continue
-		}
-		if ratio <= ch.Redline {
+	if !est.Unknown {
+		if est.Ratio <= margin {
 			return false
 		}
-		if w.ResetAt.IsZero() || !w.ResetAt.After(now) || w.ResetAt.Sub(now) > fillWindow {
+		if resetSoon(est.Reset, now) {
+			return true
+		}
+		for _, w := range ch.QuotaWindows {
+			if (w.LimitTokens > 0 || w.LimitRequests > 0) && resetSoon(w.ResetAt, now) {
+				return true
+			}
+		}
+		return false
+	}
+	// A limit-less window is unknown. Only an explicit positive remaining
+	// ratio can satisfy the fill predicate. Zero is not a known balance.
+	near := false
+	for _, w := range ch.QuotaWindows {
+		if w.LimitTokens > 0 || w.LimitRequests > 0 || w.Remaining <= 0 {
 			continue
 		}
-		if ratio > margin {
+		if w.Remaining <= ch.Redline {
+			return false
+		}
+		if !resetSoon(w.ResetAt, now) {
+			continue
+		}
+		if w.Remaining > margin {
 			near = true
 		}
 	}
 	return near
 }
 
-func windowRatio(w model.QuotaWindow) (float64, bool) {
-	if w.LimitTokens > 0 {
-		used := w.UsedTokens
-		if used < 0 {
-			used = 0
-		}
-		if used > w.LimitTokens {
-			used = w.LimitTokens
-		}
-		return float64(w.LimitTokens-used) / float64(w.LimitTokens), true
-	}
-	if w.Name != "" || !w.ResetAt.IsZero() {
-		return w.Remaining, true
-	}
-	return 0, false
+func resetSoon(reset, now time.Time) bool {
+	return !reset.IsZero() && reset.After(now) && reset.Sub(now) <= fillWindow
 }
 
 type scheduleFile struct {
@@ -910,13 +941,26 @@ func (r *Runner) allow(ctx context.Context, db *store.Store, card *model.Card, o
 	return true, nil
 }
 
-func executionDepsDone(ctx context.Context, db *store.Store, card model.Card) bool {
-	if card.Kind == model.KindReview || card.Kind == model.KindRepair || card.Kind == model.KindRebase {
+func canDispatch(card model.Card) bool {
+	switch card.Status {
+	case model.CardReady, model.CardRunning:
 		return true
+	default:
+		return claimWait(card)
+	}
+}
+
+func executionDepsDone(ctx context.Context, db *store.Store, card model.Card) bool {
+	skip := ""
+	switch card.Kind {
+	case model.KindReview, model.KindRepair, model.KindRebase:
+		if len(card.Deps) > 0 {
+			skip = strings.TrimSpace(card.Deps[0])
+		}
 	}
 	for _, id := range card.Deps {
 		id = strings.TrimSpace(id)
-		if id == "" {
+		if id == "" || id == skip {
 			continue
 		}
 		dep, err := db.GetCard(ctx, id)
@@ -1033,84 +1077,120 @@ func detachHead(ctx context.Context, worktree string) error {
 	return nil
 }
 
-type channelQuota struct {
-	channels []model.Channel
-}
-
-// quotaView reports each window's own remaining ratio. The tightest window
-// wins. Snapshots are not ledger events, so two windows are not added together.
-func (r *Runner) quotaView(channels []model.Channel) route.Quotas {
-	return channelQuota{channels: channels}
-}
-
-func (q channelQuota) Remaining(ctx context.Context, channelID string) (quota.Estimate, error) {
-	if err := ctx.Err(); err != nil {
-		return quota.Estimate{}, err
+// quotaView is the estimator dispatch and fill both pass to routing.
+// Limited windows use configured caps, snapshot usage that has not reset,
+// finished-attempt usage, and a quota-hit reset read from attempt evidence.
+// A window with no token or request limit stays unknown.
+func (r *Runner) quotaView(ctx context.Context, db *store.Store, channels []model.Channel) (route.Quotas, error) {
+	led := quota.New()
+	led.SetClock(func() time.Time { return r.now() })
+	now := r.now().UTC()
+	attempts, err := db.ListAttempts(ctx, "")
+	if err != nil {
+		return nil, err
 	}
-	for _, ch := range q.channels {
-		if ch.ID != channelID {
+	for _, ch := range channels {
+		led.Configure(ch)
+		if err := r.seedChannel(ctx, led, ch, attempts, now); err != nil {
+			return nil, err
+		}
+	}
+	return led, nil
+}
+
+func (r *Runner) seedChannel(ctx context.Context, led *quota.Ledger, ch model.Channel, attempts []model.Attempt, now time.Time) error {
+	if used, ok := snapshotUsage(ch, now); ok {
+		at := now.Add(-time.Millisecond)
+		if err := led.Record(ctx, ch.ID, model.Usage{Tokens: used, Source: "snapshot", Confidence: 1}, at, now); err != nil {
+			return err
+		}
+	}
+	for i := range attempts {
+		a := attempts[i]
+		if a.Route.Channel != ch.ID || !attemptFinished(a) {
 			continue
 		}
-		best := 0.0
-		known := false
-		var reset time.Time
-		var limit, used int64
-		for _, w := range ch.QuotaWindows {
-			ratio, lim, u, ok := quotaSnapshot(w)
-			if !ok {
-				continue
-			}
-			if !known || ratio < best {
-				known = true
-				best = ratio
-				reset = w.ResetAt
-				limit, used = lim, u
-			}
+		usage := a.Usage
+		if usage.Tokens > 0 && strings.TrimSpace(usage.Source) == "" {
+			usage.Source = "attempt"
 		}
-		if !known {
-			return quota.Estimate{Unknown: true}, nil
+		ended := a.EndedAt
+		if ended.IsZero() {
+			ended = a.StartedAt
 		}
-		return quota.Estimate{
-			Ratio: best, Reset: reset, Confidence: 1,
-			LimitTokens: limit, UsedTokens: used,
-		}, nil
+		if err := led.Record(ctx, ch.ID, usage, a.StartedAt, ended); err != nil {
+			return err
+		}
+		if a.Outcome != model.OutcomeQuotaHit && a.ErrorClass != model.ErrorQuotaHit {
+			continue
+		}
+		reset, ok := quotaReset(r.Home, a)
+		if !ok {
+			continue
+		}
+		if err := led.ObserveLimit(ctx, ch.ID, reset); err != nil {
+			return err
+		}
 	}
-	return quota.Estimate{Unknown: true}, nil
+	return nil
 }
 
-// quotaSnapshot is one window's own balance. A token limit uses that window's
-// used count. A stored remaining ratio is not mixed with another window.
-func quotaSnapshot(w model.QuotaWindow) (ratio float64, limit, used int64, ok bool) {
-	if w.LimitTokens > 0 {
-		limit = w.LimitTokens
-		used = w.UsedTokens
-		if used <= 0 && w.Remaining > 0 && w.Remaining < 1 {
-			used = limit - int64(math.Round(w.Remaining*float64(limit)))
+// snapshotUsage is the largest limited-window used count that has not reached
+// its reset. One record is shared by every open window, so windows are not added.
+func snapshotUsage(ch model.Channel, now time.Time) (int64, bool) {
+	var used int64
+	ok := false
+	for _, w := range ch.QuotaWindows {
+		if w.LimitTokens <= 0 || w.UsedTokens <= 0 {
+			continue
 		}
-		if used < 0 {
-			used = 0
+		if !w.ResetAt.IsZero() && !now.Before(w.ResetAt) {
+			continue
 		}
-		if used > limit {
-			used = limit
+		ok = true
+		if w.UsedTokens > used {
+			used = w.UsedTokens
 		}
-		return float64(limit-used) / float64(limit), limit, used, true
 	}
-	ratio, ok = windowRatio(w)
-	if !ok {
-		return 0, 0, 0, false
+	return used, ok
+}
+
+func attemptFinished(a model.Attempt) bool {
+	return a.Outcome != "" || a.Exit != nil || !a.EndedAt.IsZero()
+}
+
+var resetStamp = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})`)
+
+func quotaReset(home string, a model.Attempt) (time.Time, bool) {
+	if t, ok := findReset(a.ErrorExcerpt); ok {
+		return t, true
 	}
-	if ratio < 0 {
-		ratio = 0
+	body, err := os.ReadFile(filepath.Join(home, "attempts", a.ID, "output.log"))
+	if err != nil {
+		return time.Time{}, false
 	}
-	if ratio > 1 {
-		ratio = 1
+	return findReset(string(body))
+}
+
+func findReset(text string) (time.Time, bool) {
+	for _, stamp := range resetStamp.FindAllString(text, -1) {
+		if t, err := time.Parse(time.RFC3339, stamp); err == nil {
+			return t, true
+		}
 	}
-	const synth = int64(1_000_000)
-	used = int64(math.Round((1 - ratio) * float64(synth)))
-	if used < 0 {
-		used = 0
+	return time.Time{}, false
+}
+
+func cardBranchName(objectiveID, cardID string) string {
+	return "cardex/" + objectiveID + "/c/" + cardID
+}
+
+func gitRefExists(ctx context.Context, repo, ref string) bool {
+	if strings.TrimSpace(repo) == "" || strings.TrimSpace(ref) == "" {
+		return false
 	}
-	return ratio, synth, used, true
+	cmd := exec.CommandContext(ctx, "git", "-C", repo, "show-ref", "--verify", "--quiet", ref)
+	return cmd.Run() == nil
 }
 
 func newID(prefix string) (string, error) {

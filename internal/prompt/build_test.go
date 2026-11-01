@@ -2,8 +2,6 @@ package prompt
 
 import (
 	"context"
-	"errors"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -173,7 +171,7 @@ func TestPrefacesRender(t *testing.T) {
 	checks := map[model.CardKind][]string{
 		model.KindDesign:    append([]string{"## 结论", "## 开放问题", "## 设计问题"}, shared...),
 		model.KindPlan:      append(append([]string{"## 结论", "## 开放问题", "## 新卡"}, shared...), planExtra...),
-		model.KindReplan:    append([]string{"## 结论", "## 开放问题", "## 新卡"}, shared...),
+		model.KindReplan:    append(append([]string{"## 结论", "## 开放问题", "## 新卡"}, shared...), []string{"context.md", "同步维护", "不要只调整卡清单"}...),
 		model.KindResearch:  {"## 事实", "### Q<id>", "只回答卡里列出的问题", "不下设计结论", "不改代码", "结论", "证据", "文件:行号", "命令及输出片段", "URL", "把握", "高", "中", "低", "未能核实", "不确定时写明，不要猜"},
 		model.KindReview:    {"## 复核结论", "pass", "rework", "只检查是否达成卡的目标、是否越界", "不得提出新需求"},
 		model.KindSpike:     {"## 结论", "实做验证"},
@@ -215,43 +213,75 @@ func TestPrefacesRender(t *testing.T) {
 			}
 		})
 	}
-	t.Run("missing-ranking", func(t *testing.T) {
-		absent := model.CardKind("absent-kind")
-		rank, rankErr := Preface(model.KindRanking)
-		_, absErr := Preface(absent)
-		if !errors.Is(absErr, fs.ErrNotExist) || !strings.Contains(absErr.Error(), "prompt: preface "+string(absent)) {
-			t.Fatalf("absent kind %v", absErr)
-		}
-		if rankErr != nil && strings.Contains(rankErr.Error(), "not in this lane") {
-			t.Fatalf("ranking-only refusal %v", rankErr)
-		}
-		if rankErr == nil {
-			if strings.TrimSpace(rank) == "" {
-				t.Fatal("empty ranking preface")
-			}
+}
+
+func TestBuildSoftKind(t *testing.T) {
+	ctx := context.Background()
+	const (
+		title = "SOFT-TITLE-9f3a"
+		body  = "SOFT-CARD-BODY-9f3a"
+	)
+	dev, err := Preface(model.KindDev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(dev, ".cardex-result.md") {
+		t.Fatal("dev preface is not the embedded template")
+	}
+	rank, err := Preface(model.KindRanking)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rankingTemplate := strings.Contains(rank, ".cardex-result.md")
+	cases := []struct {
+		name   string
+		kind   model.CardKind
+		prefix string
+		review bool
+	}{
+		{name: "empty", kind: "", prefix: dev},
+		{name: "unknown", kind: "not-a-real-kind", review: true},
+		{name: "ranking", kind: model.KindRanking, prefix: rank, review: !rankingTemplate},
+		{name: "dev", kind: model.KindDev, prefix: dev},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			out, err := Build(ctx, Input{
-				Card:      model.Card{Kind: model.KindRanking},
+				Card: model.Card{
+					Kind:       tc.kind,
+					Title:      title,
+					Body:       body,
+					Claims:     []model.Claim{{Path: "internal/prompt/build.go", Symbol: "Build"}},
+					Acceptance: []string{"go test ./internal/prompt/"},
+				},
 				Objective: model.Objective{ID: "obj"},
 				Context:   "CTX\n",
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.HasPrefix(out, rank) {
-				t.Fatal("present ranking preface was not returned")
+			for _, want := range []string{title, body, "internal/prompt/build.go", "Build", "go test ./internal/prompt/"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("missing card material %q\n%s", want, out)
+				}
 			}
-			return
-		}
-		if !errors.Is(rankErr, fs.ErrNotExist) || !strings.Contains(rankErr.Error(), "prompt: preface "+string(model.KindRanking)) {
-			t.Fatalf("ranking missing kind %v", rankErr)
-		}
-		if _, err := Build(ctx, Input{Card: model.Card{Kind: model.KindRanking}}); !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("build ranking %v", err)
-		}
-		if _, err := Build(ctx, Input{Card: model.Card{Kind: absent}}); !errors.Is(err, fs.ErrNotExist) {
-			t.Fatalf("build absent %v", err)
-		}
-	})
+			if tc.review {
+				if !strings.Contains(out, "待复核") {
+					t.Fatalf("missing review mark\n%s", out)
+				}
+				if strings.HasPrefix(out, dev) {
+					t.Fatal("missing template used the dev preface")
+				}
+				return
+			}
+			if !strings.HasPrefix(out, tc.prefix) {
+				t.Fatal("preface was not rendered first")
+			}
+			if strings.Contains(out, "待复核") {
+				t.Fatal("templated kind was marked for review")
+			}
+		})
+	}
 }
 
 func TestMissingContextIsEmpty(t *testing.T) {

@@ -8,4 +8,6 @@
 
 引用事实时写上问题编号。对某条事实存疑时写 `[fact] Q<id> 复查：<原因>`。
 
+按实际结果同步维护 context.md，不要只调整卡清单。
+
 在 `## 新卡` 里给出调整后的 JSON 卡清单。每张卡的字段是 `key`、`kind`、`title`、`body`、`tier?`、`claims?`、`deps?`、`acceptance?`。

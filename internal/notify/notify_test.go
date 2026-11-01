@@ -2,6 +2,8 @@ package notify
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,6 +13,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestOriginFlagBeatsEnvAndSlashID(t *testing.T) {
@@ -71,7 +74,8 @@ func TestDeliverOrderInboxWhenOriginFails(t *testing.T) {
 			t.Fatalf("unexpected flag %q", arg)
 		}
 	}
-	if calls[1][0] != "lark-cli" {
+	wantLark := []string{"lark-cli", "im", "+messages-send", "--chat-id", "chat-b", "--text", "need a decision"}
+	if !reflect.DeepEqual(calls[1], wantLark) {
 		t.Fatalf("lark argv %#v", calls[1])
 	}
 	inbox := filepath.Join(home, "inbox", "q-order.txt")
@@ -175,6 +179,12 @@ func TestPartialFailureKeepsDedupeAndBackoff(t *testing.T) {
 			exec := func(_ context.Context, argv []string) error {
 				if len(argv) == 0 {
 					t.Fatal("empty argv")
+				}
+				if argv[0] == "lark-cli" {
+					want := []string{"lark-cli", "im", "+messages-send", "--chat-id", "chat-b", "--text", "still open"}
+					if !reflect.DeepEqual(argv, want) {
+						t.Fatalf("lark argv %#v", argv)
+					}
 				}
 				trace = append(trace, argv[0])
 				if tc.failOrigin && argv[0] == "codex" {
@@ -735,7 +745,8 @@ func TestLarkArgvIsNotAProcess(t *testing.T) {
 	if err := svc.Deliver(context.Background(), lark); err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 1 || calls[0][0] != "lark-cli" {
+	want := []string{"lark-cli", "im", "+messages-send", "--chat-id", "oc_chat", "--text", "ping"}
+	if len(calls) != 1 || !reflect.DeepEqual(calls[0], want) {
 		t.Fatalf("lark calls %#v", calls)
 	}
 }
@@ -762,6 +773,279 @@ func TestFileAdapterWritesInbox(t *testing.T) {
 	if !strings.Contains(string(raw), "on disk") {
 		t.Fatalf("inbox %s", raw)
 	}
+}
+
+func TestReminderStateSurvivesNewDeliverer(t *testing.T) {
+	t.Run("partial", func(t *testing.T) {
+		home := t.TempDir()
+		cur := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+		var calls int
+		exec := func(_ context.Context, argv []string) error {
+			calls++
+			if len(argv) > 0 && argv[0] == "codex" {
+				return errors.New("origin down")
+			}
+			return nil
+		}
+		now := func() time.Time { return cur }
+		msg := Message{
+			QuestionID: "q-restart",
+			Objective:  "obj",
+			Origin:     "codex:thread-a",
+			Fallback:   "lark:chat-b",
+			Text:       "still open",
+			Home:       home,
+		}
+		other := msg
+		other.QuestionID = "q-other"
+		svc := New(exec, now)
+		if err := svc.Deliver(context.Background(), msg); err == nil {
+			t.Fatal("partial failure was ignored")
+		}
+		if err := svc.Deliver(context.Background(), other); err == nil {
+			t.Fatal("second partial failure was ignored")
+		}
+		if calls != 4 {
+			t.Fatalf("calls %d", calls)
+		}
+		st := svc.sent[msg.QuestionID]
+		held := calls
+		again := New(exec, now)
+		if err := again.Deliver(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+		if err := again.Deliver(context.Background(), other); err != nil {
+			t.Fatal(err)
+		}
+		if calls != held {
+			t.Fatalf("restart resent before the gap, calls %d", calls)
+		}
+		got := again.sent[msg.QuestionID]
+		if !got.at.Equal(st.at) || got.gap != st.gap || !reflect.DeepEqual(got.completed, st.completed) {
+			t.Fatalf("restored %+v want %+v", got, st)
+		}
+		cur = st.at.Add(st.gap)
+		if err := New(exec, now).Deliver(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+		if calls != held {
+			t.Fatalf("gap boundary resent, calls %d", calls)
+		}
+		cur = st.at.Add(st.gap + time.Nanosecond)
+		if err := New(exec, now).Deliver(context.Background(), msg); err == nil {
+			t.Fatal("reminder lost the failing origin")
+		}
+		if calls == held {
+			t.Fatal("restored gap did not open the next reminder")
+		}
+	})
+
+	t.Run("unacked-hermes", func(t *testing.T) {
+		const (
+			profile = "profile"
+			session = "session"
+			sub     = "mgr-r3d"
+		)
+		home := t.TempDir()
+		cur := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+		var inboxN int
+		origWrite := inboxWrite
+		t.Cleanup(func() { inboxWrite = origWrite })
+		inboxWrite = func(name string, data []byte, perm os.FileMode) error {
+			inboxN++
+			return origWrite(name, data, perm)
+		}
+		now := func() time.Time { return cur }
+		ack := func(home, subscriptionID string) error {
+			return simulateHermesReceive(home, subscriptionID, profile, session)
+		}
+		msg := Message{
+			QuestionID:     "q-hermes-restart",
+			Objective:      "obj",
+			Origin:         "hermes:" + profile + "/" + session,
+			Text:           "still open",
+			Home:           home,
+			SubscriptionID: sub,
+		}
+		svc := New(func(context.Context, []string) error { return nil }, now)
+		svc.receiveHermes = ack
+		if err := svc.Deliver(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+		first := svc.sent[msg.QuestionID]
+		svc.receiveHermes = nil
+		cur = first.at.Add(first.gap + time.Nanosecond)
+		if err := svc.Deliver(context.Background(), msg); err == nil {
+			t.Fatal("second delivery acked itself")
+		}
+		second := svc.sent[msg.QuestionID]
+		if second.wakeSeq != 2 || second.wakeID == "" || second.wakeID == first.wakeID || second.gap <= first.gap || second.digest == "" {
+			t.Fatalf("second identity %+v first %+v", second, first)
+		}
+		if len(hermesInboundFiles(t, home, sub)) != 2 {
+			t.Fatal("second delivery did not open a wake")
+		}
+		inboxAfter := inboxN
+		restart := New(func(context.Context, []string) error { return nil }, now)
+		if err := restart.Deliver(context.Background(), msg); err == nil {
+			t.Fatal("unacked restart started a clean delivery")
+		}
+		if inboxN != inboxAfter {
+			t.Fatal("unacked restart wrote the inbox again")
+		}
+		got := restart.sent[msg.QuestionID]
+		if !got.at.Equal(second.at) || got.gap != second.gap || got.wakeSeq != second.wakeSeq || got.wakeID != second.wakeID || got.digest != second.digest {
+			t.Fatalf("restored %+v want %+v", got, second)
+		}
+		if len(hermesInboundFiles(t, home, sub)) != 2 {
+			t.Fatal("unacked restart opened a new sequence")
+		}
+		cur = second.at.Add(first.gap + time.Nanosecond)
+		if err := New(func(context.Context, []string) error { return nil }, now).Deliver(context.Background(), msg); err == nil {
+			t.Fatal("shorter previous gap reopened the reminder")
+		}
+		if len(hermesInboundFiles(t, home, sub)) != 2 || inboxN != inboxAfter {
+			t.Fatal("reminder fired inside the restored gap")
+		}
+		cur = second.at.Add(second.gap + time.Nanosecond)
+		opened := New(func(context.Context, []string) error { return nil }, now)
+		opened.receiveHermes = ack
+		if err := opened.Deliver(context.Background(), msg); err != nil {
+			t.Fatal(err)
+		}
+		if opened.sent[msg.QuestionID].wakeSeq != 3 || opened.sent[msg.QuestionID].wakeID == second.wakeID {
+			t.Fatalf("seq after restored gap %+v", opened.sent[msg.QuestionID])
+		}
+		if len(hermesInboundFiles(t, home, sub)) != 3 {
+			t.Fatal("restored gap did not open a new wake")
+		}
+	})
+}
+
+func TestQuestionIdentityStaysDistinct(t *testing.T) {
+	longPrefix := strings.Repeat("a", 80)
+	pairs := [][2]string{
+		{"q/a", "qa"},
+		{longPrefix + "xxx", longPrefix + "yyy"},
+		{"q/a", "q_a"},
+		{"dir/item", "item"},
+		{"a..b", "a.b"},
+		{"!!!", "@@@"},
+	}
+	for _, pair := range pairs {
+		t.Run(pair[0]+" vs "+pair[1], func(t *testing.T) {
+			left := deliverQuestionIdentity(t, pair[0])
+			right := deliverQuestionIdentity(t, pair[1])
+			again := deliverQuestionIdentity(t, pair[0])
+			if left != again {
+				t.Fatalf("unstable %q %+v %+v", pair[0], left, again)
+			}
+			if left.task == right.task || left.wake == right.wake || left.inbox == right.inbox {
+				t.Fatalf("collision %+v %+v", left, right)
+			}
+			checkQuestionIdentity(t, pair[0], left)
+			checkQuestionIdentity(t, pair[1], right)
+		})
+	}
+}
+
+type questionIdentity struct {
+	task, wake, inbox string
+}
+
+func deliverQuestionIdentity(t *testing.T, id string) questionIdentity {
+	t.Helper()
+	home := t.TempDir()
+	cur := time.Date(2026, 11, 1, 11, 0, 0, 0, time.UTC)
+	svc := New(func(context.Context, []string) error { return nil }, func() time.Time { return cur })
+	svc.receiveHermes = func(home, subscriptionID string) error {
+		return simulateHermesReceive(home, subscriptionID, "profile", "session")
+	}
+	if err := svc.Deliver(context.Background(), Message{
+		QuestionID:     id,
+		Objective:      "obj",
+		Origin:         "hermes:profile/session",
+		Text:           "body",
+		Home:           home,
+		SubscriptionID: "mgr-r3d",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, raw := readOnlyInbound(t, hermesInboxDir(home, "mgr-r3d"))
+	var inbound hermesInboundFile
+	if err := json.Unmarshal(raw, &inbound); err != nil {
+		t.Fatal(err)
+	}
+	_, _, rows := mustParseCompact(t, inbound.Message)
+	if len(rows) != 1 || rows[0].wake != rows[0].task+":1" || inbound.WakeEventIDs[0] != rows[0].wake {
+		t.Fatalf("wake %+v ids %+v", rows, inbound.WakeEventIDs)
+	}
+	entries, err := os.ReadDir(filepath.Join(home, "inbox"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".txt") {
+		t.Fatalf("inbox %#v", entries)
+	}
+	return questionIdentity{
+		task:  rows[0].task,
+		wake:  rows[0].wake,
+		inbox: strings.TrimSuffix(entries[0].Name(), ".txt"),
+	}
+}
+
+func checkQuestionIdentity(t *testing.T, id string, got questionIdentity) {
+	t.Helper()
+	assertReceiverToken(t, got.task)
+	assertReceiverToken(t, got.inbox)
+	if got.wake != got.task+":1" {
+		t.Fatalf("wake %q task %q", got.wake, got.task)
+	}
+	assertReceiverToken(t, strings.TrimSuffix(got.wake, ":1"))
+	if strings.Contains(got.wake, "/") || strings.Contains(got.wake, "..") {
+		t.Fatalf("wake %q", got.wake)
+	}
+	for i, r := range got.wake {
+		if i == 0 && !receiverAlnum(r) {
+			t.Fatalf("wake %q", got.wake)
+		}
+		if !isCompactRune(r) {
+			t.Fatalf("wake rune %q", r)
+		}
+	}
+	sum := sha256.Sum256([]byte(id))
+	digest := hex.EncodeToString(sum[:])[:16]
+	if got.task != id && !strings.Contains(got.task, digest) {
+		t.Fatalf("task %q lost digest of %q", got.task, id)
+	}
+	if got.inbox != id && !strings.Contains(got.inbox, digest) {
+		t.Fatalf("inbox %q lost digest of %q", got.inbox, id)
+	}
+	if got.task != got.inbox {
+		t.Fatalf("hermes %q inbox %q", got.task, got.inbox)
+	}
+}
+
+func assertReceiverToken(t *testing.T, id string) {
+	t.Helper()
+	if id == "" || utf8.RuneCountInString(id) > 80 {
+		t.Fatalf("len %d %q", utf8.RuneCountInString(id), id)
+	}
+	if strings.Contains(id, "/") || strings.Contains(id, "..") {
+		t.Fatalf("separators %q", id)
+	}
+	for i, r := range id {
+		if i == 0 && !receiverAlnum(r) {
+			t.Fatalf("start %q", id)
+		}
+		if !isCompactRune(r) {
+			t.Fatalf("rune %q in %q", r, id)
+		}
+	}
+}
+
+func receiverAlnum(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 }
 
 type compactRow struct {

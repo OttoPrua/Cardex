@@ -2,7 +2,7 @@ package prompt
 
 import (
 	"embed"
-	"fmt"
+	"strings"
 
 	"cardex/internal/model"
 )
@@ -11,12 +11,16 @@ import (
 var prefaces embed.FS
 
 // Preface returns the embedded instructions for a card kind.
-// A kind with no template fails the same way as any other missing file.
+// An empty kind uses the dev preface. A kind with no template is marked
+// for review; the card materials still go out with the prompt.
 func Preface(kind model.CardKind) (string, error) {
+	if strings.TrimSpace(string(kind)) == "" {
+		kind = model.KindDev
+	}
 	name := "templates/" + string(kind) + ".md"
 	raw, err := prefaces.ReadFile(name)
 	if err != nil {
-		return "", fmt.Errorf("prompt: preface %s: %w", kind, err)
+		return "待复核\n", nil
 	}
 	return string(raw), nil
 }

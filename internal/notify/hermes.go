@@ -86,26 +86,71 @@ func compactQuestionWake(subscriptionID, questionID, objective string, seq int) 
 	return b.String(), []string{wake}
 }
 
-func compactTaskID(id string) string {
+const (
+	deliveryIDMax   = 80
+	deliveryDigestN = 16
+)
+
+// deliveryIdentity is the receiver token for one question id.
+// An id that already meets the receiver rules is kept. Stripping or
+// truncation keeps a stable digest of the original so different ids
+// cannot collapse into one token.
+func deliveryIdentity(id string) string {
+	if deliveryIDOK(id) {
+		return id
+	}
+	suffix := "-" + questionDigest(id)
+	prefix := compactPrefix(id, deliveryIDMax-len(suffix))
+	token := prefix + suffix
+	if prefix == "" {
+		token = "q" + suffix
+	}
+	if !deliveryIDOK(token) {
+		token = "q" + suffix
+	}
+	return token
+}
+
+func questionDigest(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return hex.EncodeToString(sum[:])[:deliveryDigestN]
+}
+
+func deliveryIDOK(s string) bool {
+	if s == "" || utf8.RuneCountInString(s) > deliveryIDMax {
+		return false
+	}
+	return isTaskID(s)
+}
+
+func compactPrefix(id string, max int) string {
 	var b strings.Builder
 	for _, r := range id {
 		if isCompactRune(r) {
 			b.WriteRune(r)
 		}
 	}
-	s := strings.ReplaceAll(b.String(), "..", ".")
+	s := b.String()
+	for strings.Contains(s, "..") {
+		s = strings.ReplaceAll(s, "..", ".")
+	}
 	s = strings.Trim(s, ".:-")
-	if s == "" || !isTaskID(s) {
-		return "question"
+	if s == "" || max <= 0 {
+		return ""
 	}
-	if utf8.RuneCountInString(s) > 80 {
-		s = string([]rune(s)[:80])
-		s = strings.TrimRight(s, ".:-")
+	runes := []rune(s)
+	if len(runes) > max {
+		runes = runes[:max]
 	}
+	s = strings.TrimRight(string(runes), ".:-")
 	if s == "" || !isTaskID(s) {
-		return "question"
+		return ""
 	}
 	return s
+}
+
+func compactTaskID(id string) string {
+	return deliveryIdentity(id)
 }
 
 func compactProject(objective string) string {

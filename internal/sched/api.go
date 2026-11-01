@@ -20,5 +20,5 @@ type Stub struct{}
 // Tick is one scheduler pass.
 func (Stub) Tick(context.Context) error { return ErrNotImplemented }
 
-// Serve runs Tick until ctx is cancelled and mounts the board. R3-C owns the body.
-func Serve(ctx context.Context, home, addr string) error { return ErrNotImplemented }
+// Serve runs Tick until ctx is cancelled and mounts the board.
+// The body lives in serve.go.

@@ -175,7 +175,7 @@ func runServe(ctx context.Context, home, addr string, stdout, stderr io.Writer) 
 		_ = srv.Shutdown(shut)
 	}()
 	fmt.Fprintf(stdout, "serve listening %s\n", ln.Addr())
-	loop := sched.Stub{}
+	loop := sched.New(home)
 	for n := 1; ; n++ {
 		if ctx.Err() != nil {
 			return 0

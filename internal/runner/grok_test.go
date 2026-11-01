@@ -931,6 +931,59 @@ func TestGrokGoalQuotaTerminal(t *testing.T) {
 	})
 }
 
+// TestGrokScreenEchoAndTruncation is the screen-channel echo and truncation
+// table. Classify and Drive both see the bytes. Drive's copy includes the
+// synchronized-update end marker.
+func TestGrokScreenEchoAndTruncation(t *testing.T) {
+	sentence := "You've hit the rate limit for your plan."
+	if len(sentence) >= 80 {
+		t.Fatalf("sentence len %d", len(sentence))
+	}
+	padded := sentence + strings.Repeat(" ", 80-len(sentence)) + "is only an example"
+	sync := "\x1b[?2026l"
+	rows := []struct {
+		name   string
+		prompt string
+		zero   bool
+		pty    string
+	}{
+		{
+			name: "goal_echo_without_prompt",
+			zero: true,
+			pty:  "/goal explain\n" + sentence + "\n" + sync,
+		},
+		{
+			name:   "truncated_multiline_prompt",
+			prompt: "finish the card\n" + padded,
+			pty:    "/goal finish the card\n" + padded + "\n" + sync,
+		},
+		{
+			name:   "truncated_body",
+			prompt: "finish the card",
+			pty:    padded + "\n" + sync,
+		},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			var classify runner.Grok
+			if !row.zero {
+				classify.Prompt = row.prompt
+			}
+			if got := classify.Classify(0, []byte(row.pty)); got == model.ErrorQuotaHit || got == model.ErrorBudgetLimited {
+				t.Fatalf("class %q", got)
+			}
+			dir := t.TempDir()
+			err, _ := driveSession(t, row.prompt, dir, []byte(row.pty))
+			if err == nil || errors.Is(err, runner.ErrGrokQuotaHit) || errors.Is(err, runner.ErrGrokBudgetLimited) || errors.Is(err, runner.ErrGrokCrash) {
+				t.Fatalf("drive %v", err)
+			}
+			if _, ok := runner.ReadGrokGoalSession(dir); ok {
+				t.Fatal("counterexample invented a session status")
+			}
+		})
+	}
+}
+
 // TestGrokInteractiveQuota keeps the headless stderr line and the headless
 // error JSON off the interactive quota terminal. Completion, budget_limited,
 // and the host exit crash stay on their own channels. The positive card is

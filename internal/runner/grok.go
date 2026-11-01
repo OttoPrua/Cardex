@@ -400,11 +400,15 @@ func jsonErrorRecord(line string) bool {
 // prompt is not yielded, even when it is a JSON error record or any other
 // JSON object. A complete JSON error record outside that span is yielded.
 // The last line is finished: Classify sees the whole capture.
-func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
-	echoLines := goalPromptEchoLines(prompt)
-	echoIdx := 0
-	matchedPrompt := false
-	inEcho := false
+// scanLine is one finished row. cutOff means the frame dropped a tail, so
+// the visible text is not a finished diagnosis. The echo walk still sees it.
+type scanLine struct {
+	text   string
+	cutOff bool
+}
+
+func splitScanLines(output []byte) []scanLine {
+	var lines []scanLine
 	rest := output
 	for len(rest) > 0 {
 		raw := rest
@@ -415,6 +419,28 @@ func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
 			rest = nil
 		}
 		line := strings.TrimSpace(strings.TrimRight(string(raw), "\r"))
+		lines = append(lines, scanLine{text: line})
+	}
+	return lines
+}
+
+func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
+	walkScanLines(splitScanLines(output), prompt, func(line scanLine) {
+		fn(line.text)
+	})
+}
+
+// walkScanLines is the echo and body-source walk. A known prompt span is the
+// echo. With no prompt, a /goal line opens an echo through later plain lines.
+// A blank line does not close it. A complete JSON error record outside that
+// span is still yielded. cutOff does not change that decision.
+func walkScanLines(lines []scanLine, prompt string, fn func(line scanLine)) {
+	echoLines := goalPromptEchoLines(prompt)
+	echoIdx := 0
+	matchedPrompt := false
+	inEcho := false
+	for _, item := range lines {
+		line := item.text
 		if echoIdx < len(echoLines) && line == echoLines[echoIdx] {
 			echoIdx++
 			inEcho = echoIdx < len(echoLines)
@@ -427,7 +453,7 @@ func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
 		}
 		if jsonErrorRecord(line) {
 			inEcho = false
-			fn(line)
+			fn(item)
 			continue
 		}
 		if inEcho && !matchedPrompt {
@@ -436,7 +462,7 @@ func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
 		if line == "" {
 			continue
 		}
-		fn(line)
+		fn(item)
 	}
 }
 
@@ -645,12 +671,14 @@ const (
 	grokGoalScreenCols = 80
 )
 
-// grokScreen is the 24×80 frame grok 1.0.40 used for the quota transcript.
-// One rune is one cell. Writes past the frame are dropped. A synchronized
-// update end (ESC[?2026l) commits the frame.
+// grokScreen is the 24×80 frame a committed quota transcript uses.
+// One rune is one cell. A printable rune past column 80 is dropped and that
+// row is not a finished diagnosis. A synchronized update end (ESC[?2026l)
+// commits the frame.
 type grokScreen struct {
-	cell []rune
-	r, c int
+	cell     []rune
+	overflow [grokGoalScreenRows]bool
+	r, c     int
 }
 
 func newGrokScreen() *grokScreen {
@@ -671,6 +699,8 @@ func (s *grokScreen) put(ch rune) {
 			for i := (grokGoalScreenRows - 1) * grokGoalScreenCols; i < len(s.cell); i++ {
 				s.cell[i] = ' '
 			}
+			copy(s.overflow[:grokGoalScreenRows-1], s.overflow[1:])
+			s.overflow[grokGoalScreenRows-1] = false
 			s.r = grokGoalScreenRows - 1
 		}
 		return
@@ -678,7 +708,11 @@ func (s *grokScreen) put(ch rune) {
 		s.c = 0
 		return
 	}
-	if ch < ' ' || s.r < 0 || s.c < 0 || s.r >= grokGoalScreenRows || s.c >= grokGoalScreenCols {
+	if ch < ' ' || s.r < 0 || s.c < 0 || s.r >= grokGoalScreenRows {
+		return
+	}
+	if s.c >= grokGoalScreenCols {
+		s.overflow[s.r] = true
 		return
 	}
 	s.cell[s.r*grokGoalScreenCols+s.c] = ch
@@ -727,28 +761,24 @@ func (s *grokScreen) rowString(row int) string {
 	return string(raw[:end])
 }
 
+// showsInteractiveQuota reads the committed frame with the same echo and
+// body-source walk as the line scanner. A row whose tail the frame dropped
+// is not a finished quota diagnosis.
 func (s *grokScreen) showsInteractiveQuota(prompt string) bool {
-	echo := goalPromptEchoLines(prompt)
+	lines := make([]scanLine, grokGoalScreenRows)
 	for row := 0; row < grokGoalScreenRows; row++ {
-		line := s.rowString(row)
-		if line == "" || grokQuotaEcho(line, echo) {
-			continue
-		}
-		if grokInteractiveQuotaLine(line) || grokRateRetryStatus(line) {
-			return true
-		}
+		lines[row] = scanLine{text: s.rowString(row), cutOff: s.overflow[row]}
 	}
-	return false
-}
-
-func grokQuotaEcho(line string, echo []string) bool {
-	line = strings.TrimSpace(line)
-	for _, e := range echo {
-		if line == e {
-			return true
+	hit := false
+	walkScanLines(lines, prompt, func(line scanLine) {
+		if line.cutOff {
+			return
 		}
-	}
-	return false
+		if grokInteractiveQuotaLine(line.text) || grokRateRetryStatus(line.text) {
+			hit = true
+		}
+	})
+	return hit
 }
 
 // grokInteractiveQuotaScreen replays PTY bytes onto a 24×80 frame. A

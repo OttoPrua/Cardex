@@ -33,3 +33,6 @@ B2 未完成：额度终态只接受可追溯的交互转录或 v1 已写会话�
 终态验收必须在可信交互通道上正向识别额度，排除不可信样本不能替代该验收 → internal/runner/grok.go:195、grok.go:243、grok.go:577 → TestGrokGoalQuotaTerminal
 终态正向验收必须覆盖实际交互通道的输出，字符串表只能证明文案存在 → 未改 internal/runner/grok.go:194、grok.go:243、grok.go:577、grok.go:597 与 testdata/grok_goal_quota_pty.txt:1：v1 observeNativeGrokGoal（workflow_goal.go:2928）不读额度字段，380 份 goal/state.json 的 status 只有 complete/active/budget_limited/user_paused/no_progress_paused/blocked/back_off_paused/infra_paused，workflow_goal_host_unix.go:240 不留 PTY 转录 → TestGrokGoalQuotaTerminal
 交互终态的正向验收必须覆盖实际 PTY 输出及其消费路径；字符串表文案、手写整行、或“没有转录”的说明都不能充当该验收 → internal/runner/grok.go:195、grok.go:244、grok.go:607、grok.go:632、grok.go:759 → TestGrokGoalQuotaTerminal
+拒收的真实 CLI 采集不留在树里，历史不改写 → docs/v2/lane-notes/R2-B.md:7、internal/runner/grok_test.go:693 → TestGrokGoalQuotaTerminal
+交互额度的正向验收只回放已有 screen 日志里的终端帧，并写明帧来源与嵌入的额度句 → internal/runner/grok.go:632、grok.go:767、testdata/grok_goal_quota_screen.provenance.txt:1 → TestGrokGoalQuotaTerminal
+屏幕解析沿用行解析的回显和正文排除，被帧截断的行不是完成的额度诊断 → internal/runner/grok.go:437、grok.go:715、grok.go:767（cursor.go:52、kimi.go:112、agy.go:44 无屏幕通道） → TestGrokScreenEchoAndTruncation

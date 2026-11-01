@@ -433,10 +433,11 @@ func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
 // echoWalk is the echo and body-source walk. A known prompt span is the
 // echo. With no prompt, a /goal line opens an echo through later plain lines.
 // A blank line does not close it. A complete JSON error record outside that
-// span is still yielded. cutOff does not change that decision.
-// Screen rows and prompt lines share strings.TrimSpace, so a display indent
-// is the same line. The screen keeps this walk as rows scroll off, so a later
-// frame still knows that origin.
+// span is still yielded. Screen rows and prompt lines share strings.TrimSpace,
+// so a display indent is the same line. The screen keeps this walk as rows
+// scroll off. A later redraw of the known prompt is that echo again. A row
+// whose tail the frame dropped still consumes the echo line it prefixes, so
+// a prompt that has left the display does not stay open.
 type echoWalk struct {
 	echoLines     []string
 	echoIdx       int
@@ -451,10 +452,7 @@ func newEchoWalk(prompt string) echoWalk {
 func (w *echoWalk) feed(item scanLine, fn func(scanLine)) {
 	item.text = strings.TrimSpace(item.text)
 	line := item.text
-	if w.echoIdx < len(w.echoLines) && line == w.echoLines[w.echoIdx] {
-		w.echoIdx++
-		w.inEcho = w.echoIdx < len(w.echoLines)
-		w.matchedPrompt = w.echoIdx == len(w.echoLines)
+	if w.takeEcho(line, item.cutOff) {
 		return
 	}
 	if !w.matchedPrompt && w.echoIdx == 0 && goalEchoLine(line) {
@@ -475,6 +473,39 @@ func (w *echoWalk) feed(item scanLine, fn func(scanLine)) {
 		return
 	}
 	fn(item)
+}
+
+// takeEcho consumes line when it is the next known prompt row, or a redraw
+// of that prompt after an earlier copy already matched. A cut-off row still
+// counts when the visible cells are the prefix of the echo line the frame
+// shortened. An empty redraw does not restart the prompt.
+func (w *echoWalk) takeEcho(line string, cutOff bool) bool {
+	if len(w.echoLines) == 0 {
+		return false
+	}
+	idx := -1
+	if w.echoIdx < len(w.echoLines) && echoRowMatch(w.echoLines[w.echoIdx], line, cutOff) {
+		idx = w.echoIdx
+	} else if line != "" && w.echoIdx > 0 && echoRowMatch(w.echoLines[0], line, cutOff) {
+		idx = 0
+	}
+	if idx < 0 {
+		return false
+	}
+	w.echoIdx = idx + 1
+	w.inEcho = w.echoIdx < len(w.echoLines)
+	w.matchedPrompt = w.echoIdx == len(w.echoLines)
+	return true
+}
+
+func echoRowMatch(want, line string, cutOff bool) bool {
+	if line == want {
+		return true
+	}
+	if !cutOff || line == "" || len(line) >= len(want) {
+		return false
+	}
+	return strings.HasPrefix(want, line)
 }
 
 func walkScanLines(lines []scanLine, prompt string, fn func(line scanLine)) {
@@ -691,13 +722,15 @@ const (
 
 // grokScreen is the 24×80 frame a committed quota transcript uses.
 // One rune is one cell. A printable rune past column 80 is dropped and that
-// row is not a finished diagnosis. Writing the last column replaces the
-// visible cells, so the truncation flag clears until another rune is dropped.
-// walk keeps the echo decision for rows that have scrolled off.
+// row is not a finished diagnosis. The cells still on the row stand in for
+// the dropped tail. The truncation flag clears only after a later redraw
+// overwrites every one of those cells. Writing column 80 alone does not.
+// walk keeps echo progress for rows that have scrolled off.
 // A synchronized update end (ESC[?2026l) commits the frame.
 type grokScreen struct {
 	cell     []rune
 	overflow [grokGoalScreenRows]bool
+	tail     [grokGoalScreenRows][grokGoalScreenCols]bool
 	r, c     int
 	walk     echoWalk
 }
@@ -723,6 +756,8 @@ func (s *grokScreen) put(ch rune) {
 			}
 			copy(s.overflow[:grokGoalScreenRows-1], s.overflow[1:])
 			s.overflow[grokGoalScreenRows-1] = false
+			copy(s.tail[:grokGoalScreenRows-1], s.tail[1:])
+			s.tail[grokGoalScreenRows-1] = [grokGoalScreenCols]bool{}
 			s.r = grokGoalScreenRows - 1
 		}
 		return
@@ -734,14 +769,37 @@ func (s *grokScreen) put(ch rune) {
 		return
 	}
 	if s.c >= grokGoalScreenCols {
-		s.overflow[s.r] = true
+		s.cutRow(s.r)
 		return
 	}
 	s.cell[s.r*grokGoalScreenCols+s.c] = ch
+	written := s.c
 	s.c++
-	if s.c == grokGoalScreenCols {
-		s.overflow[s.r] = false
+	s.wroteCell(s.r, written)
+}
+
+// cutRow marks row truncated. Every visible cell stands in for the dropped
+// tail until a later write replaces it.
+func (s *grokScreen) cutRow(row int) {
+	s.overflow[row] = true
+	for c := range s.tail[row] {
+		s.tail[row][c] = true
 	}
+}
+
+// wroteCell clears the truncation flag only once this redraw has replaced
+// every cell that still stands in for the dropped tail.
+func (s *grokScreen) wroteCell(row, col int) {
+	if !s.overflow[row] {
+		return
+	}
+	s.tail[row][col] = false
+	for _, still := range s.tail[row] {
+		if still {
+			return
+		}
+	}
+	s.overflow[row] = false
 }
 
 func (s *grokScreen) cup(body string) {
@@ -788,8 +846,8 @@ func (s *grokScreen) rowString(row int) string {
 
 // showsInteractiveQuota reads the committed frame with the same echo and
 // body-source walk as the line scanner. Rows that already scrolled off stay
-// in s.walk, so the visible rows continue that echo. A row whose tail the
-// frame dropped is not a finished quota diagnosis.
+// in s.walk, and a redraw of the known prompt matches that echo again. A row
+// whose tail the frame dropped is not a finished quota diagnosis.
 func (s *grokScreen) showsInteractiveQuota() bool {
 	w := s.walk
 	hit := false

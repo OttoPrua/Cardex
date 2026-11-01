@@ -934,9 +934,13 @@ func TestGrokGoalQuotaTerminal(t *testing.T) {
 // TestGrokScreenEchoAndTruncation is the screen-channel echo and truncation
 // table. Classify and goal-mode Drive both see the bytes. cursor, kimi, and
 // agy have no screen frame; their Classify path is classifyScanned only.
-// Echo origin has to survive scroll, and a row's truncation flag has to
-// follow the current cells. Drive's copy includes the synchronized-update
-// end marker.
+// This rework searched those three for a scrolled-echo update or a
+// last-column truncation clear and left them unchanged.
+// Echo origin has to follow the current frame: a redrawn known prompt is
+// echo again, and a prompt that has scrolled off does not swallow a later
+// card. A row's truncation flag clears only when the redraw replaces the
+// cells that stand in for the dropped tail. Drive's copy includes the
+// synchronized-update end marker.
 func TestGrokScreenEchoAndTruncation(t *testing.T) {
 	sentence := "You've hit the rate limit for your plan."
 	if len(sentence) >= 80 {
@@ -945,6 +949,14 @@ func TestGrokScreenEchoAndTruncation(t *testing.T) {
 	padded := sentence + strings.Repeat(" ", 80-len(sentence)) + "is only an example"
 	sync := "\x1b[?2026l"
 	scrolledPrompt := "explain\n" + strings.Repeat("context line\n", 24) + sentence
+	redrawPrompt := "explain\n" + sentence
+	// Full echo, 24 newlines, commit, then the same prompt drawn on rows 1 and 2.
+	redrawAfterScroll := "/goal " + redrawPrompt + "\n" + strings.Repeat("\n", 24) + sync +
+		"\x1b[1;1H/goal explain\x1b[2;1H" + sentence + sync
+	longPrompt := strings.Repeat("x", 90)
+	truncatedEchoThenQuota := "/goal " + longPrompt + "\n" + strings.Repeat("\n", 24) +
+		"\x1b[10;1H" + sentence + sync
+	lastColumnOnly := "\x1b[10;1H" + padded + "\x1b[10;80H " + sync
 	rows := []struct {
 		name      string
 		prompt    string
@@ -988,6 +1000,22 @@ func TestGrokScreenEchoAndTruncation(t *testing.T) {
 			prompt:    "explain",
 			pty:       "\x1b[10;1H" + strings.Repeat("x", 81) + "\x1b[10;1H" + strings.Repeat(" ", 80) + "\x1b[10;1H" + sentence + sync,
 			wantQuota: true,
+		},
+		{
+			name:   "prompt_redraw_after_scroll",
+			prompt: redrawPrompt,
+			pty:    redrawAfterScroll,
+		},
+		{
+			name:      "truncated_echo_scroll_then_real_quota",
+			prompt:    longPrompt,
+			pty:       truncatedEchoThenQuota,
+			wantQuota: true,
+		},
+		{
+			name:   "truncated_body_last_column_only",
+			prompt: "explain",
+			pty:    lastColumnOnly,
 		},
 	}
 	for _, row := range rows {

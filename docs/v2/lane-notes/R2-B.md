@@ -38,3 +38,5 @@ B2 未完成：额度终态只接受可追溯的交互转录或 v1 已写会话�
 屏幕解析沿用行解析的回显和正文排除，被帧截断的行不是完成的额度诊断 → internal/runner/grok.go:437、grok.go:715、grok.go:767（cursor.go:52、kimi.go:112、agy.go:44 无屏幕通道） → TestGrokScreenEchoAndTruncation
 屏幕回显来源必须随滚屏保留，屏幕文本与 prompt 用同一种 TrimSpace 比较，滚屏或显示缩进不能改变终态 → internal/runner/grok.go:452、grok.go:719、grok.go:793、grok.go:815（cursor.go:52、kimi.go:112、agy.go:44 无屏幕通道） → TestGrokScreenEchoAndTruncation
 截断标志必须反映当前行内容，写满最后一列的重绘清除旧标志，仍超出末列的正文保持截断 → internal/runner/grok.go:736、grok.go:742（cursor.go:52、kimi.go:112、agy.go:44 无屏幕通道） → TestGrokScreenEchoAndTruncation
+滚屏保留的回显状态必须随当前显示来源正确更新，不能把重绘的 prompt 当诊断，也不能持续吞掉 prompt 结束后的真实诊断 → internal/runner/grok.go:455、grok.go:482、grok.go:501、grok.go:752（cursor.go:52、kimi.go:112、agy.go:44 无屏幕通道，已查未改） → TestGrokScreenEchoAndTruncation
+只有足以消除旧截断内容的重绘才能清除截断标志，写到最后一列本身不能作为依据 → internal/runner/grok.go:772、grok.go:783、grok.go:792（cursor.go:52、kimi.go:112、agy.go:44 无屏幕通道，已查未改） → TestGrokScreenEchoAndTruncation

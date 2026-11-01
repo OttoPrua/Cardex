@@ -345,12 +345,8 @@ func absorbRankingText(t *testing.T, db *store.Store, text string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handled, err := (Deps{Store: db}).absorbDelegated(context.Background(), card, text)
-	if err != nil {
+	if err := AbsorbRanking(context.Background(), Deps{Store: db}, card, text); err != nil {
 		t.Fatal(err)
-	}
-	if !handled {
-		t.Fatal("ranking absorption did not handle the proposal")
 	}
 }
 

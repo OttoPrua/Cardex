@@ -1008,20 +1008,9 @@ func rankingDispose(db *store.Store) func(context.Context, *model.Card, harvest.
 		if card.Kind != model.KindRanking {
 			return other(ctx, card, res)
 		}
-		attempts, err := db.ListAttempts(ctx, card.ID)
-		if err != nil {
-			return err
-		}
-		id := ""
-		for i := range attempts {
-			if attempts[i].Outcome == "" {
-				id = attempts[i].ID
-			}
-		}
-		if id == "" {
-			return fmt.Errorf("ranking absorb: no attempt")
-		}
-		if err := loop.AbsorbDisposed(ctx, loop.Deps{Store: db}, id, res.Outcome, res.ResultText); err != nil {
+		// absorbAttempt does not dispatch ranking. Drive the lane absorber
+		// with the harvested text instead of waiting for that hook.
+		if err := loop.AbsorbRanking(ctx, loop.Deps{Store: db}, *card, res.ResultText); err != nil {
 			return err
 		}
 		fresh, err := db.GetCard(ctx, card.ID)

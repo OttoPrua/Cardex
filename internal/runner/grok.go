@@ -438,11 +438,13 @@ func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
 // scroll off. A later redraw of the known prompt is that echo again. A row
 // whose tail the frame dropped still consumes the echo line it prefixes, so
 // a prompt that has left the display does not stay open. A row that scrolls
-// off is consumed in order: a boundary finished that way stays closed, and a
-// later independent diagnostic stays outside that echo. When the first and
-// last prompt lines are the same text, only a residual tail still on the
-// current frame is held. The next on-screen rows decide whether it closed
-// that open echo or began a redraw. The next echo keeps its first line.
+// off in order is not a residual tail: a boundary finished that way stays
+// closed, and a later independent diagnostic stays outside that echo. A row
+// that scrolls off after a cursor-addressed redraw still gets the head/tail
+// check, so that redraw is not taken as the original echo's tail. When the
+// first and last prompt lines are the same text, the pending tail is held.
+// The next rows decide whether it closed that open echo or began a redraw.
+// The next echo keeps its first line.
 type echoWalk struct {
 	echoLines     []string
 	echoIdx       int
@@ -467,15 +469,19 @@ func (w *echoWalk) feed(item scanLine, fn func(scanLine)) {
 	w.consume(item, fn, true)
 }
 
-// feedScrolled consumes a row that has left the frame. That row is already
-// in order, so it must not be held as a residual tail still on screen.
-func (w *echoWalk) feedScrolled(item scanLine) {
-	w.consume(item, nil, false)
+// feedScrolled consumes a row that has left the frame. An in-order row is
+// not held as a residual tail. fromRedraw is a row a cursor-addressed write
+// produced: that row still gets the head/tail check. A boundary already
+// closed in order stays closed, because holdHeadTail requires an open leftover.
+func (w *echoWalk) feedScrolled(item scanLine, fromRedraw bool) {
+	w.consume(item, nil, fromRedraw)
 }
 
 func (w *echoWalk) consume(item scanLine, fn func(scanLine), probeResidual bool) {
 	item.text = strings.TrimSpace(item.text)
-	if probeResidual && w.specHold {
+	// An open speculation has to see the next row, including one that has
+	// since scrolled. probeResidual only decides whether this row may start one.
+	if w.specHold {
 		w.feedSpec(item, fn)
 		return
 	}
@@ -832,8 +838,13 @@ type grokScreen struct {
 	cell     []rune
 	overflow [grokGoalScreenRows]bool
 	tail     [grokGoalScreenRows][grokGoalScreenCols]bool
-	r, c     int
-	walk     echoWalk
+	// redrawn marks a row whose current text was written by CUP. When that
+	// row scrolls off it is a redraw, not the original echo's in-order tail.
+	redrawn [grokGoalScreenRows]bool
+	// addressed stays set after CUP until a newline advances in order.
+	addressed bool
+	r, c      int
+	walk      echoWalk
 }
 
 func newGrokScreen() *grokScreen {
@@ -847,12 +858,13 @@ func newGrokScreen() *grokScreen {
 func (s *grokScreen) put(ch rune) {
 	switch ch {
 	case '\n':
+		s.addressed = false
 		s.r++
 		s.c = 0
 		if s.r >= grokGoalScreenRows {
-			// This row has left. Consume it in order. Only an echo that is
-			// still open keeps a residual tail for the current frame.
-			s.walk.feedScrolled(scanLine{text: s.rowString(0), cutOff: s.overflow[0]})
+			// This row has left. An in-order row is the original echo's tail.
+			// A cursor-addressed redraw of that row is not.
+			s.walk.feedScrolled(scanLine{text: s.rowString(0), cutOff: s.overflow[0]}, s.redrawn[0])
 			if s.walk.echoIdx > 0 && !s.walk.matchedPrompt {
 				s.walk.leftover = true
 			}
@@ -864,6 +876,8 @@ func (s *grokScreen) put(ch rune) {
 			s.overflow[grokGoalScreenRows-1] = false
 			copy(s.tail[:grokGoalScreenRows-1], s.tail[1:])
 			s.tail[grokGoalScreenRows-1] = [grokGoalScreenCols]bool{}
+			copy(s.redrawn[:grokGoalScreenRows-1], s.redrawn[1:])
+			s.redrawn[grokGoalScreenRows-1] = false
 			s.r = grokGoalScreenRows - 1
 		}
 		return
@@ -873,6 +887,9 @@ func (s *grokScreen) put(ch rune) {
 	}
 	if ch < ' ' || s.r < 0 || s.c < 0 || s.r >= grokGoalScreenRows {
 		return
+	}
+	if s.addressed {
+		s.redrawn[s.r] = true
 	}
 	if s.c >= grokGoalScreenCols {
 		s.cutRow(s.r)
@@ -919,6 +936,7 @@ func (s *grokScreen) cup(body string) {
 	}
 	s.r = row - 1
 	s.c = col - 1
+	s.addressed = true
 }
 
 func vtParam(s string) int {

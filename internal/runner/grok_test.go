@@ -1114,6 +1114,68 @@ func TestGrokScreenEchoAndTruncation(t *testing.T) {
 	}
 }
 
+// TestGrokRedrawScrolledRowKeepsIndependentQuota is the redraw-then-scroll
+// boundary. A row that leaves the 24×80 frame because a cursor-addressed
+// redraw wrote it is that redraw, not the original echo's in-order tail.
+// Classify and Drive share the screen walk. The same bytes without the
+// later independent rate-limit row stay empty. cursor, kimi, and agy have
+// no screen frame and no scrolled-echo walk.
+func TestGrokRedrawScrolledRowKeepsIndependentQuota(t *testing.T) {
+	q := "You've hit the rate limit for your plan."
+	p := "explain\n/goal explain\n" + q + "\n/goal explain"
+	sync := "\x1b[?2026l"
+	// Original echo, 22 newlines, commit: only the echo tail remains.
+	// Rows 1–4 are then redrawn and committed.
+	opened := "/goal " + p + "\n" + strings.Repeat("\n", 22) + sync +
+		"\x1b[1;1H/goal explain\x1b[2;1H/goal explain\x1b[3;1H" + q + "\x1b[4;1H/goal explain" + sync
+	rows := []struct {
+		name  string
+		n     int
+		quota bool
+	}{
+		{name: "scroll_1_quota_true", n: 1, quota: true},
+		{name: "scroll_2_quota_true", n: 2, quota: true},
+		{name: "scroll_4_quota_true", n: 4, quota: true},
+		{name: "no_second_scroll_quota_true", n: -1, quota: true},
+		{name: "scroll_1_no_diagnosis", n: 1},
+		{name: "scroll_2_no_diagnosis", n: 2},
+		{name: "scroll_4_no_diagnosis", n: 4},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			pty := opened
+			if row.n >= 0 {
+				pty += "\x1b[24;1H" + strings.Repeat("\n", row.n)
+			}
+			if row.quota {
+				pty += "\x1b[10;1H" + q
+			}
+			pty += sync
+			got := runner.Grok{Prompt: p}.Classify(0, []byte(pty))
+			dir := t.TempDir()
+			err, _ := driveSession(t, p, dir, []byte(pty))
+			if _, ok := runner.ReadGrokGoalSession(dir); ok {
+				t.Fatal("counterexample invented a session status")
+			}
+			if row.quota {
+				if got != model.ErrorQuotaHit {
+					t.Fatalf("Classify=%q want %q", got, model.ErrorQuotaHit)
+				}
+				if err == nil || err.Error() != "grok goal quota_hit" {
+					t.Fatalf("Drive=%v want %q", err, "grok goal quota_hit")
+				}
+				return
+			}
+			if got != "" {
+				t.Fatalf("Classify=%q want empty", got)
+			}
+			if err == nil || err.Error() != "grok goal: no terminal" {
+				t.Fatalf("Drive=%v want %q", err, "grok goal: no terminal")
+			}
+		})
+	}
+}
+
 // TestGrokScrolledConsumedEchoStaysClosed is the scrolled complete-echo
 // boundary. Two in-order copies of the prompt may leave the 24×80 frame.
 // That must not reopen the boundary, and it must not swallow a later

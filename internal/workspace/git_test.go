@@ -324,6 +324,205 @@ func TestBlockPushRefusesLongerPushInsteadOf(t *testing.T) {
 	}
 }
 
+func TestBlockPushKeepsReadAddress(t *testing.T) {
+	type readOp struct {
+		name   string
+		args   []string
+		getURL bool
+	}
+	type pushOp struct {
+		name     string
+		direct   bool
+		noVerify bool
+	}
+	reads := []readOp{
+		{name: "ls-remote --get-url", args: []string{"ls-remote", "--get-url"}, getURL: true},
+		{name: "ls-remote", args: []string{"ls-remote"}},
+		{name: "fetch", args: []string{"fetch"}},
+	}
+	pushes := []pushOp{
+		{name: "inherited push"},
+		{name: "inherited push --no-verify", noVerify: true},
+		{name: "direct push", direct: true},
+		{name: "direct push --no-verify", direct: true, noVerify: true},
+	}
+	for _, scheme := range []string{"http", "https", "ftp", "ftps"} {
+		t.Run(scheme, func(t *testing.T) {
+			fx := newSchemeReadFixture(t, scheme)
+			for _, read := range reads {
+				t.Run(read.name, func(t *testing.T) {
+					fx.assertRead(t, read.getURL, append(append([]string{}, read.args...), fx.url)...)
+				})
+			}
+			for _, push := range pushes {
+				t.Run(push.name, func(t *testing.T) {
+					fx.assertPush(t, push.direct, push.noVerify)
+				})
+			}
+		})
+	}
+}
+
+type schemeReadFixture struct {
+	repo, bare, worktree, url string
+	seed, before              string
+	urlBefore, pushBefore     string
+	hits                      *atomic.Int32
+}
+
+func newSchemeReadFixture(t *testing.T, scheme string) *schemeReadFixture {
+	t.Helper()
+	repo := initRepo(t)
+	bare := filepath.Join(t.TempDir(), "bare.git")
+	gitRun(t, "", "init", "--bare", bare)
+	gitRun(t, repo, "remote", "add", "origin", bare)
+	gitRun(t, repo, "push", bare, "HEAD:refs/heads/probe")
+	seed := gitOut(t, bare, "rev-parse", "refs/heads/probe")
+	before := gitOut(t, bare, "show-ref")
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var hits atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			hits.Add(1)
+			c.Close()
+		}
+	}()
+	url := scheme + "://" + ln.Addr().String() + "/repo.git"
+	gitRun(t, repo, "config", "--local", "--add", "remote.origin.pushurl", url)
+	gitRun(t, repo, "config", "--local", "--add", "remote.origin.pushurl", bare)
+	urlBefore := gitOut(t, repo, "config", "--local", "--get", "remote.origin.url")
+	pushBefore := gitOut(t, repo, "config", "--local", "--get-all", "remote.origin.pushurl")
+
+	root := t.TempDir()
+	ctx := context.Background()
+	m := Git{}
+	wt, err := m.Create(ctx, CreateRequest{
+		CardID: "card", AttemptID: "a", ObjectiveID: "obj",
+		RepoPath: repo, WorktreeRoot: root, IntegrationBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "pushed.txt"), []byte("nope\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Commit(ctx, wt.Path, "should not land"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.BlockPush(ctx, wt.Path); err != nil {
+		t.Fatal(err)
+	}
+	fx := &schemeReadFixture{
+		repo: repo, bare: bare, worktree: wt.Path, url: url,
+		seed: seed, before: before,
+		urlBefore: urlBefore, pushBefore: pushBefore,
+		hits: &hits,
+	}
+	fx.assertMainUntouched(t)
+	assertPushReadsWork(t, wt.Path, bare, "origin")
+	return fx
+}
+
+func (f *schemeReadFixture) assertRead(t *testing.T, getURL bool, args ...string) {
+	t.Helper()
+	out, err := runIsolatedGit(f.worktree, args...)
+	text := string(out)
+	if strings.Contains(text, "invalid://cardex.blocked") {
+		t.Fatalf("git %s rewrote the read address:\n%s", strings.Join(args, " "), text)
+	}
+	if strings.Contains(text, "not allowed") {
+		t.Fatalf("git %s protocol denial:\n%s", strings.Join(args, " "), text)
+	}
+	if getURL {
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, text)
+		}
+		if strings.TrimSpace(text) != f.url {
+			t.Fatalf("resolved %q want %s", strings.TrimSpace(text), f.url)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatalf("git %s succeeded against a non-git endpoint:\n%s", strings.Join(args, " "), text)
+	}
+	if !strings.Contains(text, f.url) {
+		t.Fatalf("git %s did not use the original URL %s:\n%s", strings.Join(args, " "), f.url, text)
+	}
+}
+
+func (f *schemeReadFixture) assertPush(t *testing.T, direct, noVerify bool) {
+	t.Helper()
+	beforeHits := f.hits.Load()
+	ref := "refs/heads/inherited-new"
+	args := []string{"push"}
+	if noVerify {
+		args = append(args, "--no-verify")
+	}
+	if direct {
+		ref = "refs/heads/direct-new"
+		args = append(args, f.url, "HEAD:"+ref)
+	} else {
+		args = append(args, "origin", "HEAD:refs/heads/probe", "HEAD:"+ref)
+	}
+	out, err := runIsolatedGit(f.worktree, args...)
+	if err == nil {
+		t.Fatalf("git %s succeeded:\n%s", strings.Join(args, " "), out)
+	}
+	if strings.Contains(string(out), "not allowed") {
+		t.Fatalf("git %s protocol denial:\n%s", strings.Join(args, " "), out)
+	}
+	if got := gitOut(t, f.bare, "show-ref"); got != f.before {
+		t.Fatalf("remote refs changed\nbefore:\n%s\nafter:\n%s\npush:\n%s", f.before, got, out)
+	}
+	if _, missing := gitOptional(f.bare, "rev-parse", "--verify", ref); missing == nil {
+		t.Fatalf("created %s\n%s", ref, out)
+	}
+	if got := gitOut(t, f.bare, "rev-parse", "refs/heads/probe"); got != f.seed {
+		t.Fatalf("probe moved %s -> %s", f.seed, got)
+	}
+	if delta := f.hits.Load() - beforeHits; delta != 0 {
+		t.Fatalf("live push target was contacted %d times\n%s", delta, out)
+	}
+	f.assertMainUntouched(t)
+}
+
+func (f *schemeReadFixture) assertMainUntouched(t *testing.T) {
+	t.Helper()
+	if got := gitOut(t, f.repo, "config", "--local", "--get", "remote.origin.url"); got != f.urlBefore {
+		t.Fatalf("main origin url changed %s -> %s", f.urlBefore, got)
+	}
+	if got := gitOut(t, f.repo, "config", "--local", "--get-all", "remote.origin.pushurl"); got != f.pushBefore {
+		t.Fatalf("main pushurl changed %q -> %q", f.pushBefore, got)
+	}
+	if _, err := gitOptional(f.repo, "config", "--local", "--get", "core.hooksPath"); err == nil {
+		t.Fatal("main repo hooksPath was set")
+	}
+	for _, key := range []string{
+		"protocol.allow", "protocol.file.allow", "protocol.https.allow",
+		"protocol.http.allow", "protocol.ftp.allow", "protocol.ftps.allow",
+		"protocol.ssh.allow", "protocol.git.allow",
+	} {
+		if _, err := gitOptional(f.repo, "config", "--local", "--get", key); err == nil {
+			t.Fatalf("main repo %s was set", key)
+		}
+	}
+	if got, err := gitOptional(f.repo, "config", "--local", "--get-regexp", `url\..*\.insteadOf`); err == nil && strings.TrimSpace(got) != "" {
+		t.Fatalf("main repo insteadOf was set: %s", got)
+	}
+	if got, err := gitOptional(f.repo, "config", "--local", "--get-regexp", `url\..*\.pushInsteadOf`); err == nil && strings.TrimSpace(got) != "" {
+		t.Fatalf("main repo pushInsteadOf was set: %s", got)
+	}
+}
+
 func assertLongerPushInsteadOfRefused(t *testing.T, kind string, configArgs, pushArgs []string, advertise bool) {
 	t.Helper()
 	repo := initRepo(t)

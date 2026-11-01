@@ -212,11 +212,12 @@ func (Git) Remove(ctx context.Context, worktree string) error {
 // value; git still rejects it. Fetch and ls-remote do not read
 // push.followTags. The newline push option and the reject-all hook stay;
 // they are not this guarantee.
-// The empty rewrite is
-// ignored when a remote already has a pushurl, and http(s) ignores
-// receivepack, so those pushurls are rewritten with insteadOf. insteadOf
-// does not apply to a local fetch URL. protocol.allow is left unset.
-// Push-related keys in the main repository config are left alone.
+// The empty rewrite is ignored when a remote already has a pushurl.
+// http(s), ftp, and ftps also ignore receivepack. Those pushes still die
+// on the non-boolean push.followTags before transport. url.*.insteadOf is
+// not set, because it would rewrite fetch and ls-remote to the blocked
+// address. protocol.allow is left unset. Push-related keys in the main
+// repository config are left alone.
 func (Git) BlockPush(ctx context.Context, worktree string) error {
 	if strings.TrimSpace(worktree) == "" {
 		return fmt.Errorf("workspace: block push worktree required")
@@ -243,15 +244,6 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 	if _, err := runGit(ctx, worktree, "config", "--worktree", "--add", "url."+blockedPushURL+"/.pushInsteadOf", ""); err != nil {
 		return err
 	}
-	// pushInsteadOf does not apply to an explicit pushurl. http(s) also
-	// ignores receivepack, so rewrite those schemes on every operation that
-	// uses the URL. Local paths are not in this list, so fetch and ls-remote
-	// of a local remote stay intact.
-	for _, prefix := range httpPushSchemes {
-		if _, err := runGit(ctx, worktree, "config", "--worktree", "--add", "url."+blockedPushURL+"/.insteadOf", prefix); err != nil {
-			return err
-		}
-	}
 	reject, err := exec.LookPath("false")
 	if err != nil {
 		return fmt.Errorf("workspace: push reject command: %w", err)
@@ -259,7 +251,10 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 	// git push parses every push.followTags value with the boolean parser.
 	// A non-boolean dies before command-line push options or signing flags
 	// are applied, and a higher-priority -c push.followTags=false does not
-	// skip the worktree value. Fetch and ls-remote do not read it.
+	// skip the worktree value. That refusal covers an inherited or direct
+	// http, https, ftp, or ftps push URL, including --no-verify, without
+	// rewriting the address fetch and ls-remote use. Fetch and ls-remote
+	// do not read push.followTags.
 	if _, err := runGit(ctx, worktree, "config", "--worktree", "push.followTags", blockedPushFollowTags); err != nil {
 		return err
 	}
@@ -308,15 +303,6 @@ const blockedPushFollowTags = "cardex-blocked"
 // blockedPushOption contains a newline. git push rejects that only when
 // the command does not replace it with --push-option or -o.
 const blockedPushOption = "cardex-blocked\nrefuse"
-
-// httpPushSchemes ignore remote.<name>.receivepack. Rewriting them stops an
-// inherited pushurl of that scheme from being contacted.
-var httpPushSchemes = []string{
-	"https://",
-	"http://",
-	"ftp://",
-	"ftps://",
-}
 
 func excludeResultFile(ctx context.Context, worktree string) error {
 	gitDir, err := runGit(ctx, worktree, "rev-parse", "--absolute-git-dir")

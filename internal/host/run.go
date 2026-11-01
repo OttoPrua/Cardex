@@ -390,8 +390,8 @@ func handoffReview(ctx context.Context, db *store.Store, attempt *model.Attempt,
 }
 
 func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card model.Card, output []byte, code int, r runner.Runner, prior, driveErr error, timedOut bool) error {
-	pctx, cancel := persistContext(ctx)
-	defer cancel()
+	commitCtx, commitCancel := persistContext(ctx)
+	defer commitCancel()
 	attempt.Exit = &code
 	attempt.EndedAt = time.Now().UTC()
 	attempt.Usage = r.ParseUsage(output)
@@ -427,11 +427,16 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 	if attempt.ErrorExcerpt == "" && prior != nil {
 		attempt.ErrorExcerpt = trimExcerpt(prior.Error())
 	}
-	head, commitErr := workspaceFrom(pctx).Commit(pctx, attempt.Worktree, "cardex "+card.ID+" "+attempt.ID)
+	// Commit keeps this bound. Write-back below opens another one: a child of
+	// an expired commit context is already expired, so the result would be lost.
+	head, commitErr := workspaceFrom(commitCtx).Commit(commitCtx, attempt.Worktree, "cardex "+card.ID+" "+attempt.ID)
+	commitCancel()
 	if commitErr == nil && head != "" {
 		attempt.HeadCommit = head
 	}
-	if err := db.UpdateAttempt(pctx, attempt); err != nil {
+	writeCtx, writeCancel := persistContext(ctx)
+	defer writeCancel()
+	if err := db.UpdateAttempt(writeCtx, attempt); err != nil {
 		return err
 	}
 	finishEvent := map[string]any{
@@ -446,11 +451,11 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 	if driveErr != nil && !errors.Is(driveErr, context.Canceled) {
 		finishEvent["drive_error"] = driveErr.Error()
 	}
-	appendEvent(pctx, db, attempt.ID, "host_finish", finishEvent)
+	appendEvent(writeCtx, db, attempt.ID, "host_finish", finishEvent)
 	if commitErr != nil {
-		appendEvent(pctx, db, attempt.ID, "workspace_commit", map[string]string{"error": commitErr.Error()})
+		appendEvent(writeCtx, db, attempt.ID, "workspace_commit", map[string]string{"error": commitErr.Error()})
 	} else {
-		appendEvent(pctx, db, attempt.ID, "workspace_commit", map[string]string{"head": head})
+		appendEvent(writeCtx, db, attempt.ID, "workspace_commit", map[string]string{"head": head})
 	}
 	return nil
 }
@@ -502,13 +507,14 @@ func exitCode(err error) int {
 	return 1
 }
 
-// resultPersistTimeout bounds result write-back after the executor is done.
-// It is long enough for the sqlite update and workspace commit, and it is not
-// the run context's deadline.
-const resultPersistTimeout = 30 * time.Second
+// resultPersistTimeout bounds one post-execution step. The workspace commit
+// and the attempt write-back that follows it each take a fresh bound, so a
+// commit deadline does not expire the write-back. It is not the run deadline.
+var resultPersistTimeout = 30 * time.Second
 
 // persistContext outlives cancellation of the run context, keeps values stored
-// on it (the workspace manager), and has its own deadline.
+// on it (the workspace manager), and has its own deadline. Call it again for
+// the next step; do not derive that step from the context this call returned.
 func persistContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if ctx == nil {
 		ctx = context.Background()

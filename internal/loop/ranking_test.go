@@ -214,7 +214,10 @@ func TestRankingAbsorbLooseAndApprove(t *testing.T) {
 		text := "前言不是 JSON\n" +
 			`{"entries":[{"model":"kept-model","family":"fam","tiers":["T2","nope"],"capabilities":["web"],"preference":3,"理由":"因为榜"},{"model":"partial"}]}` +
 			"\n尾部 { 坏了\n"
-		absorbRankingText(t, db, model.OutcomeResultUnparsable, text)
+		if strings.Contains(text, "##") {
+			t.Fatal("proposal fixture has a known section title")
+		}
+		absorbRankingText(t, db, text)
 		questions := mustQuestions(t, db)
 		if len(questions) != 1 || !strings.Contains(questions[0].Text, "待复核") {
 			t.Fatalf("question %+v", questions)
@@ -245,7 +248,7 @@ func TestRankingAbsorbLooseAndApprove(t *testing.T) {
 	t.Run("garbage", func(t *testing.T) {
 		_, db := rankingHome(t)
 		seedRanking(t, db, "old-model")
-		absorbRankingText(t, db, model.OutcomeResultUnparsable, "{")
+		absorbRankingText(t, db, "{")
 		questions := mustQuestions(t, db)
 		if len(questions) != 1 || !strings.Contains(questions[0].Text, "待复核") {
 			t.Fatalf("question %+v", questions)
@@ -258,13 +261,48 @@ func TestRankingAbsorbLooseAndApprove(t *testing.T) {
 		}
 	})
 
+	t.Run("untitled", func(t *testing.T) {
+		_, db := rankingHome(t)
+		seedRanking(t, db, "old-model")
+		before := mustAttempt(t, db, "a-keep")
+		rankBefore := mustAttempt(t, db, "a-rank")
+		text := "{\"model\":\"plain-model\",\"family\":\"plainfam\",\"tiers\":[\"T2\"],\"capabilities\":[\"web\"],\"preference\":2,\"理由\":\"无标题\"}"
+		if strings.Contains(text, "##") {
+			t.Fatal("proposal fixture has a known section title")
+		}
+		absorbRankingText(t, db, text)
+		questions := mustQuestions(t, db)
+		if len(questions) != 1 || strings.Contains(questions[0].Text, "待复核") {
+			t.Fatalf("question %+v", questions)
+		}
+		if !strings.Contains(questions[0].Text, "新出现") || !strings.Contains(questions[0].Text, "plain-model") || !strings.Contains(questions[0].Text, "+ plain-model") {
+			t.Fatalf("question text %s", questions[0].Text)
+		}
+		saved := mustProposals(t)
+		if len(saved) != 1 || saved[0].Status == "approved" {
+			t.Fatalf("published early %+v", saved)
+		}
+		if models := positioningModels(t, db); len(models) != 1 || models[0] != "old-model" {
+			t.Fatalf("table changed %v", models)
+		}
+		if got := mustAttempt(t, db, "a-keep"); got.Route != before.Route {
+			t.Fatalf("keep route %v want %v", got.Route, before.Route)
+		}
+		if got := mustAttempt(t, db, "a-rank"); got.Route != rankBefore.Route {
+			t.Fatalf("ranking route %v want %v", got.Route, rankBefore.Route)
+		}
+	})
+
 	t.Run("approve", func(t *testing.T) {
 		_, db := rankingHome(t)
 		seedRanking(t, db, "old-model")
 		before := mustAttempt(t, db, "a-keep")
 		rankBefore := mustAttempt(t, db, "a-rank")
 		text := `{"entries":[{"model":"new-model","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"榜单"}]}`
-		absorbRankingText(t, db, model.OutcomePassed, text)
+		if strings.Contains(text, "##") {
+			t.Fatal("proposal fixture has a known section title")
+		}
+		absorbRankingText(t, db, text)
 		questions := mustQuestions(t, db)
 		if len(questions) != 1 {
 			t.Fatalf("questions %+v", questions)
@@ -301,10 +339,18 @@ func TestRankingAbsorbLooseAndApprove(t *testing.T) {
 	})
 }
 
-func absorbRankingText(t *testing.T, db *store.Store, outcome model.Outcome, text string) {
+func absorbRankingText(t *testing.T, db *store.Store, text string) {
 	t.Helper()
-	if err := AbsorbDisposed(context.Background(), Deps{Store: db}, "a-rank", outcome, text); err != nil {
+	card, err := db.GetCard(context.Background(), "rank")
+	if err != nil {
 		t.Fatal(err)
+	}
+	handled, err := (Deps{Store: db}).absorbDelegated(context.Background(), card, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !handled {
+		t.Fatal("ranking absorption did not handle the proposal")
 	}
 }
 

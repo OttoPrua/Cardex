@@ -438,16 +438,20 @@ func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
 // scroll off. A later redraw of the known prompt is that echo again. A row
 // whose tail the frame dropped still consumes the echo line it prefixes, so
 // a prompt that has left the display does not stay open. When the first and
-// last prompt lines are the same text, a row that matches that tail is held
-// until the next row: a following copy of the prompt is one closed redraw,
-// not the old tail plus a new open head.
+// last prompt lines are the same text, only a scrolled leftover tail is held:
+// the next rows decide whether it closed that open echo or began a redraw.
+// A boundary already consumed in order is not held again. The next echo keeps
+// its first line, and a later diagnostic stays outside the old echo.
 type echoWalk struct {
 	echoLines     []string
 	echoIdx       int
 	matchedPrompt bool
 	inEcho        bool
-	// noRestart keeps a failed redraw replay from opening the echo again.
+	// noRestart keeps a failed leftover-redraw replay from opening the echo again.
 	noRestart bool
+	// leftover is an open echo whose prefix has scrolled off. Its pending tail
+	// is the only row that is ambiguous with a redraw head.
+	leftover bool
 	// specHold is the pending tail row, plus any prefix of a redraw that
 	// started with it, while head and tail text are the same.
 	specHold bool
@@ -513,15 +517,19 @@ func (w *echoWalk) takeEcho(line string, cutOff bool) bool {
 	w.echoIdx = idx + 1
 	w.inEcho = w.echoIdx < len(w.echoLines)
 	w.matchedPrompt = w.echoIdx == len(w.echoLines)
+	if w.matchedPrompt {
+		w.leftover = false
+	}
 	return true
 }
 
-// holdHeadTail is true when line matches the pending last prompt row and
-// that row's text is also the first row. The next rows decide whether it
-// closed the old echo or began a redraw.
+// holdHeadTail is true when a scrolled leftover tail matches and that row's
+// text is also the first row. A boundary already consumed in order is not a
+// leftover: holding it would drop the next echo's first line or pull a later
+// diagnostic back into the old echo.
 func (w *echoWalk) holdHeadTail(item scanLine) bool {
 	n := len(w.echoLines)
-	if n < 2 || w.echoLines[0] != w.echoLines[n-1] || w.echoIdx != n-1 {
+	if !w.leftover || n < 2 || w.echoLines[0] != w.echoLines[n-1] || w.echoIdx != n-1 {
 		return false
 	}
 	return echoRowMatch(w.echoLines[n-1], item.text, item.cutOff)
@@ -535,11 +543,14 @@ func (w *echoWalk) feedSpec(item scanLine, fn func(scanLine)) {
 		buf[next] = item
 		w.spec = buf
 		if len(w.spec) == len(w.echoLines) {
+			// A full leftover redraw closes that echo. Lines past this
+			// boundary are not part of the match.
 			w.specHold = false
 			w.spec = nil
 			w.echoIdx = len(w.echoLines)
 			w.inEcho = false
 			w.matchedPrompt = true
+			w.leftover = false
 		}
 		return
 	}
@@ -556,6 +567,9 @@ func (w *echoWalk) abandonSpec(fn func(scanLine), extra scanLine, haveExtra bool
 	w.echoIdx = n
 	w.inEcho = false
 	w.matchedPrompt = n > 0
+	// The held row closed the leftover echo. Replay must not reopen it on
+	// the failed prefix; the extra row is past that boundary.
+	w.leftover = false
 	w.noRestart = true
 	for _, line := range rest {
 		w.feed(line, fn)
@@ -826,6 +840,9 @@ func (s *grokScreen) put(ch rune) {
 		s.c = 0
 		if s.r >= grokGoalScreenRows {
 			s.walk.feed(scanLine{text: s.rowString(0), cutOff: s.overflow[0]}, nil)
+			if s.walk.echoIdx > 0 && !s.walk.matchedPrompt {
+				s.walk.leftover = true
+			}
 			copy(s.cell, s.cell[grokGoalScreenCols:])
 			for i := (grokGoalScreenRows - 1) * grokGoalScreenCols; i < len(s.cell); i++ {
 				s.cell[i] = ' '

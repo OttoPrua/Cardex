@@ -958,16 +958,23 @@ func TestGrokScreenEchoAndTruncation(t *testing.T) {
 	// then that text on rows 1 and 2 and the rate-limit sentence on row 10.
 	repeatedHeadRedraw := "/goal " + repeatedHeadPrompt + "\n" + strings.Repeat("\n", 22) + sync +
 		"\x1b[1;1H/goal explain\x1b[2;1H/goal explain\x1b[10;1H" + sentence + sync
+	// Q inside the prompt is echo. A later copy of that sentence is the card.
+	promptQ := "explain\n/goal explain\n" + sentence + "\n/goal explain"
+	echoQ := "/goal " + promptQ + "\n"
+	jsonErr := `{"type":"error","message":"HTTP 429: usage limit reached"}`
+	promptJ := "explain\n" + jsonErr + "\n/goal explain"
+	echoJ := "/goal " + promptJ + "\n"
 	longPrompt := strings.Repeat("x", 90)
 	truncatedEchoThenQuota := "/goal " + longPrompt + "\n" + strings.Repeat("\n", 24) +
 		"\x1b[10;1H" + sentence + sync
 	lastColumnOnly := "\x1b[10;1H" + padded + "\x1b[10;80H " + sync
 	rows := []struct {
-		name      string
-		prompt    string
-		zero      bool
-		pty       string
-		wantQuota bool
+		name          string
+		prompt        string
+		zero          bool
+		pty           string
+		wantQuota     bool
+		classifyQuota bool
 	}{
 		{
 			name: "goal_echo_without_prompt",
@@ -1028,6 +1035,44 @@ func TestGrokScreenEchoAndTruncation(t *testing.T) {
 			prompt: "explain",
 			pty:    lastColumnOnly,
 		},
+		{
+			name:   "consumed_echo_keeps_interior_rate_sentence",
+			prompt: promptQ,
+			pty:    echoQ,
+		},
+		{
+			name:   "two_consumed_echoes_keep_interior_rate_sentence",
+			prompt: promptQ,
+			pty:    echoQ + echoQ,
+		},
+		{
+			name:      "rate_sentence_after_two_consumed_echoes",
+			prompt:    promptQ,
+			pty:       echoQ + echoQ + sentence + "\n",
+			wantQuota: true,
+		},
+		{
+			name:      "addressed_rate_sentence_after_two_screen_echoes",
+			prompt:    promptQ,
+			pty:       echoQ + echoQ + "\x1b[10;1H" + sentence + "\x1b[?2026l",
+			wantQuota: true,
+		},
+		{
+			name:   "two_screen_echoes_sync_without_addressed_rate_sentence",
+			prompt: promptQ,
+			pty:    echoQ + echoQ + "\x1b[?2026l",
+		},
+		{
+			name:   "consumed_echo_keeps_interior_error_json",
+			prompt: promptJ,
+			pty:    echoJ,
+		},
+		{
+			name:          "error_json_after_consumed_echo",
+			prompt:        promptJ,
+			pty:           echoJ + jsonErr + "\n/goal explain\n",
+			classifyQuota: true,
+		},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -1047,6 +1092,15 @@ func TestGrokScreenEchoAndTruncation(t *testing.T) {
 				}
 				if err == nil || err.Error() != runner.ErrGrokQuotaHit.Error() {
 					t.Fatalf("Drive=%v want %q", err, runner.ErrGrokQuotaHit)
+				}
+				return
+			}
+			if row.classifyQuota {
+				if got != model.ErrorQuotaHit {
+					t.Fatalf("Classify=%q want %q", got, model.ErrorQuotaHit)
+				}
+				if err == nil || err.Error() != "grok goal: no terminal" || errors.Is(err, runner.ErrGrokQuotaHit) {
+					t.Fatalf("Drive=%v want %q", err, "grok goal: no terminal")
 				}
 				return
 			}

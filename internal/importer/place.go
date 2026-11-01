@@ -3,6 +3,7 @@ package importer
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 
 	"cardex/internal/model"
@@ -28,6 +29,9 @@ type v1Record struct {
 	RunnerPref  string          `json:"runner_pref"`
 	FrozenRoute json.RawMessage `json:"frozen_route"`
 	Model       string          `json:"model"`
+	Prompts     []string        `json:"prompts"`
+	Step        int             `json:"step"`
+	DependsOn   []string        `json:"depends_on"`
 }
 
 // placement is the v2 row a parsed record becomes. It does not touch the disk.
@@ -36,6 +40,8 @@ type placement struct {
 	Title      string
 	Kind       model.CardKind
 	RepoPath   string
+	Body       string
+	Deps       []string
 	Status     model.CardStatus
 	Legacy     model.Legacy
 	V1Status   string
@@ -124,7 +130,52 @@ func place(rel string, rec *v1Record, parseErr string) placement {
 		p.V2Place = "history"
 		p.Status = model.CardCanceled
 	}
+	if continuableStatus(status) {
+		p.Body = continuableBody(rec.Prompts, rec.Step)
+		p.Deps = mappedDeps(rec.DependsOn)
+	}
 	return p
+}
+
+func continuableStatus(status string) bool {
+	switch status {
+	case "queued", "running", "held":
+		return true
+	default:
+		return false
+	}
+}
+
+// continuableBody keeps every v1 prompt and the current step on the card.
+// Card has no step column, so the step is the first line and the prompts follow.
+func continuableBody(prompts []string, step int) string {
+	var b strings.Builder
+	b.WriteString("step: ")
+	b.WriteString(strconv.Itoa(step))
+	b.WriteByte('\n')
+	for _, p := range prompts {
+		b.WriteString(p)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+func mappedDeps(ids []string) []string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		out = append(out, cardID("", id))
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func projectKey(rec *v1Record) string {

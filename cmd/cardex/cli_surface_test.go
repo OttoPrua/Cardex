@@ -11,8 +11,12 @@ import (
 	"testing"
 	"time"
 
+	"reflect"
+
+	"cardex/internal/importer"
 	"cardex/internal/model"
 	"cardex/internal/positioning"
+	"cardex/internal/scorecard"
 	"cardex/internal/store"
 )
 
@@ -470,13 +474,339 @@ func TestScheduleRunEnqueuesOnce(t *testing.T) {
 
 func TestScorecardSurfacesCompute(t *testing.T) {
 	home := t.TempDir()
+	dir, err := resolveHome(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, compErr := scorecard.Compute(context.Background(), dir)
 	code, out, errb := callCLI(t, []string{"--home", home, "scorecard"})
-	if code == 0 {
-		t.Fatalf("exit 0\n%s", out)
+	if compErr != nil {
+		if code == 0 {
+			t.Fatalf("compute error %v exited 0\n%s", compErr, out)
+		}
+		msg := compErr.Error()
+		if !strings.Contains(out, msg) && !strings.Contains(errb, msg) {
+			t.Fatalf("stdout %q stderr %q want %q", out, errb, msg)
+		}
+		return
 	}
-	if !strings.Contains(out, "not implemented") || strings.Contains(out, "未实现") || strings.Contains(errb, "未实现") {
-		t.Fatalf("stdout %q stderr %q", out, errb)
+	if code != 0 {
+		t.Fatalf("exit %d\n%s\n%s", code, out, errb)
 	}
+	var got []scorecard.Row
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout %s: %v", out, err)
+	}
+	want, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotRaw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotRaw) != string(want) {
+		t.Fatalf("cli %s compute %s", gotRaw, want)
+	}
+}
+
+func TestImportedHistoryStaysReadOnly(t *testing.T) {
+	v1 := t.TempDir()
+	home := t.TempDir()
+	rows := []struct {
+		rel, id, status string
+	}{
+		{"archive/done.json", "d1", "done"},
+		{"archive/failed.json", "f1", "failed"},
+		{"archive/canceled.json", "c1", "canceled"},
+		{"tasks/bogus.json", "u1", "bogus"},
+	}
+	for _, row := range rows {
+		writeLegacyFile(t, v1, row.rel, map[string]any{
+			"id": row.id, "title": row.id, "status": row.status, "project": "lumen",
+			"prompts": []string{"history " + row.id}, "step": 1,
+		})
+	}
+	writeLegacyFile(t, v1, "tasks/held.json", map[string]any{
+		"id": "h1", "title": "Held lamp", "status": "held", "project": "lumen",
+		"hold_reason": "waiting on the lamp", "prompts": []string{"held prompt"}, "step": 2,
+	})
+	if _, err := importer.Import(context.Background(), home, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	verbs := []string{"retry", "resume", "revive", "pause", "cancel"}
+	for _, row := range rows {
+		id := "v1-" + row.id
+		for _, verb := range verbs {
+			var before model.Card
+			withDB(t, home, func(db *store.Store) {
+				var err error
+				before, err = db.GetCard(context.Background(), id)
+				if err != nil {
+					t.Fatal(err)
+				}
+			})
+			mustHome(t, home, "card", verb, id)
+			var after model.Card
+			withDB(t, home, func(db *store.Store) {
+				var err error
+				after, err = db.GetCard(context.Background(), id)
+				if err != nil {
+					t.Fatal(err)
+				}
+			})
+			if !reflect.DeepEqual(after, before) {
+				t.Fatalf("%s %s changed\nbefore %+v\nafter %+v", row.status, verb, before, after)
+			}
+		}
+	}
+	var held model.Card
+	withDB(t, home, func(db *store.Store) {
+		var err error
+		held, err = db.GetCard(context.Background(), "v1-h1")
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	mustHome(t, home, "card", "revive", "v1-h1")
+	var revived model.Card
+	withDB(t, home, func(db *store.Store) {
+		var err error
+		revived, err = db.GetCard(context.Background(), "v1-h1")
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	if revived.Status != model.CardReady || revived.Legacy.Reason != "waiting on the lamp" || revived.Legacy.Status != "held" {
+		t.Fatalf("revived %+v", revived)
+	}
+	revived.Status = held.Status
+	if !reflect.DeepEqual(revived, held) {
+		t.Fatalf("revive changed more than status\nbefore %+v\nafter %+v", held, revived)
+	}
+}
+
+func TestNodeReopenAndFreezeLoopEffects(t *testing.T) {
+	t.Run("reopen", func(t *testing.T) {
+		home, obj := seedNodeHome(t)
+		withDB(t, home, func(db *store.Store) {
+			node := model.DesignNode{ID: "n1", Objective: obj, Layer: model.LayerModule, Status: model.NodeFrozen}
+			other := model.DesignNode{ID: "n2", Objective: obj, Layer: model.LayerModule, Status: model.NodeFrozen}
+			if err := db.CreateNode(context.Background(), &node); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.CreateNode(context.Background(), &other); err != nil {
+				t.Fatal(err)
+			}
+			seedNodeCard(t, db, "ready", obj, "n1", model.KindDev, model.CardReady)
+			seedNodeCard(t, db, "waiting", obj, "n1", model.KindDev, model.CardWaiting)
+			seedNodeCard(t, db, "needs", obj, "n1", model.KindDev, model.CardNeedsInput)
+			seedNodeCard(t, db, "running", obj, "n1", model.KindDev, model.CardRunning)
+			seedNodeCard(t, db, "done", obj, "n1", model.KindDev, model.CardDone)
+			seedNodeCard(t, db, "other", obj, "n2", model.KindDev, model.CardReady)
+			open := model.Question{ID: "reopen-open", Objective: obj, Scope: "n1", ScopeKind: "node", Kind: model.QuestionReopen, Text: "open the node", Options: []string{"同意", "拒绝"}}
+			consented := model.Question{ID: "reopen-yes", Objective: obj, Scope: "n1", ScopeKind: "node", Kind: model.QuestionReopen, Text: "already agreed", Options: []string{"同意", "拒绝"}, Answer: "同意"}
+			rejected := model.Question{ID: "reopen-no", Objective: obj, Scope: "n1", ScopeKind: "node", Kind: model.QuestionReopen, Text: "already refused", Options: []string{"同意", "拒绝"}, Answer: "拒绝"}
+			freeze := model.Question{ID: "freeze-1", Objective: obj, Scope: "n1", ScopeKind: "node", Kind: model.QuestionFreeze, Text: "freeze it", Options: []string{"同意", "拒绝"}, Answer: "同意"}
+			for _, q := range []*model.Question{&open, &consented, &rejected, &freeze} {
+				if err := db.CreateQuestion(context.Background(), q); err != nil {
+					t.Fatal(err)
+				}
+			}
+		})
+		mustHome(t, home, "node", "reopen", "n1")
+		withDB(t, home, func(db *store.Store) {
+			node, err := db.GetNode(context.Background(), "n1")
+			if err != nil || node.Status != model.NodeReopened {
+				t.Fatalf("node %+v %v", node, err)
+			}
+			want := map[string]model.CardStatus{
+				"ready": model.CardPaused, "waiting": model.CardPaused, "needs": model.CardPaused,
+				"running": model.CardRunning, "done": model.CardDone, "other": model.CardReady,
+			}
+			for id, status := range want {
+				card, err := db.GetCard(context.Background(), id)
+				if err != nil || card.Status != status {
+					t.Fatalf("%s %+v %v", id, card, err)
+				}
+				if status == model.CardPaused && (card.Status == model.CardReady || card.Status == model.CardRunning) {
+					t.Fatalf("%s still dispatch-eligible", id)
+				}
+			}
+			cards, err := db.ListCards(context.Background(), obj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var replans []model.Card
+			for _, card := range cards {
+				if card.Node == "n1" && card.Kind == model.KindReplan {
+					replans = append(replans, card)
+				}
+			}
+			if len(replans) != 1 || replans[0].Status != model.CardReady {
+				t.Fatalf("replans %+v", replans)
+			}
+			notes := reopenNotes(t, db, "n1")
+			if !noteUses(notes, "reopen-open") || !noteUses(notes, "reopen-yes") {
+				t.Fatalf("notes %+v", notes)
+			}
+			open, err := db.GetQuestion(context.Background(), "reopen-open")
+			if err != nil || open.Answer != open.Options[0] {
+				t.Fatalf("open %+v %v", open, err)
+			}
+			rejected, err := db.GetQuestion(context.Background(), "reopen-no")
+			if err != nil || rejected.Answer != "拒绝" || noteUses(notes, "reopen-no") {
+				t.Fatalf("rejected %+v notes %+v %v", rejected, notes, err)
+			}
+		})
+	})
+	t.Run("in-flight replan", func(t *testing.T) {
+		home, obj := seedNodeHome(t)
+		withDB(t, home, func(db *store.Store) {
+			node := model.DesignNode{ID: "n1", Objective: obj, Layer: model.LayerModule, Status: model.NodeFrozen}
+			if err := db.CreateNode(context.Background(), &node); err != nil {
+				t.Fatal(err)
+			}
+			seedNodeCard(t, db, "running-replan", obj, "n1", model.KindReplan, model.CardRunning)
+			seedNodeCard(t, db, "ready", obj, "n1", model.KindDev, model.CardReady)
+			q := model.Question{ID: "reopen-open", Objective: obj, Scope: "n1", ScopeKind: "node", Kind: model.QuestionReopen, Text: "again", Options: []string{"同意", "拒绝"}, Answer: "同意"}
+			if err := db.CreateQuestion(context.Background(), &q); err != nil {
+				t.Fatal(err)
+			}
+		})
+		mustHome(t, home, "node", "reopen", "n1")
+		withDB(t, home, func(db *store.Store) {
+			running, err := db.GetCard(context.Background(), "running-replan")
+			if err != nil || running.Status != model.CardRunning {
+				t.Fatalf("running %+v %v", running, err)
+			}
+			ready, err := db.GetCard(context.Background(), "ready")
+			if err != nil || ready.Status != model.CardPaused {
+				t.Fatalf("ready %+v %v", ready, err)
+			}
+			cards, err := db.ListCards(context.Background(), obj)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n := 0
+			for _, card := range cards {
+				if card.Kind == model.KindReplan {
+					n++
+				}
+			}
+			if n != 1 || !noteUses(reopenNotes(t, db, "n1"), "reopen-open") {
+				t.Fatalf("replans %d", n)
+			}
+		})
+	})
+	t.Run("freeze", func(t *testing.T) {
+		home, obj := seedNodeHome(t)
+		withDB(t, home, func(db *store.Store) {
+			node := model.DesignNode{ID: "n1", Objective: obj, Layer: model.LayerModule, Status: model.NodeFreezable}
+			other := model.DesignNode{ID: "n2", Objective: obj, Layer: model.LayerModule, Status: model.NodeFreezable}
+			if err := db.CreateNode(context.Background(), &node); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.CreateNode(context.Background(), &other); err != nil {
+				t.Fatal(err)
+			}
+			freeze := model.Question{ID: "freeze-1", Objective: obj, Scope: "n1", ScopeKind: "node", Kind: model.QuestionFreeze, Text: "freeze it", Options: []string{"同意", "拒绝"}, Answer: "同意"}
+			elsewhere := model.Question{ID: "freeze-2", Objective: obj, Scope: "n2", ScopeKind: "node", Kind: model.QuestionFreeze, Text: "other", Options: []string{"同意", "拒绝"}, Answer: "同意"}
+			if err := db.CreateQuestion(context.Background(), &freeze); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.CreateQuestion(context.Background(), &elsewhere); err != nil {
+				t.Fatal(err)
+			}
+		})
+		mustHome(t, home, "node", "freeze", "n1")
+		withDB(t, home, func(db *store.Store) {
+			node, err := db.GetNode(context.Background(), "n1")
+			if err != nil || node.Status != model.NodeFrozen {
+				t.Fatalf("node %+v %v", node, err)
+			}
+			notes := reopenNotes(t, db, "n1")
+			if len(notes) == 0 || !freezeSpent(notes, "freeze-1") || freezeSpent(notes, "freeze-2") {
+				t.Fatalf("notes %+v", notes)
+			}
+			q, err := db.GetQuestion(context.Background(), "freeze-1")
+			if err != nil || q.Answer != "同意" {
+				t.Fatalf("question %+v %v", q, err)
+			}
+		})
+	})
+}
+
+func seedNodeHome(t *testing.T) (string, string) {
+	t.Helper()
+	home := t.TempDir()
+	repo := t.TempDir()
+	mustHome(t, home, "project", "add", "--id", "p1", "--repo", repo)
+	mustHome(t, home, "objective", "add", "--id", "o1", "--project", "p1", "--title", "Chart")
+	return home, "o1"
+}
+
+func seedNodeCard(t *testing.T, db *store.Store, id, obj, node string, kind model.CardKind, status model.CardStatus) {
+	t.Helper()
+	card := model.Card{ID: id, Objective: obj, Node: node, Kind: kind, Title: id, Body: id, Tier: model.TierT3, Status: status}
+	if err := db.CreateCard(context.Background(), &card); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeLegacyFile(t *testing.T, root, rel string, body map[string]any) {
+	t.Helper()
+	path := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func reopenNotes(t *testing.T, db *store.Store, nodeID string) []loopReopenNote {
+	t.Helper()
+	ev, err := db.ListEvents(context.Background(), "node:"+nodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var notes []loopReopenNote
+	for _, e := range ev {
+		if e.Type != loopReopenUsed || len(e.Data) == 0 {
+			continue
+		}
+		var note loopReopenNote
+		if err := json.Unmarshal(e.Data, &note); err != nil {
+			t.Fatal(err)
+		}
+		notes = append(notes, note)
+	}
+	return notes
+}
+
+func noteUses(notes []loopReopenNote, id string) bool {
+	for _, note := range notes {
+		if note.Question == id {
+			return true
+		}
+	}
+	return false
+}
+
+func freezeSpent(notes []loopReopenNote, id string) bool {
+	for _, note := range notes {
+		for _, freeze := range note.Freeze {
+			if freeze == id {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestHostUnknownAttempt(t *testing.T) {

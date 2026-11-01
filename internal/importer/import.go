@@ -70,11 +70,21 @@ func importHome(ctx context.Context, v2Home, v1Home string, dryRun bool) (Report
 		return Report{}, err
 	}
 	defer db.Close()
+	repos := map[string]string{}
+	for _, row := range rows {
+		if row.pl.RepoPath == "" {
+			continue
+		}
+		if _, ok := repos[row.pl.ProjectKey]; ok {
+			continue
+		}
+		repos[row.pl.ProjectKey] = row.pl.RepoPath
+	}
 	for _, row := range rows {
 		if err := ctx.Err(); err != nil {
 			return Report{}, err
 		}
-		if err := writeRow(ctx, db, v1Home, row.id, row.pl); err != nil {
+		if err := writeRow(ctx, db, v1Home, row.id, row.pl, repos[row.pl.ProjectKey]); err != nil {
 			return Report{}, err
 		}
 	}
@@ -121,7 +131,7 @@ func readRecord(path string) (*v1Record, string) {
 	return &rec, ""
 }
 
-func writeRow(ctx context.Context, db *store.Store, v1Home, id string, pl placement) error {
+func writeRow(ctx context.Context, db *store.Store, v1Home, id string, pl placement, repo string) error {
 	if _, err := db.GetCard(ctx, id); err == nil {
 		return nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -129,7 +139,6 @@ func writeRow(ctx context.Context, db *store.Store, v1Home, id string, pl placem
 	}
 	proj := projectID(pl.ProjectKey)
 	if _, err := db.GetProject(ctx, proj); errors.Is(err, sql.ErrNoRows) {
-		repo := pl.RepoPath
 		if repo == "" {
 			repo = v1Home
 		}
@@ -168,6 +177,8 @@ func writeRow(ctx context.Context, db *store.Store, v1Home, id string, pl placem
 		Objective: objID,
 		Kind:      pl.Kind,
 		Title:     pl.Title,
+		Body:      pl.Body,
+		Deps:      pl.Deps,
 		Status:    pl.Status,
 		Legacy:    pl.Legacy,
 	}
@@ -201,5 +212,3 @@ func writeHint(ctx context.Context, db *store.Store, cardID string, hint routeHi
 		Data:   data,
 	})
 }
-
-

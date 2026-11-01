@@ -828,19 +828,24 @@ func TestS21(t *testing.T) {
 	writeS21(t, v1, "tasks/queued.json", map[string]any{
 		"id": "q1", "title": "Queue the lumen ferry", "status": "queued", "project": "lumen",
 		"dir": "/tmp/lumen", "model": "should-not-pin",
+		"prompts": []string{"ferry the lumen cargo", "check the lamp"}, "step": 1,
+		"depends_on":   []string{"r1", "h1"},
 		"frozen_route": map[string]any{"primary": map[string]any{"runner": "grok", "model": "lumen-test"}},
 	})
 	writeS21(t, v1, "tasks/running.json", map[string]any{
 		"id": "r1", "title": "Run the buoy", "status": "running", "project": "lumen",
 		"runner_pref": "codex",
+		"prompts":     []string{"sound the buoy"}, "step": 0,
 	})
 	writeS21(t, v1, "tasks/held-chart.json", map[string]any{
 		"id": "h1", "title": "Hold for a chart", "status": "held", "project": "lumen",
 		"hold_reason": "waiting on the chart locker",
+		"prompts":     []string{"wait on the chart locker"}, "step": 2, "depends_on": []string{"q1"},
 	})
 	writeS21(t, v1, "tasks/held-tide.json", map[string]any{
 		"id": "h2", "title": "Hold for a tide", "status": "held", "project": "lumen",
-		"reason": "tide window closed",
+		"reason":  "tide window closed",
+		"prompts": []string{"wait out the tide"}, "step": 3,
 	})
 	writeS21(t, v1, "archive/done.json", map[string]any{
 		"id": "d1", "title": "Done chart", "status": "done", "project": "lumen",
@@ -896,6 +901,17 @@ func TestS21(t *testing.T) {
 	assertS21(t, byID["v1-c1"], model.CardCanceled, "canceled", "archive/canceled.json", "")
 	if byID["v1-h1"].Legacy.Reason == byID["v1-h2"].Legacy.Reason {
 		t.Fatal("held reasons collapsed")
+	}
+	assertS21Body(t, byID["v1-q1"], 1, []string{"ferry the lumen cargo", "check the lamp"}, []string{byID["v1-r1"].ID, byID["v1-h1"].ID})
+	assertS21Body(t, byID["v1-r1"], 0, []string{"sound the buoy"}, nil)
+	assertS21Body(t, byID["v1-h1"], 2, []string{"wait on the chart locker"}, []string{byID["v1-q1"].ID})
+	assertS21Body(t, byID["v1-h2"], 3, []string{"wait out the tide"}, nil)
+	projects, err := db.ListProjects(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 1 || projects[0].RepoPath != "/tmp/lumen" {
+		t.Fatalf("repo %+v", projects)
 	}
 	assertS21Hint(t, db, "v1-q1", true, false)
 	assertS21Hint(t, db, "v1-r1", false, true)
@@ -966,6 +982,23 @@ func assertS21(t *testing.T, card model.Card, status model.CardStatus, legacy, s
 	}
 	if card.Status != status || card.Legacy.Status != legacy || card.Legacy.SourcePath != source || card.Legacy.Reason != reason {
 		t.Fatalf("%s status %s legacy %+v", card.ID, card.Status, card.Legacy)
+	}
+}
+
+func assertS21Body(t *testing.T, card model.Card, step int, prompts, deps []string) {
+	t.Helper()
+	line, rest, _ := strings.Cut(card.Body, "\n")
+	n, err := strconv.Atoi(strings.TrimPrefix(line, "step: "))
+	if !strings.HasPrefix(line, "step: ") || err != nil || n != step {
+		t.Fatalf("%s step %q", card.ID, card.Body)
+	}
+	for _, prompt := range prompts {
+		if !strings.Contains(rest, prompt) {
+			t.Fatalf("%s missing %q in %q", card.ID, prompt, card.Body)
+		}
+	}
+	if strings.Join(card.Deps, ",") != strings.Join(deps, ",") {
+		t.Fatalf("%s deps %v want %v", card.ID, card.Deps, deps)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"cardex/internal/model"
 )
@@ -217,10 +218,12 @@ func cardTransition(home string, asJSON bool, verb string, args []string, stdout
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	c.Status = cardVerbStatus(verb)
-	if err := db.UpdateCard(context.Background(), &c); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
+	if !legacyReadOnly(c.Legacy.Status) {
+		c.Status = cardVerbStatus(verb)
+		if err := db.UpdateCard(context.Background(), &c); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
 	}
 	origin, err := loadCardOrigin(context.Background(), db, c.ID)
 	if err != nil {
@@ -239,5 +242,14 @@ func cardVerbStatus(verb string) model.CardStatus {
 		return model.CardCanceled
 	default:
 		return model.CardReady
+	}
+}
+
+func legacyReadOnly(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "done", "failed", "canceled", "unparsed":
+		return true
+	default:
+		return false
 	}
 }

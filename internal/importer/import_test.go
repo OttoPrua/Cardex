@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -303,4 +304,152 @@ func assertNoHint(t *testing.T, db *store.Store, id string) {
 	}
 }
 
+type continuableSpec struct {
+	rel, id, status, project, title string
+	dir, repo, hold                 string
+	prompts                         []string
+	step                            int
+	deps                            []string
+	keep                            bool
+}
 
+func TestImportKeepsContinuableBodyDepsAndRepo(t *testing.T) {
+	v1 := t.TempDir()
+	rows := []continuableSpec{
+		{rel: "archive/done.json", id: "d1", status: "done", project: "lumen", title: "Done chart"},
+		{rel: "archive/queued.json", id: "aq", status: "queued", project: "lumen", title: "Archive queue", prompts: []string{"archive prompt text"}, step: 4, deps: []string{"q1"}, keep: true},
+		{rel: "archive/harbor-done.json", id: "hd", status: "done", project: "harbor", title: "Harbor done", dir: "/tmp/harbor-old"},
+		{rel: "tasks/held.json", id: "h1", status: "held", project: "lumen", title: "Hold the lamp", prompts: []string{"lumen held prompt"}, step: 2, deps: []string{"r1"}, hold: "waiting on the lamp", keep: true},
+		{rel: "tasks/harbor-queued.json", id: "hq", status: "queued", project: "harbor", title: "Harbor queue", dir: "/tmp/harbor-new", prompts: []string{"harbor prompt"}, step: 5, deps: []string{"hd"}, keep: true},
+		{rel: "tasks/keel.json", id: "k1", status: "queued", project: "keel", title: "Keel queue", repo: "/tmp/keel", prompts: []string{"keel prompt"}, step: 6, keep: true},
+		{rel: "tasks/queued.json", id: "q1", status: "queued", project: "lumen", title: "Queue the ferry", dir: "/tmp/lumen", prompts: []string{"lumen queued prompt", "lumen second prompt"}, step: 1, deps: []string{"r1", "h1"}, keep: true},
+		{rel: "tasks/running.json", id: "r1", status: "running", project: "lumen", title: "Run the buoy", prompts: []string{"lumen running prompt"}, step: 0, keep: true},
+		{rel: "workflows/live.json", id: "w1", status: "running", project: "lumen", title: "Workflow live", prompts: []string{"workflow prompt text"}, step: 3, deps: []string{"q1"}, keep: true},
+	}
+	for _, row := range rows {
+		body := map[string]any{
+			"id": row.id, "title": row.title, "status": row.status, "project": row.project, "step": row.step,
+		}
+		if row.dir != "" {
+			body["dir"] = row.dir
+		}
+		if row.repo != "" {
+			body["repo"] = row.repo
+		}
+		if row.hold != "" {
+			body["hold_reason"] = row.hold
+		}
+		if row.prompts != nil {
+			body["prompts"] = row.prompts
+		}
+		if row.deps != nil {
+			body["depends_on"] = row.deps
+		}
+		writeV1(t, v1, row.rel, body)
+	}
+	before := snapshotTree(t, v1)
+	v2 := t.TempDir()
+	ctx := context.Background()
+	if _, err := Import(ctx, v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, v2)
+	cards := cardsOf(t, db)
+	objs := objectivesOf(t, db)
+	bySource := map[string]model.Card{}
+	for _, card := range cards {
+		bySource[card.Legacy.SourcePath] = card
+	}
+	byV1 := map[string]model.Card{}
+	for _, row := range rows {
+		card, ok := bySource[row.rel]
+		if !ok {
+			t.Fatalf("missing %s", row.rel)
+		}
+		byV1[row.id] = card
+	}
+	for _, row := range rows {
+		if !row.keep {
+			continue
+		}
+		card := byV1[row.id]
+		if importedStep(t, card.Body) != row.step {
+			t.Fatalf("%s step %d body %q", row.id, row.step, card.Body)
+		}
+		_, rest, _ := strings.Cut(card.Body, "\n")
+		for _, prompt := range row.prompts {
+			if !strings.Contains(rest, prompt) {
+				t.Fatalf("%s missing prompt %q in %q", row.id, prompt, card.Body)
+			}
+		}
+		var want []string
+		for _, dep := range row.deps {
+			want = append(want, byV1[dep].ID)
+		}
+		if strings.Join(card.Deps, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s deps %v want %v", row.id, card.Deps, want)
+		}
+		switch row.status {
+		case "queued", "running":
+			if card.Status != model.CardReady {
+				t.Fatalf("%s status %s", row.id, card.Status)
+			}
+		case "held":
+			if card.Status != model.CardPaused || card.Legacy.Reason != row.hold || card.Legacy.Status != "held" {
+				t.Fatalf("%s held %+v", row.id, card)
+			}
+		}
+	}
+	lumen, err := db.GetProject(ctx, projectID("lumen"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lumen.RepoPath != "/tmp/lumen" || lumen.RepoPath == v1 {
+		t.Fatalf("lumen repo %q home %q", lumen.RepoPath, v1)
+	}
+	harbor, err := db.GetProject(ctx, projectID("harbor"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if harbor.RepoPath != "/tmp/harbor-old" && harbor.RepoPath != "/tmp/harbor-new" || harbor.RepoPath == v1 {
+		t.Fatalf("harbor repo %q", harbor.RepoPath)
+	}
+	keel, err := db.GetProject(ctx, projectID("keel"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keel.RepoPath != "/tmp/keel" || keel.RepoPath == v1 {
+		t.Fatalf("keel repo %q", keel.RepoPath)
+	}
+	if _, err := Import(ctx, v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	if again := cardsOf(t, db); len(again) != len(cards) {
+		t.Fatalf("second import cards %d want %d", len(again), len(cards))
+	}
+	if again := objectivesOf(t, db); len(again) != len(objs) {
+		t.Fatalf("second import objectives %d want %d", len(again), len(objs))
+	}
+	afterCards := cardsOf(t, db)
+	for _, card := range afterCards {
+		if card.ID == byV1["q1"].ID && card.Body != byV1["q1"].Body {
+			t.Fatalf("second import rewrote body %q", card.Body)
+		}
+	}
+	if after := snapshotTree(t, v1); after != before {
+		t.Fatal("import changed v1 bytes")
+	}
+}
+
+func importedStep(t *testing.T, body string) int {
+	t.Helper()
+	line, _, _ := strings.Cut(body, "\n")
+	if !strings.HasPrefix(line, "step: ") {
+		t.Fatalf("step line %q", body)
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(line, "step: "))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}

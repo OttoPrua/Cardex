@@ -118,8 +118,16 @@ func nodeStatus(home string, asJSON bool, status model.NodeStatus, args []string
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	n.Status = status
-	if err := db.UpdateNode(context.Background(), &n); err != nil {
+	switch status {
+	case model.NodeReopened:
+		err = applyNodeReopen(db, &n)
+	case model.NodeFrozen:
+		err = applyNodeFreeze(db, &n)
+	default:
+		n.Status = status
+		err = db.UpdateNode(context.Background(), &n)
+	}
+	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -131,6 +139,178 @@ func statusVerb(status model.NodeStatus) string {
 		return "freeze"
 	}
 	return "reopen"
+}
+
+const loopReopenUsed = "loop.reopen_used"
+
+type loopReopenNote struct {
+	Question string   `json:"question"`
+	Freeze   []string `json:"freeze"`
+	Replan   string   `json:"replan"`
+}
+
+func applyNodeReopen(db *store.Store, n *model.DesignNode) error {
+	ctx := context.Background()
+	n.Status = model.NodeReopened
+	if err := db.UpdateNode(ctx, n); err != nil {
+		return err
+	}
+	cards, err := db.ListCards(ctx, n.Objective)
+	if err != nil {
+		return err
+	}
+	for i := range cards {
+		if cards[i].Node != n.ID || !nodeNotStarted(cards[i].Status) {
+			continue
+		}
+		cards[i].Status = model.CardPaused
+		if err := db.UpdateCard(ctx, &cards[i]); err != nil {
+			return err
+		}
+	}
+	replanID, inFlight := nodeReplanInFlight(cards, n.ID)
+	if !inFlight {
+		card := model.Card{
+			Objective: n.Objective,
+			Node:      n.ID,
+			Kind:      model.KindReplan,
+			Title:     "重规划",
+			Body:      "重规划\n",
+			Tier:      model.DefaultTier(model.KindReplan),
+			Status:    model.CardReady,
+		}
+		if err := db.CreateCard(ctx, &card); err != nil {
+			return err
+		}
+		replanID = card.ID
+	}
+	questions, err := db.ListQuestions(ctx, n.Objective)
+	if err != nil {
+		return err
+	}
+	used, err := usedReopenQuestions(ctx, db, n.ID)
+	if err != nil {
+		return err
+	}
+	var freezeIDs []string
+	var reopenIDs []string
+	qs := question.New(db, nil)
+	for _, q := range questions {
+		if q.Kind == model.QuestionFreeze && q.Scope == n.ID {
+			freezeIDs = append(freezeIDs, q.ID)
+		}
+		if q.Kind != model.QuestionReopen || q.Scope != n.ID || used[q.ID] {
+			continue
+		}
+		if !questionConsented(q) && len(q.Options) > 0 && strings.TrimSpace(q.Answer) == "" {
+			answered, err := qs.Answer(ctx, q.ID, q.Options[0])
+			if err != nil {
+				return err
+			}
+			q = answered
+		}
+		if questionConsented(q) {
+			reopenIDs = append(reopenIDs, q.ID)
+		}
+	}
+	if len(reopenIDs) == 0 {
+		return appendReopenNote(ctx, db, n.ID, "", freezeIDs, replanID)
+	}
+	for _, id := range reopenIDs {
+		if err := appendReopenNote(ctx, db, n.ID, id, freezeIDs, replanID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func applyNodeFreeze(db *store.Store, n *model.DesignNode) error {
+	ctx := context.Background()
+	n.Status = model.NodeFrozen
+	if err := db.UpdateNode(ctx, n); err != nil {
+		return err
+	}
+	questions, err := db.ListQuestions(ctx, n.Objective)
+	if err != nil {
+		return err
+	}
+	var freezeIDs []string
+	for _, q := range questions {
+		if q.Kind == model.QuestionFreeze && q.Scope == n.ID {
+			freezeIDs = append(freezeIDs, q.ID)
+		}
+	}
+	if len(freezeIDs) == 0 {
+		return nil
+	}
+	return appendReopenNote(ctx, db, n.ID, "", freezeIDs, "")
+}
+
+func appendReopenNote(ctx context.Context, db *store.Store, nodeID, questionID string, freezeIDs []string, replanID string) error {
+	raw, err := json.Marshal(loopReopenNote{Question: questionID, Freeze: freezeIDs, Replan: replanID})
+	if err != nil {
+		return err
+	}
+	return db.AppendEvent(ctx, &model.Event{Entity: "node:" + nodeID, Type: loopReopenUsed, Data: raw})
+}
+
+func usedReopenQuestions(ctx context.Context, db *store.Store, nodeID string) (map[string]bool, error) {
+	ev, err := db.ListEvents(ctx, "node:"+nodeID)
+	if err != nil {
+		return nil, err
+	}
+	used := map[string]bool{}
+	for _, e := range ev {
+		if e.Type != loopReopenUsed || len(e.Data) == 0 {
+			continue
+		}
+		var note loopReopenNote
+		if err := json.Unmarshal(e.Data, &note); err != nil {
+			return nil, err
+		}
+		if note.Question != "" {
+			used[note.Question] = true
+		}
+	}
+	return used, nil
+}
+
+func questionConsented(q model.Question) bool {
+	if strings.TrimSpace(q.Answer) == "" || len(q.Options) == 0 {
+		return false
+	}
+	return q.Answer == q.Options[0]
+}
+
+func nodeNotStarted(st model.CardStatus) bool {
+	switch st {
+	case model.CardReady, model.CardWaiting, model.CardNeedsInput:
+		return true
+	default:
+		return false
+	}
+}
+
+func nodeTerminal(st model.CardStatus) bool {
+	switch st {
+	case model.CardDone, model.CardMerged, model.CardCanceled, model.CardFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func nodeReplanInFlight(cards []model.Card, nodeID string) (string, bool) {
+	for _, c := range cards {
+		if c.Node != nodeID || c.Kind != model.KindReplan {
+			continue
+		}
+		if nodeTerminal(c.Status) || c.Status == model.CardPaused || nodeNotStarted(c.Status) {
+			continue
+		}
+		return c.ID, true
+	}
+	return "", false
 }
 
 const questionGroupUsage = `question — list, show, and answer stored questions

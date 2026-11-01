@@ -664,7 +664,10 @@ func TestGrokQuotaAndCrashChannels(t *testing.T) {
 	})
 }
 
-// TestGrokGoalQuotaTerminal is the B2 table. The pager sentence in
+// TestGrokGoalQuotaTerminal is the B2 table. The positive proof is
+// testdata/grok_goal_quota_screen.bin replayed through Drive, whole and in
+// chunks. Its provenance names the screen-log frame and the pager sentence
+// embedded into that frame. The pager sentence in
 // testdata/grok_goal_quota_pty.txt and the shell billing sentences are the
 // string table. They are not testdata/grok_goal_quota_stderr.txt and not the
 // headless {"type":"error"} record pasted on the PTY. ReadGrokGoalSession
@@ -686,6 +689,86 @@ func TestGrokGoalQuotaTerminal(t *testing.T) {
 		"You hit your weekly limit.",
 		"out of credits or over your spending limit. Add credits and retry.",
 	}
+
+	t.Run("screen_log", func(t *testing.T) {
+		raw := readFixture(t, "grok_goal_quota_screen.bin")
+		note := string(readFixture(t, "grok_goal_quota_screen.provenance.txt"))
+		pager := bytes.TrimSpace(readFixture(t, "grok_goal_quota_pty.txt"))
+		if bytes.Equal(raw, pager) {
+			t.Fatal("screen fixture is the pager sentence")
+		}
+		for _, frag := range [][]byte{
+			[]byte("\x1b[?2026h\x1b[15;4H"),
+			[]byte("\x1b[15;6HStarting"),
+			[]byte("\x1b[15;15Hsession"),
+			[]byte("\x1b[15;24H0.0s"),
+			[]byte("\x1b[10;1H"),
+			pager,
+			[]byte("\x1b[?2026l"),
+		} {
+			if !bytes.Contains(raw, frag) {
+				t.Fatalf("screen fixture missing %q", frag)
+			}
+		}
+		if bytes.Contains(raw, []byte{'\n'}) || bytes.Contains(raw, []byte{'\r'}) {
+			t.Fatal("screen fixture CR/LF was rewritten")
+		}
+		commit := bytes.LastIndex(raw, []byte("\x1b[?2026l"))
+		if sentenceAt := bytes.Index(raw, pager); sentenceAt < 0 || sentenceAt > commit {
+			t.Fatal("pager sentence is not inside the committed frame")
+		}
+		for _, want := range []string{
+			"rounds/R2/R2-B.screen.log",
+			"offset: 1643",
+			"length: 142",
+			"time: 2026-10-31T01:29:23+08:00",
+			"grok_goal_quota_pty.txt:1",
+		} {
+			if !strings.Contains(note, want) {
+				t.Fatalf("provenance missing %q", want)
+			}
+		}
+		for _, banned := range []string{"token", "Bearer", "cookie", "sk-", "/Users/", "/home/", "@"} {
+			if bytes.Contains(raw, []byte(banned)) || strings.Contains(note, banned) {
+				t.Fatalf("scrub %q", banned)
+			}
+		}
+		dir := t.TempDir()
+		got, wrote := driveSession(t, prompt, dir, raw)
+		if string(wrote) != written {
+			t.Fatalf("wrote %q", wrote)
+		}
+		if !errors.Is(got, runner.ErrGrokQuotaHit) {
+			t.Fatalf("screen log %v", got)
+		}
+		if _, ok := runner.ReadGrokGoalSession(dir); ok {
+			t.Fatal("screen log invented a session status")
+		}
+	})
+
+	t.Run("screen_log_chunks", func(t *testing.T) {
+		raw := readFixture(t, "grok_goal_quota_screen.bin")
+		at := bytes.LastIndex(raw, []byte("\x1b[?2026l"))
+		if at <= 0 {
+			t.Fatal("sync commit")
+		}
+		dir := t.TempDir()
+		rw := &chunkRW{chunks: [][]byte{raw[:at], raw[at:]}}
+		err := runner.Grok{GoalMode: true, Prompt: prompt, SessionDir: dir}.Drive(context.Background(), rw)
+		if rw.reads != 2 {
+			t.Fatalf("uncommitted frame fired early: reads %d", rw.reads)
+		}
+		if !errors.Is(err, runner.ErrGrokQuotaHit) {
+			t.Fatalf("committed frame %v", err)
+		}
+		if _, ok := runner.ReadGrokGoalSession(dir); ok {
+			t.Fatal("chunked replay invented a session status")
+		}
+		early, _ := driveSession(t, prompt, t.TempDir(), raw[:at])
+		if early == nil || errors.Is(early, runner.ErrGrokQuotaHit) || errors.Is(early, runner.ErrGrokBudgetLimited) || errors.Is(early, runner.ErrGrokCrash) {
+			t.Fatalf("uncommitted prefix %v", early)
+		}
+	})
 
 	t.Run("pager_card", func(t *testing.T) {
 		dir := t.TempDir()

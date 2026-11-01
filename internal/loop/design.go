@@ -1606,8 +1606,14 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 			return err
 		}
 	default:
-		if err := d.markAbsorbed(ctx, card.ID, nil); err != nil {
+		handled, err := d.absorbDelegated(ctx, card, text)
+		if err != nil {
 			return err
+		}
+		if !handled {
+			if err := d.markAbsorbed(ctx, card.ID, nil); err != nil {
+				return err
+			}
 		}
 	}
 	if err := d.markAttempt(ctx, attemptID); err != nil {

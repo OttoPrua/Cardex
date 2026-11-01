@@ -335,6 +335,15 @@ func FollowRanking(ctx context.Context, db *store.Store) error {
 	return nil
 }
 
+// absorbDelegated absorbs kinds that are not cases in the design switch.
+// Ranking is handled here so a result_unparsable proposal still becomes a question.
+func (d Deps) absorbDelegated(ctx context.Context, card model.Card, text string) (bool, error) {
+	if card.Kind != model.KindRanking {
+		return false, nil
+	}
+	return true, d.absorbRanking(ctx, card, text)
+}
+
 func (d Deps) absorbRanking(ctx context.Context, card model.Card, text string) error {
 	if d.Store == nil {
 		return errNilStore

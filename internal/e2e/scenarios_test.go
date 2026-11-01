@@ -95,27 +95,134 @@ func TestS06(t *testing.T) {
 
 func TestS07(t *testing.T) {
 	// 没有产出，换渠道重派一次，仍然没有就派待拍板问题。
-	t.Skip("R3-B")
+	f := newDev(t, model.ModeManual, "file:origin", model.Budget{})
+	a := f.channel("ch-a")
+	b := f.channel("ch-b")
+	card := f.card("c", a.ID, model.KindDev, model.CardHarvesting, "")
+	f.attempt(card, 0, model.OutcomeNoOutput, a.ID, "", 0)
+	f.step()
+	got := f.mustCard("c")
+	if got.Channel != b.ID || got.Status != model.CardReady || len(f.questions()) != 0 {
+		t.Fatalf("switch %+v questions %+v", got, f.questions())
+	}
+	f.attempt(got, 1, model.OutcomeNoOutput, b.ID, "", 0)
+	f.step()
+	got = f.mustCard("c")
+	if got.Channel != b.ID || got.Status != model.CardNeedsInput || len(f.questions()) != 1 || f.questions()[0].Answer != "" {
+		t.Fatalf("ask %+v questions %+v", got, f.questions())
+	}
+	f.step()
+	if f.mustCard("c").Channel != b.ID || len(f.questions()) != 1 {
+		t.Fatal("second step changed the no-output disposition")
+	}
 }
 
 func TestS08(t *testing.T) {
 	// 撞额度，渠道封锁，换渠道从卡分支续做。
-	t.Skip("R3-B")
+	f := newDev(t, model.ModeManual, "file:origin", model.Budget{})
+	a := f.channel("ch-a")
+	b := f.channel("ch-b")
+	reset := time.Date(2026, 12, 1, 3, 4, 5, 0, time.UTC)
+	card := f.card("c", a.ID, model.KindDev, model.CardHarvesting, "")
+	attempt := f.attempt(card, 0, model.OutcomeQuotaHit, a.ID, "quota reset "+reset.Format(time.RFC3339), 0)
+	f.step()
+	got := f.mustCard("c")
+	if got.Channel != b.ID || got.Status != model.CardReady || got.Base != attempt.Branch {
+		t.Fatalf("continue %+v", got)
+	}
+	blocked, err := f.h.DB.GetChannel(f.ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked.Health != model.HealthOK || len(blocked.QuotaWindows) != 1 || blocked.QuotaWindows[0].Remaining != 0 || !blocked.QuotaWindows[0].ResetAt.Equal(reset) {
+		t.Fatalf("channel %+v", blocked)
+	}
+	led := quota.New()
+	if err := loop.RestoreQuota(f.ctx, led, f.events("")); err != nil {
+		t.Fatal(err)
+	}
+	rem, err := led.Remaining(f.ctx, a.ID)
+	if err != nil || !rem.Blocked {
+		t.Fatalf("remaining %+v %v", rem, err)
+	}
+	if len(f.events("quota_block")) != 1 {
+		t.Fatalf("events %+v", f.events("quota_block"))
+	}
+	f.step()
+	if f.mustCard("c").Channel != b.ID || len(f.events("quota_block")) != 1 {
+		t.Fatal("second step blocked or switched again")
+	}
 }
 
 func TestS09(t *testing.T) {
 	// 认证失败，渠道标记不健康并推送通知，卡换渠道。
-	t.Skip("R3-B")
+	f := newDev(t, model.ModeManual, "lark:ou_s09", model.Budget{})
+	dir := f.noticeDir()
+	a := f.channel("ch-a")
+	b := f.channel("ch-b")
+	card := f.card("c", a.ID, model.KindDev, model.CardHarvesting, "")
+	attempt := f.attempt(card, 0, model.OutcomeAuthFailed, a.ID, "token rejected", 0)
+	f.step()
+	got := f.mustCard("c")
+	if got.Channel != b.ID || got.Base != attempt.Branch || got.Status != model.CardReady {
+		t.Fatalf("switch %+v", got)
+	}
+	ch, err := f.h.DB.GetChannel(f.ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Health != model.HealthAuthFailed {
+		t.Fatalf("health %s", ch.Health)
+	}
+	body := noticeBody(t, dir, "auth_failed")
+	if !strings.Contains(body, f.origin) || !strings.Contains(body, `"destination": "`+f.origin) || !strings.Contains(body, `"adapter": "file"`) {
+		t.Fatalf("notice %s", body)
+	}
+	f.step()
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || f.mustCard("c").Channel != b.ID {
+		t.Fatal("second step notified or switched again")
+	}
 }
 
 func TestS10(t *testing.T) {
 	// 拒答，不换渠道，派待拍板问题。
-	t.Skip("R3-B")
+	f := newDev(t, model.ModeManual, "file:origin", model.Budget{})
+	a := f.channel("ch-a")
+	f.channel("ch-b")
+	card := f.card("c", a.ID, model.KindDev, model.CardHarvesting, "")
+	f.attempt(card, 0, model.OutcomeRefusal, a.ID, "", 0)
+	f.step()
+	got := f.mustCard("c")
+	qs := f.questions()
+	if got.Channel != a.ID || got.Status != model.CardNeedsInput || len(qs) != 1 || qs[0].Kind != model.QuestionRefusal || qs[0].Answer != "" {
+		t.Fatalf("card %+v questions %+v", got, qs)
+	}
+	f.step()
+	if f.mustCard("c").Channel != a.ID || len(f.questions()) != 1 {
+		t.Fatal("second step switched or asked again")
+	}
 }
 
 func TestS11(t *testing.T) {
 	// 结果格式乱，派整理卡。
-	t.Skip("R3-B")
+	f := newDev(t, model.ModeManual, "file:origin", model.Budget{})
+	a := f.channel("ch-a")
+	card := f.card("c", a.ID, model.KindDev, model.CardHarvesting, "")
+	f.attempt(card, 0, model.OutcomeResultUnparsable, a.ID, "", 0)
+	f.step()
+	norms := f.cardsKind(model.KindNormalize)
+	got := f.mustCard("c")
+	if len(norms) != 1 || !devHasDep(norms[0], "c") || got.Status != model.CardWaiting || got.WaitReason != "normalize:"+norms[0].ID {
+		t.Fatalf("card %+v norms %+v", got, norms)
+	}
+	f.step()
+	if len(f.cardsKind(model.KindNormalize)) != 1 || f.mustCard("c").Status != model.CardWaiting {
+		t.Fatal("second step created another normalize card")
+	}
 }
 
 func TestS12(t *testing.T) {
@@ -236,12 +343,79 @@ func TestS14(t *testing.T) {
 
 func TestS15(t *testing.T) {
 	// 节点熔断，问题投递到 origin（用 file 适配器）。
-	t.Skip("R3-B")
+	f := newDev(t, model.ModeAuto, "lark:ou_test", model.Budget{})
+	dir := f.noticeDir()
+	ch := f.channel("ch-a")
+	f.card("sib", ch.ID, model.KindDev, model.CardReady, "node")
+	f.node("other")
+	f.card("else", ch.ID, model.KindDev, model.CardReady, "other")
+	card := f.card("dev", ch.ID, model.KindDev, model.CardHarvesting, "node")
+	f.attempt(card, 0, model.OutcomeTestsFailed, ch.ID, "alpha", 0)
+	f.attempt(card, 1, model.OutcomeTestsFailed, ch.ID, "beta", 0)
+	f.attempt(card, 2, model.OutcomeTestsFailed, ch.ID, "gamma", 0)
+	f.step()
+	if f.mustCard("sib").Status != model.CardPaused || f.mustCard("else").Status != model.CardReady {
+		t.Fatalf("sib %s else %s", f.mustCard("sib").Status, f.mustCard("else").Status)
+	}
+	var breaker *model.Question
+	for i := range f.questions() {
+		q := f.questions()[i]
+		if q.Kind == model.QuestionBreaker {
+			breaker = &q
+		}
+	}
+	if breaker == nil || breaker.Scope != "node" || breaker.Answer != "" || len(breaker.Deliveries) != 1 || breaker.Deliveries[0].Adapter != "file" || breaker.Deliveries[0].Destination != f.origin {
+		t.Fatalf("questions %+v", f.questions())
+	}
+	body := noticeBody(t, dir, "breaker")
+	if !strings.Contains(body, f.origin) || !strings.Contains(body, `"destination": "`+f.origin) || !strings.Contains(body, `"adapter": "file"`) {
+		t.Fatalf("notice %s", body)
+	}
+	before, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.step()
+	after, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) || f.mustCard("else").Status != model.CardReady || f.mustCard("sib").Status != model.CardPaused {
+		t.Fatal("second step delivered the breaker again")
+	}
 }
 
 func TestS16(t *testing.T) {
 	// 目标预算触顶，暂停目标。
-	t.Skip("R3-B")
+	f := newDev(t, model.ModeManual, "file:origin", model.Budget{SoftTokens: 1000, HardTokens: 40})
+	ch := f.channel("ch-a")
+	card := f.card("spike", ch.ID, model.KindSpike, model.CardHarvesting, "")
+	f.attempt(card, 0, model.OutcomePassed, ch.ID, "", 40)
+	f.step()
+	obj, err := f.h.DB.GetObjective(f.ctx, "obj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var budget int
+	for _, q := range f.questions() {
+		if q.Kind == model.QuestionBudget && q.Scope == "obj" && q.Answer == "" {
+			budget++
+		}
+		if q.Kind == model.QuestionDone {
+			t.Fatal("hard stop opened a done question")
+		}
+	}
+	if obj.Status != model.ObjectivePaused || budget != 1 {
+		t.Fatalf("status %s questions %+v", obj.Status, f.questions())
+	}
+	f.step()
+	obj, err = f.h.DB.GetObjective(f.ctx, "obj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obj.Status != model.ObjectivePaused || len(f.questions()) != 1 {
+		t.Fatal("second step changed the hard stop")
+	}
 }
 
 func TestS17(t *testing.T) {
@@ -455,6 +629,191 @@ func TestS24(t *testing.T) {
 		t.Fatalf("outcome %q", got.Outcome)
 	}
 	t.Logf("outside file absent; denial in evidence: %s", got.ErrorExcerpt)
+}
+
+type devFix struct {
+	t      *testing.T
+	h      *Harness
+	ctx    context.Context
+	origin string
+	notes  string
+}
+
+func newDev(t *testing.T, mode model.ObjectiveMode, origin string, budget model.Budget) *devFix {
+	t.Helper()
+	h := New(t)
+	t.Setenv("CARDEX_HOME", h.Home)
+	ctx := context.Background()
+	project := &model.Project{ID: "p", RepoPath: h.Repo}
+	if err := h.DB.CreateProject(ctx, project); err != nil {
+		t.Fatal(err)
+	}
+	obj := &model.Objective{
+		ID: "obj", Project: project.ID, Title: "e2e",
+		Mode: mode, FreezeMode: model.FreezeSafe, Status: model.ObjectiveActive,
+		Origin: origin, IntegrationBranch: "integration", Budget: budget,
+	}
+	if err := h.DB.CreateObjective(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	node := &model.DesignNode{ID: "node", Objective: obj.ID, Layer: model.LayerDetail, Status: model.NodeFrozen}
+	if err := h.DB.CreateNode(ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	return &devFix{t: t, h: h, ctx: ctx, origin: origin}
+}
+
+func (f *devFix) noticeDir() string {
+	f.t.Helper()
+	dir := f.t.TempDir()
+	f.notes = dir
+	f.ctx = loop.WithNotifier(f.ctx, loop.FileNotifier{Dir: dir})
+	return dir
+}
+
+func (f *devFix) channel(id string) model.Channel {
+	f.t.Helper()
+	ch := &model.Channel{
+		ID: id, Runner: model.RunnerFake, Family: id, Tier: model.TierT2,
+		Health: model.HealthOK, Models: []string{"fake"}, Concurrency: 1, SourceGroup: id,
+		QuotaWindows: []model.QuotaWindow{{
+			Name: "5h", ResetRule: "rolling", LimitTokens: 100,
+			ResetAt: time.Now().Add(2 * time.Hour).UTC(), Remaining: 1,
+		}},
+	}
+	if err := f.h.DB.CreateChannel(f.ctx, ch); err != nil {
+		f.t.Fatal(err)
+	}
+	return *ch
+}
+
+func (f *devFix) node(id string) {
+	f.t.Helper()
+	node := &model.DesignNode{ID: id, Objective: "obj", Layer: model.LayerModule, Status: model.NodeFrozen}
+	if err := f.h.DB.CreateNode(f.ctx, node); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *devFix) card(id, channel string, kind model.CardKind, status model.CardStatus, node string) model.Card {
+	f.t.Helper()
+	if node == "" {
+		node = "node"
+	}
+	card := &model.Card{
+		ID: id, Objective: "obj", Node: node, Kind: kind, Title: id,
+		Tier: model.DefaultTier(kind), Status: status, Channel: channel,
+		Budget: model.Budget{SoftTokens: 1, HardTokens: 1},
+	}
+	if err := f.h.DB.CreateCard(f.ctx, card); err != nil {
+		f.t.Fatal(err)
+	}
+	return *card
+}
+
+func (f *devFix) attempt(card model.Card, index int, outcome model.Outcome, channel, excerpt string, tokens int64) model.Attempt {
+	f.t.Helper()
+	attempt := &model.Attempt{
+		ID: card.ID + "-" + string(rune('0'+index)), Card: card.ID, Index: index,
+		Route:        model.Route{Channel: channel, Model: "fake"},
+		Outcome:      outcome,
+		ErrorClass:   model.ErrorClass(outcome),
+		ErrorExcerpt: excerpt,
+		EndedAt:      time.Now().UTC(),
+		Branch:       "cardex/obj/c/" + card.ID,
+		Usage:        model.Usage{Tokens: tokens},
+	}
+	if err := f.h.DB.CreateAttempt(f.ctx, attempt); err != nil {
+		f.t.Fatal(err)
+	}
+	return *attempt
+}
+
+func (f *devFix) step() {
+	f.t.Helper()
+	f.t.Setenv("CARDEX_HOME", f.h.Home)
+	if err := loop.DevStep(f.ctx, "obj"); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *devFix) mustCard(id string) model.Card {
+	f.t.Helper()
+	card, err := f.h.DB.GetCard(f.ctx, id)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return card
+}
+
+func (f *devFix) questions() []model.Question {
+	f.t.Helper()
+	questions, err := f.h.DB.ListQuestions(f.ctx, "obj")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	return questions
+}
+
+func (f *devFix) events(typ string) []model.Event {
+	f.t.Helper()
+	events, err := f.h.DB.ListEvents(f.ctx, "")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	if typ == "" {
+		return events
+	}
+	var out []model.Event
+	for _, event := range events {
+		if event.Type == typ {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+func (f *devFix) cardsKind(kind model.CardKind) []model.Card {
+	f.t.Helper()
+	cards, err := f.h.DB.ListCards(f.ctx, "obj")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	var out []model.Card
+	for _, card := range cards {
+		if card.Kind == kind {
+			out = append(out, card)
+		}
+	}
+	return out
+}
+
+func devHasDep(card model.Card, id string) bool {
+	for _, dep := range card.Deps {
+		if dep == id {
+			return true
+		}
+	}
+	return false
+}
+
+func noticeBody(t *testing.T, dir, kind string) string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		body, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), `"kind": "`+kind+`"`) {
+			return string(body)
+		}
+	}
+	t.Fatalf("no %s notice in %s", kind, dir)
+	return ""
 }
 
 // sandboxOutsideDir is outside TMPDIR. The seatbelt profile allows writes under TMPDIR,

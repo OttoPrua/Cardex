@@ -27,7 +27,7 @@ func TestAbsorbDisposedHarvest(t *testing.T) {
 			t.Fatalf("status %s before harvest", card.Status)
 		}
 		oldDir := t.TempDir()
-		writeResult(t, oldDir, "## 事实\n### Q0\n结论：旧盘点\n证据：old.go:1\n把握：高\n")
+		writeResultFile(t, oldDir, "## 事实\n### Q0\n结论：旧盘点\n证据：old.go:1\n把握：高\n")
 		makeAttempt(t, st, card.ID, 0, "old-base", oldDir, "")
 		gone := goneWorktree(t)
 		later := makeAttempt(t, st, card.ID, 1, "inv-base", gone, model.OutcomePassed)
@@ -94,7 +94,7 @@ func TestAbsorbDisposedHarvest(t *testing.T) {
 				t.Fatalf("status %s before harvest", card.Status)
 			}
 			oldDir := t.TempDir()
-			writeResult(t, oldDir, "## 开放问题\n- 旧文件不该吸收\n## 事实\n### Q1\n结论：旧答案\n证据：old.go:1\n把握：高\n## 结论\n旧结论\n## 设计问题\n旧设计问题\n")
+			writeResultFile(t, oldDir, "## 开放问题\n- 旧文件不该吸收\n## 事实\n### Q1\n结论：旧答案\n证据：old.go:1\n把握：高\n## 结论\n旧结论\n## 设计问题\n旧设计问题\n")
 			makeAttempt(t, st, card.ID, 0, "old-base", oldDir, "")
 			later := makeAttempt(t, st, card.ID, 1, "new-base", goneWorktree(t), model.OutcomePassed)
 			if err := AbsorbDisposed(t.Context(), depsOf(st), later.ID, model.OutcomePassed, tc.result); err != nil {
@@ -266,7 +266,7 @@ func TestAbsorbBindsDisposedAttempt(t *testing.T) {
 		}
 		card := seedCard(t, st, obj.ID, node.ID, model.KindResearch, model.CardReady, "Q1: 端口是多少\n")
 		oldDir := t.TempDir()
-		writeResult(t, oldDir, "## 事实\n### Q1\n结论：旧答案\n证据：old.go:1\n把握：高\n")
+		writeResultFile(t, oldDir, "## 事实\n### Q1\n结论：旧答案\n证据：old.go:1\n把握：高\n")
 		makeAttempt(t, st, card.ID, 0, "old-base", oldDir, model.OutcomePassed)
 		later := makeAttempt(t, st, card.ID, 1, "new-base", goneWorktree(t), "")
 		if err := AbsorbDisposed(t.Context(), depsOf(st), later.ID, model.OutcomePassed, ""); err != nil {
@@ -342,11 +342,11 @@ func TestAbsorbBindsDisposedAttempt(t *testing.T) {
 				t.Fatal(err)
 			}
 			oldDir := t.TempDir()
-			writeResult(t, oldDir, "## 复核结论\npass\n")
+			writeResultFile(t, oldDir, "## 复核结论\npass\n")
 			makeAttempt(t, st, review, 0, "old-base", oldDir, model.OutcomePassed)
 			if tc.viaStep {
 				fileDir := t.TempDir()
-				writeResult(t, fileDir, "## 复核结论\npass\n")
+				writeResultFile(t, fileDir, "## 复核结论\npass\n")
 				makeAttempt(t, st, review, 1, "new-base", fileDir, tc.outcome)
 				if err := loopStep(t, depsOf(st), rev.Objective); err != nil {
 					t.Fatal(err)
@@ -428,7 +428,7 @@ func designWithOlderFile(t *testing.T) (*store.Store, model.Objective, model.Des
 	node := seedNode(t, st, obj.ID, "", model.LayerModule)
 	card := seedCard(t, st, obj.ID, node.ID, model.KindDesign, model.CardReady, "任务\n")
 	oldDir := t.TempDir()
-	writeResult(t, oldDir, "## 开放问题\n- 旧问题不该出现\n")
+	writeResultFile(t, oldDir, "## 开放问题\n- 旧问题不该出现\n")
 	makeAttempt(t, st, card.ID, 0, "old-base", oldDir, model.OutcomePassed)
 	return st, obj, node, card
 }
@@ -462,7 +462,7 @@ func makeAttempt(t *testing.T, st *store.Store, cardID string, index int, base, 
 	return *a
 }
 
-func writeResult(t *testing.T, dir, body string) {
+func writeResultFile(t *testing.T, dir, body string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(dir, ".cardex-result.md"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)

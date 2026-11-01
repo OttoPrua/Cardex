@@ -687,7 +687,7 @@ func absorbText(t *testing.T, st *store.Store, cardID string, index int, outcome
 func plantAttempt(t *testing.T, st *store.Store, cardID string, index int, outcome model.Outcome, text string) model.Attempt {
 	t.Helper()
 	dir := t.TempDir()
-	writeResult(t, dir, text)
+	writeResultFile(t, dir, text)
 	return makeAttempt(t, st, cardID, index, "base", dir, outcome)
 }
 

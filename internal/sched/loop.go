@@ -511,7 +511,7 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 		Repo:       repo,
 		Revision:   attempt.BaseCommit,
 	})
-	if err != nil && !errors.Is(err, prompt.ErrNotImplemented) {
+	if err != nil {
 		return err
 	}
 	if strings.TrimSpace(text) == "" {
@@ -926,7 +926,7 @@ func (r *Runner) allow(ctx context.Context, db *store.Store, card *model.Card, o
 		return true, nil
 	}
 	probe := append(append([]model.Card{}, occupy...), *card)
-	conflicts, err := claims.Conflicts(probe)
+	conflicts, err := claims.Conflicts(probe, nil)
 	if err != nil {
 		return false, err
 	}

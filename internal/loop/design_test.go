@@ -134,8 +134,9 @@ func TestDesignStepNeedsStoreAndDevStaysOpen(t *testing.T) {
 	if !errors.Is(DesignStep(t.Context(), "o"), ErrNotImplemented) {
 		t.Fatal("DesignStep")
 	}
-	if !errors.Is(DevStep(t.Context(), "o"), ErrNotImplemented) {
-		t.Fatal("DevStep")
+	t.Setenv("CARDEX_HOME", "")
+	if err := DevStep(t.Context(), "o"); err == nil || errors.Is(err, ErrNotImplemented) {
+		t.Fatalf("DevStep %v", err)
 	}
 	st := openLoop(t)
 	obj := seedObjective(t, st, "", model.ModeAuto, model.FreezeSafe)

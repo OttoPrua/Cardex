@@ -24,7 +24,7 @@ R4-D `internal/e2e` TestS23：走缺省 `schedules` 下的默认每周 ranking�
 
 ## 已知问题
 
-无 `schedules` 时生产 Tick 仍不入队每周 ranking。`Dispose` 为 nil 时生产收割不吸收 ranking。回答批准后没有生产调用 `FollowRanking`。`ranking_sources` 仍会触发未知顶层键警告。dev 路径的复核吸收仍不写 `loop.review_pass`。现有 TestS23 仍手工建卡、注入 Dispose 并直接调用 `FollowRanking`；拆出 default 委托后，它等不到问题。
+无 `schedules` 时生产 Tick 仍不入队每周 ranking。`Dispose` 为 nil 时生产收割不吸收 ranking。回答批准后没有生产调用 `FollowRanking`。`ranking_sources` 仍会触发未知顶层键警告。dev 路径的复核吸收仍不写 `loop.review_pass`。现有 TestS23 仍手工建卡、注入 Dispose 并直接调用 `FollowRanking`，拆出 default 委托后等不到问题。本轮不恢复该委托，也不改 e2e、sched、question；全量测试因此只在 TestS23 失败，要等 R3-A 在 default 调用 `absorbDelegated`、R4-D 把 TestS23 改到默认定时、正常收割和批准回答之后才能变绿。
 
 ## 修复记录
 

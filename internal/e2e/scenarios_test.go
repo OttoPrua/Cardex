@@ -972,6 +972,21 @@ func runRankingProductionPath(t *testing.T) {
 	if len(asked.Options) != 1 || asked.Options[0] != "批准" {
 		t.Fatalf("options %+v", asked.Options)
 	}
+	if err := loop.AbsorbHarvestedRanking(ctx, loop.Deps{Store: h.DB}, rank, loop.RankingHarvest{
+		AttemptID:  "a-rank",
+		Outcome:    model.OutcomePassed,
+		Acceptance: "passed",
+		ResultText: proposal,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := h.DB.ListQuestions(ctx, obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repeated) != 1 || repeated[0].ID != asked.ID {
+		t.Fatalf("second absorb questions %+v", repeated)
+	}
 	keptRoute := model.Route{Channel: "keep-ch", Model: "keep-model"}
 	if _, err := question.New(h.DB, nil).Answer(ctx, asked.ID, asked.Options[0]); err != nil {
 		t.Fatal(err)

@@ -451,6 +451,7 @@ func TestRankingAbsorbHonorsHarvest(t *testing.T) {
 		{name: "acceptance failed", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "failed", status: model.CardReady},
 		{name: "stopped failed", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "passed", status: model.CardFailed},
 		{name: "stopped canceled", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "passed", status: model.CardCanceled},
+		{name: "result_unparsable", outcome: model.OutcomeResultUnparsable, class: model.ErrorResultUnparsable, acceptance: "passed", status: model.CardReady, wantAbsorb: true},
 		{name: "passed", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "passed", status: model.CardReady, wantAbsorb: true},
 	}
 	for _, tc := range cases {
@@ -506,8 +507,8 @@ func TestRankingAbsorbHonorsHarvest(t *testing.T) {
 			if gotCard.Status != model.CardDone {
 				t.Fatalf("status %s", gotCard.Status)
 			}
-			if gotAttempt.Outcome != model.OutcomePassed {
-				t.Fatalf("outcome %s", gotAttempt.Outcome)
+			if gotAttempt.Outcome != tc.outcome {
+				t.Fatalf("outcome %s want %s", gotAttempt.Outcome, tc.outcome)
 			}
 			if gotAttempt.Route != before.Route {
 				t.Fatalf("route %v", gotAttempt.Route)
@@ -526,7 +527,7 @@ func TestRankingAbsorbHonorsHarvest(t *testing.T) {
 				t.Fatalf("second tick questions %d", len(mustQuestions(t, db)))
 			}
 			again := mustAttempt(t, db, "a-rank")
-			if again.Outcome != model.OutcomePassed || again.Route != before.Route {
+			if again.Outcome != tc.outcome || again.Route != before.Route {
 				t.Fatalf("second tick attempt %+v", again)
 			}
 		})

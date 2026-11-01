@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,9 +43,12 @@ type objectiveView struct {
 }
 
 type nodeView struct {
-	ID                string `json:"id"`
-	Status            string `json:"status"`
-	OpenQuestionCount int    `json:"open_question_count"`
+	ID                string     `json:"id"`
+	Parent            string     `json:"parent"`
+	Layer             string     `json:"layer"`
+	Status            string     `json:"status"`
+	OpenQuestionCount int        `json:"open_question_count"`
+	Children          []nodeView `json:"children"`
 }
 
 type statusCount struct {
@@ -95,10 +99,10 @@ type channelView struct {
 }
 
 type windowView struct {
-	Name       string  `json:"name"`
-	Remaining  float64 `json:"remaining"`
-	Confidence float64 `json:"confidence"`
-	ResetAt    string  `json:"reset_at"`
+	Name       string   `json:"name"`
+	Remaining  *float64 `json:"remaining"`
+	Confidence float64  `json:"confidence"`
+	ResetAt    string   `json:"reset_at"`
 }
 
 type cardView struct {
@@ -108,11 +112,20 @@ type cardView struct {
 	Attempts []attemptView `json:"attempts"`
 }
 
+type eventView struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+}
+
 type attemptView struct {
 	ID           string            `json:"id"`
 	RouteReason  model.RouteReason `json:"route_reason"`
 	Outcome      string            `json:"outcome"`
 	ErrorExcerpt string            `json:"error_excerpt"`
+	Exit         *int              `json:"exit"`
+	BaseCommit   string            `json:"base_commit"`
+	HeadCommit   string            `json:"head_commit"`
+	Events       []eventView       `json:"events"`
 	LogTailURL   string            `json:"log_tail_url"`
 	Ended        bool              `json:"ended"`
 }
@@ -190,14 +203,17 @@ func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 		if err != nil {
 			return nil, err
 		}
-		ov := objectiveView{ID: o.ID, Title: o.Title, Status: string(o.Status), Nodes: []nodeView{}}
+		flat := make([]nodeView, 0, len(nodes))
 		for _, n := range nodes {
-			ov.Nodes = append(ov.Nodes, nodeView{
+			flat = append(flat, nodeView{
 				ID:                n.ID,
+				Parent:            n.Parent,
+				Layer:             string(n.Layer),
 				Status:            string(n.Status),
 				OpenQuestionCount: openQuestionCount(n),
 			})
 		}
+		ov := objectiveView{ID: o.ID, Title: o.Title, Status: string(o.Status), Nodes: nestNodes(flat)}
 		view.Objectives = append(view.Objectives, ov)
 		cards, err := db.ListCards(ctx, o.ID)
 		if err != nil {
@@ -310,7 +326,7 @@ func loadChannels(ctx context.Context, db *store.Store) (*channelsView, error) {
 		for _, w := range ch.QuotaWindows {
 			row.Windows = append(row.Windows, windowView{
 				Name:       w.Name,
-				Remaining:  w.Remaining,
+				Remaining:  windowRemaining(w),
 				Confidence: w.Confidence,
 				ResetAt:    formatReset(w.ResetAt),
 			})
@@ -341,11 +357,27 @@ func loadCard(ctx context.Context, db *store.Store, id string) (*cardView, error
 	}
 	view := &cardView{ID: card.ID, Title: card.Title, Status: string(card.Status), Attempts: []attemptView{}}
 	for _, a := range attempts {
+		events, err := db.ListEvents(ctx, "attempt:"+a.ID)
+		if err != nil {
+			return nil, err
+		}
+		evs := make([]eventView, 0, len(events))
+		for _, e := range events {
+			data := e.Data
+			if len(data) == 0 {
+				data = json.RawMessage(`{}`)
+			}
+			evs = append(evs, eventView{Type: e.Type, Data: data})
+		}
 		view.Attempts = append(view.Attempts, attemptView{
 			ID:           a.ID,
 			RouteReason:  a.RouteReason,
 			Outcome:      string(a.Outcome),
 			ErrorExcerpt: a.ErrorExcerpt,
+			Exit:         a.Exit,
+			BaseCommit:   a.BaseCommit,
+			HeadCommit:   a.HeadCommit,
+			Events:       evs,
 			LogTailURL:   "/attempts/" + a.ID + "/output.log",
 			Ended:        !a.EndedAt.IsZero(),
 		})
@@ -394,10 +426,12 @@ func loadHistory(ctx context.Context, db *store.Store, query, status string, pag
 		return items[i].ID < items[j].ID
 	})
 	total := len(items)
-	start := (page - 1) * historyPageSize
-	if start > total {
-		start = total
+	page = clampHistoryPage(page, total)
+	start64 := int64(page-1) * int64(historyPageSize)
+	if start64 < 0 || start64 > int64(total) {
+		start64 = int64(total)
 	}
+	start := int(start64)
 	end := start + historyPageSize
 	if end > total {
 		end = total
@@ -437,4 +471,70 @@ func filterHistory(items []historyItem, query, status string) []historyItem {
 		out = append(out, item)
 	}
 	return out
+}
+
+func nestNodes(flat []nodeView) []nodeView {
+	ids := map[string]bool{}
+	for _, n := range flat {
+		ids[n.ID] = true
+	}
+	grouped := map[string][]nodeView{}
+	roots := make([]nodeView, 0, len(flat))
+	for _, n := range flat {
+		if n.Parent != "" && ids[n.Parent] && n.Parent != n.ID {
+			grouped[n.Parent] = append(grouped[n.Parent], n)
+			continue
+		}
+		roots = append(roots, n)
+	}
+	var attach func(nodeView) nodeView
+	attach = func(n nodeView) nodeView {
+		kids := grouped[n.ID]
+		n.Children = make([]nodeView, 0, len(kids))
+		for _, k := range kids {
+			n.Children = append(n.Children, attach(k))
+		}
+		return n
+	}
+	out := make([]nodeView, 0, len(roots))
+	for _, r := range roots {
+		out = append(out, attach(r))
+	}
+	return out
+}
+
+func windowRemaining(w model.QuotaWindow) *float64 {
+	if w.LimitTokens == 0 && w.LimitRequests == 0 {
+		return nil
+	}
+	v := w.Remaining
+	return &v
+}
+
+func (w windowView) RemainingLabel() string {
+	if w.Remaining == nil {
+		return "未知"
+	}
+	return strconv.FormatFloat(*w.Remaining, 'f', -1, 64)
+}
+
+func (e eventView) DataText() string {
+	return string(e.Data)
+}
+
+func clampHistoryPage(page, total int) int {
+	if page < 1 {
+		return 1
+	}
+	pages := 1
+	if total > 0 {
+		pages = int((int64(total) + int64(historyPageSize) - 1) / int64(historyPageSize))
+	}
+	if pages < 1 {
+		pages = 1
+	}
+	if page > pages {
+		return pages
+	}
+	return page
 }

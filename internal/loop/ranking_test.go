@@ -112,6 +112,7 @@ func TestRankingPromptSnapshots(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, piece := range []string{
+				"## 当前定位表", "## 各渠道可用的模型清单", "## 成绩单摘要",
 				"model=" + posModel, "family=fam-" + tc.name, "tiers=T2", "capabilities=web", "preference=3",
 				"channel=ch-" + tc.name, "models=" + chModel,
 				"model=" + scoreModel, "kind=dev", "tier=T2",
@@ -121,6 +122,9 @@ func TestRankingPromptSnapshots(t *testing.T) {
 				if !strings.Contains(text, piece) {
 					t.Fatalf("prompt missing %q\n%s", piece, text)
 				}
+			}
+			if tc.sources != nil {
+				t.Log("source override plus the three snapshots")
 			}
 			if tc.sources == nil {
 				for _, source := range defaults {
@@ -338,6 +342,10 @@ func TestRankingAbsorbLooseAndApprove(t *testing.T) {
 		if got := mustAttempt(t, db, "a-rank"); got.Route != rankBefore.Route {
 			t.Fatalf("ranking route %v want %v", got.Route, rankBefore.Route)
 		}
+		if q.Options[0] != "批准" {
+			t.Fatalf("options %+v", q.Options)
+		}
+		t.Log("「批准」 without rewriting a stored route")
 	})
 }
 
@@ -353,6 +361,7 @@ func TestRankingScheduleRequires(t *testing.T) {
 		wantReq  []string
 	}{
 		{name: "default weekly", wantCard: true, wantReq: []string{"web"}},
+		{name: "missing schedules key", config: "{}\n", wantCard: true, wantReq: []string{"web"}},
 		{name: "explicit web", tasks: []ScheduleTask{explicitWeb}, wantCard: true, wantReq: []string{"web"}},
 		{name: "explicit web and tools", tasks: []ScheduleTask{explicitFull}, wantCard: true, wantReq: []string{"web", "tools"}},
 		{name: "schedules key suppresses default", config: `{"schedules":[]}` + "\n", wantCard: false},
@@ -411,6 +420,12 @@ func TestRankingScheduleRequires(t *testing.T) {
 			}
 			if !sameRequires(found[0].Requires, tc.wantReq) {
 				t.Fatalf("stored requires %+v want %+v", found[0].Requires, tc.wantReq)
+			}
+			if tc.tasks == nil {
+				t.Log("missing schedules key")
+			}
+			if hasWeb(found[0].Requires) && tc.tasks != nil {
+				t.Logf("explicit web requires kept: %v", found[0].Requires)
 			}
 		})
 	}
@@ -521,23 +536,28 @@ func TestRankingAbsorbHonorsHarvest(t *testing.T) {
 func TestRankingHarvestFormatStillAbsorbs(t *testing.T) {
 	proposal := `{"entries":[{"model":"new-model","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"榜单"}]}`
 	prose := "说明文字还不是标题\n" + proposal + "\n以上是提案。\n"
+	headed := "## 结论\n提案\n" + proposal + "\n"
 	cases := []struct {
 		name       string
 		body       string
 		class      model.ErrorClass
 		acceptance []string
+		status     model.CardStatus
 		want       string
 	}{
 		{name: "untitled json", body: proposal, want: "absorb"},
 		{name: "prose json", body: prose, want: "absorb"},
+		{name: "passed", body: headed, want: "absorb"},
 		{name: "garbage", body: "this is not a proposal\n", want: "review"},
-		{name: "violation", body: proposal, class: model.ErrorViolation, want: "skip"},
-		{name: "budget_limited", body: proposal, class: model.ErrorBudgetLimited, want: "skip"},
-		{name: "acceptance failure", body: proposal, acceptance: []string{"exit 1"}, want: "skip"},
+		{name: "violation", body: headed, class: model.ErrorViolation, want: "skip"},
+		{name: "budget_limited", body: headed, class: model.ErrorBudgetLimited, want: "skip"},
+		{name: "acceptance failure", body: headed, acceptance: []string{"exit 1"}, want: "skip"},
+		{name: "stopped failed", body: headed, status: model.CardFailed, want: "skip"},
+		{name: "stopped canceled", body: headed, status: model.CardCanceled, want: "skip"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if strings.Contains(tc.body, "##") {
+			if tc.name != "passed" && tc.want != "skip" && strings.Contains(tc.body, "##") {
 				t.Fatal("result fixture has a known section title")
 			}
 			_, db := rankingHome(t)
@@ -565,11 +585,22 @@ func TestRankingHarvestFormatStillAbsorbs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.class != model.ErrorViolation && res.Outcome != model.OutcomeResultUnparsable {
-				t.Fatalf("harvest outcome %s evidence %s", res.Outcome, res.Evidence)
+			wantHarvest := model.OutcomeResultUnparsable
+			switch {
+			case tc.class == model.ErrorViolation:
+				wantHarvest = model.OutcomeViolation
+			case tc.class == model.ErrorBudgetLimited:
+				wantHarvest = model.OutcomeBudgetLimited
+			case len(tc.acceptance) > 0:
+				wantHarvest = model.OutcomeTestsFailed
+			case strings.Contains(tc.body, "## 结论"):
+				wantHarvest = model.OutcomePassed
 			}
-			if tc.class == model.ErrorViolation && res.Outcome != model.OutcomeViolation {
-				t.Fatalf("harvest outcome %s evidence %s", res.Outcome, res.Evidence)
+			if res.Outcome != wantHarvest {
+				t.Fatalf("harvest outcome %s want %s evidence %s", res.Outcome, wantHarvest, res.Evidence)
+			}
+			if !strings.Contains(tc.body, "##") && res.Outcome == model.OutcomePassed {
+				t.Fatal("outcome was overwritten to passed")
 			}
 			if res.ResultText != tc.body {
 				t.Fatalf("result text %q", res.ResultText)
@@ -585,8 +616,11 @@ func TestRankingHarvestFormatStillAbsorbs(t *testing.T) {
 				Acceptance: acceptance,
 				ResultText: res.ResultText,
 			}
-			if got.Outcome == model.OutcomePassed {
-				t.Fatal("outcome was overwritten to passed")
+			if tc.status != "" {
+				card.Status = tc.status
+				if err := db.UpdateCard(ctx, &card); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := AbsorbHarvestedRanking(ctx, Deps{Store: db}, card, got); err != nil {
 				t.Fatal(err)
@@ -605,11 +639,20 @@ func TestRankingHarvestFormatStillAbsorbs(t *testing.T) {
 				if proposalCount(t) != 0 || len(mustQuestions(t, db)) != 0 {
 					t.Fatalf("absorbed proposals %d questions %+v", proposalCount(t), mustQuestions(t, db))
 				}
-				if gotCard.Status != model.CardReady {
+				wantStatus := model.CardReady
+				if tc.status != "" {
+					wantStatus = tc.status
+				}
+				if gotCard.Status != wantStatus {
 					t.Fatalf("status %s", gotCard.Status)
 				}
 				if gotAttempt.Outcome != "" {
 					t.Fatalf("outcome %s", gotAttempt.Outcome)
+				}
+				if tc.status != "" {
+					t.Log("stopped card not absorbed")
+				} else {
+					t.Logf("%s not absorbed", tc.name)
 				}
 			case "review":
 				if proposalCount(t) != 0 {
@@ -626,7 +669,7 @@ func TestRankingHarvestFormatStillAbsorbs(t *testing.T) {
 					t.Fatalf("outcome %s want %s", gotAttempt.Outcome, res.Outcome)
 				}
 			case "absorb":
-				if res.Outcome != model.OutcomeResultUnparsable {
+				if res.Outcome != model.OutcomeResultUnparsable && res.Outcome != model.OutcomePassed {
 					t.Fatalf("outcome %s", res.Outcome)
 				}
 				if proposalCount(t) != 1 {
@@ -643,29 +686,40 @@ func TestRankingHarvestFormatStillAbsorbs(t *testing.T) {
 				if gotCard.Status != model.CardDone {
 					t.Fatalf("status %s", gotCard.Status)
 				}
-				if gotAttempt.Outcome != model.OutcomeResultUnparsable {
-					t.Fatalf("outcome %s", gotAttempt.Outcome)
+				if gotAttempt.Outcome != res.Outcome {
+					t.Fatalf("outcome %s want %s", gotAttempt.Outcome, res.Outcome)
+				}
+				if tc.name == "untitled json" && res.Outcome == model.OutcomeResultUnparsable {
+					t.Log("untitled result_unparsable JSON absorbed")
 				}
 			default:
 				t.Fatalf("want %s", tc.want)
-			}
-			if tc.want == "skip" {
-				return
 			}
 			if err := AbsorbHarvestedRanking(ctx, Deps{Store: db}, gotCard, got); err != nil {
 				t.Fatal(err)
 			}
 			if (tc.want == "absorb" && proposalCount(t) != 1) || (tc.want != "absorb" && proposalCount(t) != 0) {
-				t.Fatalf("second tick proposals %d", proposalCount(t))
+				t.Fatalf("second absorb proposals %d", proposalCount(t))
 			}
-			wantQuestions := 1
+			wantQuestions := 0
+			if tc.want != "skip" {
+				wantQuestions = 1
+			}
 			if len(mustQuestions(t, db)) != wantQuestions {
-				t.Fatalf("second tick questions %d", len(mustQuestions(t, db)))
+				t.Fatalf("second absorb questions %d", len(mustQuestions(t, db)))
 			}
 			again := mustAttempt(t, db, "a-rank")
 			if again.Outcome != gotAttempt.Outcome || again.Route != before.Route {
-				t.Fatalf("second tick attempt %+v", again)
+				t.Fatalf("second absorb attempt %+v", again)
 			}
+			fresh, err := db.GetCard(ctx, "rank")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fresh.Status != gotCard.Status {
+				t.Fatalf("second absorb status %s", fresh.Status)
+			}
+			t.Log("second absorb did not add a proposal or question")
 		})
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"cardex/internal/classify"
 	"cardex/internal/harvest"
 	"cardex/internal/host"
+	"cardex/internal/importer"
 	"cardex/internal/loop"
 	"cardex/internal/merge"
 	"cardex/internal/model"
@@ -823,7 +824,187 @@ func TestS20(t *testing.T) {
 
 func TestS21(t *testing.T) {
 	// 导入 v1 数据，按映射规则落位。
-	t.Skip("R4-B")
+	v1 := t.TempDir()
+	writeS21(t, v1, "tasks/queued.json", map[string]any{
+		"id": "q1", "title": "Queue the lumen ferry", "status": "queued", "project": "lumen",
+		"dir": "/tmp/lumen", "model": "should-not-pin",
+		"frozen_route": map[string]any{"primary": map[string]any{"runner": "grok", "model": "lumen-test"}},
+	})
+	writeS21(t, v1, "tasks/running.json", map[string]any{
+		"id": "r1", "title": "Run the buoy", "status": "running", "project": "lumen",
+		"runner_pref": "codex",
+	})
+	writeS21(t, v1, "tasks/held-chart.json", map[string]any{
+		"id": "h1", "title": "Hold for a chart", "status": "held", "project": "lumen",
+		"hold_reason": "waiting on the chart locker",
+	})
+	writeS21(t, v1, "tasks/held-tide.json", map[string]any{
+		"id": "h2", "title": "Hold for a tide", "status": "held", "project": "lumen",
+		"reason": "tide window closed",
+	})
+	writeS21(t, v1, "archive/done.json", map[string]any{
+		"id": "d1", "title": "Done chart", "status": "done", "project": "lumen",
+	})
+	writeS21(t, v1, "archive/failed.json", map[string]any{
+		"id": "f1", "title": "Failed sounding", "status": "failed", "project": "lumen",
+	})
+	writeS21(t, v1, "archive/canceled.json", map[string]any{
+		"id": "c1", "title": "Canceled watch", "status": "canceled", "project": "lumen",
+	})
+	before := readS21(t, v1)
+
+	v2 := t.TempDir()
+	ctx := context.Background()
+	if _, err := importer.Import(ctx, v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(filepath.Join(v2, "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cards, err := db.ListCards(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != 7 {
+		t.Fatalf("cards %d", len(cards))
+	}
+	objs, err := db.ListObjectives(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(objs) != 1 || objs[0].ID != "v1-import-lumen" || objs[0].Title != "v1 导入" || objs[0].Mode != model.ModeManual {
+		t.Fatalf("objectives %+v", objs)
+	}
+	byID := map[string]model.Card{}
+	for _, card := range cards {
+		byID[card.ID] = card
+		if card.Objective != "v1-import-lumen" {
+			t.Fatalf("%s objective %s", card.ID, card.Objective)
+		}
+		if card.Channel != "" || card.Model != "" {
+			t.Fatalf("%s pinned channel %q model %q", card.ID, card.Channel, card.Model)
+		}
+	}
+	assertS21(t, byID["v1-q1"], model.CardReady, "queued", "tasks/queued.json", "")
+	assertS21(t, byID["v1-r1"], model.CardReady, "running", "tasks/running.json", "")
+	assertS21(t, byID["v1-h1"], model.CardPaused, "held", "tasks/held-chart.json", "waiting on the chart locker")
+	assertS21(t, byID["v1-h2"], model.CardPaused, "held", "tasks/held-tide.json", "tide window closed")
+	assertS21(t, byID["v1-d1"], model.CardDone, "done", "archive/done.json", "")
+	assertS21(t, byID["v1-f1"], model.CardFailed, "failed", "archive/failed.json", "")
+	assertS21(t, byID["v1-c1"], model.CardCanceled, "canceled", "archive/canceled.json", "")
+	if byID["v1-h1"].Legacy.Reason == byID["v1-h2"].Legacy.Reason {
+		t.Fatal("held reasons collapsed")
+	}
+	assertS21Hint(t, db, "v1-q1", true, false)
+	assertS21Hint(t, db, "v1-r1", false, true)
+	assertS21Hint(t, db, "v1-d1", false, false)
+
+	if _, err := importer.Import(ctx, v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	again, err := db.ListCards(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	objs, err = db.ListObjectives(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 7 || len(objs) != 1 {
+		t.Fatalf("second import cards %d objectives %d", len(again), len(objs))
+	}
+	if after := readS21(t, v1); after != before {
+		t.Fatal("import changed v1 bytes")
+	}
+}
+
+func writeS21(t *testing.T, root, rel string, body map[string]any) {
+	t.Helper()
+	path := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readS21(t *testing.T, root string) string {
+	t.Helper()
+	var b strings.Builder
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(&b, "%s %x\n", rel, body)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b.String()
+}
+
+func assertS21(t *testing.T, card model.Card, status model.CardStatus, legacy, source, reason string) {
+	t.Helper()
+	if card.ID == "" {
+		t.Fatal("missing card")
+	}
+	if card.Status != status || card.Legacy.Status != legacy || card.Legacy.SourcePath != source || card.Legacy.Reason != reason {
+		t.Fatalf("%s status %s legacy %+v", card.ID, card.Status, card.Legacy)
+	}
+}
+
+func assertS21Hint(t *testing.T, db *store.Store, id string, frozen, pref bool) {
+	t.Helper()
+	evs, err := db.ListEvents(context.Background(), "card:"+id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hints int
+	var body struct {
+		FrozenRoute json.RawMessage `json:"frozen_route"`
+		RunnerPref  string          `json:"runner_pref"`
+	}
+	for _, ev := range evs {
+		if ev.Type != "route_hint" {
+			continue
+		}
+		hints++
+		if err := json.Unmarshal(ev.Data, &body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !frozen && !pref {
+		if hints != 0 {
+			t.Fatalf("%s hints %d", id, hints)
+		}
+		return
+	}
+	if hints != 1 {
+		t.Fatalf("%s hints %d", id, hints)
+	}
+	if frozen == (len(bytesTrim(body.FrozenRoute)) == 0) || (body.RunnerPref != "") != pref {
+		t.Fatalf("%s hint frozen %s pref %q", id, body.FrozenRoute, body.RunnerPref)
+	}
+}
+
+func bytesTrim(raw []byte) string {
+	return strings.TrimSpace(string(raw))
 }
 
 func TestS22(t *testing.T) {

@@ -1605,6 +1605,10 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 		if err := d.applyNormalize(ctx, obj, card, text, outcome); err != nil {
 			return err
 		}
+	case model.KindRanking:
+		if err := d.absorbRanking(ctx, card, text); err != nil {
+			return err
+		}
 	default:
 		if err := d.markAbsorbed(ctx, card.ID, nil); err != nil {
 			return err

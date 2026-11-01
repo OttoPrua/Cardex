@@ -889,7 +889,188 @@ func TestS22(t *testing.T) {
 
 func TestS23(t *testing.T) {
 	// 定位任务产生提案，提案生成问题，批准后新卡使用新定位。
-	t.Skip("R4-C")
+	h := New(t)
+	t.Setenv("CARDEX_HOME", h.Home)
+	useRankingSched(t, h)
+	stopLater(t, h)
+	_, obj := bindProject(t, h, "true")
+	ctx := context.Background()
+	oldModel := "old-selectable"
+	newModel := "new-approved"
+	chOld := readyChannel(t, h, "oldfam", oldModel)
+	readyChannel(t, h, "newfam", newModel)
+	if err := h.DB.CreatePositioning(ctx, &model.Positioning{
+		ID: "pos-old", Model: oldModel, Family: "oldfam",
+		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	keep := model.Card{
+		ID: "c-keep", Objective: obj, Kind: model.KindDev, Tier: model.TierT2,
+		Title: "keep", Status: model.CardDone,
+	}
+	if err := h.DB.CreateCard(ctx, &keep); err != nil {
+		t.Fatal(err)
+	}
+	keptRoute := model.Route{Channel: "keep-ch", Model: "keep-model"}
+	if err := h.DB.CreateAttempt(ctx, &model.Attempt{
+		ID: "a-keep", Card: keep.ID, Route: keptRoute,
+		Outcome: model.OutcomePassed, EndedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	proposal := `{"entries":[{"model":"new-approved","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"新榜"}]}`
+	script, err := json.Marshal(map[string]any{
+		"attempts": map[string]any{
+			"0": map[string]any{"result": proposal, "exit_code": 0},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rank := model.Card{
+		ID: "c-rank", Objective: obj, Kind: model.KindRanking, Tier: model.TierT2,
+		Title: "rank", Status: model.CardReady, Requires: []string{"web"},
+		Channel: chOld.ID, Model: oldModel, Body: string(script),
+	}
+	if err := h.DB.CreateCard(ctx, &rank); err != nil {
+		t.Fatal(err)
+	}
+	var asked model.Question
+	mustTick(t, h, func() bool {
+		questions, err := h.DB.ListQuestions(ctx, obj)
+		if err != nil || len(questions) != 1 {
+			return false
+		}
+		asked = questions[0]
+		return strings.Contains(asked.Text, "新出现") && strings.Contains(asked.Text, newModel)
+	}, 30*time.Second)
+	if !strings.Contains(asked.Text, "+ "+newModel) {
+		t.Fatalf("question missing diff %s", asked.Text)
+	}
+	if models := positionModels(t, h); len(models) != 1 || models[0] != oldModel {
+		t.Fatalf("table changed before approval %v", models)
+	}
+	if len(asked.Options) != 1 {
+		t.Fatalf("options %+v", asked.Options)
+	}
+	if _, err := question.New(h.DB, nil).Answer(ctx, asked.ID, asked.Options[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.FollowRanking(ctx, h.DB); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := h.DB.ListPositioning(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Model != newModel || !tierHas(rows[0].Tiers, model.TierT2) {
+		t.Fatalf("approved positioning %+v", rows)
+	}
+	if got := attemptsOf(t, h, keep.ID); len(got) != 1 || got[0].Route != keptRoute {
+		t.Fatalf("kept route %+v", got)
+	}
+	rankAttempts := attemptsOf(t, h, rank.ID)
+	if len(rankAttempts) != 1 || rankAttempts[0].Route.Channel != chOld.ID || rankAttempts[0].Route.Model != oldModel {
+		t.Fatalf("ranking route %+v", rankAttempts)
+	}
+	next := model.Card{
+		ID: "c-next", Objective: obj, Kind: model.KindDev, Tier: model.TierT2,
+		Title: "next", Status: model.CardReady, Acceptance: []string{"true"},
+		Body: fakeScript("", nil, nil),
+	}
+	if err := h.DB.CreateCard(ctx, &next); err != nil {
+		t.Fatal(err)
+	}
+	mustTick(t, h, func() bool {
+		attempts := attemptsOf(t, h, next.ID)
+		return len(attempts) == 1 && attempts[0].Route.Model == newModel
+	}, 30*time.Second)
+	got := attemptsOf(t, h, next.ID)[0]
+	if got.Route.Model != newModel || got.Route.Channel == "" {
+		t.Fatalf("new route %+v", got.Route)
+	}
+	if again := attemptsOf(t, h, keep.ID); len(again) != 1 || again[0].Route != keptRoute {
+		t.Fatalf("kept route after dispatch %+v", again)
+	}
+}
+
+func useRankingSched(t *testing.T, h *Harness) {
+	t.Helper()
+	r := sched.New(h.Home)
+	r.Dispose = rankingDispose(h.DB)
+	h.Sched = r
+}
+
+func rankingDispose(db *store.Store) func(context.Context, *model.Card, harvest.Result) error {
+	other := scenarioDispose(db)
+	return func(ctx context.Context, card *model.Card, res harvest.Result) error {
+		if card.Kind != model.KindRanking {
+			return other(ctx, card, res)
+		}
+		attempts, err := db.ListAttempts(ctx, card.ID)
+		if err != nil {
+			return err
+		}
+		id := ""
+		for i := range attempts {
+			if attempts[i].Outcome == "" {
+				id = attempts[i].ID
+			}
+		}
+		if id == "" {
+			return fmt.Errorf("ranking absorb: no attempt")
+		}
+		if err := loop.AbsorbDisposed(ctx, loop.Deps{Store: db}, id, res.Outcome, res.ResultText); err != nil {
+			return err
+		}
+		fresh, err := db.GetCard(ctx, card.ID)
+		if err != nil {
+			return err
+		}
+		*card = fresh
+		return nil
+	}
+}
+
+func readyChannel(t *testing.T, h *Harness, family, modelName string) model.Channel {
+	t.Helper()
+	ch, err := h.RegisterFakeChannel(family, model.TierT2, RemainingWindow{
+		Ratio: 0.8, Reset: time.Now().Add(24 * time.Hour), Confidence: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch.Models = []string{modelName}
+	ch.Concurrency = 4
+	ch.Redline = 0
+	ch.SourceGroup = family
+	if err := h.DB.UpdateChannel(context.Background(), &ch); err != nil {
+		t.Fatal(err)
+	}
+	return ch
+}
+
+func positionModels(t *testing.T, h *Harness) []string {
+	t.Helper()
+	rows, err := h.DB.ListPositioning(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.Model)
+	}
+	return out
+}
+
+func tierHas(tiers []model.Tier, want model.Tier) bool {
+	for _, tier := range tiers {
+		if tier == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestS24(t *testing.T) {

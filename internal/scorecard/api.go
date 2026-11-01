@@ -8,7 +8,8 @@ import (
 	"cardex/internal/model"
 )
 
-// ErrNotImplemented is returned until R4-C fills this package in.
+// ErrNotImplemented is the stub error kept for callers that still name it.
+// Compute no longer returns it.
 var ErrNotImplemented = errors.New("not implemented")
 
 // Row is one model × kind × tier aggregate.
@@ -24,7 +25,15 @@ type Row struct {
 	Insufficient   bool           // 样本少于 5。
 }
 
-// Compute aggregates attempts and events under home.
+// Compute aggregates attempts, cards, and events in home/cardex.db.
 func Compute(ctx context.Context, home string) ([]Row, error) {
-	return nil, ErrNotImplemented
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	db, err := openHome(home)
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	return aggregate(ctx, db)
 }

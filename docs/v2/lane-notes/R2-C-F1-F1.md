@@ -13,7 +13,7 @@ BlockPush 不再给 https、http、ftp、ftps 写 url.*.insteadOf。这四类地
 acceptance 无 deadline 时默认 2 分钟。linked worktree 不读自己的 info/exclude，仍改用 core.excludesFile。extensions.worktreeConfig 写在公共 config。
 
 ## 转交
-PTY Drive 错误必须记在该次尝试上：host_finish 与错误摘录都含该错误（prompt missing），同次或之后写出的执行器字节（completion）留在尝试日志，不能丢掉。写域 internal/workspace、internal/claims、internal/harvest 不读 Drive、不写 host_finish、不改尝试日志，无违反位置。internal/host/run.go:283 在超时且错误为 context.Canceled、io.ErrClosedPipe 或 os.ErrClosed 时清掉 driveErr；internal/host/run.go:408 与 internal/host/run.go:446 只在 driveErr 非空且不是 context.Canceled 时写入摘录和 host_finish。internal/runner/fake.go:166 在行前缀 drive_error: 或行等于 completion 时返回。请 host/runner 的 lane 修 TestPTYDriveErrorIsApplied。本 lane 未改这些文件。
+PTY Drive 错误必须记在该次尝试上：host_finish 与错误摘录都含该错误（prompt missing），同次或之后写出的执行器字节（completion）留在尝试日志，不能丢掉。写域 internal/workspace、internal/claims、internal/harvest 不读 Drive、不写 host_finish、不改尝试日志，无违反位置。internal/host/run.go:283 在超时且错误为 context.Canceled、io.ErrClosedPipe 或 os.ErrClosed 时清掉 driveErr；internal/host/run.go:408 与 internal/host/run.go:446 只在 driveErr 非空且不是 context.Canceled 时写入摘录和 host_finish。internal/runner/fake.go:166 在行前缀 drive_error: 或行等于 completion 时返回。五次运行里有一次 host_finish 为 {"error_class":"","exit":0,"source":"","tokens":0}，没有 prompt missing，也没有 hard_limit_timeout。请 R2-A-F1-F1 修 TestPTYDriveErrorIsApplied。本 lane 未改这些文件。
 
 ## 修复记录
 防推送措施不能改写正常读取所用的地址 → internal/workspace/git.go:244, internal/workspace/git.go:258 → TestBlockPushKeepsReadAddress

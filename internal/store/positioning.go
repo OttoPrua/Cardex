@@ -2,17 +2,10 @@ package store
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 
 	"cardex/internal/model"
 )
-
-// legacyPositioningVersionID is the old model-row carrier for an empty table version.
-const legacyPositioningVersionID = "cardex.positioning.version"
-
-const positioningMetaID = "version"
 
 func preparePositioning(p *model.Positioning) error {
 	if p == nil {
@@ -23,55 +16,16 @@ func preparePositioning(p *model.Positioning) error {
 		return err
 	}
 	p.ID = id
-	var tiers []model.Tier
+	if p.Tiers == nil {
+		p.Tiers = []model.Tier{}
+	}
 	for _, tier := range p.Tiers {
-		canon, ok := model.CanonicalTier(tier)
-		if ok {
-			tiers = append(tiers, canon)
+		if !tier.Valid() || tier == "" {
+			return invalid("tier", tier)
 		}
 	}
-	if tiers == nil {
-		tiers = []model.Tier{}
-	}
-	p.Tiers = tiers
 	p.Capabilities = normStrings(p.Capabilities)
 	return nil
-}
-
-// PositioningPublishedVersion is the table version stored apart from model rows.
-func (s *Store) PositioningPublishedVersion(ctx context.Context) (int, bool, error) {
-	var v int
-	err := s.q(ctx).QueryRowContext(ctx, `SELECT version FROM positioning_meta WHERE id=?`, positioningMetaID).Scan(&v)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
-	}
-	if err != nil {
-		return 0, false, err
-	}
-	return v, true, nil
-}
-
-// SetPositioningPublishedVersion records the published table version.
-func (s *Store) SetPositioningPublishedVersion(ctx context.Context, version int) error {
-	_, err := s.q(ctx).ExecContext(ctx, `INSERT INTO positioning_meta(id, version) VALUES (?, ?)
-		ON CONFLICT(id) DO UPDATE SET version=excluded.version`, positioningMetaID, version)
-	return err
-}
-
-func migratePositioningVersion(ctx context.Context, conn *sql.Conn) error {
-	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS positioning_meta (
-		id TEXT PRIMARY KEY,
-		version INTEGER NOT NULL
-	)`); err != nil {
-		return err
-	}
-	if _, err := conn.ExecContext(ctx, `INSERT INTO positioning_meta(id, version)
-		SELECT ?, version FROM positioning WHERE id=?
-		ON CONFLICT(id) DO UPDATE SET version=excluded.version`, positioningMetaID, legacyPositioningVersionID); err != nil {
-		return err
-	}
-	_, err := conn.ExecContext(ctx, `DELETE FROM positioning WHERE id=?`, legacyPositioningVersionID)
-	return err
 }
 
 func (s *Store) CreatePositioning(ctx context.Context, p *model.Positioning) error {
@@ -92,9 +46,6 @@ func (s *Store) CreatePositioning(ctx context.Context, p *model.Positioning) err
 }
 
 func (s *Store) GetPositioning(ctx context.Context, id string) (model.Positioning, error) {
-	if id == legacyPositioningVersionID {
-		return model.Positioning{}, sql.ErrNoRows
-	}
 	row := s.q(ctx).QueryRowContext(ctx, positioningSelect+` WHERE id=?`, id)
 	return scanPositioning(row)
 }
@@ -137,9 +88,6 @@ func (s *Store) ListPositioning(ctx context.Context) ([]model.Positioning, error
 		item, err := scanPositioning(rows)
 		if err != nil {
 			return nil, err
-		}
-		if item.ID == legacyPositioningVersionID {
-			continue
 		}
 		out = append(out, item)
 	}

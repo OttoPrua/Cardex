@@ -16,13 +16,17 @@ import (
 	"cardex/internal/store"
 )
 
-// versionRowID was the model-row carrier for an empty table version. New publishes
-// store that version in positioning_meta. List and Get do not return this id.
+// versionRowID stores the published table version when the approved table has
+// no model rows. Current leaves it out. List and Get still return the row.
 const versionRowID = "cardex.positioning.version"
 
 // publishAfterRead runs inside the publish transaction after the stored version
 // is read and before rows are replaced. Tests use it to overlap two approvals.
 var publishAfterRead func()
+
+// currentAfterContent runs inside the current-table transaction after the row
+// read and before the version read. Tests overlap an approval there.
+var currentAfterContent func()
 
 // Home is a versioned positioning table rooted at a caller-supplied directory.
 // The unapproved seed is config.json's positioning section. Proposals are files.
@@ -98,26 +102,57 @@ func (h *Home) Current(ctx context.Context) ([]model.Positioning, error) {
 }
 
 func (h *Home) currentLocked(ctx context.Context) ([]model.Positioning, error) {
-	rows, err := h.db.ListPositioning(ctx)
+	var content, versioned []model.Positioning
+	err := h.db.WithTx(ctx, func(ctx context.Context) error {
+		var err error
+		content, err = h.db.ListPositioning(ctx)
+		if err != nil {
+			return err
+		}
+		if currentAfterContent != nil {
+			currentAfterContent()
+		}
+		versioned, err = h.db.ListPositioning(ctx)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	published, ok, err := h.db.PositioningPublishedVersion(ctx)
-	if err != nil {
-		return nil, err
+	return h.rowsFromSnapshot(sharedSnapshot(content, versioned))
+}
+
+// sharedSnapshot is one committed positioning table. The two reads share a
+// transaction. If they still disagree, the earlier read is kept whole so older
+// rows are not stamped with a newer version and a pre-publish row read is not
+// paired with a post-publish version.
+func sharedSnapshot(content, versioned []model.Positioning) []model.Positioning {
+	if samePositioningSnapshot(content, versioned) {
+		return versioned
+	}
+	return content
+}
+
+func samePositioningSnapshot(a, b []model.Positioning) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].ID != b[i].ID || a[i].Version != b[i].Version || a[i].Model != b[i].Model || a[i].Family != b[i].Family || a[i].Preference != b[i].Preference || !sameTiers(a[i].Tiers, b[i].Tiers) || !sameStrings(a[i].Capabilities, b[i].Capabilities) {
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Home) rowsFromSnapshot(rows []model.Positioning) ([]model.Positioning, error) {
+	if len(rows) == 0 {
+		return h.seedLocked()
 	}
 	visible := withoutVersionRow(rows)
 	if len(visible) == 0 {
-		if ok || len(rows) > 0 {
-			return []model.Positioning{}, nil
-		}
-		return h.seedLocked()
+		return []model.Positioning{}, nil
 	}
-	ver := maxVersion(visible)
-	if ok && published > ver {
-		ver = published
-	}
-	return stampVersion(visible, ver), nil
+	return stampVersion(visible, maxVersion(rows)), nil
 }
 
 func (h *Home) seedLocked() ([]model.Positioning, error) {
@@ -233,17 +268,7 @@ func (h *Home) publishOnce(ctx context.Context, entries []model.Positioning) err
 	if err != nil {
 		return err
 	}
-	published, ok, err := h.db.PositioningPublishedVersion(ctx)
-	if err != nil {
-		return err
-	}
-	prev := 0
-	if ok {
-		prev = published
-	}
-	if v := maxVersion(rows); v > prev {
-		prev = v
-	}
+	prev := maxVersion(rows)
 	if prev == 0 {
 		seed, err := h.seedLocked()
 		if err != nil {
@@ -262,8 +287,9 @@ func (h *Home) publishOnce(ctx context.Context, entries []model.Positioning) err
 			return err
 		}
 	}
-	if err := h.db.SetPositioningPublishedVersion(ctx, next); err != nil {
-		return err
+	if len(entries) == 0 {
+		carrier := model.Positioning{ID: versionRowID, Version: next}
+		return h.db.CreatePositioning(ctx, &carrier)
 	}
 	for i := range entries {
 		entries[i].Version = next
@@ -363,12 +389,22 @@ func maxVersion(entries []model.Positioning) int {
 	return v
 }
 
+func canonicalPositioningTier(raw model.Tier) (model.Tier, bool) {
+	t := model.Tier(strings.ToUpper(strings.TrimSpace(string(raw))))
+	switch t {
+	case model.TierT1, model.TierT2, model.TierT3:
+		return t, true
+	default:
+		return "", false
+	}
+}
+
 func softenPositioningTiers(entries []model.Positioning) ([]model.Positioning, bool) {
 	review := false
 	for i := range entries {
 		var tiers []model.Tier
 		for _, tier := range entries[i].Tiers {
-			canon, ok := model.CanonicalTier(tier)
+			canon, ok := canonicalPositioningTier(tier)
 			if ok {
 				tiers = append(tiers, canon)
 				continue

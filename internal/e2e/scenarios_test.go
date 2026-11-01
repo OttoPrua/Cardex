@@ -889,90 +889,69 @@ func TestS22(t *testing.T) {
 
 func TestS23(t *testing.T) {
 	// 定位任务产生提案，提案生成问题，批准后新卡使用新定位。
+	runRankingProductionPath(t)
+}
+
+func TestRankingDefaultEntry(t *testing.T) {
+	// 缺省 schedules、卡上的 web、真实 prompt、nil Dispose 收割、批准后的新路由。
+	t.Run("no config file", func(t *testing.T) { runRankingProductionPath(t) })
+	t.Run("config without schedules", func(t *testing.T) {
+		assertRankingEnqueued(t, "{}\n", true, false, nil)
+	})
+	t.Run("schedules already set", func(t *testing.T) {
+		assertRankingEnqueued(t, `{"schedules":[]}`+"\n", false, false, nil)
+	})
+	t.Run("ranking_sources replaces the list", func(t *testing.T) {
+		assertRankingEnqueued(t, `{"ranking_sources":["自定义榜A","自定义榜B"]}`+"\n", true, false, []string{"自定义榜A", "自定义榜B"})
+	})
+	t.Run("manual tick still enqueues", func(t *testing.T) {
+		assertRankingEnqueued(t, "", true, true, nil)
+	})
+}
+
+func runRankingProductionPath(t *testing.T) {
+	t.Helper()
 	h := New(t)
 	t.Setenv("CARDEX_HOME", h.Home)
-	useRankingSched(t, h)
+	useDefaultRunner(t, h)
 	stopLater(t, h)
-	_, obj := bindProject(t, h, "true")
 	ctx := context.Background()
-	oldModel := "old-selectable"
-	newModel := "new-approved"
-	chOld := readyChannel(t, h, "oldfam", oldModel)
-	readyChannel(t, h, "newfam", newModel)
-	if err := h.DB.CreatePositioning(ctx, &model.Positioning{
-		ID: "pos-old", Model: oldModel, Family: "oldfam",
-		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	keep := model.Card{
-		ID: "c-keep", Objective: obj, Kind: model.KindDev, Tier: model.TierT2,
-		Title: "keep", Status: model.CardDone,
-	}
-	if err := h.DB.CreateCard(ctx, &keep); err != nil {
-		t.Fatal(err)
-	}
-	keptRoute := model.Route{Channel: "keep-ch", Model: "keep-model"}
-	if err := h.DB.CreateAttempt(ctx, &model.Attempt{
-		ID: "a-keep", Card: keep.ID, Route: keptRoute,
-		Outcome: model.OutcomePassed, EndedAt: time.Now().UTC(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	proposal := `{"entries":[{"model":"new-approved","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"新榜"}]}`
-	script, err := json.Marshal(map[string]any{
-		"attempts": map[string]any{
-			"0": map[string]any{"result": proposal, "exit_code": 0},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	rank := model.Card{
-		ID: "c-rank", Objective: obj, Kind: model.KindRanking, Tier: model.TierT2,
-		Title: "rank", Status: model.CardReady, Requires: []string{"web"},
-		Channel: chOld.ID, Model: oldModel, Body: string(script),
-	}
-	if err := h.DB.CreateCard(ctx, &rank); err != nil {
-		t.Fatal(err)
-	}
+	obj, oldCh, oldModel, newModel := seedRankingWorld(t, h, true)
+	plantRankingExecutor(t, h, newModel)
 	var asked model.Question
+	var rank model.Card
 	mustTick(t, h, func() bool {
 		questions, err := h.DB.ListQuestions(ctx, obj)
 		if err != nil || len(questions) != 1 {
 			return false
 		}
 		asked = questions[0]
+		found, ok := findRankingCard(t, h, obj)
+		if !ok {
+			return false
+		}
+		rank = found
 		return strings.Contains(asked.Text, "新出现") && strings.Contains(asked.Text, newModel)
 	}, 30*time.Second)
+	if !cardRequires(rank, "web") {
+		t.Fatalf("ranking requires %+v", rank.Requires)
+	}
+	if rank.ID != loop.DefaultRankingCardID(time.Now()) {
+		t.Fatalf("ranking id %s", rank.ID)
+	}
 	if !strings.Contains(asked.Text, "+ "+newModel) {
 		t.Fatalf("question missing diff %s", asked.Text)
 	}
+	assertDefaultRankingPrompt(t, attemptPrompt(t, h, rank.ID))
 	if models := positionModels(t, h); len(models) != 1 || models[0] != oldModel {
 		t.Fatalf("table changed before approval %v", models)
 	}
-	if len(asked.Options) != 1 {
+	if len(asked.Options) != 1 || asked.Options[0] != "批准" {
 		t.Fatalf("options %+v", asked.Options)
 	}
+	keptRoute := model.Route{Channel: "keep-ch", Model: "keep-model"}
 	if _, err := question.New(h.DB, nil).Answer(ctx, asked.ID, asked.Options[0]); err != nil {
 		t.Fatal(err)
-	}
-	if err := loop.FollowRanking(ctx, h.DB); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := h.DB.ListPositioning(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != 1 || rows[0].Model != newModel || !tierHas(rows[0].Tiers, model.TierT2) {
-		t.Fatalf("approved positioning %+v", rows)
-	}
-	if got := attemptsOf(t, h, keep.ID); len(got) != 1 || got[0].Route != keptRoute {
-		t.Fatalf("kept route %+v", got)
-	}
-	rankAttempts := attemptsOf(t, h, rank.ID)
-	if len(rankAttempts) != 1 || rankAttempts[0].Route.Channel != chOld.ID || rankAttempts[0].Route.Model != oldModel {
-		t.Fatalf("ranking route %+v", rankAttempts)
 	}
 	next := model.Card{
 		ID: "c-next", Objective: obj, Kind: model.KindDev, Tier: model.TierT2,
@@ -983,42 +962,245 @@ func TestS23(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustTick(t, h, func() bool {
+		rows, err := h.DB.ListPositioning(ctx)
+		if err != nil || len(rows) != 1 || rows[0].Model != newModel {
+			return false
+		}
 		attempts := attemptsOf(t, h, next.ID)
 		return len(attempts) == 1 && attempts[0].Route.Model == newModel
 	}, 30*time.Second)
+	rows, err := h.DB.ListPositioning(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Model != newModel || !tierHas(rows[0].Tiers, model.TierT2) {
+		t.Fatalf("approved positioning %+v", rows)
+	}
+	if got := attemptsOf(t, h, "c-keep"); len(got) != 1 || got[0].Route != keptRoute {
+		t.Fatalf("kept route %+v", got)
+	}
+	rankAttempts := attemptsOf(t, h, rank.ID)
+	if len(rankAttempts) != 1 || rankAttempts[0].Route.Channel != oldCh.ID || rankAttempts[0].Route.Model != oldModel {
+		t.Fatalf("ranking route %+v", rankAttempts)
+	}
 	got := attemptsOf(t, h, next.ID)[0]
 	if got.Route.Model != newModel || got.Route.Channel == "" {
 		t.Fatalf("new route %+v", got.Route)
 	}
-	if again := attemptsOf(t, h, keep.ID); len(again) != 1 || again[0].Route != keptRoute {
-		t.Fatalf("kept route after dispatch %+v", again)
+}
+
+func assertRankingEnqueued(t *testing.T, config string, wantCard, manual bool, sources []string) {
+	t.Helper()
+	h := New(t)
+	t.Setenv("CARDEX_HOME", h.Home)
+	useDefaultRunner(t, h)
+	stopLater(t, h)
+	ctx := context.Background()
+	var obj, newModel string
+	if len(sources) > 0 {
+		obj, _, _, newModel = seedRankingWorld(t, h, !manual)
+		plantRankingExecutor(t, h, newModel)
+	} else {
+		var id string
+		_, id = bindProject(t, h, "true")
+		obj = id
+		if !manual {
+			setObjectiveAuto(t, h, obj)
+		}
+	}
+	if config != "" {
+		if err := os.WriteFile(filepath.Join(h.Home, "config.json"), []byte(config), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if sources != nil {
+		var rank model.Card
+		mustTick(t, h, func() bool {
+			found, ok := findRankingCard(t, h, obj)
+			if !ok || len(attemptsOf(t, h, found.ID)) == 0 {
+				return false
+			}
+			rank = found
+			return true
+		}, 30*time.Second)
+		if !cardRequires(rank, "web") {
+			t.Fatalf("requires %+v", rank.Requires)
+		}
+		text := attemptPrompt(t, h, rank.ID)
+		for _, source := range sources {
+			if !strings.Contains(text, source) {
+				t.Fatalf("prompt missing %s\n%s", source, text)
+			}
+		}
+		if strings.Contains(text, "SWE-bench 官方榜") {
+			t.Fatalf("default sources remained\n%s", text)
+		}
+		assertRankingSnapshots(t, text)
+		return
+	}
+	if manual {
+		mustTick(t, h, func() bool {
+			_, ok := findRankingCard(t, h, obj)
+			return ok
+		}, 15*time.Second)
+	} else if err := h.Sched.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	found, ok := findRankingCard(t, h, obj)
+	if wantCard != ok {
+		t.Fatalf("ranking card present=%v want %v id %s", ok, wantCard, found.ID)
+	}
+	if wantCard && !cardRequires(found, "web") {
+		t.Fatalf("requires %+v", found.Requires)
+	}
+	if !wantCard {
+		for _, card := range cardsOf(t, h, obj) {
+			if card.Kind == model.KindRanking {
+				t.Fatalf("default ranking card %s", card.ID)
+			}
+		}
 	}
 }
 
-func useRankingSched(t *testing.T, h *Harness) {
+func useDefaultRunner(t *testing.T, h *Harness) {
 	t.Helper()
+	loop.InstallRankingProduction()
+	t.Cleanup(loop.PauseRankingProduction)
 	r := sched.New(h.Home)
-	r.Dispose = rankingDispose(h.DB)
+	if r.Dispose != nil {
+		t.Fatal("sched.New installed Dispose")
+	}
 	h.Sched = r
 }
 
-func rankingDispose(db *store.Store) func(context.Context, *model.Card, harvest.Result) error {
-	other := scenarioDispose(db)
-	return func(ctx context.Context, card *model.Card, res harvest.Result) error {
-		if card.Kind != model.KindRanking {
-			return other(ctx, card, res)
+func setObjectiveAuto(t *testing.T, h *Harness, id string) {
+	t.Helper()
+	obj, err := h.DB.GetObjective(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj.Mode = model.ModeAuto
+	if err := h.DB.UpdateObjective(context.Background(), &obj); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func seedRankingWorld(t *testing.T, h *Harness, auto bool) (obj string, oldCh model.Channel, oldModel, newModel string) {
+	t.Helper()
+	_, obj = bindProject(t, h, "true")
+	if auto {
+		setObjectiveAuto(t, h, obj)
+	}
+	oldModel = "old-selectable"
+	newModel = "new-approved"
+	oldCh = readyChannel(t, h, "oldfam", oldModel)
+	readyChannel(t, h, "newfam", newModel)
+	if err := h.DB.CreatePositioning(context.Background(), &model.Positioning{
+		ID: "pos-old", Model: oldModel, Family: "oldfam",
+		Tiers:        []model.Tier{model.TierT1, model.TierT2, model.TierT3},
+		Capabilities: []string{"web"}, Preference: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	keep := model.Card{
+		ID: "c-keep", Objective: obj, Kind: model.KindDev, Tier: model.TierT2,
+		Title: "keep", Status: model.CardDone,
+	}
+	if err := h.DB.CreateCard(context.Background(), &keep); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.DB.CreateAttempt(context.Background(), &model.Attempt{
+		ID: "a-keep", Card: keep.ID, Route: model.Route{Channel: "keep-ch", Model: "keep-model"},
+		Outcome: model.OutcomePassed, EndedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The dev collaborator already disposed this attempt. A second auto tick
+	// must not open another review for it.
+	if err := h.DB.CreateEvent(context.Background(), &model.Event{
+		Entity: "attempt:a-keep", Type: "dev_disposed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return obj, oldCh, oldModel, newModel
+}
+
+func plantRankingExecutor(t *testing.T, h *Harness, newModel string) {
+	t.Helper()
+	proposal := `{"entries":[{"model":"` + newModel + `","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"新榜"}]}`
+	script, err := json.Marshal(map[string]any{
+		"attempts": map[string]any{
+			"0": map[string]any{"result": proposal, "exit_code": 0},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(h.Home, "scripts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	id := loop.DefaultRankingCardID(time.Now())
+	if err := os.WriteFile(filepath.Join(dir, id+".json"), script, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func findRankingCard(t *testing.T, h *Harness, obj string) (model.Card, bool) {
+	t.Helper()
+	for _, card := range cardsOf(t, h, obj) {
+		if card.Kind == model.KindRanking {
+			return card, true
 		}
-		// absorbAttempt does not dispatch ranking. Drive the lane absorber
-		// with the harvested text instead of waiting for that hook.
-		if err := loop.AbsorbRanking(ctx, loop.Deps{Store: db}, *card, res.ResultText); err != nil {
-			return err
+	}
+	return model.Card{}, false
+}
+
+func cardRequires(card model.Card, want string) bool {
+	for _, req := range card.Requires {
+		if req == want {
+			return true
 		}
-		fresh, err := db.GetCard(ctx, card.ID)
-		if err != nil {
-			return err
+	}
+	return false
+}
+
+func attemptPrompt(t *testing.T, h *Harness, cardID string) string {
+	t.Helper()
+	attempts := attemptsOf(t, h, cardID)
+	if len(attempts) == 0 {
+		t.Fatalf("no attempt for %s", cardID)
+	}
+	path := attempts[0].PromptPath
+	if path == "" {
+		path = filepath.Join(h.Home, "attempts", attempts[0].ID, "prompt.txt")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+func assertDefaultRankingPrompt(t *testing.T, text string) {
+	t.Helper()
+	for _, source := range []string{
+		"SWE-bench 官方榜", "Aider 多语言编程榜", "LMArena WebDev",
+		"LiveBench 编程类", "Terminal-Bench", "Artificial Analysis 编程指数",
+	} {
+		if !strings.Contains(text, source) {
+			t.Fatalf("prompt missing %s\n%s", source, text)
 		}
-		*card = fresh
-		return nil
+	}
+	assertRankingSnapshots(t, text)
+}
+
+func assertRankingSnapshots(t *testing.T, text string) {
+	t.Helper()
+	for _, part := range []string{"## 当前定位表", "## 各渠道可用的模型清单", "## 成绩单摘要", "样本不足"} {
+		if !strings.Contains(text, part) {
+			t.Fatalf("prompt missing %s\n%s", part, text)
+		}
 	}
 }
 

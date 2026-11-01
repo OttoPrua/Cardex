@@ -36,7 +36,7 @@ type ScheduleTask struct {
 }
 
 // DefaultSchedule is the weekly ranking task used when config.json has no schedules key.
-// The scheduler does not read this yet; it only enqueues schedules from the file.
+// sched.schedules still returns when that key is absent; the production binding calls this.
 func DefaultSchedule(home string) ([]ScheduleTask, error) {
 	set, err := schedulesConfigured(home)
 	if err != nil || set {
@@ -48,6 +48,16 @@ func DefaultSchedule(home string) ([]ScheduleTask, error) {
 		Kind:     model.KindRanking,
 		Requires: []string{"web"},
 	}}, nil
+}
+
+// DefaultRankingCardID is the card id for the weekly ranking task at now.
+// The slot matches a duration schedule: unix seconds divided by the week length.
+func DefaultRankingCardID(now time.Time) string {
+	secs := int64(week / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	return "sch-ranking-" + strconv.FormatInt(now.Unix()/secs, 10)
 }
 
 // RankingMaterial is the ranking prompt text. A ranking_sources list in config.json
@@ -296,7 +306,7 @@ func FollowRanking(ctx context.Context, db *store.Store) error {
 	if db == nil {
 		return errNilStore
 	}
-	home := os.Getenv("CARDEX_HOME")
+	home := currentRankingHome()
 	questions, err := db.ListQuestions(ctx, "")
 	if err != nil {
 		return err
@@ -364,7 +374,7 @@ func (d Deps) absorbRanking(ctx context.Context, card model.Card, text string) e
 	var prop positioning.Proposal
 	var current []model.Positioning
 	if len(parsed.entries) > 0 {
-		home := os.Getenv("CARDEX_HOME")
+		home := currentRankingHome()
 		table, err := positioning.Open(home)
 		if err != nil {
 			return err

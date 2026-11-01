@@ -198,6 +198,9 @@ func applyNodeReopen(db *store.Store, n *model.DesignNode) error {
 	for _, q := range questions {
 		if q.Kind == model.QuestionFreeze && q.Scope == n.ID {
 			freezeIDs = append(freezeIDs, q.ID)
+			if err := acceptOpenFreeze(ctx, qs, q); err != nil {
+				return err
+			}
 		}
 		if q.Kind != model.QuestionReopen || q.Scope != n.ID || used[q.ID] {
 			continue
@@ -234,16 +237,44 @@ func applyNodeFreeze(db *store.Store, n *model.DesignNode) error {
 	if err != nil {
 		return err
 	}
-	var freezeIDs []string
+	qs := question.New(db, nil)
 	for _, q := range questions {
-		if q.Kind == model.QuestionFreeze && q.Scope == n.ID {
-			freezeIDs = append(freezeIDs, q.ID)
+		if q.Kind != model.QuestionFreeze || q.Scope != n.ID {
+			continue
+		}
+		if err := acceptOpenFreeze(ctx, qs, q); err != nil {
+			return err
 		}
 	}
-	if len(freezeIDs) == 0 {
+	return nil
+}
+
+// acceptOpenFreeze stores an explicit accepting decision on an unanswered
+// freeze question. Pending, Blocked, and the reminder loop read Answer.
+// A refusal already stored, including 拒绝, is left as it is. 同意 is the
+// accepting choice when it is one of the options; otherwise the first listed
+// choice is stored. With no options the service accepts any non-empty answer,
+// so the same accepting word is stored.
+func acceptOpenFreeze(ctx context.Context, qs question.Service, q model.Question) error {
+	if strings.TrimSpace(q.Answer) != "" {
 		return nil
 	}
-	return appendReopenNote(ctx, db, n.ID, "", freezeIDs, "")
+	_, err := qs.Answer(ctx, q.ID, acceptingFreezeChoice(q.Options))
+	return err
+}
+
+func acceptingFreezeChoice(options []string) string {
+	for _, opt := range options {
+		if opt == "同意" {
+			return opt
+		}
+	}
+	for _, opt := range options {
+		if strings.TrimSpace(opt) != "" {
+			return opt
+		}
+	}
+	return "同意"
 }
 
 func appendReopenNote(ctx context.Context, db *store.Store, nodeID, questionID string, freezeIDs []string, replanID string) error {

@@ -147,17 +147,40 @@ func continuableStatus(status string) bool {
 }
 
 // continuableBody keeps every v1 prompt and the current step on the card.
-// Card has no step column, so the step is the first line and the prompts follow.
+// Card has no step column, so the step is the first line. A valid step leaves
+// earlier prompts as historical context and the prompt at that index, internal
+// newlines included, plus any later prompts as the remaining work. Each prompt
+// keeps its own length-prefixed step boundary. A missing step arrives as 0.
+// A negative or past-the-end step stays a soft empty remainder: the prompts
+// are still in the body, and nothing is rejected.
 func continuableBody(prompts []string, step int) string {
 	var b strings.Builder
 	b.WriteString("step: ")
 	b.WriteString(strconv.Itoa(step))
 	b.WriteByte('\n')
-	for _, p := range prompts {
-		b.WriteString(p)
-		b.WriteByte('\n')
+	b.WriteString("## 已完成\n")
+	history := len(prompts)
+	if step >= 0 && step <= len(prompts) {
+		history = step
+	}
+	writePromptSteps(&b, prompts, 0, history)
+	b.WriteString("## 待执行\n")
+	if step >= 0 && step < len(prompts) {
+		writePromptSteps(&b, prompts, step, len(prompts))
 	}
 	return b.String()
+}
+
+func writePromptSteps(b *strings.Builder, prompts []string, from, to int) {
+	for i := from; i < to; i++ {
+		b.WriteString("<<<step ")
+		b.WriteString(strconv.Itoa(i))
+		b.WriteByte(' ')
+		b.WriteString(strconv.Itoa(len(prompts[i])))
+		b.WriteString(">>>\n")
+		b.WriteString(prompts[i])
+		b.WriteByte('\n')
+	}
 }
 
 func mappedDeps(ids []string) []string {

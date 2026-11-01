@@ -24,15 +24,15 @@ sched 的入队未导出。请导出 `Enqueue(ctx, home, name)`，只入队该�
 
 ## 已知问题
 
-卡 origin 和路由提示只在事件里，其他包看不到。`schedule run` 不写调度戳，也不判断 cron 是否到期。doctor 不把未知重置规则当问题。`positioning reject` 按包的实现失败，且不改当前表。同一项目多条非空 dir/repo 时保留文件名排序后的第一条。`node freeze` 把冻结确认写进 `loop.reopen_used` 且 question 为空，loop 的重开轮次计数会加一。复核里的 `TestPTYDriveReceivesTerminalBytes` 这次全量通过，`internal/host` 与 v2 无差异，没有改它。
+卡 origin 和路由提示只在事件里，其他包看不到。`schedule run` 不写调度戳，也不判断 cron 是否到期。doctor 不把未知重置规则当问题。`positioning reject` 按包的实现失败，且不改当前表。同一项目多条非空 dir/repo 时保留文件名排序后的第一条。复核里的 `TestPTYDriveReceivesTerminalBytes` 这次全量通过，`internal/host` 与 v2 无差异，没有改它。
 
 ## 修复记录
 
-B1：可继续的 queued/running/held 保留 prompts、step、depends_on，项目仓库取全体记录里的非空 dir/repo，不由无 dir 的先排序历史冻成 v1 home → internal/importer/place.go:133 internal/importer/import.go:73 internal/importer/import.go:180 → TestImportKeepsContinuableBodyDepsAndRepo、TestS21
+B1：续做正文保留每个 prompt 的步骤边界，有效 step 之前只作已完成上下文，当前 prompt（含内部换行）及之后的 prompt 为待执行 → internal/importer/place.go:156 → TestImportContinuableBodyKeepsStepBoundaries
 
 B2：done/failed/canceled/unparsed 在 card retry/resume/revive/pause/cancel 上保持原记录，held 的 revive 仍变为 ready 并保留原因 → cmd/cardex/ops.go:221 cmd/cardex/ops.go:248 → TestImportedHistoryStaysReadOnly
 
-B3：node reopen 暂停尚未开始的卡、留下 running、消费重开同意并记一轮、无在途重规划时建重规划卡；node freeze 冻结节点并把已有冻结确认记为已处理 → cmd/cardex/surface.go:122 cmd/cardex/surface.go:152 cmd/cardex/surface.go:227 → TestNodeReopenAndFreezeLoopEffects
+B3：节点冻结和重开把本节点未答冻结确认写成同意，Pending、Blocked 和提醒读到非空 Answer；freeze 不追加 loop.reopen_used → cmd/cardex/surface.go:201 cmd/cardex/surface.go:245 cmd/cardex/surface.go:258 → TestNodeFreezeAndReopenCloseUnansweredFreeze
 
 B4：scorecard 测试按 Compute 的真实返回断言退出码和输出，不要求未实现 → cmd/cardex/cli_surface_test.go:475 → TestScorecardSurfacesCompute
 

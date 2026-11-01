@@ -15,7 +15,10 @@ import (
 
 	"cardex/internal/importer"
 	"cardex/internal/model"
+	"cardex/internal/notify"
 	"cardex/internal/positioning"
+	"cardex/internal/question"
+	"cardex/internal/sched"
 	"cardex/internal/scorecard"
 	"cardex/internal/store"
 )
@@ -726,15 +729,266 @@ func TestNodeReopenAndFreezeLoopEffects(t *testing.T) {
 				t.Fatalf("node %+v %v", node, err)
 			}
 			notes := reopenNotes(t, db, "n1")
-			if len(notes) == 0 || !freezeSpent(notes, "freeze-1") || freezeSpent(notes, "freeze-2") {
-				t.Fatalf("notes %+v", notes)
+			if len(notes) != 0 {
+				t.Fatalf("freeze wrote reopen notes %+v", notes)
 			}
 			q, err := db.GetQuestion(context.Background(), "freeze-1")
 			if err != nil || q.Answer != "同意" {
 				t.Fatalf("question %+v %v", q, err)
 			}
+			other, err := db.GetQuestion(context.Background(), "freeze-2")
+			if err != nil || other.Answer != "同意" {
+				t.Fatalf("other %+v %v", other, err)
+			}
 		})
 	})
+}
+
+func TestNodeFreezeAndReopenCloseUnansweredFreeze(t *testing.T) {
+	type qspec struct {
+		id, scope, answer string
+		kind              model.QuestionKind
+	}
+	cases := []struct {
+		name        string
+		verb        string
+		questions   []qspec
+		cards       bool
+		closed      []string
+		pending     map[string]string
+		blocked     map[string]bool
+		answers     map[string]string
+		silent      []string
+		reminded    []string
+		reopenNotes int
+		reopenFor   string
+	}{
+		{
+			name:      "freeze-unanswered",
+			verb:      "freeze",
+			questions: []qspec{{id: "freeze-1", scope: "n1", kind: model.QuestionFreeze}},
+			closed:    []string{"n1"},
+			blocked:   map[string]bool{"n1": false},
+			answers:   map[string]string{"freeze-1": "同意"},
+			silent:    []string{"freeze-1"},
+		},
+		{
+			name: "reopen-closes-freeze",
+			verb: "reopen",
+			questions: []qspec{
+				{id: "freeze-1", scope: "n1", kind: model.QuestionFreeze},
+				{id: "reopen-1", scope: "n1", kind: model.QuestionReopen},
+			},
+			cards:       true,
+			closed:      []string{"n1"},
+			blocked:     map[string]bool{"n1": false},
+			answers:     map[string]string{"freeze-1": "同意", "reopen-1": "同意"},
+			silent:      []string{"freeze-1", "reopen-1"},
+			reopenNotes: 1,
+			reopenFor:   "reopen-1",
+		},
+		{
+			name: "other-node",
+			verb: "freeze",
+			questions: []qspec{
+				{id: "freeze-1", scope: "n1", kind: model.QuestionFreeze},
+				{id: "freeze-2", scope: "n2", kind: model.QuestionFreeze},
+			},
+			closed:   []string{"n1"},
+			pending:  map[string]string{"n2": "freeze-2"},
+			blocked:  map[string]bool{"n1": false, "n2": true},
+			answers:  map[string]string{"freeze-1": "同意", "freeze-2": ""},
+			silent:   []string{"freeze-1"},
+			reminded: []string{"freeze-2"},
+		},
+		{
+			name:      "refusal",
+			verb:      "freeze",
+			questions: []qspec{{id: "freeze-1", scope: "n1", kind: model.QuestionFreeze, answer: "拒绝"}},
+			closed:    []string{"n1"},
+			blocked:   map[string]bool{"n1": false},
+			answers:   map[string]string{"freeze-1": "拒绝"},
+			silent:    []string{"freeze-1"},
+		},
+		{
+			name: "reopen-keeps-refusal",
+			verb: "reopen",
+			questions: []qspec{
+				{id: "freeze-no", scope: "n1", kind: model.QuestionFreeze, answer: "拒绝"},
+				{id: "reopen-1", scope: "n1", kind: model.QuestionReopen},
+			},
+			cards:       true,
+			closed:      []string{"n1"},
+			blocked:     map[string]bool{"n1": false},
+			answers:     map[string]string{"freeze-no": "拒绝", "reopen-1": "同意"},
+			silent:      []string{"freeze-no", "reopen-1"},
+			reopenNotes: 1,
+			reopenFor:   "reopen-1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home, obj := seedManualNodeHome(t)
+			withDB(t, home, func(db *store.Store) {
+				ctx := context.Background()
+				status := model.NodeFreezable
+				if tc.verb == "reopen" {
+					status = model.NodeFrozen
+				}
+				for _, id := range []string{"n1", "n2"} {
+					node := model.DesignNode{ID: id, Objective: obj, Layer: model.LayerModule, Status: status}
+					if err := db.CreateNode(ctx, &node); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.cards {
+					seedNodeCard(t, db, "ready", obj, "n1", model.KindDev, model.CardReady)
+					seedNodeCard(t, db, "waiting", obj, "n1", model.KindDev, model.CardWaiting)
+					seedNodeCard(t, db, "needs", obj, "n1", model.KindDev, model.CardNeedsInput)
+					seedNodeCard(t, db, "running", obj, "n1", model.KindDev, model.CardRunning)
+					seedNodeCard(t, db, "done", obj, "n1", model.KindDev, model.CardDone)
+					seedNodeCard(t, db, "other", obj, "n2", model.KindDev, model.CardReady)
+				}
+				for _, spec := range tc.questions {
+					q := model.Question{
+						ID: spec.id, Objective: obj, Scope: spec.scope, ScopeKind: "node",
+						Kind: spec.kind, Text: spec.id, Options: []string{"同意", "拒绝"}, Answer: spec.answer,
+					}
+					if err := db.CreateQuestion(ctx, &q); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+			mustHome(t, home, "node", tc.verb, "n1")
+			withDB(t, home, func(db *store.Store) {
+				ctx := context.Background()
+				node, err := db.GetNode(ctx, "n1")
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantStatus := model.NodeFrozen
+				if tc.verb == "reopen" {
+					wantStatus = model.NodeReopened
+				}
+				if node.Status != wantStatus {
+					t.Fatalf("status %s", node.Status)
+				}
+				qs := question.New(db, nil)
+				for _, scope := range tc.closed {
+					pending, err := qs.Pending(ctx, scope)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(pending) != 0 {
+						t.Fatalf("scope %s still pending %+v", scope, pending)
+					}
+				}
+				for scope, id := range tc.pending {
+					pending, err := qs.Pending(ctx, scope)
+					if err != nil {
+						t.Fatal(err)
+					}
+					found := false
+					for _, q := range pending {
+						if q.ID == id {
+							found = true
+						}
+					}
+					if !found {
+						t.Fatalf("scope %s pending %+v missing %s", scope, pending, id)
+					}
+				}
+				for scope, want := range tc.blocked {
+					blocked, err := qs.Blocked(ctx, scope)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if blocked != want {
+						t.Fatalf("scope %s blocked %v", scope, blocked)
+					}
+				}
+				for id, want := range tc.answers {
+					q, err := db.GetQuestion(ctx, id)
+					if err != nil || q.Answer != want {
+						t.Fatalf("%s answer %q %v", id, q.Answer, err)
+					}
+				}
+				notes := reopenNotes(t, db, "n1")
+				if len(notes) != tc.reopenNotes {
+					t.Fatalf("notes %+v", notes)
+				}
+				if tc.reopenFor != "" && !noteUses(notes, tc.reopenFor) {
+					t.Fatalf("notes %+v", notes)
+				}
+				if tc.cards {
+					want := map[string]model.CardStatus{
+						"ready": model.CardPaused, "waiting": model.CardPaused, "needs": model.CardPaused,
+						"running": model.CardRunning, "done": model.CardDone, "other": model.CardReady,
+					}
+					for id, status := range want {
+						card, err := db.GetCard(ctx, id)
+						if err != nil || card.Status != status {
+							t.Fatalf("%s %+v %v", id, card, err)
+						}
+					}
+					cards, err := db.ListCards(ctx, obj)
+					if err != nil {
+						t.Fatal(err)
+					}
+					n := 0
+					for _, card := range cards {
+						if card.Node == "n1" && card.Kind == model.KindReplan {
+							n++
+							if card.Status != model.CardReady {
+								t.Fatalf("replan %+v", card)
+							}
+						}
+					}
+					if n != 1 {
+						t.Fatalf("replans %d", n)
+					}
+				}
+			})
+			binless := t.TempDir()
+			t.Setenv("PATH", binless)
+			var notified []string
+			runner := sched.New(home)
+			runner.Notify = func(_ context.Context, msg notify.Message) error {
+				notified = append(notified, msg.QuestionID)
+				return nil
+			}
+			if err := runner.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range tc.silent {
+				for _, got := range notified {
+					if got == id {
+						t.Fatalf("reminded %s in %v", id, notified)
+					}
+				}
+			}
+			for _, id := range tc.reminded {
+				found := false
+				for _, got := range notified {
+					if got == id {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("notify %v missing %s", notified, id)
+				}
+			}
+		})
+	}
+}
+
+func seedManualNodeHome(t *testing.T) (string, string) {
+	t.Helper()
+	home := t.TempDir()
+	repo := t.TempDir()
+	mustHome(t, home, "project", "add", "--id", "p1", "--repo", repo)
+	mustHome(t, home, "objective", "add", "--id", "o1", "--project", "p1", "--title", "Chart", "--mode", "manual")
+	return home, "o1"
 }
 
 func seedNodeHome(t *testing.T) (string, string) {
@@ -793,17 +1047,6 @@ func noteUses(notes []loopReopenNote, id string) bool {
 	for _, note := range notes {
 		if note.Question == id {
 			return true
-		}
-	}
-	return false
-}
-
-func freezeSpent(notes []loopReopenNote, id string) bool {
-	for _, note := range notes {
-		for _, freeze := range note.Freeze {
-			if freeze == id {
-				return true
-			}
 		}
 	}
 	return false

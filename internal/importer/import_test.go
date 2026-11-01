@@ -453,3 +453,189 @@ func importedStep(t *testing.T, body string) int {
 	}
 	return n
 }
+
+func TestImportContinuableBodyKeepsStepBoundaries(t *testing.T) {
+	type row struct {
+		name      string
+		rel       string
+		status    string
+		prompts   []string
+		step      int
+		omitStep  bool
+		deps      []string
+		stepLine  string
+		completed []string
+		remaining []string
+	}
+	rows := []row{
+		{name: "queued-ab", rel: "tasks/queued-ab.json", status: "queued", prompts: []string{"A\nB", "C"}, step: 1, deps: []string{"keep"}, stepLine: "step: 1", completed: []string{"A\nB"}, remaining: []string{"C"}},
+		{name: "queued-bc", rel: "tasks/queued-bc.json", status: "queued", prompts: []string{"A", "B\nC"}, step: 1, stepLine: "step: 1", completed: []string{"A"}, remaining: []string{"B\nC"}},
+		{name: "running-ab", rel: "tasks/running-ab.json", status: "running", prompts: []string{"A\nB", "C"}, step: 1, stepLine: "step: 1", completed: []string{"A\nB"}, remaining: []string{"C"}},
+		{name: "running-bc", rel: "tasks/running-bc.json", status: "running", prompts: []string{"A", "B\nC"}, step: 1, stepLine: "step: 1", completed: []string{"A"}, remaining: []string{"B\nC"}},
+		{name: "held-ab", rel: "tasks/held-ab.json", status: "held", prompts: []string{"A\nB", "C"}, step: 1, stepLine: "step: 1", completed: []string{"A\nB"}, remaining: []string{"C"}},
+		{name: "held-bc", rel: "tasks/held-bc.json", status: "held", prompts: []string{"A", "B\nC"}, step: 1, stepLine: "step: 1", completed: []string{"A"}, remaining: []string{"B\nC"}},
+		{name: "step0", rel: "tasks/step0.json", status: "queued", prompts: []string{"ONLY"}, stepLine: "step: 0", remaining: []string{"ONLY"}},
+		{name: "workflow", rel: "workflows/flow.json", status: "running", prompts: []string{"A\nB", "C"}, step: 1, stepLine: "step: 1", completed: []string{"A\nB"}, remaining: []string{"C"}},
+		{name: "later", rel: "tasks/later.json", status: "queued", prompts: []string{"A", "B", "C\nD"}, step: 1, stepLine: "step: 1", completed: []string{"A"}, remaining: []string{"B", "C\nD"}},
+		{name: "past", rel: "tasks/past.json", status: "held", prompts: []string{"A\nB", "C"}, step: 4, stepLine: "step: 4", completed: []string{"A\nB", "C"}},
+		{name: "negative", rel: "tasks/negative.json", status: "running", prompts: []string{"A", "B\nC"}, step: -1, stepLine: "step: -1", completed: []string{"A", "B\nC"}},
+		{name: "missing", rel: "tasks/missing.json", status: "queued", prompts: []string{"MISS"}, omitStep: true, stepLine: "step: 0", remaining: []string{"MISS"}},
+	}
+	v1 := t.TempDir()
+	for _, row := range rows {
+		body := map[string]any{
+			"id": row.name, "title": row.name, "status": row.status, "project": "boundary",
+			"prompts": row.prompts,
+		}
+		if !row.omitStep {
+			body["step"] = row.step
+		}
+		if row.deps != nil {
+			body["depends_on"] = row.deps
+		}
+		writeV1(t, v1, row.rel, body)
+	}
+	v2 := t.TempDir()
+	if _, err := Import(context.Background(), v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, v2)
+	bySource := map[string]model.Card{}
+	for _, card := range cardsOf(t, db) {
+		bySource[card.Legacy.SourcePath] = card
+	}
+	bodies := map[string]string{}
+	remainings := map[string][]string{}
+	for _, row := range rows {
+		card, ok := bySource[row.rel]
+		if !ok {
+			t.Fatalf("missing %s", row.rel)
+		}
+		line, completed, remaining := parseContinuableBody(t, card.Body)
+		if line != row.stepLine {
+			t.Fatalf("%s first line %q", row.name, line)
+		}
+		if !sameStrings(completed, row.completed) || !sameStrings(remaining, row.remaining) {
+			t.Fatalf("%s completed %q remaining %q", row.name, completed, remaining)
+		}
+		joined := append(append([]string{}, completed...), remaining...)
+		if !sameStrings(joined, row.prompts) {
+			t.Fatalf("%s prompts %q became %q", row.name, row.prompts, joined)
+		}
+		_, pendingRaw := splitContinuableSections(t, card.Body)
+		for _, done := range completed {
+			if done != "" && strings.Contains(pendingRaw, done) {
+				t.Fatalf("%s completed %q inside remaining %q", row.name, done, pendingRaw)
+			}
+		}
+		if row.deps != nil {
+			var want []string
+			for _, id := range row.deps {
+				want = append(want, "v1-"+id)
+			}
+			if strings.Join(card.Deps, ",") != strings.Join(want, ",") {
+				t.Fatalf("%s deps %v want %v", row.name, card.Deps, want)
+			}
+		}
+		bodies[row.name] = card.Body
+		remainings[row.name] = remaining
+	}
+	for _, status := range []string{"queued", "running", "held"} {
+		ab, bc := status+"-ab", status+"-bc"
+		if bodies[ab] == bodies[bc] {
+			t.Fatalf("%s pair collapsed\n%s", status, bodies[ab])
+		}
+		if len(remainings[ab]) != 1 || remainings[ab][0] != "C" || len(remainings[bc]) != 1 || remainings[bc][0] != "B\nC" {
+			t.Fatalf("%s remaining %q vs %q", status, remainings[ab], remainings[bc])
+		}
+	}
+	if len(remainings["step0"]) != 1 || remainings["step0"][0] != "ONLY" {
+		t.Fatalf("step0 remaining %q", remainings["step0"])
+	}
+}
+
+func splitContinuableSections(t *testing.T, body string) (history, pending string) {
+	t.Helper()
+	_, rest, ok := strings.Cut(body, "\n")
+	if !ok || !strings.HasPrefix(rest, "## 已完成\n") {
+		t.Fatalf("completed section %q", body)
+	}
+	rest = strings.TrimPrefix(rest, "## 已完成\n")
+	history, pending, ok = strings.Cut(rest, "## 待执行\n")
+	if !ok {
+		t.Fatalf("remaining section %q", body)
+	}
+	return history, pending
+}
+
+func parseContinuableBody(t *testing.T, body string) (string, []string, []string) {
+	t.Helper()
+	line, rest, ok := strings.Cut(body, "\n")
+	if !ok || !strings.HasPrefix(line, "step: ") {
+		t.Fatalf("step line %q", body)
+	}
+	const doneLabel = "## 已完成\n"
+	const pendLabel = "## 待执行\n"
+	if !strings.HasPrefix(rest, doneLabel) {
+		t.Fatalf("completed label %q", body)
+	}
+	rest = rest[len(doneLabel):]
+	var completed []string
+	for strings.HasPrefix(rest, "<<<step ") {
+		var payload string
+		payload, rest = takeContinuableStep(t, rest)
+		completed = append(completed, payload)
+	}
+	if !strings.HasPrefix(rest, pendLabel) {
+		t.Fatalf("remaining label %q", rest)
+	}
+	rest = rest[len(pendLabel):]
+	var remaining []string
+	for strings.HasPrefix(rest, "<<<step ") {
+		var payload string
+		payload, rest = takeContinuableStep(t, rest)
+		remaining = append(remaining, payload)
+	}
+	if strings.TrimSpace(rest) != "" {
+		t.Fatalf("trailing %q", rest)
+	}
+	return line, completed, remaining
+}
+
+func takeContinuableStep(t *testing.T, rest string) (string, string) {
+	t.Helper()
+	header, after, ok := strings.Cut(rest, "\n")
+	if !ok || !strings.HasPrefix(header, "<<<step ") || !strings.HasSuffix(header, ">>>") {
+		t.Fatalf("boundary %q", rest)
+	}
+	mid := strings.TrimSuffix(strings.TrimPrefix(header, "<<<step "), ">>>")
+	indexText, lengthText, ok := strings.Cut(mid, " ")
+	if !ok {
+		t.Fatalf("boundary %q", header)
+	}
+	if _, err := strconv.Atoi(indexText); err != nil {
+		t.Fatal(err)
+	}
+	n, err := strconv.Atoi(lengthText)
+	if err != nil || n < 0 || n > len(after) {
+		t.Fatalf("boundary %q", header)
+	}
+	payload := after[:n]
+	rest = after[n:]
+	if strings.HasPrefix(rest, "\n") {
+		rest = rest[1:]
+	}
+	return payload, rest
+}
+
+func sameStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}

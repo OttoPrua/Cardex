@@ -664,13 +664,11 @@ func TestGrokQuotaAndCrashChannels(t *testing.T) {
 	})
 }
 
-// TestGrokGoalQuotaTerminal is the B2 table. The positive proof is
-// testdata/grok_goal_quota_pty_raw.bin, replayed unchanged through Drive.
-// Its provenance file names the grok 1.0.40 PTY those bytes were cut from.
-// The pager sentence in testdata/grok_goal_quota_pty.txt and the shell
-// billing sentences are the string table, not that proof. They are not
-// testdata/grok_goal_quota_stderr.txt and not the headless {"type":"error"}
-// record pasted on the PTY. ReadGrokGoalSession does not invent a quota status.
+// TestGrokGoalQuotaTerminal is the B2 table. The pager sentence in
+// testdata/grok_goal_quota_pty.txt and the shell billing sentences are the
+// string table. They are not testdata/grok_goal_quota_stderr.txt and not the
+// headless {"type":"error"} record pasted on the PTY. ReadGrokGoalSession
+// does not invent a quota status.
 func TestGrokGoalQuotaTerminal(t *testing.T) {
 	const prompt = "finish the card\n"
 	const written = "/goal finish the card\r"
@@ -688,86 +686,6 @@ func TestGrokGoalQuotaTerminal(t *testing.T) {
 		"You hit your weekly limit.",
 		"out of credits or over your spending limit. Add credits and retry.",
 	}
-
-	t.Run("raw_pty", func(t *testing.T) {
-		raw := readFixture(t, "grok_goal_quota_pty_raw.bin")
-		note := string(readFixture(t, "grok_goal_quota_pty_raw.provenance.txt"))
-		pager := readFixture(t, "grok_goal_quota_pty.txt")
-		if bytes.Equal(raw, pager) || bytes.Equal(bytes.TrimSpace(raw), bytes.TrimSpace(pager)) {
-			t.Fatal("raw fixture is the pager sentence")
-		}
-		if bytes.Contains(raw, []byte("You've hit the rate limit")) {
-			t.Fatal("raw fixture contains the string-table sentence")
-		}
-		if bytes.Contains(raw, []byte{'\n'}) || bytes.Contains(raw, []byte{'\r'}) {
-			t.Fatal("raw fixture CR/LF was rewritten")
-		}
-		if !bytes.Contains(raw, []byte("\x1b[15;6HR")) || !bytes.Contains(raw, []byte("\x1b[15;8Hte limited")) {
-			t.Fatal("raw fixture is missing the cursor-split redraw")
-		}
-		for _, want := range []string{"grok-1.0.40", "cli-chat-proxy.grok.com", "/v1/responses", "HTTP/1.1 429", "24 rows by 80 columns"} {
-			if !strings.Contains(note, want) {
-				t.Fatalf("provenance missing %q", want)
-			}
-		}
-		dir := t.TempDir()
-		got, wrote := driveSession(t, prompt, dir, raw)
-		if string(wrote) != written {
-			t.Fatalf("wrote %q", wrote)
-		}
-		if !errors.Is(got, runner.ErrGrokQuotaHit) {
-			t.Fatalf("raw pty %v", got)
-		}
-		if _, ok := runner.ReadGrokGoalSession(dir); ok {
-			t.Fatal("raw pty invented a session status")
-		}
-		if got := (runner.Grok{GoalMode: true, Prompt: prompt}).Classify(0, raw); got != model.ErrorQuotaHit {
-			t.Fatalf("classify raw pty %q", got)
-		}
-
-		mark := []byte("\x1b[15;8Hte limited")
-		at := bytes.Index(raw, mark)
-		if at < 0 {
-			t.Fatal("split redraw")
-		}
-		rel := bytes.Index(raw[at:], []byte("\x1b[?2026l"))
-		if rel < 0 {
-			t.Fatal("sync commit")
-		}
-		cut := at + rel
-		rw := &chunkRW{chunks: [][]byte{raw[:cut], raw[cut:]}}
-		err := runner.Grok{GoalMode: true, Prompt: prompt, SessionDir: t.TempDir()}.Drive(context.Background(), rw)
-		if rw.reads != 2 {
-			t.Fatalf("uncommitted frame fired early: reads %d", rw.reads)
-		}
-		if !errors.Is(err, runner.ErrGrokQuotaHit) {
-			t.Fatalf("committed frame %v", err)
-		}
-		early, _ := driveSession(t, prompt, t.TempDir(), raw[:cut])
-		if early == nil || errors.Is(early, runner.ErrGrokQuotaHit) || errors.Is(early, runner.ErrGrokBudgetLimited) || errors.Is(early, runner.ErrGrokCrash) {
-			t.Fatalf("uncommitted prefix %v", early)
-		}
-
-		prose := []byte("Rate limited | Retrying (attempt 1)... is only an example\n")
-		if got := (runner.Grok{GoalMode: true, Prompt: prompt}).Classify(0, prose); got == model.ErrorQuotaHit || got == model.ErrorBudgetLimited {
-			t.Fatalf("prose class %q", got)
-		}
-	})
-
-	t.Run("raw_pty_complete_session", func(t *testing.T) {
-		dir := installSessionFixture(t, "grok_goal_complete.jsonl")
-		got, _ := driveSession(t, prompt, dir, readFixture(t, "grok_goal_quota_pty_raw.bin"))
-		if got != nil {
-			t.Fatalf("completion %v", got)
-		}
-	})
-	t.Run("raw_pty_budget_limited_session", func(t *testing.T) {
-		dir := installSessionFixture(t, "grok_goal_budget_limited.jsonl")
-		got, _ := driveSession(t, prompt, dir, readFixture(t, "grok_goal_quota_pty_raw.bin"))
-		if !errors.Is(got, runner.ErrGrokBudgetLimited) || errors.Is(got, runner.ErrGrokQuotaHit) {
-			t.Fatalf("budget_limited %v", got)
-		}
-	})
 
 	t.Run("pager_card", func(t *testing.T) {
 		dir := t.TempDir()

@@ -601,9 +601,8 @@ func grokInteractiveQuotaLine(line string) bool {
 // finished line that is not the known prompt echo, or on a committed TUI
 // frame. finishTail treats a capture's last line and the screen's current
 // frame as finished; a streaming read leaves an unfinished tail unmatched.
-// Newline sentences are the pager card. grok 1.0.40 also paints the status
-// with cursor addressing and commits it at ESC[?2026l. That transcript is
-// testdata/grok_goal_quota_pty_raw.bin.
+// Newline sentences are the pager card. A cursor-addressed frame commits
+// at ESC[?2026l.
 func grokInteractiveQuotaTerminal(output []byte, prompt string, finishTail bool) bool {
 	return grokInteractiveQuotaLines(output, prompt, finishTail) ||
 		grokInteractiveQuotaScreen(output, prompt, finishTail)

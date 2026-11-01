@@ -460,10 +460,10 @@ type RankingHarvest struct {
 	ResultText string
 }
 
-// AbsorbHarvestedRanking absorbs a ranking result only when the harvest passed.
-// violation, budget_limited, 验收失败, and a stopped card do not create a proposal
-// and do not mark the card done. A pass stores the attempt outcome, so a later
-// call does not absorb that same attempt again.
+// AbsorbHarvestedRanking absorbs a ranking result when harvest passed or the only
+// defect is format (result_unparsable). violation, budget_limited, 验收失败, and a
+// stopped card do not create a proposal and do not mark the card done. A parsed
+// result stores the harvest outcome, so a later call does not absorb that attempt again.
 func AbsorbHarvestedRanking(ctx context.Context, d Deps, card model.Card, harvest RankingHarvest) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -523,10 +523,12 @@ func rankingAbsorbable(card model.Card, harvest RankingHarvest) bool {
 	if card.Status == model.CardFailed || card.Status == model.CardCanceled {
 		return false
 	}
-	if harvest.Outcome != model.OutcomePassed {
+	// A missing heading is result_unparsable. That is a format defect, so the
+	// loose parser still runs. Other outcomes, and a non-format error class, stay blocked.
+	if harvest.Outcome != model.OutcomePassed && harvest.Outcome != model.OutcomeResultUnparsable {
 		return false
 	}
-	if harvest.ErrorClass != "" && harvest.ErrorClass != model.ErrorPassed {
+	if harvest.ErrorClass != "" && harvest.ErrorClass != model.ErrorPassed && harvest.ErrorClass != model.ErrorResultUnparsable {
 		return false
 	}
 	switch strings.TrimSpace(harvest.Acceptance) {

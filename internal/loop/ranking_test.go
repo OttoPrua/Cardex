@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"cardex/internal/harvest"
 	"cardex/internal/model"
 	"cardex/internal/prompt"
 	"cardex/internal/store"
@@ -514,6 +516,188 @@ func TestRankingAbsorbHonorsHarvest(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRankingHarvestFormatStillAbsorbs(t *testing.T) {
+	proposal := `{"entries":[{"model":"new-model","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"榜单"}]}`
+	prose := "说明文字还不是标题\n" + proposal + "\n以上是提案。\n"
+	cases := []struct {
+		name       string
+		body       string
+		class      model.ErrorClass
+		acceptance []string
+		want       string
+	}{
+		{name: "untitled json", body: proposal, want: "absorb"},
+		{name: "prose json", body: prose, want: "absorb"},
+		{name: "garbage", body: "this is not a proposal\n", want: "review"},
+		{name: "violation", body: proposal, class: model.ErrorViolation, want: "skip"},
+		{name: "budget_limited", body: proposal, class: model.ErrorBudgetLimited, want: "skip"},
+		{name: "acceptance failure", body: proposal, acceptance: []string{"exit 1"}, want: "skip"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Contains(tc.body, "##") {
+				t.Fatal("result fixture has a known section title")
+			}
+			_, db := rankingHome(t)
+			seedRanking(t, db, "old-model")
+			ctx := context.Background()
+			card, err := db.GetCard(ctx, "rank")
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := mustAttempt(t, db, "a-rank")
+			keepBefore := mustAttempt(t, db, "a-keep")
+			work, head := rankingGitWorktree(t)
+			if err := os.WriteFile(filepath.Join(work, ".cardex-result.md"), []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			harvestCard := card
+			harvestCard.Acceptance = tc.acceptance
+			res, err := harvest.Harvest(ctx, harvest.Input{
+				Attempt:    model.Attempt{ID: before.ID, Card: card.ID, Worktree: work, BaseCommit: head},
+				Card:       harvestCard,
+				Exit:       0,
+				ErrorClass: tc.class,
+				Repo:       work,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.class != model.ErrorViolation && res.Outcome != model.OutcomeResultUnparsable {
+				t.Fatalf("harvest outcome %s evidence %s", res.Outcome, res.Evidence)
+			}
+			if tc.class == model.ErrorViolation && res.Outcome != model.OutcomeViolation {
+				t.Fatalf("harvest outcome %s evidence %s", res.Outcome, res.Evidence)
+			}
+			if res.ResultText != tc.body {
+				t.Fatalf("result text %q", res.ResultText)
+			}
+			acceptance := ""
+			if strings.Contains(res.Evidence, "acceptance=failed") {
+				acceptance = "failed"
+			}
+			got := RankingHarvest{
+				AttemptID:  before.ID,
+				Outcome:    res.Outcome,
+				ErrorClass: res.ErrorClass,
+				Acceptance: acceptance,
+				ResultText: res.ResultText,
+			}
+			if got.Outcome == model.OutcomePassed {
+				t.Fatal("outcome was overwritten to passed")
+			}
+			if err := AbsorbHarvestedRanking(ctx, Deps{Store: db}, card, got); err != nil {
+				t.Fatal(err)
+			}
+			gotCard, err := db.GetCard(ctx, "rank")
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotAttempt := mustAttempt(t, db, "a-rank")
+			keep := mustAttempt(t, db, "a-keep")
+			if gotAttempt.Route != before.Route || keep.Route != keepBefore.Route {
+				t.Fatalf("route changed attempt %+v keep %+v", gotAttempt.Route, keep.Route)
+			}
+			switch tc.want {
+			case "skip":
+				if proposalCount(t) != 0 || len(mustQuestions(t, db)) != 0 {
+					t.Fatalf("absorbed proposals %d questions %+v", proposalCount(t), mustQuestions(t, db))
+				}
+				if gotCard.Status != model.CardReady {
+					t.Fatalf("status %s", gotCard.Status)
+				}
+				if gotAttempt.Outcome != "" {
+					t.Fatalf("outcome %s", gotAttempt.Outcome)
+				}
+			case "review":
+				if proposalCount(t) != 0 {
+					t.Fatalf("proposals %d", proposalCount(t))
+				}
+				if gotCard.Status != model.CardNeedsInput || gotCard.WaitReason != "待复核" {
+					t.Fatalf("card %+v", gotCard)
+				}
+				questions := mustQuestions(t, db)
+				if len(questions) != 1 || !strings.Contains(questions[0].Text, "待复核") {
+					t.Fatalf("questions %+v", questions)
+				}
+				if gotAttempt.Outcome != res.Outcome {
+					t.Fatalf("outcome %s want %s", gotAttempt.Outcome, res.Outcome)
+				}
+			case "absorb":
+				if res.Outcome != model.OutcomeResultUnparsable {
+					t.Fatalf("outcome %s", res.Outcome)
+				}
+				if proposalCount(t) != 1 {
+					t.Fatalf("proposals %d", proposalCount(t))
+				}
+				saved := mustProposals(t)
+				if len(saved) != 1 || !strings.Contains(saved[0].Diff, "new-model") {
+					t.Fatalf("proposal %+v", saved)
+				}
+				questions := mustQuestions(t, db)
+				if len(questions) != 1 || !strings.Contains(questions[0].Text, "+ new-model") || !strings.Contains(questions[0].Text, "新出现") || !strings.Contains(questions[0].Text, "new-model") {
+					t.Fatalf("question %+v", questions)
+				}
+				if gotCard.Status != model.CardDone {
+					t.Fatalf("status %s", gotCard.Status)
+				}
+				if gotAttempt.Outcome != model.OutcomeResultUnparsable {
+					t.Fatalf("outcome %s", gotAttempt.Outcome)
+				}
+			default:
+				t.Fatalf("want %s", tc.want)
+			}
+			if tc.want == "skip" {
+				return
+			}
+			if err := AbsorbHarvestedRanking(ctx, Deps{Store: db}, gotCard, got); err != nil {
+				t.Fatal(err)
+			}
+			if (tc.want == "absorb" && proposalCount(t) != 1) || (tc.want != "absorb" && proposalCount(t) != 0) {
+				t.Fatalf("second tick proposals %d", proposalCount(t))
+			}
+			wantQuestions := 1
+			if len(mustQuestions(t, db)) != wantQuestions {
+				t.Fatalf("second tick questions %d", len(mustQuestions(t, db)))
+			}
+			again := mustAttempt(t, db, "a-rank")
+			if again.Outcome != gotAttempt.Outcome || again.Route != before.Route {
+				t.Fatalf("second tick attempt %+v", again)
+			}
+		})
+	}
+}
+
+func rankingGitWorktree(t *testing.T) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	wt := filepath.Join(root, "wt")
+	if err := os.Mkdir(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return string(out)
+	}
+	git(repo, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("ranking\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(repo, "add", "README")
+	git(repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "init")
+	git(repo, "worktree", "add", "--detach", wt, "HEAD")
+	head := strings.TrimSpace(git(wt, "rev-parse", "HEAD"))
+	return wt, head
 }
 
 func TestRankingOpenDoesNotMaintain(t *testing.T) {

@@ -23,7 +23,7 @@ type finding struct {
 }
 
 func cmdDoctor(home string, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("doctor", doctorUsagePurpose, stdout, stderr)
+	fs := newFlagSet("doctor", doctorUsagePurpose, "no command arguments", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}

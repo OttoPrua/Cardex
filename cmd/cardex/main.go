@@ -131,7 +131,7 @@ func splitGlobal(args []string) (home string, asJSON bool, rest []string, err er
 }
 
 func cmdServe(home string, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("serve", "run the board and the scheduler loop until interrupted", stdout, stderr)
+	fs := newFlagSet("serve", "run the board and the scheduler loop until interrupted", "--addr", stdout, stderr)
 	addr := fs.String("addr", "127.0.0.1:0", "listen address; 8787 and 8788 are refused")
 	if code, ok := parseSet(fs, args); !ok {
 		return code

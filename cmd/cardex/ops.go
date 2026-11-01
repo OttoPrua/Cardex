@@ -19,7 +19,7 @@ parameters:
 `
 
 func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("project set", "update fields on a stored project", stdout, stderr)
+	fs := newFlagSet("project set", "update fields on a stored project", "--json", stdout, stderr)
 	id := fs.String("id", "", "project id")
 	repo := fs.String("repo", "", "main checkout")
 	root := fs.String("worktree-root", "", "worktree root")
@@ -84,7 +84,7 @@ parameters:
 `
 
 func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("objective set", "update mode, freeze-mode, budget, or priority on a stored objective", stdout, stderr)
+	fs := newFlagSet("objective set", "update mode, freeze-mode, budget, or priority on a stored objective", "--json", stdout, stderr)
 	id := fs.String("id", "", "objective id")
 	mode := fs.String("mode", "", "auto or manual")
 	freeze := fs.String("freeze-mode", "", "safe or fast")
@@ -145,7 +145,7 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 }
 
 func objectiveTransition(home string, asJSON bool, verb string, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("objective "+verb, "set the objective status to "+string(objectiveVerbStatus(verb)), stdout, stderr)
+	fs := newFlagSet("objective "+verb, "set the objective status to "+string(objectiveVerbStatus(verb)), "<id> --json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -198,7 +198,7 @@ parameters:
 `
 
 func cardTransition(home string, asJSON bool, verb string, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card "+verb, "change a stored card to "+string(cardVerbStatus(verb))+" without starting an executor", stdout, stderr)
+	fs := newFlagSet("card "+verb, "change a stored card to "+string(cardVerbStatus(verb))+" without starting an executor", "<id> --json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}

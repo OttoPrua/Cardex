@@ -50,7 +50,7 @@ func cmdNode(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 }
 
 func nodeList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("node list", "list design nodes, optionally for one objective", stdout, stderr)
+	fs := newFlagSet("node list", "list design nodes, optionally for one objective", "--json", stdout, stderr)
 	objective := fs.String("objective", "", "objective id")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
@@ -76,7 +76,7 @@ func nodeList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 }
 
 func nodeShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("node show", "show one stored design node", stdout, stderr)
+	fs := newFlagSet("node show", "show one stored design node", "<id> --json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -99,7 +99,7 @@ func nodeShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 }
 
 func nodeStatus(home string, asJSON bool, status model.NodeStatus, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("node "+string(status), "set a design node status to "+string(status), stdout, stderr)
+	fs := newFlagSet("node "+statusVerb(status), "set a design node status to "+string(status), "<id> --json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -160,7 +160,7 @@ func cmdQuestion(home string, asJSON bool, args []string, stdout, stderr io.Writ
 }
 
 func questionList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("question list", "list stored questions", stdout, stderr)
+	fs := newFlagSet("question list", "list stored questions", "--json", stdout, stderr)
 	objective := fs.String("objective", "", "objective id")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
@@ -186,7 +186,7 @@ func questionList(home string, asJSON bool, args []string, stdout, stderr io.Wri
 }
 
 func questionShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("question show", "show one stored question", stdout, stderr)
+	fs := newFlagSet("question show", "show one stored question", "<id> --json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -209,7 +209,7 @@ func questionShow(home string, asJSON bool, args []string, stdout, stderr io.Wri
 }
 
 func questionAnswer(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("question answer", "save one stored option through question.Service", stdout, stderr)
+	fs := newFlagSet("question answer", "save one stored option through question.Service", "<id> <option> --json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -266,7 +266,7 @@ func cmdChannel(home string, asJSON bool, args []string, stdout, stderr io.Write
 }
 
 func channelList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("channel list", "list stored channels", stdout, stderr)
+	fs := newFlagSet("channel list", "list stored channels", "--json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -291,7 +291,7 @@ func channelList(home string, asJSON bool, args []string, stdout, stderr io.Writ
 }
 
 func channelShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("channel show", "show one stored channel", stdout, stderr)
+	fs := newFlagSet("channel show", "show one stored channel", "<id> --json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -314,7 +314,7 @@ func channelShow(home string, asJSON bool, args []string, stdout, stderr io.Writ
 }
 
 func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("channel set", "set redline, quota windows, or concurrency on a channel", stdout, stderr)
+	fs := newFlagSet("channel set", "set redline, quota windows, or concurrency on a channel", "--json", stdout, stderr)
 	id := fs.String("id", "", "channel id")
 	runner := fs.String("runner", "", "runner name")
 	redline := fs.Float64("redline", 0, "redline from 0 to 1 inclusive")
@@ -410,7 +410,7 @@ func parseWindows(raw []string) ([]model.QuotaWindow, error) {
 }
 
 func channelCheck(home string, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("channel check", "report channel tier, redline, and window problems with suggestions", stdout, stderr)
+	fs := newFlagSet("channel check", "report channel tier, redline, and window problems with suggestions", "no command arguments", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -446,7 +446,7 @@ func cmdRoute(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		fmt.Fprintf(stderr, "unknown route verb %q\n", args[0])
 		return 2
 	}
-	fs := newFlagSet("route explain", "print the attempt's stored route reason: candidates, filtered reasons, and scores", stdout, stderr)
+	fs := newFlagSet("route explain", "print the attempt's stored route reason: candidates, filtered reasons, and scores", "<card> --json", stdout, stderr)
 	if code, ok := parseSet(fs, args[1:]); !ok {
 		return code
 	}
@@ -528,7 +528,7 @@ func openPositioning(home string) (*positioning.Home, error) {
 }
 
 func positioningShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("positioning show", "show the current positioning table from positioning.Store", stdout, stderr)
+	fs := newFlagSet("positioning show", "show the current positioning table from positioning.Store", "--json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -553,7 +553,7 @@ func positioningShow(home string, asJSON bool, args []string, stdout, stderr io.
 }
 
 func positioningProposals(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("positioning proposals", "list proposal files written by positioning.Store", stdout, stderr)
+	fs := newFlagSet("positioning proposals", "list proposal files written by positioning.Store", "--json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -618,7 +618,7 @@ func positioningDecide(home string, approve bool, args []string, stdout, stderr 
 		name = "approve"
 		purpose = "approve a proposal through positioning.Store and make it current"
 	}
-	fs := newFlagSet("positioning "+name, purpose, stdout, stderr)
+	fs := newFlagSet("positioning "+name, purpose, "<id>", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -650,8 +650,8 @@ const scheduleGroupUsage = `schedule — list configured schedules and enqueue o
 purpose: list prints names from config.json. run enqueues that name's card template once and does not start an executor
 
 parameters:
-  list
-  run <name>
+  list --json
+  run <name> --json
 `
 
 func cmdSchedule(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
@@ -710,7 +710,7 @@ func loadSchedules(home string) ([]scheduleEntry, string, error) {
 }
 
 func scheduleList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("schedule list", "print configured schedule names", stdout, stderr)
+	fs := newFlagSet("schedule list", "print configured schedule names", "--json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -735,7 +735,7 @@ func scheduleList(home string, asJSON bool, args []string, stdout, stderr io.Wri
 }
 
 func scheduleRun(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("schedule run", "enqueue one card from the named template and do not start an executor", stdout, stderr)
+	fs := newFlagSet("schedule run", "enqueue one card from the named template and do not start an executor", "<name> --json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -819,7 +819,7 @@ func enqueueTemplate(ctx context.Context, db *store.Store, entry scheduleEntry) 
 }
 
 func cmdScorecard(home string, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("scorecard", "print scorecard.Compute rows, or the package error when Compute cannot aggregate", stdout, stderr)
+	fs := newFlagSet("scorecard", "print scorecard.Compute rows, or the package error when Compute cannot aggregate", "no command arguments", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -836,7 +836,7 @@ func cmdScorecard(home string, args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdHost(home string, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("host", "run host.Run for one attempt id. an unknown attempt fails before any provider CLI starts", stdout, stderr)
+	fs := newFlagSet("host", "run host.Run for one attempt id. an unknown attempt fails before any provider CLI starts", "<attempt-id>", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -858,7 +858,7 @@ func cmdHost(home string, args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdImport(home string, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("import-legacy", "read a v1 home and map its tasks into this v2 home. the v1 tree is not written", stdout, stderr)
+	fs := newFlagSet("import-legacy", "read a v1 home and map its tasks into this v2 home. the v1 tree is not written", "<v1-home>", stdout, stderr)
 	dry := fs.Bool("dry-run", false, "print v1 status counts, v2 placement counts, and unparsed entries without writing v2 rows")
 	if code, ok := parseSet(fs, args); !ok {
 		return code

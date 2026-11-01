@@ -44,78 +44,90 @@ func withDB(t *testing.T, home string, fn func(*store.Store)) {
 }
 
 func TestCommandHelpNamesPurposeAndParameters(t *testing.T) {
-	commands := [][]string{
-		{"serve", "--help"},
-		{"project", "--help"},
-		{"project", "add", "--help"},
-		{"project", "list", "--help"},
-		{"project", "show", "--help"},
-		{"project", "set", "--help"},
-		{"objective", "--help"},
-		{"objective", "add", "--help"},
-		{"objective", "list", "--help"},
-		{"objective", "show", "--help"},
-		{"objective", "set", "--help"},
-		{"objective", "pause", "--help"},
-		{"objective", "resume", "--help"},
-		{"objective", "cancel", "--help"},
-		{"node", "--help"},
-		{"node", "list", "--help"},
-		{"node", "show", "--help"},
-		{"node", "freeze", "--help"},
-		{"node", "reopen", "--help"},
-		{"card", "--help"},
-		{"card", "add", "--help"},
-		{"card", "list", "--help"},
-		{"card", "show", "--help"},
-		{"card", "cancel", "--help"},
-		{"card", "retry", "--help"},
-		{"card", "pause", "--help"},
-		{"card", "resume", "--help"},
-		{"card", "revive", "--help"},
-		{"question", "--help"},
-		{"question", "list", "--help"},
-		{"question", "show", "--help"},
-		{"question", "answer", "--help"},
-		{"channel", "--help"},
-		{"channel", "list", "--help"},
-		{"channel", "show", "--help"},
-		{"channel", "set", "--help"},
-		{"channel", "check", "--help"},
-		{"route", "--help"},
-		{"route", "explain", "--help"},
-		{"positioning", "--help"},
-		{"positioning", "show", "--help"},
-		{"positioning", "proposals", "--help"},
-		{"positioning", "approve", "--help"},
-		{"positioning", "reject", "--help"},
-		{"schedule", "--help"},
-		{"schedule", "list", "--help"},
-		{"schedule", "run", "--help"},
-		{"scorecard", "--help"},
-		{"import-legacy", "--help"},
-		{"doctor", "--help"},
-		{"host", "--help"},
+	commands := []struct {
+		args []string
+		want []string
+	}{
+		{[]string{"serve", "--help"}, []string{"--addr"}},
+		{[]string{"project", "--help"}, []string{"add", "--json"}},
+		{[]string{"project", "add", "--help"}, []string{"-repo", "-id"}},
+		{[]string{"project", "list", "--help"}, []string{"--json"}},
+		{[]string{"project", "show", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"project", "set", "--help"}, []string{"-repo", "--json"}},
+		{[]string{"objective", "--help"}, []string{"add", "<id>", "--origin", "--json"}},
+		{[]string{"objective", "add", "--help"}, []string{"-origin", "-project", "--json"}},
+		{[]string{"objective", "list", "--help"}, []string{"--json"}},
+		{[]string{"objective", "show", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"objective", "set", "--help"}, []string{"-mode", "--json"}},
+		{[]string{"objective", "pause", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"objective", "resume", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"objective", "cancel", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"node", "--help"}, []string{"list", "show", "freeze", "reopen", "<id>", "--json"}},
+		{[]string{"node", "list", "--help"}, []string{"--json"}},
+		{[]string{"node", "show", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"node", "freeze", "--help"}, []string{"node freeze\n", "<id>", "--json"}},
+		{[]string{"node", "reopen", "--help"}, []string{"node reopen\n", "<id>", "--json"}},
+		{[]string{"card", "--help"}, []string{"add", "<id>", "--origin", "--json"}},
+		{[]string{"card", "add", "--help"}, []string{"-origin", "-objective", "--json"}},
+		{[]string{"card", "list", "--help"}, []string{"--json"}},
+		{[]string{"card", "show", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"card", "cancel", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"card", "retry", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"card", "pause", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"card", "resume", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"card", "revive", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"question", "--help"}, []string{"answer", "<id>", "<option>", "--json"}},
+		{[]string{"question", "list", "--help"}, []string{"--json"}},
+		{[]string{"question", "show", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"question", "answer", "--help"}, []string{"<id>", "<option>"}},
+		{[]string{"channel", "--help"}, []string{"list", "show", "<id>", "--json"}},
+		{[]string{"channel", "list", "--help"}, []string{"--json"}},
+		{[]string{"channel", "show", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"channel", "set", "--help"}, []string{"-runner", "-redline", "--json"}},
+		{[]string{"channel", "check", "--help"}, []string{"no command arguments"}},
+		{[]string{"route", "--help"}, []string{"explain", "<card>"}},
+		{[]string{"route", "explain", "--help"}, []string{"<card>", "--json"}},
+		{[]string{"positioning", "--help"}, []string{"show", "proposals", "approve", "reject", "<id>", "--json"}},
+		{[]string{"positioning", "show", "--help"}, []string{"--json"}},
+		{[]string{"positioning", "proposals", "--help"}, []string{"--json"}},
+		{[]string{"positioning", "approve", "--help"}, []string{"<id>"}},
+		{[]string{"positioning", "reject", "--help"}, []string{"<id>"}},
+		{[]string{"schedule", "--help"}, []string{"list", "run", "<name>", "--json"}},
+		{[]string{"schedule", "list", "--help"}, []string{"--json"}},
+		{[]string{"schedule", "run", "--help"}, []string{"<name>"}},
+		{[]string{"scorecard", "--help"}, []string{"no command arguments"}},
+		{[]string{"import-legacy", "--help"}, []string{"<v1-home>", "-dry-run"}},
+		{[]string{"doctor", "--help"}, []string{"no command arguments"}},
+		{[]string{"host", "--help"}, []string{"<attempt-id>"}},
 	}
-	for _, args := range commands {
-		code, out, errb := callCLI(t, args)
+	for _, tc := range commands {
+		code, out, errb := callCLI(t, tc.args)
 		if code != 0 {
-			t.Fatalf("%v exit %d\n%s\n%s", args, code, out, errb)
+			t.Fatalf("%v exit %d\n%s\n%s", tc.args, code, out, errb)
 		}
 		if !strings.Contains(out, "purpose") || !strings.Contains(out, "parameters") {
-			t.Fatalf("%v help missing purpose or parameters\n%s", args, out)
+			t.Fatalf("%v help missing purpose or parameters\n%s", tc.args, out)
 		}
 		if strings.Contains(out, "未实现") {
-			t.Fatalf("%v still stub\n%s", args, out)
+			t.Fatalf("%v still stub\n%s", tc.args, out)
+		}
+		for _, needle := range tc.want {
+			if !strings.Contains(out, needle) {
+				t.Fatalf("%v help missing %q\n%s", tc.args, needle, out)
+			}
 		}
 	}
 	_, out, _ := callCLI(t, []string{"project", "add", "--help"})
-	if !strings.Contains(out, "-repo") || strings.Contains(out, "import-legacy [--dry-run]") {
+	if strings.Contains(out, "import-legacy [--dry-run]") {
 		t.Fatalf("project add help was swallowed\n%s", out)
 	}
-	_, cardHelp, _ := callCLI(t, []string{"card", "add", "--help"})
-	if !strings.Contains(cardHelp, "-origin") || !strings.Contains(cardHelp, "-objective") {
-		t.Fatalf("card add help\n%s", cardHelp)
+	_, freeze, _ := callCLI(t, []string{"node", "freeze", "--help"})
+	if strings.Contains(freeze, "node frozen") {
+		t.Fatalf("freeze help uses the status name\n%s", freeze)
+	}
+	_, reopen, _ := callCLI(t, []string{"node", "reopen", "--help"})
+	if strings.Contains(reopen, "node reopened") {
+		t.Fatalf("reopen help uses the status name\n%s", reopen)
 	}
 }
 

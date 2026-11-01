@@ -35,7 +35,7 @@ func cmdProject(home string, asJSON bool, args []string, stdout, stderr io.Write
 }
 
 func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("project add", "create a project record in the home database", stdout, stderr)
+	fs := newFlagSet("project add", "create a project record in the home database", "--json", stdout, stderr)
 	id := fs.String("id", "", "project id")
 	repo := fs.String("repo", "", "main checkout")
 	root := fs.String("worktree-root", "", "worktree root")
@@ -89,7 +89,7 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 }
 
 func projectList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("project list", "list stored projects", stdout, stderr)
+	fs := newFlagSet("project list", "list stored projects", "--json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -114,7 +114,7 @@ func projectList(home string, asJSON bool, args []string, stdout, stderr io.Writ
 }
 
 func projectShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("project show", "show one stored project", stdout, stderr)
+	fs := newFlagSet("project show", "show one stored project", "<id> --json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -158,7 +158,7 @@ func cmdObjective(home string, asJSON bool, args []string, stdout, stderr io.Wri
 }
 
 func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("objective add", "create an objective. origin comes from --origin, or from CARDEX_ORIGIN when the flag is absent", stdout, stderr)
+	fs := newFlagSet("objective add", "create an objective. origin comes from --origin, or from CARDEX_ORIGIN when the flag is absent", "--json", stdout, stderr)
 	id := fs.String("id", "", "objective id")
 	project := fs.String("project", "", "project id")
 	title := fs.String("title", "", "title")
@@ -264,7 +264,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 }
 
 func objectiveList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("objective list", "list stored objectives, optionally for one project", stdout, stderr)
+	fs := newFlagSet("objective list", "list stored objectives, optionally for one project", "--json", stdout, stderr)
 	project := fs.String("project", "", "project id")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
@@ -290,7 +290,7 @@ func objectiveList(home string, asJSON bool, args []string, stdout, stderr io.Wr
 }
 
 func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("objective show", "show one stored objective, including its origin", stdout, stderr)
+	fs := newFlagSet("objective show", "show one stored objective, including its origin", "<id> --json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -336,7 +336,7 @@ func cmdCard(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 }
 
 func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card add", "create a card. origin comes from --origin, or from CARDEX_ORIGIN when the flag is absent", stdout, stderr)
+	fs := newFlagSet("card add", "create a card. origin comes from --origin, or from CARDEX_ORIGIN when the flag is absent", "--json", stdout, stderr)
 	id := fs.String("id", "", "card id")
 	objective := fs.String("objective", "", "objective id")
 	node := fs.String("node", "", "design node id")
@@ -426,7 +426,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 }
 
 func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card list", "list stored cards, optionally for one objective", stdout, stderr)
+	fs := newFlagSet("card list", "list stored cards, optionally for one objective", "--json", stdout, stderr)
 	objective := fs.String("objective", "", "objective id")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
@@ -452,7 +452,7 @@ func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 }
 
 func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", stdout, stderr)
+	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", "<id> --json", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}

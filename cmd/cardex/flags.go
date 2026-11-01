@@ -7,11 +7,14 @@ import (
 	"io"
 )
 
-func newFlagSet(name, purpose string, stdout, stderr io.Writer) *flag.FlagSet {
+func newFlagSet(name, purpose, params string, stdout, stderr io.Writer) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
 		fmt.Fprintf(stdout, "%s\npurpose: %s\n\nparameters:\n", name, purpose)
+		if params != "" {
+			fmt.Fprintf(stdout, "  %s\n", params)
+		}
 		fs.SetOutput(stdout)
 		fs.PrintDefaults()
 		fs.SetOutput(stderr)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"cardex/internal/model"
+	"cardex/internal/store"
 )
 
 func TestHelpListsCommands(t *testing.T) {
@@ -652,6 +654,154 @@ func assertObjectiveQuestion(t *testing.T, obj model.Objective, questions []mode
 	if q.Kind != model.QuestionCustom || q.Objective != obj.ID || q.Text == "" || !strings.Contains(q.Text, token) {
 		t.Fatalf("question %+v", q)
 	}
+}
+
+func TestObjectiveAddQuestionCommit(t *testing.T) {
+	cases := []struct {
+		name   string
+		extra  []string
+		token  string
+		reason string
+	}{
+		{name: "missing title", reason: "missing title"},
+		{name: "unrecognized mode", extra: []string{"--title", "Bad mode", "--mode", "NOPE"}, token: "NOPE", reason: "unrecognized mode"},
+		{name: "unrecognized freeze-mode", extra: []string{"--title", "Bad freeze", "--freeze-mode", "LOOSE"}, token: "LOOSE", reason: "unrecognized freeze-mode"},
+		{name: "unrecognized status", extra: []string{"--title", "Bad status", "--status", "BOGUS"}, token: "BOGUS", reason: "unrecognized status"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+" success", func(t *testing.T) {
+			objectiveQuestionWrite = nil
+			home := addFixtureProject(t)
+			var out, errb bytes.Buffer
+			args := []string{"--home", home, "objective", "add", "--id", "o1", "--project", "p1"}
+			args = append(args, tc.extra...)
+			if code := Main(args, &out, &errb); code != 0 {
+				t.Fatalf("add %d %s", code, errb.String())
+			}
+			out.Reset()
+			errb.Reset()
+			if code := Main([]string{"--home", home, "objective", "list", "--json"}, &out, &errb); code != 0 {
+				t.Fatalf("list %d %s", code, errb.String())
+			}
+			var objectives []model.Objective
+			if err := json.Unmarshal(out.Bytes(), &objectives); err != nil {
+				t.Fatal(err)
+			}
+			if len(objectives) != 1 || objectives[0].ID != "o1" || objectives[0].Status != model.ObjectivePaused {
+				t.Fatalf("list %s", out.String())
+			}
+			out.Reset()
+			errb.Reset()
+			if code := Main([]string{"--home", home, "objective", "show", "--json", "o1"}, &out, &errb); code != 0 {
+				t.Fatalf("show %d %s", code, errb.String())
+			}
+			var shown model.Objective
+			if err := json.Unmarshal(out.Bytes(), &shown); err != nil {
+				t.Fatal(err)
+			}
+			if shown.ID != "o1" || shown.Status != model.ObjectivePaused {
+				t.Fatalf("show %+v", shown)
+			}
+			db, err := openStore(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			questions, err := db.ListQuestions(context.Background(), "o1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(questions) != 1 {
+				t.Fatalf("questions %+v", questions)
+			}
+			q := questions[0]
+			if q.Kind != model.QuestionCustom || q.Objective != "o1" || !strings.Contains(q.Text, tc.reason) {
+				t.Fatalf("question %+v", q)
+			}
+			if tc.token != "" && !strings.Contains(q.Text, tc.token) {
+				t.Fatalf("question %q missing token %q", q.Text, tc.token)
+			}
+			t.Logf("input %s success status=%s question=%q", tc.name, shown.Status, q.Text)
+		})
+		t.Run(tc.name+" rollback", func(t *testing.T) {
+			home := addFixtureProject(t)
+			t.Cleanup(func() { objectiveQuestionWrite = nil })
+			objectiveQuestionWrite = func(ctx context.Context, db *store.Store, q *model.Question) error {
+				got, err := db.GetObjective(ctx, "o1")
+				if err != nil {
+					t.Errorf("in-tx objective: %v", err)
+					return err
+				}
+				if got.ID != "o1" || got.Status != model.ObjectivePaused {
+					t.Errorf("in-tx objective id %s status %s", got.ID, got.Status)
+				}
+				if q.Kind != model.QuestionCustom || q.Objective != "o1" || !strings.Contains(q.Text, tc.reason) {
+					t.Errorf("in-tx question %+v", q)
+				}
+				if tc.token != "" && !strings.Contains(q.Text, tc.token) {
+					t.Errorf("in-tx question %q missing token %q", q.Text, tc.token)
+				}
+				return errors.New("forced question write failure")
+			}
+			var out, errb bytes.Buffer
+			args := []string{"--home", home, "objective", "add", "--id", "o1", "--project", "p1"}
+			args = append(args, tc.extra...)
+			if code := Main(args, &out, &errb); code == 0 {
+				t.Fatalf("add succeeded, stdout %s", out.String())
+			}
+			if !strings.Contains(errb.String(), "forced question write failure") {
+				t.Fatalf("stderr %s", errb.String())
+			}
+			out.Reset()
+			errb.Reset()
+			if code := Main([]string{"--home", home, "objective", "list", "--json"}, &out, &errb); code != 0 {
+				t.Fatalf("list %d %s", code, errb.String())
+			}
+			var objectives []model.Objective
+			if err := json.Unmarshal(out.Bytes(), &objectives); err != nil {
+				t.Fatal(err)
+			}
+			if len(objectives) != 0 {
+				t.Fatalf("list after rollback %s", out.String())
+			}
+			out.Reset()
+			errb.Reset()
+			if code := Main([]string{"--home", home, "objective", "show", "--json", "o1"}, &out, &errb); code == 0 {
+				t.Fatalf("show after rollback %s", out.String())
+			}
+			db, err := openStore(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			questions, err := db.ListQuestions(context.Background(), "o1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(questions) != 0 {
+				t.Fatalf("questions after rollback %+v", questions)
+			}
+			all, err := db.ListQuestions(context.Background(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(all) != 0 {
+				t.Fatalf("orphan questions %+v", all)
+			}
+			t.Logf("input %s rollback objective absent", tc.name)
+		})
+	}
+}
+
+func addFixtureProject(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	repo := t.TempDir()
+	var out, errb bytes.Buffer
+	if code := Main([]string{"--home", home, "project", "add", "--id", "p1", "--repo", repo}, &out, &errb); code != 0 {
+		t.Fatalf("project %d %s", code, errb.String())
+	}
+	return home
 }
 
 func assertNeedsInput(t *testing.T, card model.Card, title string) {

@@ -2,14 +2,25 @@ package scorecard
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"cardex/internal/model"
 	"cardex/internal/store"
 )
 
-const reviewPass = "loop.review_pass"
+const (
+	reviewPass = "loop.review_pass"
+	reviewBind = "loop.review_bind"
+)
+
+// reviewBindNote is the existing bind record. Its design field is the reviewed card.
+// A loop.review_pass payload is not this record: that payload names the review card.
+type reviewBindNote struct {
+	Design string `json:"design"`
+}
 
 func openHome(home string) (*store.Store, error) {
 	return store.Open(filepath.Join(home, "cardex.db"))
@@ -50,12 +61,7 @@ func aggregate(ctx context.Context, db *store.Store) ([]Row, error) {
 	for _, card := range cards {
 		byID[card.ID] = card
 	}
-	passed := map[string]bool{}
-	for _, ev := range events {
-		if ev.Type == reviewPass {
-			passed[ev.Entity] = true
-		}
-	}
+	passed := passedCards(byID, events)
 	groups := map[bucketKey]*bucket{}
 	for _, attempt := range attempts {
 		card, ok := byID[attempt.Card]
@@ -74,7 +80,7 @@ func aggregate(ctx context.Context, db *store.Store) ([]Row, error) {
 			stat = &cardStat{
 				rework: card.ReworkCount,
 				merged: card.Status == model.CardMerged,
-				review: passed["card:"+card.ID],
+				review: passed[card.ID],
 			}
 			group.cards[card.ID] = stat
 		}
@@ -99,6 +105,73 @@ func aggregate(ctx context.Context, db *store.Store) ([]Row, error) {
 		return rows[i].Tier < rows[j].Tier
 	})
 	return rows, nil
+}
+
+func passedCards(byID map[string]model.Card, events []model.Event) map[string]bool {
+	bound := map[string]string{}
+	for _, ev := range events {
+		if ev.Type != reviewBind || len(ev.Data) == 0 {
+			continue
+		}
+		reviewID, ok := cardEntity(ev.Entity)
+		if !ok {
+			continue
+		}
+		var note reviewBindNote
+		if json.Unmarshal(ev.Data, &note) != nil || note.Design == "" || note.Design == reviewID {
+			continue
+		}
+		if _, ok := byID[note.Design]; !ok {
+			continue
+		}
+		bound[reviewID] = note.Design
+	}
+	passed := map[string]bool{}
+	for _, ev := range events {
+		if ev.Type != reviewPass {
+			continue
+		}
+		id, ok := cardEntity(ev.Entity)
+		if !ok {
+			continue
+		}
+		card, ok := byID[id]
+		if !ok {
+			continue
+		}
+		if card.Kind == model.KindReview {
+			id = reviewedCard(card, bound, byID)
+			if id == "" {
+				continue
+			}
+		}
+		passed[id] = true
+	}
+	return passed
+}
+
+func reviewedCard(card model.Card, bound map[string]string, byID map[string]model.Card) string {
+	for _, dep := range card.Deps {
+		if _, ok := byID[dep]; ok {
+			return dep
+		}
+	}
+	if id := bound[card.ID]; id != "" {
+		return id
+	}
+	return ""
+}
+
+func cardEntity(entity string) (string, bool) {
+	const prefix = "card:"
+	if !strings.HasPrefix(entity, prefix) {
+		return "", false
+	}
+	id := entity[len(prefix):]
+	if id == "" {
+		return "", false
+	}
+	return id, true
 }
 
 func rowOf(key bucketKey, group *bucket) Row {

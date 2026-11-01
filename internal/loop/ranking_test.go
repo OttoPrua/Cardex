@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,129 @@ func TestRankingMaterialAndDefaultSchedule(t *testing.T) {
 	}
 }
 
+func TestRankingPromptSnapshots(t *testing.T) {
+	defaults := []string{
+		"SWE-bench 官方榜", "Aider 多语言编程榜", "LMArena WebDev",
+		"LiveBench 编程类", "Terminal-Bench", "Artificial Analysis 编程指数",
+	}
+	cases := []struct {
+		name      string
+		sources   []string
+		schedules bool
+	}{
+		{name: "defaults"},
+		{name: "override", sources: []string{"Only Alpha Board", "Only Beta Board"}},
+		{name: "schedules", schedules: true},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			token := 4200 + i
+			posModel := "pos-" + tc.name
+			chModel := "listed-" + tc.name
+			scoreModel := "score-" + tc.name
+			plantRankingHome(t, home, posModel, "fam-"+tc.name, "ch-"+tc.name, chModel, scoreModel, int64(token), tc.sources, tc.schedules)
+			text, err := RankingMaterial(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, piece := range []string{
+				"model=" + posModel, "family=fam-" + tc.name, "tiers=T2", "capabilities=web", "preference=3",
+				"channel=ch-" + tc.name, "models=" + chModel,
+				"model=" + scoreModel, "kind=dev", "tier=T2",
+				"复核通过率=0", "合入率=1", "平均返工=0",
+				"每张合入token=" + strconv.Itoa(token), "样本=1", "样本不足",
+			} {
+				if !strings.Contains(text, piece) {
+					t.Fatalf("prompt missing %q\n%s", piece, text)
+				}
+			}
+			if tc.sources == nil {
+				for _, source := range defaults {
+					if !strings.Contains(text, source) {
+						t.Fatalf("default source %q missing", source)
+					}
+				}
+			} else {
+				for _, source := range tc.sources {
+					if !strings.Contains(text, "- "+source) {
+						t.Fatalf("override %q missing\n%s", source, text)
+					}
+				}
+				for _, source := range defaults {
+					if strings.Contains(text, source) {
+						t.Fatalf("default source %q survived", source)
+					}
+				}
+			}
+			tasks, err := DefaultSchedule(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.schedules {
+				if len(tasks) != 0 {
+					t.Fatalf("set schedules still defaulted %+v", tasks)
+				}
+				return
+			}
+			if len(tasks) != 1 || tasks[0].Kind != model.KindRanking || tasks[0].Every != 168*time.Hour || !hasWeb(tasks[0].Requires) {
+				t.Fatalf("default schedule %+v", tasks)
+			}
+		})
+	}
+}
+
+func plantRankingHome(t *testing.T, home, posModel, family, channelID, channelModel, scoreModel string, tokens int64, sources []string, schedules bool) {
+	t.Helper()
+	ctx := context.Background()
+	top := map[string]any{}
+	if sources != nil {
+		top["ranking_sources"] = sources
+	}
+	if schedules {
+		top["schedules"] = []any{}
+	}
+	if len(top) > 0 {
+		body, err := json.Marshal(top)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(home, "config.json"), body, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.CreatePositioning(ctx, &model.Positioning{
+		ID: "pos-" + posModel, Model: posModel, Family: family,
+		Tiers: []model.Tier{model.TierT2}, Capabilities: []string{"web"}, Preference: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateChannel(ctx, &model.Channel{
+		ID: channelID, Runner: model.RunnerFake, Family: family, Tier: model.TierT2,
+		Health: model.HealthOK, Models: []string{channelModel}, Concurrency: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateCard(ctx, &model.Card{
+		ID: "score-" + scoreModel, Kind: model.KindDev, Tier: model.TierT2,
+		Title: scoreModel, Status: model.CardMerged,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateAttempt(ctx, &model.Attempt{
+		ID: "att-" + scoreModel, Card: "score-" + scoreModel,
+		Route: model.Route{Channel: channelID, Model: scoreModel},
+		Usage: model.Usage{Tokens: tokens},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRankingAbsorbLooseAndApprove(t *testing.T) {
 	t.Run("malformed", func(t *testing.T) {
 		_, db := rankingHome(t)
@@ -90,9 +214,7 @@ func TestRankingAbsorbLooseAndApprove(t *testing.T) {
 		text := "前言不是 JSON\n" +
 			`{"entries":[{"model":"kept-model","family":"fam","tiers":["T2","nope"],"capabilities":["web"],"preference":3,"理由":"因为榜"},{"model":"partial"}]}` +
 			"\n尾部 { 坏了\n"
-		if err := AbsorbDisposed(context.Background(), Deps{Store: db}, "a-rank", model.OutcomeResultUnparsable, text); err != nil {
-			t.Fatal(err)
-		}
+		absorbRankingText(t, db, text)
 		questions := mustQuestions(t, db)
 		if len(questions) != 1 || !strings.Contains(questions[0].Text, "待复核") {
 			t.Fatalf("question %+v", questions)
@@ -123,9 +245,7 @@ func TestRankingAbsorbLooseAndApprove(t *testing.T) {
 	t.Run("garbage", func(t *testing.T) {
 		_, db := rankingHome(t)
 		seedRanking(t, db, "old-model")
-		if err := AbsorbDisposed(context.Background(), Deps{Store: db}, "a-rank", model.OutcomeResultUnparsable, "{"); err != nil {
-			t.Fatal(err)
-		}
+		absorbRankingText(t, db, "{")
 		questions := mustQuestions(t, db)
 		if len(questions) != 1 || !strings.Contains(questions[0].Text, "待复核") {
 			t.Fatalf("question %+v", questions)
@@ -144,9 +264,7 @@ func TestRankingAbsorbLooseAndApprove(t *testing.T) {
 		before := mustAttempt(t, db, "a-keep")
 		rankBefore := mustAttempt(t, db, "a-rank")
 		text := `{"entries":[{"model":"new-model","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"榜单"}]}`
-		if err := AbsorbDisposed(context.Background(), Deps{Store: db}, "a-rank", model.OutcomePassed, text); err != nil {
-			t.Fatal(err)
-		}
+		absorbRankingText(t, db, text)
 		questions := mustQuestions(t, db)
 		if len(questions) != 1 {
 			t.Fatalf("questions %+v", questions)
@@ -181,6 +299,17 @@ func TestRankingAbsorbLooseAndApprove(t *testing.T) {
 			t.Fatalf("ranking route %v want %v", got.Route, rankBefore.Route)
 		}
 	})
+}
+
+func absorbRankingText(t *testing.T, db *store.Store, text string) {
+	t.Helper()
+	card, err := db.GetCard(context.Background(), "rank")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (Deps{Store: db}).absorbRanking(context.Background(), card, text); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func rankingHome(t *testing.T) (string, *store.Store) {

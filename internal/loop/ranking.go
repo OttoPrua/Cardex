@@ -6,12 +6,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"cardex/internal/model"
 	"cardex/internal/positioning"
 	"cardex/internal/prompt"
+	"cardex/internal/scorecard"
 	"cardex/internal/store"
 )
 
@@ -48,17 +51,176 @@ func DefaultSchedule(home string) ([]ScheduleTask, error) {
 }
 
 // RankingMaterial is the ranking prompt text. A ranking_sources list in config.json
-// replaces the default source list. Other keys are left for the loop loader.
+// replaces the default source list. A non-empty home also appends the current
+// positioning table, each channel's models, and the scorecard summary.
 func RankingMaterial(home string) (string, error) {
 	base, err := prompt.Preface(model.KindRanking)
 	if err != nil {
 		return "", err
 	}
 	sources, ok, err := configuredSources(home)
-	if err != nil || !ok {
-		return base, err
+	if err != nil {
+		return "", err
 	}
-	return replaceSources(base, sources), nil
+	if ok {
+		base = replaceSources(base, sources)
+	}
+	if strings.TrimSpace(home) == "" {
+		return base, nil
+	}
+	snap, err := inputSnapshot(home)
+	if err != nil {
+		return "", err
+	}
+	if !strings.HasSuffix(base, "\n") {
+		base += "\n"
+	}
+	return base + "\n" + snap, nil
+}
+
+func inputSnapshot(home string) (string, error) {
+	ctx := context.Background()
+	var b strings.Builder
+	rows, err := currentPositioning(ctx, home)
+	if err != nil {
+		return "", err
+	}
+	writePositioning(&b, rows)
+	channels, err := channelModels(ctx, home)
+	if err != nil {
+		return "", err
+	}
+	writeChannels(&b, channels)
+	summary, err := scoreSummary(ctx, home)
+	if err != nil {
+		return "", err
+	}
+	writeScorecard(&b, summary)
+	return b.String(), nil
+}
+
+func currentPositioning(ctx context.Context, home string) ([]model.Positioning, error) {
+	if !homeDBExists(home) {
+		return nil, nil
+	}
+	table, err := positioning.Open(home)
+	if err != nil {
+		return nil, err
+	}
+	defer table.Close()
+	rows, err := table.Current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Model < rows[j].Model })
+	return rows, nil
+}
+
+func channelModels(ctx context.Context, home string) ([]model.Channel, error) {
+	if !homeDBExists(home) {
+		return nil, nil
+	}
+	db, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	channels, err := db.ListChannels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(channels, func(i, j int) bool { return channels[i].ID < channels[j].ID })
+	return channels, nil
+}
+
+func scoreSummary(ctx context.Context, home string) ([]scorecard.Row, error) {
+	if !homeDBExists(home) {
+		return nil, nil
+	}
+	return scorecard.Compute(ctx, home)
+}
+
+func homeDBExists(home string) bool {
+	info, err := os.Stat(filepath.Join(home, "cardex.db"))
+	return err == nil && !info.IsDir()
+}
+
+func writePositioning(b *strings.Builder, rows []model.Positioning) {
+	b.WriteString("## 当前定位表\n")
+	if len(rows) == 0 {
+		b.WriteString("（无）\n")
+		return
+	}
+	for _, row := range rows {
+		b.WriteString("- model=")
+		b.WriteString(row.Model)
+		b.WriteString(" family=")
+		b.WriteString(row.Family)
+		b.WriteString(" tiers=")
+		b.WriteString(joinTiers(row.Tiers))
+		b.WriteString(" capabilities=")
+		b.WriteString(strings.Join(row.Capabilities, ","))
+		b.WriteString(" preference=")
+		b.WriteString(strconv.Itoa(row.Preference))
+		b.WriteByte('\n')
+	}
+}
+
+func writeChannels(b *strings.Builder, channels []model.Channel) {
+	b.WriteString("## 各渠道可用的模型清单\n")
+	if len(channels) == 0 {
+		b.WriteString("（无）\n")
+		return
+	}
+	for _, ch := range channels {
+		b.WriteString("- channel=")
+		b.WriteString(ch.ID)
+		b.WriteString(" models=")
+		b.WriteString(strings.Join(ch.Models, ","))
+		b.WriteByte('\n')
+	}
+}
+
+func writeScorecard(b *strings.Builder, rows []scorecard.Row) {
+	b.WriteString("## 成绩单摘要\n")
+	if len(rows) == 0 {
+		b.WriteString("（无）\n")
+		return
+	}
+	for _, row := range rows {
+		b.WriteString("- model=")
+		b.WriteString(row.Model)
+		b.WriteString(" kind=")
+		b.WriteString(string(row.Kind))
+		b.WriteString(" tier=")
+		b.WriteString(string(row.Tier))
+		b.WriteString(" 复核通过率=")
+		b.WriteString(formatFigure(row.ReviewPassRate))
+		b.WriteString(" 合入率=")
+		b.WriteString(formatFigure(row.MergeRate))
+		b.WriteString(" 平均返工=")
+		b.WriteString(formatFigure(row.AvgRework))
+		b.WriteString(" 每张合入token=")
+		b.WriteString(formatFigure(row.TokensPerMerge))
+		b.WriteString(" 样本=")
+		b.WriteString(strconv.Itoa(row.Sample))
+		if row.Insufficient {
+			b.WriteString(" 样本不足")
+		}
+		b.WriteByte('\n')
+	}
+}
+
+func joinTiers(tiers []model.Tier) string {
+	parts := make([]string, len(tiers))
+	for i, tier := range tiers {
+		parts[i] = string(tier)
+	}
+	return strings.Join(parts, ",")
+}
+
+func formatFigure(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }
 
 func schedulesConfigured(home string) (bool, error) {

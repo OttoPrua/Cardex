@@ -44,3 +44,4 @@ B2 未完成：额度终态只接受可追溯的交互转录或 v1 已写会话�
 已经完整消费的 prompt 边界必须保留：下一段回显从它的真正首行开始，边界之后的独立诊断不再纳入旧回显；只有滚屏残留的首尾同文尾行才做重绘试探 → internal/runner/grok.go:521、grok.go:530、grok.go:553、grok.go:572、grok.go:844（cursor.go:52、kimi.go:112、agy.go:44 空 prompt，无回显重开，已查未改） → TestGrokScreenEchoAndTruncation
 顺序消费的完整回显滚出屏幕后不得重开该 prompt 边界，也不得吞掉后续独立诊断 → internal/runner/grok.go:472、grok.go:482、grok.go:855（cursor.go:52、kimi.go:112、agy.go:44 无滚屏回显，已查未改） → TestGrokScrolledConsumedEchoStaysClosed
 滚出屏幕的行可能来自刚发生的重绘，不能一律当作原回显的顺序尾行；已经完整消费的回显边界保持关闭，重绘产生的行仍做首尾同文消歧，以免吞掉后续独立诊断 → internal/runner/grok.go:476、grok.go:484、grok.go:488、grok.go:867（cursor.go:52、kimi.go:112、agy.go:44 无屏幕帧，已查未改） → TestGrokRedrawScrolledRowKeepsIndependentQuota
+定位到光标当前格的 CUP 是普通顺序写入，不是回显来源的改变，不得重开已经按顺序消费完的回显边界 → internal/runner/grok.go:943（cursor.go:52、kimi.go:112、agy.go:44 无屏幕帧，已查未改） → TestGrokAddressedCurrentCellEchoStaysClosed

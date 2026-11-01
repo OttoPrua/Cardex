@@ -838,10 +838,13 @@ type grokScreen struct {
 	cell     []rune
 	overflow [grokGoalScreenRows]bool
 	tail     [grokGoalScreenRows][grokGoalScreenCols]bool
-	// redrawn marks a row whose current text was written by CUP. When that
-	// row scrolls off it is a redraw, not the original echo's in-order tail.
+	// redrawn marks a row whose current text was written after a CUP that
+	// moved the cursor. When that row scrolls off it is a redraw, not the
+	// original echo's in-order tail.
 	redrawn [grokGoalScreenRows]bool
-	// addressed stays set after CUP until a newline advances in order.
+	// addressed stays set after a CUP that moves the cursor, until a newline
+	// advances in order. A CUP onto the cell the cursor already occupies is
+	// a sequential write and does not set it.
 	addressed bool
 	r, c      int
 	walk      echoWalk
@@ -934,8 +937,14 @@ func (s *grokScreen) cup(body string) {
 			col = vtParam(parts[1])
 		}
 	}
-	s.r = row - 1
-	s.c = col - 1
+	nr, nc := row-1, col-1
+	// Naming the cell the cursor already occupies does not change the echo
+	// source. Marking it addressed would reopen a boundary consumed in order.
+	if nr == s.r && nc == s.c {
+		return
+	}
+	s.r = nr
+	s.c = nc
 	s.addressed = true
 }
 

@@ -1231,6 +1231,90 @@ func TestGrokScrolledConsumedEchoStaysClosed(t *testing.T) {
 	}
 }
 
+// TestGrokAddressedCurrentCellEchoStaysClosed is the current-cell positioning
+// boundary. A CUP that names the cell the cursor already occupies is an
+// ordinary sequential write: before lines 4 and 8 only, or before every line
+// of two full echoes. Either way the consumed /goal boundary stays closed.
+// A later independent rate-limit row is quota_hit. The same bytes without
+// that row stay empty. cursor, kimi, and agy have no screen frame.
+func TestGrokAddressedCurrentCellEchoStaysClosed(t *testing.T) {
+	q := "You've hit the rate limit for your plan."
+	p := "explain\n/goal explain\n" + q + "\n/goal explain"
+	lines := []string{
+		"/goal explain",
+		"/goal explain",
+		q,
+		"/goal explain",
+		"/goal explain",
+		"/goal explain",
+		q,
+		"/goal explain",
+	}
+	position := func(every bool) string {
+		var b strings.Builder
+		for i, line := range lines {
+			row := i + 1
+			if every || row == 4 || row == 8 {
+				b.WriteString("\x1b[" + strconv.Itoa(row) + ";1H")
+			}
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+		return b.String()
+	}
+	rows := []struct {
+		name  string
+		every bool
+		n     int
+		quota bool
+	}{
+		{name: "lines_4_8_n20_quota", n: 20, quota: true},
+		{name: "lines_4_8_n24_quota", n: 24, quota: true},
+		{name: "lines_4_8_n28_quota", n: 28, quota: true},
+		{name: "lines_4_8_n20", n: 20},
+		{name: "lines_4_8_n24", n: 24},
+		{name: "lines_4_8_n28", n: 28},
+		{name: "every_line_n20_quota", every: true, n: 20, quota: true},
+		{name: "every_line_n24_quota", every: true, n: 24, quota: true},
+		{name: "every_line_n28_quota", every: true, n: 28, quota: true},
+		{name: "every_line_n20", every: true, n: 20},
+		{name: "every_line_n24", every: true, n: 24},
+		{name: "every_line_n28", every: true, n: 28},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			pty := position(row.every) + strings.Repeat("\n", row.n)
+			if row.quota {
+				pty += "\x1b[10;1H" + q
+			}
+			pty += "\x1b[?2026l"
+			got := runner.Grok{Prompt: p}.Classify(0, []byte(pty))
+			dir := t.TempDir()
+			err, _ := driveSession(t, p, dir, []byte(pty))
+			_, sessionOK := runner.ReadGrokGoalSession(dir)
+			t.Logf("Classify=%q Drive=%v session=%v", got, err, sessionOK)
+			if sessionOK {
+				t.Fatal("counterexample invented a session status")
+			}
+			if row.quota {
+				if got != model.ErrorQuotaHit {
+					t.Fatalf("Classify=%q want %q", got, model.ErrorQuotaHit)
+				}
+				if err == nil || err.Error() != "grok goal quota_hit" {
+					t.Fatalf("Drive=%v want %q", err, "grok goal quota_hit")
+				}
+				return
+			}
+			if got != "" {
+				t.Fatalf("Classify=%q want empty", got)
+			}
+			if err == nil || err.Error() != "grok goal: no terminal" {
+				t.Fatalf("Drive=%v want %q", err, "grok goal: no terminal")
+			}
+		})
+	}
+}
+
 // TestGrokInteractiveQuota keeps the headless stderr line and the headless
 // error JSON off the interactive quota terminal. Completion, budget_limited,
 // and the host exit crash stay on their own channels. The positive card is

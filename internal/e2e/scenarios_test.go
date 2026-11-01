@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"cardex/internal/board"
 	"cardex/internal/classify"
 	"cardex/internal/harvest"
 	"cardex/internal/host"
@@ -825,7 +828,63 @@ func TestS21(t *testing.T) {
 
 func TestS22(t *testing.T) {
 	// 看板只接受 GET，默认视图不含历史。
-	t.Skip("R4-A")
+	home := t.TempDir()
+	t.Setenv("CARDEX_HOME", home)
+	db, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	if err := db.CreateProject(ctx, &model.Project{ID: "p-s22", RepoPath: home}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateObjective(ctx, &model.Objective{
+		ID: "o-live", Project: "p-s22", Title: "live work", Status: model.ObjectiveActive,
+		Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateObjective(ctx, &model.Objective{
+		ID: "o-hist", Project: "p-s22", Title: "old work", Status: model.ObjectiveDone,
+		Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateCard(ctx, &model.Card{
+		ID: "c-live", Objective: "o-live", Title: "live card", Kind: model.KindDev, Status: model.CardReady,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateCard(ctx, &model.Card{
+		ID: "c-hist-s22", Objective: "o-hist", Title: "imported", Kind: model.KindDev, Status: model.CardDone,
+		Legacy: model.Legacy{Status: "done", SourcePath: "v1/c-hist-s22"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := board.Handler()
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		for _, path := range []string{"/", "/api/work"} {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("%s %s: got %d, want 405", method, path, rec.Code)
+			}
+		}
+	}
+	for _, path := range []string{"/", "/api/work"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: got %d body %s", path, rec.Code, rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "c-hist-s22") {
+			t.Fatalf("GET %s contains historical card", path)
+		}
+		if !strings.Contains(rec.Body.String(), "c-live") {
+			t.Fatalf("GET %s missing current card", path)
+		}
+	}
 }
 
 func TestS23(t *testing.T) {

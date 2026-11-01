@@ -1,5 +1,7 @@
 package model
 
+import "strings"
+
 // CardKind is the closed set of card kinds in design §6.3.
 type CardKind string
 
@@ -299,6 +301,16 @@ func (k CardKind) Valid() bool { return oneOf(k, AllCardKinds()) }
 
 // Valid reports whether t is empty or T1–T3.
 func (t Tier) Valid() bool { return t == TierNone || oneOf(t, AllTiers()) }
+
+// CanonicalTier accepts a known tier that differs only by case or surrounding space.
+// The bool is false when the token is empty or not T1, T2, or T3.
+func CanonicalTier(raw Tier) (Tier, bool) {
+	t := Tier(strings.ToUpper(strings.TrimSpace(string(raw))))
+	if t == "" || !oneOf(t, AllTiers()) {
+		return "", false
+	}
+	return t, true
+}
 
 // Valid reports whether o is empty or a §5 outcome.
 func (o Outcome) Valid() bool { return o == "" || oneOf(o, AllOutcomes()) }

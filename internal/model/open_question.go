@@ -3,7 +3,7 @@ package model
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
+	"strings"
 )
 
 // OpenQuestionList is the JSON form of design-node open questions.
@@ -57,8 +57,10 @@ func ContainsLegacyOpenQuestion(data []byte) bool {
 	return false
 }
 
-// NormalizeOpenQuestions fills empty type and status and rejects unknown enums.
-// A nil list stays nil. CitedPaths nil becomes an empty slice.
+// NormalizeOpenQuestions fills empty type and status. Recognizable values that
+// differ only by case or surrounding space become the canonical token. An
+// unrecognized token keeps the question and uses decision / open. A nil list
+// stays nil. CitedPaths nil becomes an empty slice.
 func NormalizeOpenQuestions(in OpenQuestionList) (OpenQuestionList, error) {
 	if in == nil {
 		return nil, nil
@@ -95,19 +97,31 @@ func legacyOpenQuestion(text string) OpenQuestion {
 	return q
 }
 
+// CanonicalOpenQuestionType trims and lowercases a type. Empty and unknown become decision.
+func CanonicalOpenQuestionType(raw OpenQuestionType) OpenQuestionType {
+	return OpenQuestionType(canonicalEnum(string(raw), func(s string) bool {
+		return OpenQuestionType(s).Valid()
+	}, string(OQDecision)))
+}
+
+// CanonicalOpenQuestionStatus trims and lowercases a status. Empty and unknown become open.
+func CanonicalOpenQuestionStatus(raw OpenQuestionStatus) OpenQuestionStatus {
+	return OpenQuestionStatus(canonicalEnum(string(raw), func(s string) bool {
+		return OpenQuestionStatus(s).Valid()
+	}, string(OQOpen)))
+}
+
+func canonicalEnum(raw string, valid func(string) bool, fallback string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s != "" && valid(s) {
+		return s
+	}
+	return fallback
+}
+
 func normalizeOpenQuestion(q OpenQuestion) (OpenQuestion, error) {
-	if q.Type == "" {
-		q.Type = OQDecision
-	}
-	if !q.Type.Valid() {
-		return OpenQuestion{}, fmt.Errorf("invalid open question type %q", q.Type)
-	}
-	if q.Status == "" {
-		q.Status = OQOpen
-	}
-	if !q.Status.Valid() {
-		return OpenQuestion{}, fmt.Errorf("invalid open question status %q", q.Status)
-	}
+	q.Type = CanonicalOpenQuestionType(q.Type)
+	q.Status = CanonicalOpenQuestionStatus(q.Status)
 	if q.CitedPaths == nil {
 		q.CitedPaths = []string{}
 	}

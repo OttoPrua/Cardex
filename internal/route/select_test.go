@@ -13,6 +13,115 @@ import (
 	"cardex/internal/quota"
 )
 
+func TestSelectPaceStaysInsideSource(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pick := func(t *testing.T, specs []spec) (model.Route, model.RouteReason) {
+		t.Helper()
+		led, _, channels, pos := build(t, now, specs)
+		rt, reason, err := call(t, now, led, channels, pos, model.Card{Kind: model.KindDev, Tier: model.TierT2}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rt, reason
+	}
+	cross := []spec{
+		{id: "a", modelName: "a-m", family: "f", source: "alpha", pref: 1, limit: 100, used: 10, anchor: now},
+		{id: "b", modelName: "b-m", family: "f", source: "beta", pref: 1, limit: 100, used: 40, anchor: now},
+	}
+	swappedCross := []spec{
+		{id: "a", modelName: "a-m", family: "f", source: "alpha", pref: 1, limit: 100, used: 40, anchor: now},
+		{id: "b", modelName: "b-m", family: "f", source: "beta", pref: 1, limit: 100, used: 10, anchor: now},
+	}
+	led, _, _, _ := build(t, now, cross)
+	paceA := expectPace(mustEst(t, led, "a"), now)
+	paceB := expectPace(mustEst(t, led, "b"), now)
+	if paceA == paceB {
+		t.Fatalf("cross-source paces are equal %v", paceA)
+	}
+	first, _ := pick(t, cross)
+	second, _ := pick(t, swappedCross)
+	if first.Channel == "" || first.Channel != second.Channel || first.Model != second.Model {
+		t.Fatalf("cross-source pace swap changed winner %s/%s -> %s/%s", first.Channel, first.Model, second.Channel, second.Model)
+	}
+
+	inside := []spec{
+		{id: "roomier", modelName: "roomier-m", family: "f", source: "alpha", pref: 1, limit: 100, used: 10, anchor: now},
+		{id: "tighter", modelName: "tighter-m", family: "f", source: "alpha", pref: 1, limit: 100, used: 60, anchor: now},
+	}
+	swappedInside := []spec{
+		{id: "roomier", modelName: "roomier-m", family: "f", source: "alpha", pref: 1, limit: 100, used: 60, anchor: now},
+		{id: "tighter", modelName: "tighter-m", family: "f", source: "alpha", pref: 1, limit: 100, used: 10, anchor: now},
+	}
+	same, _ := pick(t, inside)
+	flipped, _ := pick(t, swappedInside)
+	if same.Channel != "roomier" || flipped.Channel != "tighter" {
+		t.Fatalf("same-source pace order %s then %s", same.Channel, flipped.Channel)
+	}
+}
+
+func TestSelectSourceGroupOrdersBeforePace(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	pick := func(t *testing.T, specs []spec) (model.Route, model.RouteReason) {
+		t.Helper()
+		led, _, channels, pos := build(t, now, specs)
+		rt, reason, err := call(t, now, led, channels, pos, model.Card{Kind: model.KindDev, Tier: model.TierT2}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rt, reason
+	}
+	index := func(reason model.RouteReason, id string) int {
+		t.Helper()
+		for i, cand := range reason.Candidates {
+			if cand.Channel == id {
+				return i
+			}
+		}
+		t.Fatalf("missing candidate %s in %+v", id, reason.Candidates)
+		return -1
+	}
+
+	t.Run("higher pace same source beats a lower pace neighbor", func(t *testing.T) {
+		specs := []spec{
+			{id: "a", modelName: "a-m", family: "f", source: "s1", pref: 1, limit: 100, used: 80, anchor: now},
+			{id: "m", modelName: "m-m", family: "f", source: "s2", pref: 1, limit: 100, used: 50, anchor: now},
+			{id: "z", modelName: "z-m", family: "f", source: "s1", pref: 1, limit: 100, used: 10, anchor: now},
+		}
+		led, _, _, _ := build(t, now, specs)
+		paceA := expectPace(mustEst(t, led, "a"), now)
+		paceM := expectPace(mustEst(t, led, "m"), now)
+		paceZ := expectPace(mustEst(t, led, "z"), now)
+		if !(paceZ > paceM && paceM > paceA) {
+			t.Fatalf("paces z %v m %v a %v", paceZ, paceM, paceA)
+		}
+		rt, reason := pick(t, specs)
+		if index(reason, "z") > index(reason, "a") || rt.Channel != "z" {
+			t.Fatalf("lower pace same-source channel won %+v order %+v", rt, reason.Candidates)
+		}
+	})
+
+	t.Run("demoted same source does not stay ahead of its group", func(t *testing.T) {
+		specs := []spec{
+			{id: "a", modelName: "a-m", family: "f", source: "s1", pref: 1, limit: 100, used: 91, anchor: now.Add(time.Hour)},
+			{id: "m", modelName: "m-m", family: "f", source: "s2", pref: 1, limit: 100, used: 20, anchor: now},
+			{id: "z", modelName: "z-m", family: "f", source: "s1", pref: 1, limit: 100, used: 80, anchor: now},
+		}
+		led, _, _, _ := build(t, now, specs)
+		estA := mustEst(t, led, "a")
+		estZ := mustEst(t, led, "z")
+		if estA.UsedTokens*100 <= estA.LimitTokens*90 || estZ.UsedTokens*100 > estZ.LimitTokens*90 {
+			t.Fatalf("demotion boundary a %+v z %+v", estA, estZ)
+		}
+		if expectPace(estA, now) <= expectPace(estZ, now) {
+			t.Fatalf("demoted pace a %v z %v", expectPace(estA, now), expectPace(estZ, now))
+		}
+		rt, reason := pick(t, specs)
+		if index(reason, "z") > index(reason, "a") || rt.Channel != "z" {
+			t.Fatalf("demoted same-source channel won %+v order %+v", rt, reason.Candidates)
+		}
+	})
+}
+
 func TestSelectFiltersAndOrder(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	ctx := context.Background()

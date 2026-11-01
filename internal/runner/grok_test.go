@@ -953,6 +953,11 @@ func TestGrokScreenEchoAndTruncation(t *testing.T) {
 	// Full echo, 24 newlines, commit, then the same prompt drawn on rows 1 and 2.
 	redrawAfterScroll := "/goal " + redrawPrompt + "\n" + strings.Repeat("\n", 24) + sync +
 		"\x1b[1;1H/goal explain\x1b[2;1H" + sentence + sync
+	repeatedHeadPrompt := "explain\n/goal explain"
+	// Full echo, one newline plus 22 more so the first line scrolls off, commit,
+	// then that text on rows 1 and 2 and the rate-limit sentence on row 10.
+	repeatedHeadRedraw := "/goal " + repeatedHeadPrompt + "\n" + strings.Repeat("\n", 22) + sync +
+		"\x1b[1;1H/goal explain\x1b[2;1H/goal explain\x1b[10;1H" + sentence + sync
 	longPrompt := strings.Repeat("x", 90)
 	truncatedEchoThenQuota := "/goal " + longPrompt + "\n" + strings.Repeat("\n", 24) +
 		"\x1b[10;1H" + sentence + sync
@@ -1005,6 +1010,12 @@ func TestGrokScreenEchoAndTruncation(t *testing.T) {
 			name:   "prompt_redraw_after_scroll",
 			prompt: redrawPrompt,
 			pty:    redrawAfterScroll,
+		},
+		{
+			name:      "repeated_head_redraw_after_scroll",
+			prompt:    repeatedHeadPrompt,
+			pty:       repeatedHeadRedraw,
+			wantQuota: true,
 		},
 		{
 			name:      "truncated_echo_scroll_then_real_quota",

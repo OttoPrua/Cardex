@@ -437,12 +437,21 @@ func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
 // so a display indent is the same line. The screen keeps this walk as rows
 // scroll off. A later redraw of the known prompt is that echo again. A row
 // whose tail the frame dropped still consumes the echo line it prefixes, so
-// a prompt that has left the display does not stay open.
+// a prompt that has left the display does not stay open. When the first and
+// last prompt lines are the same text, a row that matches that tail is held
+// until the next row: a following copy of the prompt is one closed redraw,
+// not the old tail plus a new open head.
 type echoWalk struct {
 	echoLines     []string
 	echoIdx       int
 	matchedPrompt bool
 	inEcho        bool
+	// noRestart keeps a failed redraw replay from opening the echo again.
+	noRestart bool
+	// specHold is the pending tail row, plus any prefix of a redraw that
+	// started with it, while head and tail text are the same.
+	specHold bool
+	spec     []scanLine
 }
 
 func newEchoWalk(prompt string) echoWalk {
@@ -451,6 +460,15 @@ func newEchoWalk(prompt string) echoWalk {
 
 func (w *echoWalk) feed(item scanLine, fn func(scanLine)) {
 	item.text = strings.TrimSpace(item.text)
+	if w.specHold {
+		w.feedSpec(item, fn)
+		return
+	}
+	if w.holdHeadTail(item) {
+		w.specHold = true
+		w.spec = []scanLine{item}
+		return
+	}
 	line := item.text
 	if w.takeEcho(line, item.cutOff) {
 		return
@@ -486,7 +504,7 @@ func (w *echoWalk) takeEcho(line string, cutOff bool) bool {
 	idx := -1
 	if w.echoIdx < len(w.echoLines) && echoRowMatch(w.echoLines[w.echoIdx], line, cutOff) {
 		idx = w.echoIdx
-	} else if line != "" && w.echoIdx > 0 && echoRowMatch(w.echoLines[0], line, cutOff) {
+	} else if !w.noRestart && line != "" && w.echoIdx > 0 && echoRowMatch(w.echoLines[0], line, cutOff) {
 		idx = 0
 	}
 	if idx < 0 {
@@ -496,6 +514,63 @@ func (w *echoWalk) takeEcho(line string, cutOff bool) bool {
 	w.inEcho = w.echoIdx < len(w.echoLines)
 	w.matchedPrompt = w.echoIdx == len(w.echoLines)
 	return true
+}
+
+// holdHeadTail is true when line matches the pending last prompt row and
+// that row's text is also the first row. The next rows decide whether it
+// closed the old echo or began a redraw.
+func (w *echoWalk) holdHeadTail(item scanLine) bool {
+	n := len(w.echoLines)
+	if n < 2 || w.echoLines[0] != w.echoLines[n-1] || w.echoIdx != n-1 {
+		return false
+	}
+	return echoRowMatch(w.echoLines[n-1], item.text, item.cutOff)
+}
+
+func (w *echoWalk) feedSpec(item scanLine, fn func(scanLine)) {
+	next := len(w.spec)
+	if next < len(w.echoLines) && echoRowMatch(w.echoLines[next], item.text, item.cutOff) {
+		buf := make([]scanLine, next+1)
+		copy(buf, w.spec)
+		buf[next] = item
+		w.spec = buf
+		if len(w.spec) == len(w.echoLines) {
+			w.specHold = false
+			w.spec = nil
+			w.echoIdx = len(w.echoLines)
+			w.inEcho = false
+			w.matchedPrompt = true
+		}
+		return
+	}
+	w.abandonSpec(fn, item, true)
+}
+
+// abandonSpec treats the held row as the old tail, then replays any
+// following rows that were only a prefix of a redraw.
+func (w *echoWalk) abandonSpec(fn func(scanLine), extra scanLine, haveExtra bool) {
+	rest := append([]scanLine(nil), w.spec[1:]...)
+	w.specHold = false
+	w.spec = nil
+	n := len(w.echoLines)
+	w.echoIdx = n
+	w.inEcho = false
+	w.matchedPrompt = n > 0
+	w.noRestart = true
+	for _, line := range rest {
+		w.feed(line, fn)
+	}
+	w.noRestart = false
+	if haveExtra {
+		w.feed(extra, fn)
+	}
+}
+
+func (w *echoWalk) flush(fn func(scanLine)) {
+	if !w.specHold {
+		return
+	}
+	w.abandonSpec(fn, scanLine{}, false)
 }
 
 func echoRowMatch(want, line string, cutOff bool) bool {
@@ -513,6 +588,7 @@ func walkScanLines(lines []scanLine, prompt string, fn func(line scanLine)) {
 	for _, item := range lines {
 		w.feed(item, fn)
 	}
+	w.flush(fn)
 }
 
 func plainDiagnostic(line string) bool {
@@ -851,16 +927,18 @@ func (s *grokScreen) rowString(row int) string {
 func (s *grokScreen) showsInteractiveQuota() bool {
 	w := s.walk
 	hit := false
-	for row := 0; row < grokGoalScreenRows; row++ {
-		w.feed(scanLine{text: s.rowString(row), cutOff: s.overflow[row]}, func(line scanLine) {
-			if line.cutOff {
-				return
-			}
-			if grokInteractiveQuotaLine(line.text) || grokRateRetryStatus(line.text) {
-				hit = true
-			}
-		})
+	yield := func(line scanLine) {
+		if line.cutOff {
+			return
+		}
+		if grokInteractiveQuotaLine(line.text) || grokRateRetryStatus(line.text) {
+			hit = true
+		}
 	}
+	for row := 0; row < grokGoalScreenRows; row++ {
+		w.feed(scanLine{text: s.rowString(row), cutOff: s.overflow[row]}, yield)
+	}
+	w.flush(yield)
 	return hit
 }
 

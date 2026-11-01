@@ -416,6 +416,7 @@ func TestRankingScheduleRequires(t *testing.T) {
 				t.Fatalf("ranking cards %+v want one=%v", found, tc.wantCard)
 			}
 			if !tc.wantCard {
+				t.Log("schedules key present; default weekly task not enqueued")
 				return
 			}
 			if !sameRequires(found[0].Requires, tc.wantReq) {
@@ -876,6 +877,7 @@ func TestRankingOpenDoesNotMaintain(t *testing.T) {
 	if models := positioningModels(t, opened); len(models) != 1 || models[0] != "old-model" {
 		t.Fatalf("positioning %v", models)
 	}
+	t.Log("opening the database did not enqueue, absorb, or approve")
 }
 
 func absorbRankingText(t *testing.T, db *store.Store, text string) {

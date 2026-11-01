@@ -2,10 +2,12 @@ package workspace
 
 import (
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -219,6 +221,7 @@ func TestBlockPushIsolatesMainRepo(t *testing.T) {
 	if _, err := m.Commit(ctx, wt.Path, "should not land"); err != nil {
 		t.Fatal(err)
 	}
+	assertPushReadsWork(t, wt.Path, bare, "origin")
 
 	push := exec.Command("git", "-C", wt.Path, "push", "origin", "HEAD:refs/heads/from-worktree")
 	push.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
@@ -273,6 +276,222 @@ func TestBlockPushBlocksInheritedPushURLs(t *testing.T) {
 	}
 }
 
+func TestBlockPushRefusesLongerPushInsteadOf(t *testing.T) {
+	tests := []struct {
+		name       string
+		kind       string
+		configArgs []string
+		pushArgs   []string
+		advertise  bool
+	}{
+		{name: "long prefix direct address", kind: "long-prefix"},
+		{name: "long prefix signed false", kind: "long-prefix", pushArgs: []string{"--signed=false"}},
+		{name: "long prefix no signed", kind: "long-prefix", pushArgs: []string{"--no-signed"}},
+		{name: "long prefix signed if-asked", kind: "long-prefix", pushArgs: []string{"--signed=if-asked"}},
+		{name: "long prefix gpgSign false", kind: "long-prefix", configArgs: []string{"-c", "push.gpgSign=false"}},
+		{name: "long prefix signed false advertise", kind: "long-prefix", pushArgs: []string{"--signed=false"}, advertise: true},
+		{name: "long prefix no signed advertise", kind: "long-prefix", pushArgs: []string{"--no-signed"}, advertise: true},
+		{name: "long prefix signed if-asked advertise", kind: "long-prefix", pushArgs: []string{"--signed=if-asked"}, advertise: true},
+		{name: "long prefix gpgSign false advertise", kind: "long-prefix", configArgs: []string{"-c", "push.gpgSign=false"}, advertise: true},
+		{name: "other prefix", kind: "other-prefix"},
+		{name: "other prefix signed false", kind: "other-prefix", pushArgs: []string{"--signed=false"}},
+		{name: "other prefix no signed", kind: "other-prefix", pushArgs: []string{"--no-signed"}},
+		{name: "other prefix signed if-asked", kind: "other-prefix", pushArgs: []string{"--signed=if-asked"}},
+		{name: "other prefix gpgSign false", kind: "other-prefix", configArgs: []string{"-c", "push.gpgSign=false"}},
+		{name: "other prefix signed false advertise", kind: "other-prefix", pushArgs: []string{"--signed=false"}, advertise: true},
+		{name: "other prefix no signed advertise", kind: "other-prefix", pushArgs: []string{"--no-signed"}, advertise: true},
+		{name: "other prefix signed if-asked advertise", kind: "other-prefix", pushArgs: []string{"--signed=if-asked"}, advertise: true},
+		{name: "other prefix gpgSign false advertise", kind: "other-prefix", configArgs: []string{"-c", "push.gpgSign=false"}, advertise: true},
+		{name: "long prefix push option signed false advertise", kind: "long-prefix", pushArgs: []string{"--push-option=review-probe", "--signed=false"}, advertise: true},
+		{name: "long prefix push option no signed advertise", kind: "long-prefix", pushArgs: []string{"--push-option=review-probe", "--no-signed"}, advertise: true},
+		{name: "long prefix push option signed if-asked advertise", kind: "long-prefix", pushArgs: []string{"--push-option=review-probe", "--signed=if-asked"}, advertise: true},
+		{name: "long prefix short option signed false advertise", kind: "long-prefix", pushArgs: []string{"-o", "review-probe", "--signed=false"}, advertise: true},
+		{name: "long prefix short option no signed advertise", kind: "long-prefix", pushArgs: []string{"-o", "review-probe", "--no-signed"}, advertise: true},
+		{name: "long prefix short option signed if-asked advertise", kind: "long-prefix", pushArgs: []string{"-o", "review-probe", "--signed=if-asked"}, advertise: true},
+		{name: "long prefix cleared push option signed false advertise", kind: "long-prefix", configArgs: []string{"-c", "push.pushOption=", "-c", "push.pushOption=review-probe"}, pushArgs: []string{"--signed=false"}, advertise: true},
+		{name: "long prefix cleared push option no signed advertise", kind: "long-prefix", configArgs: []string{"-c", "push.pushOption=", "-c", "push.pushOption=review-probe"}, pushArgs: []string{"--no-signed"}, advertise: true},
+		{name: "long prefix cleared push option signed if-asked advertise", kind: "long-prefix", configArgs: []string{"-c", "push.pushOption=", "-c", "push.pushOption=review-probe"}, pushArgs: []string{"--signed=if-asked"}, advertise: true},
+		{name: "long prefix push option gpgSign false advertise", kind: "long-prefix", configArgs: []string{"-c", "push.gpgSign=false"}, pushArgs: []string{"--push-option=review-probe"}, advertise: true},
+		{name: "long prefix push option followTags false advertise", kind: "long-prefix", configArgs: []string{"-c", "push.followTags=false"}, pushArgs: []string{"--push-option=review-probe", "--signed=false"}, advertise: true},
+		{name: "direct bare path", kind: "direct"},
+		{name: "dot", kind: "dot"},
+		{name: "relative path", kind: "relative"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertLongerPushInsteadOfRefused(t, tc.kind, tc.configArgs, tc.pushArgs, tc.advertise)
+		})
+	}
+}
+
+func assertLongerPushInsteadOfRefused(t *testing.T, kind string, configArgs, pushArgs []string, advertise bool) {
+	t.Helper()
+	repo := initRepo(t)
+	bare := filepath.Join(t.TempDir(), "target.git")
+	if strings.Contains(bare, "=") {
+		t.Fatalf("bare path contains '=': %s", bare)
+	}
+	gitRun(t, "", "init", "--bare", bare)
+	gitRun(t, repo, "remote", "add", "origin", bare)
+	gitRun(t, repo, "push", bare, "HEAD:refs/heads/probe")
+	seed := gitOut(t, bare, "rev-parse", "refs/heads/probe")
+	urlBefore := gitOut(t, repo, "config", "--local", "--get", "remote.origin.url")
+	if _, err := gitOptional(repo, "config", "--local", "--get", "remote.origin.pushurl"); err == nil {
+		t.Fatal("main repo already has pushurl")
+	}
+	if _, err := gitOptional(repo, "config", "--local", "--get", "core.hooksPath"); err == nil {
+		t.Fatal("main repo already has hooksPath")
+	}
+	protocolKeys := []string{
+		"protocol.allow", "protocol.file.allow", "protocol.https.allow",
+		"protocol.ssh.allow", "protocol.http.allow", "protocol.git.allow",
+	}
+	for _, key := range protocolKeys {
+		if _, err := gitOptional(repo, "config", "--local", "--get", key); err == nil {
+			t.Fatalf("main repo %s already set", key)
+		}
+	}
+
+	root := t.TempDir()
+	ctx := context.Background()
+	m := Git{}
+	wt, err := m.Create(ctx, CreateRequest{
+		CardID: "card", AttemptID: "a", ObjectiveID: "obj",
+		RepoPath: repo, WorktreeRoot: root, IntegrationBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "pushed.txt"), []byte("nope\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Commit(ctx, wt.Path, "should not land"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.BlockPush(ctx, wt.Path); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := bare
+	newRef := "refs/heads/blocked-new"
+	args := []string{"push", "--no-verify"}
+	args = append(args, pushArgs...)
+	switch kind {
+	case "long-prefix":
+		args = append([]string{"-c", "url." + bare + "/.pushInsteadOf=review-local:"}, args...)
+		args = append(args, "review-local:", "HEAD:"+newRef)
+	case "other-prefix":
+		args = append([]string{"-c", "url." + bare + "/.pushInsteadOf=inherited-push-target:"}, args...)
+		args = append(args, "inherited-push-target:", "HEAD:"+newRef)
+	case "direct":
+		args = append(args, bare, "HEAD:"+newRef)
+	case "dot":
+		dest = repo
+		newRef = "refs/heads/from-dot"
+		args = append(args, ".", "HEAD:"+newRef)
+	case "relative":
+		dest = filepath.Join(wt.Path, "nested", "bare.git")
+		gitRun(t, "", "init", "--bare", dest)
+		head := gitOut(t, wt.Path, "rev-parse", "HEAD")
+		gitRun(t, repo, "push", dest, head+":refs/heads/probe")
+		newRef = "refs/heads/from-rel"
+		args = append(args, "nested/bare.git", "HEAD:"+newRef)
+	default:
+		t.Fatalf("unknown kind %s", kind)
+	}
+	if len(configArgs) > 0 {
+		front := make([]string, 0, len(configArgs)+len(args))
+		front = append(front, configArgs...)
+		args = append(front, args...)
+	}
+	if advertise {
+		gitRun(t, dest, "config", "receive.advertisePushOptions", "true")
+		if got := gitOut(t, dest, "config", "--local", "--get", "receive.advertisePushOptions"); got != "true" {
+			t.Fatalf("destination advertisePushOptions %q", got)
+		}
+	}
+	if strings.Contains(strings.Join(args, " "), "--dry-run") {
+		t.Fatal("push refusal must be a real push")
+	}
+	before := gitOut(t, dest, "show-ref")
+	out, err := runIsolatedGit(wt.Path, args...)
+	if err == nil {
+		t.Fatalf("git %s succeeded:\n%s", strings.Join(args, " "), out)
+	}
+	if strings.Contains(string(out), "not allowed") {
+		t.Fatalf("git %s protocol denial:\n%s", strings.Join(args, " "), out)
+	}
+	if after := gitOut(t, dest, "show-ref"); after != before {
+		t.Fatalf("destination refs changed\nbefore:\n%s\nafter:\n%s\npush:\n%s", before, after, out)
+	}
+	if _, missing := gitOptional(dest, "rev-parse", "--verify", newRef); missing == nil {
+		t.Fatalf("created %s\n%s", newRef, out)
+	}
+	if kind == "long-prefix" || kind == "other-prefix" || kind == "direct" {
+		if got := gitOut(t, bare, "rev-parse", "refs/heads/probe"); got != seed {
+			t.Fatalf("probe moved %s -> %s", seed, got)
+		}
+	}
+	assertPushReadsIsolated(t, wt.Path, bare, "origin")
+
+	if got := gitOut(t, repo, "config", "--local", "--get", "remote.origin.url"); got != urlBefore {
+		t.Fatalf("main origin url changed %s -> %s", urlBefore, got)
+	}
+	if _, err := gitOptional(repo, "config", "--local", "--get", "remote.origin.pushurl"); err == nil {
+		t.Fatal("main repo pushurl was set")
+	}
+	if _, err := gitOptional(repo, "config", "--local", "--get", "core.hooksPath"); err == nil {
+		t.Fatal("main repo hooksPath was set")
+	}
+	for _, key := range protocolKeys {
+		if _, err := gitOptional(repo, "config", "--local", "--get", key); err == nil {
+			t.Fatalf("main repo %s was set", key)
+		}
+	}
+	if got, err := gitOptional(repo, "config", "--local", "--get-regexp", `url\..*\.pushInsteadOf`); err == nil && strings.TrimSpace(got) != "" {
+		t.Fatalf("main repo pushInsteadOf was set: %s", got)
+	}
+}
+
+func assertPushReadsIsolated(t *testing.T, worktree, bare, remote string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"ls-remote", bare},
+		{"ls-remote", ".", "HEAD"},
+		{"fetch", remote},
+	} {
+		out, err := runIsolatedGit(worktree, args...)
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		if strings.Contains(string(out), "not allowed") {
+			t.Fatalf("git %s protocol denial:\n%s", strings.Join(args, " "), out)
+		}
+	}
+}
+
+func runIsolatedGit(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = isolatedGitEnv()
+	return cmd.CombinedOutput()
+}
+
+func isolatedGitEnv() []string {
+	env := make([]string, 0, len(os.Environ())+3)
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "GIT_") {
+			continue
+		}
+		env = append(env, e)
+	}
+	return append(env,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+}
+
 func assertInheritedPushBlocked(t *testing.T, pushCounts []int) {
 	t.Helper()
 	repo := initRepo(t)
@@ -280,6 +499,23 @@ func assertInheritedPushBlocked(t *testing.T, pushCounts []int) {
 	if len(pushCounts) > len(names) {
 		t.Fatalf("too many remotes")
 	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	var httpsHits atomic.Int32
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			httpsHits.Add(1)
+			c.Close()
+		}
+	}()
+	httpsPush := "https://" + ln.Addr().String() + "/repo.git"
 	type target struct {
 		remote string
 		bares  []string
@@ -295,6 +531,7 @@ func assertInheritedPushBlocked(t *testing.T, pushCounts []int) {
 			tg.bares = append(tg.bares, bare)
 		}
 		gitRun(t, repo, "remote", "add", name, tg.bares[0])
+		gitRun(t, repo, "config", "--local", "--add", "remote."+name+".pushurl", httpsPush)
 		for _, bare := range tg.bares {
 			gitRun(t, repo, "config", "--local", "--add", "remote."+name+".pushurl", bare)
 			gitRun(t, repo, "push", bare, "HEAD:refs/heads/probe")
@@ -334,21 +571,59 @@ func assertInheritedPushBlocked(t *testing.T, pushCounts []int) {
 	}
 
 	for _, tg := range targets {
-		push := exec.Command("git", "-C", wt.Path, "push", "--no-verify", tg.remote, "HEAD:refs/heads/probe", "HEAD:refs/heads/probe-new")
-		push.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-		out, err := push.CombinedOutput()
+		assertPushReadsWork(t, wt.Path, tg.bares[0], tg.remote)
+		for _, verify := range []bool{false, true} {
+			args := []string{"-C", wt.Path, "push"}
+			if verify {
+				args = append(args, "--no-verify")
+			}
+			args = append(args, tg.remote, "HEAD:refs/heads/probe", "HEAD:refs/heads/probe-new")
+			push := exec.Command("git", args...)
+			push.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+			out, err := push.CombinedOutput()
+			if err == nil {
+				t.Fatalf("push %s no-verify=%t succeeded:\n%s", tg.remote, verify, out)
+			}
+			if strings.Contains(string(out), "not allowed") {
+				t.Fatalf("push %s failed by protocol denial:\n%s", tg.remote, out)
+			}
+			for _, bare := range tg.bares {
+				got := gitOut(t, bare, "rev-parse", "refs/heads/probe")
+				if got != tg.seed[bare] {
+					t.Fatalf("%s probe moved %s -> %s\n%s", bare, tg.seed[bare], got, out)
+				}
+				if _, missing := gitOptional(bare, "rev-parse", "--verify", "refs/heads/probe-new"); missing == nil {
+					t.Fatalf("%s created probe-new\n%s", bare, out)
+				}
+			}
+		}
+		direct := exec.Command("git", "-C", wt.Path, "push", "--no-verify", tg.bares[0], "HEAD:refs/heads/direct-new")
+		direct.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		out, err := direct.CombinedOutput()
 		if err == nil {
-			t.Fatalf("push %s succeeded:\n%s", tg.remote, out)
+			t.Fatalf("direct push %s succeeded:\n%s", tg.bares[0], out)
 		}
-		for _, bare := range tg.bares {
-			got := gitOut(t, bare, "rev-parse", "refs/heads/probe")
-			if got != tg.seed[bare] {
-				t.Fatalf("%s probe moved %s -> %s\n%s", bare, tg.seed[bare], got, out)
-			}
-			if _, missing := gitOptional(bare, "rev-parse", "--verify", "refs/heads/probe-new"); missing == nil {
-				t.Fatalf("%s created probe-new\n%s", bare, out)
-			}
+		if _, missing := gitOptional(tg.bares[0], "rev-parse", "--verify", "refs/heads/direct-new"); missing == nil {
+			t.Fatalf("%s created direct-new\n%s", tg.bares[0], out)
 		}
+	}
+	assertDirectPushRefused(t, wt.Path, ".", "refs/heads/from-dot")
+	relBare := filepath.Join(wt.Path, "nested", "bare.git")
+	gitRun(t, "", "init", "--bare", relBare)
+	// The worktree rewrites every push. Seed this bare from the main repo,
+	// which does not carry that rewrite.
+	head := gitOut(t, wt.Path, "rev-parse", "HEAD")
+	gitRun(t, repo, "push", relBare, head+":refs/heads/probe")
+	relSeed := gitOut(t, relBare, "rev-parse", "refs/heads/probe")
+	assertDirectPushRefused(t, wt.Path, "nested/bare.git", "refs/heads/from-rel")
+	if got := gitOut(t, relBare, "rev-parse", "refs/heads/probe"); got != relSeed {
+		t.Fatalf("relative bare probe moved %s -> %s", relSeed, got)
+	}
+	if _, missing := gitOptional(relBare, "rev-parse", "--verify", "refs/heads/from-rel"); missing == nil {
+		t.Fatal("relative bare created from-rel")
+	}
+	if hits := httpsHits.Load(); hits != 0 {
+		t.Fatalf("https pushurl was contacted %d times", hits)
 	}
 
 	for _, tg := range targets {
@@ -367,6 +642,41 @@ func assertInheritedPushBlocked(t *testing.T, pushCounts []int) {
 	for _, key := range []string{"protocol.allow", "protocol.file.allow", "protocol.https.allow", "protocol.ssh.allow", "protocol.http.allow", "protocol.git.allow"} {
 		if _, err := gitOptional(repo, "config", "--local", "--get", key); err == nil {
 			t.Fatalf("main repo %s was set", key)
+		}
+	}
+}
+
+func assertDirectPushRefused(t *testing.T, dir, url, ref string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", dir, "push", "--no-verify", url, "HEAD:"+ref)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("git push %s succeeded:\n%s", url, out)
+	}
+	if strings.Contains(string(out), "not allowed") {
+		t.Fatalf("git push %s protocol denial:\n%s", url, out)
+	}
+	if _, missing := gitOptional(dir, "rev-parse", "--verify", ref); missing == nil {
+		t.Fatalf("push %s created %s\n%s", url, ref, out)
+	}
+}
+
+func assertPushReadsWork(t *testing.T, worktree, bare, remote string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"ls-remote", bare},
+		{"ls-remote", ".", "HEAD"},
+		{"fetch", remote},
+	} {
+		cmd := exec.Command("git", append([]string{"-C", worktree}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		if strings.Contains(string(out), "not allowed") {
+			t.Fatalf("git %s protocol denial:\n%s", strings.Join(args, " "), out)
 		}
 	}
 }

@@ -10,9 +10,12 @@ import (
 
 // Conflicts reports scheduling conflicts. Review cards do not occupy claims.
 // A card with no claims does not conflict. A directory claim is a path with a
-// trailing separator: it covers only empty-symbol paths under that directory
-// (new files claimed by exact path), not symbol claims on existing files.
-func Conflicts(cards []model.Card) ([]Conflict, error) {
+// trailing separator. It covers only a new file claimed by exact path under
+// that directory. exists reports whether a path is already in the tree;
+// an existing file is not covered, including a file-level claim whose symbol
+// is empty. A nil exists does not treat an empty symbol as "new". Same-path
+// and symbol rules do not use exists.
+func Conflicts(cards []model.Card, exists func(path string) bool) ([]Conflict, error) {
 	type held struct {
 		card  string
 		claim model.Claim
@@ -25,7 +28,7 @@ func Conflicts(cards []model.Card) ([]Conflict, error) {
 		}
 		for _, claim := range card.Claims {
 			for _, other := range active {
-				path, symbol, ok := overlap(other.claim, claim)
+				path, symbol, ok := overlap(other.claim, claim, exists)
 				if !ok {
 					continue
 				}
@@ -56,14 +59,14 @@ func reason(card, path, symbol string) string {
 	return fmt.Sprintf("被卡 %s 占用 %s:%s", card, path, symbol)
 }
 
-func overlap(a, b model.Claim) (path, symbol string, ok bool) {
+func overlap(a, b model.Claim, exists func(string) bool) (path, symbol string, ok bool) {
 	ap, ad := normClaimPath(a.Path)
 	bp, bd := normClaimPath(b.Path)
 	if ap == "" || bp == "" {
 		return "", "", false
 	}
 	if ad || bd {
-		return directoryOverlap(a, b, ap, bp, ad, bd)
+		return directoryOverlap(a, b, ap, bp, ad, bd, exists)
 	}
 	if ap != bp {
 		return "", "", false
@@ -80,7 +83,7 @@ func overlap(a, b model.Claim) (path, symbol string, ok bool) {
 	return ap, sym, true
 }
 
-func directoryOverlap(a, b model.Claim, ap, bp string, ad, bd bool) (string, string, bool) {
+func directoryOverlap(a, b model.Claim, ap, bp string, ad, bd bool, exists func(string) bool) (string, string, bool) {
 	if ad && bd {
 		if underDir(ap, bp) || underDir(bp, ap) {
 			dir := ap
@@ -100,7 +103,12 @@ func directoryOverlap(a, b model.Claim, ap, bp string, ad, bd bool) (string, str
 	if !underDir(dir, file) || file == dir {
 		return "", "", false
 	}
-	// A symbol names an existing file. A directory claim does not cover it.
+	// New versus existing comes from exists, not from an empty symbol.
+	// Nil, or a path that is already in the tree, is not covered.
+	if exists == nil || exists(file) {
+		return "", "", false
+	}
+	// A new file is claimed by exact path. A symbol claim is not one.
 	if strings.TrimSpace(fileClaim.Symbol) != "" {
 		return "", "", false
 	}

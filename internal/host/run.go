@@ -123,14 +123,18 @@ func run(ctx context.Context, home, attemptID string) error {
 		return failStart(ctx, db, &attempt, err)
 	}
 	cmd.Dir = attempt.Worktree
-	// The child writes both streams to a pipe. The host copies that into
-	// output.log, so the attempt directory stays outside the sandbox write list.
+	// The host appends each chunk to output.log. The attempt directory stays
+	// outside the sandbox write list, and bytes already seen survive a crash.
+	capture, err := openAttemptLog(logPath)
+	if err != nil {
+		return failStart(ctx, db, &attempt, err)
+	}
+	defer capture.Close()
 	var logRead, logWrite *os.File
-	var pipeBuf bytes.Buffer
 	var copied chan struct{}
 	if !needPTY {
 		if attempt.PromptPath != "" {
-			prompt, err := os.Open(attempt.PromptPath)
+			prompt, err := openPrompt(ctx, attempt.PromptPath)
 			if err != nil {
 				return failStart(ctx, db, &attempt, err)
 			}
@@ -146,7 +150,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		copied = make(chan struct{})
 		go func() {
 			defer close(copied)
-			_, _ = io.Copy(&pipeBuf, logRead)
+			_, _ = io.Copy(capture, logRead)
 		}()
 	}
 
@@ -183,7 +187,6 @@ func run(ctx context.Context, home, attemptID string) error {
 
 	var (
 		waitErr  error
-		output   []byte
 		driveErr error
 		pid      int
 		fired    interface{ Load() bool }
@@ -202,7 +205,6 @@ func run(ctx context.Context, home, attemptID string) error {
 		}
 		appendEvent(ctx, db, attempt.ID, "executor_pgid", map[string]any{"pgid": pid})
 		pr, pw := io.Pipe()
-		var buf bytes.Buffer
 		copied = make(chan struct{})
 		var closeConsumer sync.Once
 		closeRead := func() {
@@ -216,7 +218,7 @@ func run(ctx context.Context, home, attemptID string) error {
 			for {
 				n, rerr := session.Master.Read(tmp)
 				if n > 0 {
-					_, _ = buf.Write(tmp[:n])
+					_, _ = capture.Write(tmp[:n])
 					if forward {
 						if _, werr := pw.Write(tmp[:n]); werr != nil {
 							// Drive stopped reading. Keep draining the master
@@ -246,7 +248,6 @@ func run(ctx context.Context, home, attemptID string) error {
 		waitErr = session.Cmd.Wait()
 		waitCopy(copied, stop, killed, pid)
 		_ = session.Master.Close()
-		output = append([]byte(nil), buf.Bytes()...)
 	} else {
 		if err := wrapped.Start(); err != nil {
 			closePipe(logWrite, logRead)
@@ -277,13 +278,13 @@ func run(ctx context.Context, home, attemptID string) error {
 		if logRead != nil {
 			_ = logRead.Close()
 		}
-		output = append([]byte(nil), pipeBuf.Bytes()...)
 	}
 	timedOut := fired != nil && fired.Load()
 	if driveErr != nil && timedOut && (errors.Is(driveErr, context.Canceled) || errors.Is(driveErr, io.ErrClosedPipe) || errors.Is(driveErr, os.ErrClosed)) {
 		driveErr = nil
 	}
-	if err := os.WriteFile(logPath, output, 0o644); err != nil {
+	output := capture.Bytes()
+	if err := capture.Close(); err != nil {
 		_ = finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, err, driveErr, timedOut)
 		return err
 	}
@@ -389,6 +390,8 @@ func handoffReview(ctx context.Context, db *store.Store, attempt *model.Attempt,
 }
 
 func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card model.Card, output []byte, code int, r runner.Runner, prior, driveErr error, timedOut bool) error {
+	pctx, cancel := persistContext(ctx)
+	defer cancel()
 	attempt.Exit = &code
 	attempt.EndedAt = time.Now().UTC()
 	attempt.Usage = r.ParseUsage(output)
@@ -424,11 +427,11 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 	if attempt.ErrorExcerpt == "" && prior != nil {
 		attempt.ErrorExcerpt = trimExcerpt(prior.Error())
 	}
-	head, commitErr := workspaceFrom(ctx).Commit(ctx, attempt.Worktree, "cardex "+card.ID+" "+attempt.ID)
+	head, commitErr := workspaceFrom(pctx).Commit(pctx, attempt.Worktree, "cardex "+card.ID+" "+attempt.ID)
 	if commitErr == nil && head != "" {
 		attempt.HeadCommit = head
 	}
-	if err := db.UpdateAttempt(ctx, attempt); err != nil {
+	if err := db.UpdateAttempt(pctx, attempt); err != nil {
 		return err
 	}
 	finishEvent := map[string]any{
@@ -443,24 +446,26 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 	if driveErr != nil && !errors.Is(driveErr, context.Canceled) {
 		finishEvent["drive_error"] = driveErr.Error()
 	}
-	appendEvent(ctx, db, attempt.ID, "host_finish", finishEvent)
+	appendEvent(pctx, db, attempt.ID, "host_finish", finishEvent)
 	if commitErr != nil {
-		appendEvent(ctx, db, attempt.ID, "workspace_commit", map[string]string{"error": commitErr.Error()})
+		appendEvent(pctx, db, attempt.ID, "workspace_commit", map[string]string{"error": commitErr.Error()})
 	} else {
-		appendEvent(ctx, db, attempt.ID, "workspace_commit", map[string]string{"head": head})
+		appendEvent(pctx, db, attempt.ID, "workspace_commit", map[string]string{"head": head})
 	}
 	return nil
 }
 
 func failStart(ctx context.Context, db *store.Store, attempt *model.Attempt, cause error) error {
+	pctx, cancel := persistContext(ctx)
+	defer cancel()
 	code := 127
 	attempt.Exit = &code
 	attempt.EndedAt = time.Now().UTC()
 	attempt.ErrorExcerpt = trimExcerpt(cause.Error())
-	if err := db.UpdateAttempt(ctx, attempt); err != nil {
+	if err := db.UpdateAttempt(pctx, attempt); err != nil {
 		return err
 	}
-	appendEvent(ctx, db, attempt.ID, "host_finish", map[string]any{
+	appendEvent(pctx, db, attempt.ID, "host_finish", map[string]any{
 		"exit":    code,
 		"error":   attempt.ErrorExcerpt,
 		"started": false,
@@ -495,4 +500,107 @@ func exitCode(err error) int {
 		}
 	}
 	return 1
+}
+
+// resultPersistTimeout bounds result write-back after the executor is done.
+// It is long enough for the sqlite update and workspace commit, and it is not
+// the run context's deadline.
+const resultPersistTimeout = 30 * time.Second
+
+// persistContext outlives cancellation of the run context, keeps values stored
+// on it (the workspace manager), and has its own deadline.
+func persistContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), resultPersistTimeout)
+}
+
+// attemptLog appends executor output to output.log as it arrives and keeps
+// the same bytes for usage parsing and error classification.
+type attemptLog struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+	f   *os.File
+	err error
+}
+
+func openAttemptLog(path string) (*attemptLog, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	return &attemptLog{f: f}, nil
+}
+
+func (l *attemptLog) Write(p []byte) (int, error) {
+	if len(p) == 0 || l == nil {
+		return 0, nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.buf.Write(p)
+	if l.f != nil {
+		if _, err := l.f.Write(p); err != nil {
+			if l.err == nil {
+				l.err = err
+			}
+		} else if err := l.f.Sync(); err != nil && l.err == nil {
+			l.err = err
+		}
+	}
+	return len(p), nil
+}
+
+func (l *attemptLog) Bytes() []byte {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]byte(nil), l.buf.Bytes()...)
+}
+
+func (l *attemptLog) Close() error {
+	if l == nil {
+		return nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.f != nil {
+		if err := l.f.Close(); err != nil && l.err == nil {
+			l.err = err
+		}
+		l.f = nil
+	}
+	return l.err
+}
+
+// openPrompt opens path. When the run context is cancelled first, the error is
+// the context error so failStart still records the attempt.
+func openPrompt(ctx context.Context, path string) (*os.File, error) {
+	if ctx == nil || ctx.Done() == nil {
+		return os.Open(path)
+	}
+	type result struct {
+		f   *os.File
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		f, err := os.Open(path)
+		ch <- result{f, err}
+	}()
+	select {
+	case <-ctx.Done():
+		go func() {
+			r := <-ch
+			if r.f != nil {
+				_ = r.f.Close()
+			}
+		}()
+		return nil, ctx.Err()
+	case r := <-ch:
+		return r.f, r.err
+	}
 }

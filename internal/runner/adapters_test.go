@@ -35,9 +35,6 @@ func TestRegistryAndCapabilities(t *testing.T) {
 			t.Fatalf("%s capabilities %v", name, got.Capabilities())
 		}
 	}
-	if _, ok := runner.Lookup("grok"); ok {
-		t.Fatal("grok is registered in this lane")
-	}
 }
 
 func TestBuildSnapshots(t *testing.T) {

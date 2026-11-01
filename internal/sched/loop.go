@@ -678,24 +678,63 @@ func windowFills(ch model.Channel, est quota.Estimate, now time.Time) bool {
 	if est.Blocked && !est.Reset.IsZero() && now.Before(est.Reset) {
 		return false
 	}
-	// Unknown and unlimited windows are not confirmed margin. Routing still
-	// reports them as unknown; fill does not spend them.
-	if est.Unknown || (est.LimitTokens <= 0 && est.LimitRequests <= 0) {
-		return false
-	}
+	// A stored remaining ratio is fill margin without a token or request cap.
+	// Routing still reports that window as unknown. A window with neither a
+	// cap nor a remaining ratio stays unknown and is not margin.
 	margin := ch.Redline + fillMargin
-	if est.Ratio <= margin {
+	if _, ok := fillRatio(ch, est, margin); !ok {
 		return false
 	}
-	if resetSoon(est.Reset, now) {
+	if ledgerRatioConfirmed(est) && resetSoon(est.Reset, now) {
 		return true
 	}
 	for _, w := range ch.QuotaWindows {
-		if (w.LimitTokens > 0 || w.LimitRequests > 0) && resetSoon(w.ResetAt, now) {
+		if !resetSoon(w.ResetAt, now) {
+			continue
+		}
+		if w.LimitTokens > 0 || w.LimitRequests > 0 || storedRemainingAbove(w, margin) {
 			return true
 		}
 	}
 	return false
+}
+
+// fillRatio is the remaining ratio §7.5 compares with redline plus the fill margin.
+// A capped ledger estimate supplies it, and the tightest stored remaining ratio
+// supplies it when no window has a cap. Confidence is not a separate cutoff.
+func fillRatio(ch model.Channel, est quota.Estimate, margin float64) (float64, bool) {
+	if est.LimitTokens > 0 || est.LimitRequests > 0 {
+		if est.Unknown || est.Ratio <= margin {
+			return 0, false
+		}
+		return est.Ratio, true
+	}
+	found := false
+	best := 0.0
+	for _, w := range ch.QuotaWindows {
+		if w.LimitTokens > 0 || w.LimitRequests > 0 || w.Remaining <= 0 {
+			continue
+		}
+		if !found || w.Remaining < best {
+			best = w.Remaining
+			found = true
+		}
+	}
+	if !found || best <= margin {
+		return 0, false
+	}
+	return best, true
+}
+
+func ledgerRatioConfirmed(est quota.Estimate) bool {
+	return !est.Unknown && (est.LimitTokens > 0 || est.LimitRequests > 0)
+}
+
+func storedRemainingAbove(w model.QuotaWindow, margin float64) bool {
+	if w.LimitTokens > 0 || w.LimitRequests > 0 {
+		return false
+	}
+	return w.Remaining > margin
 }
 
 func resetSoon(reset, now time.Time) bool {

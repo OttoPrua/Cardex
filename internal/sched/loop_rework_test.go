@@ -8,10 +8,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"cardex/internal/harvest"
+	"cardex/internal/host"
 	"cardex/internal/model"
 	"cardex/internal/notify"
 	"cardex/internal/prompt"
@@ -1113,6 +1115,7 @@ func TestQuotaEstimateDrivesDispatchAndFill(t *testing.T) {
 				Name: "5h", ResetRule: "rolling", ResetAt: soon, Remaining: 0.9,
 			}},
 			dispatch: true,
+			fill:     true,
 			check: func(est quota.Estimate) error {
 				if !est.Unknown || est.LimitTokens != 0 || est.LimitRequests != 0 {
 					return fmt.Errorf("estimate %+v", est)
@@ -1262,6 +1265,156 @@ func runQuotaMode(t *testing.T, now time.Time, windows []model.QuotaWindow, redl
 		t.Fatal(err)
 	}
 	return est, saw, len(attempts) > 0
+}
+
+func TestBacklogFillStoredRatioWithoutCap(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	soon := now.Add(30 * time.Minute)
+	far := now.Add(5 * time.Hour)
+	s19 := model.QuotaWindow{
+		Name: "5h", ResetRule: "rolling", ResetAt: soon, Remaining: 0.9, Confidence: 1,
+	}
+	cases := []struct {
+		name     string
+		windows  []model.QuotaWindow
+		redline  float64
+		readyDev bool
+		want     int
+		again    bool
+	}{
+		{
+			name: "stored ratio near reset without cap", windows: []model.QuotaWindow{s19},
+			want: 1, again: true,
+		},
+		{
+			name: "neither cap nor remaining ratio",
+			windows: []model.QuotaWindow{{
+				Name: "5h", ResetRule: "rolling", ResetAt: soon,
+			}},
+		},
+		{
+			name: "stored ratio not above redline plus margin",
+			windows: []model.QuotaWindow{{
+				Name: "5h", ResetRule: "rolling", ResetAt: soon, Remaining: 0.2, Confidence: 1,
+			}},
+		},
+		{
+			name: "reset outside horizon",
+			windows: []model.QuotaWindow{{
+				Name: "5h", ResetRule: "rolling", ResetAt: far, Remaining: 0.9, Confidence: 1,
+			}},
+		},
+		{
+			name: "ready card needs channel", windows: []model.QuotaWindow{s19}, readyDev: true,
+		},
+		{
+			name: "uncapped near reset beside capped far window",
+			windows: []model.QuotaWindow{
+				{Name: "daily", ResetRule: "rolling", ResetAt: far, LimitTokens: 100, UsedTokens: 10, Remaining: 0.9, Confidence: 1},
+				{Name: "5h", ResetRule: "rolling", ResetAt: soon, Remaining: 0.9, Confidence: 1},
+			},
+			want: 1, again: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			home, db, repo := newHome(t)
+			_, obj := seedRepo(t, db, repo, "true")
+			ch := model.Channel{
+				ID: "ch", Runner: model.RunnerFake, Family: "alpha", Models: []string{"model-a"},
+				Concurrency: 2, Health: model.HealthOK, Tier: model.TierT1, Redline: tc.redline,
+				QuotaWindows: tc.windows,
+			}
+			if err := db.CreateChannel(ctx, &ch); err != nil {
+				t.Fatal(err)
+			}
+			pos := model.Positioning{
+				ID: "pos-ch", Model: "model-a", Family: "alpha",
+				Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+			}
+			if err := db.CreatePositioning(ctx, &pos); err != nil {
+				t.Fatal(err)
+			}
+			back := model.Card{
+				ID: "back", Objective: obj, Kind: model.KindBacklog, Title: "back",
+				Tier: model.TierT1, Status: model.CardReady,
+			}
+			if err := db.CreateCard(ctx, &back); err != nil {
+				t.Fatal(err)
+			}
+			if tc.readyDev {
+				dev := model.Card{
+					ID: "dev", Objective: obj, Kind: model.KindDev, Title: "dev",
+					Tier: model.TierT2, Status: model.CardReady,
+				}
+				if err := db.CreateCard(ctx, &dev); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r := New(home)
+			r.Now = func() time.Time { return now }
+			r.Launch = holdLaunch(t)
+			if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			got, err := db.GetCard(ctx, "back")
+			if err != nil {
+				t.Fatal(err)
+			}
+			attempts, err := db.ListAttempts(ctx, "back")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(attempts) != tc.want {
+				t.Fatalf("attempts %d want %d card %+v attempts %+v", len(attempts), tc.want, got, attempts)
+			}
+			t.Logf("attempts=%d", len(attempts))
+			if tc.want == 0 {
+				if got.Status != model.CardReady {
+					t.Fatalf("backlog moved %+v", got)
+				}
+				return
+			}
+			if got.Status != model.CardRunning || attempts[0].Route.Channel != ch.ID || !host.LiveHost(attempts[0]) {
+				t.Fatalf("backlog %+v attempts %+v", got, attempts)
+			}
+			if err := syscall.Kill(attempts[0].PID, 0); err != nil && !errors.Is(err, syscall.EPERM) {
+				t.Fatalf("attempt host not alive: %v", err)
+			}
+			if !tc.again {
+				return
+			}
+			if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			again, err := db.ListAttempts(ctx, "back")
+			if err != nil || len(again) != 1 || again[0].ID != attempts[0].ID {
+				t.Fatalf("second tick %+v %v", again, err)
+			}
+			t.Logf("second attempts=%d", len(again))
+		})
+	}
+}
+
+func holdLaunch(t *testing.T) func(context.Context, string, string) (int, error) {
+	t.Helper()
+	var pids []int
+	t.Cleanup(func() {
+		for _, pid := range pids {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	return func(context.Context, string, string) (int, error) {
+		cmd := exec.Command("sleep", "60")
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		if err := cmd.Start(); err != nil {
+			return 0, err
+		}
+		pids = append(pids, cmd.Process.Pid)
+		return cmd.Process.Pid, nil
+	}
 }
 
 func TestDispatchChecksAssociationEdgeAndStopState(t *testing.T) {

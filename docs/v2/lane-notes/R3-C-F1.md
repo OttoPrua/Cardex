@@ -25,3 +25,4 @@ Ledger.Record 不能把一笔用量只记入较短窗口。嵌套 5h/daily 里�
 无上限的正剩余不作为填充余量 → internal/sched/loop.go:683 → TestQuotaEstimateDrivesDispatchAndFill
 无法同时表示的嵌套快照不是置信度 1 的满额 → internal/sched/loop.go:1215 internal/sched/quota_seed.go:70 → TestNestedSnapshotIsNotConfidentFull
 R3-C.md 不超过 40 行并保留接口请求与已知问题 → docs/v2/lane-notes/R3-C.md:11 → TestR3CLaneNoteStaysWithinLimit
+临近重置的已存剩余比例在没有 token 或请求上限时仍是填充余量，既无上限也无剩余比例的窗口仍未知 → internal/sched/loop.go:685 internal/sched/loop.go:695 internal/sched/loop.go:705 → TestBacklogFillStoredRatioWithoutCap

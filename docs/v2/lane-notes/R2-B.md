@@ -32,3 +32,4 @@ goal 的完成和 budget_limited 只从会话文件读取，PTY Read 阻塞时�
 B2 未完成：额度终态只接受可追溯的交互转录或 v1 已写会话额度字段，observeNativeGrokGoal 只读 grokNativeGoalStateFile.Status，isLimitHitGrokBuild 只扫无头样本，不伪造 fixture → internal/runner/grok.go:162、grok.go:198、grok.go:640 → TestGrokInteractiveQuota
 终态验收必须在可信交互通道上正向识别额度，排除不可信样本不能替代该验收 → internal/runner/grok.go:195、grok.go:243、grok.go:577 → TestGrokGoalQuotaTerminal
 终态正向验收必须覆盖实际交互通道的输出，字符串表只能证明文案存在 → 未改 internal/runner/grok.go:194、grok.go:243、grok.go:577、grok.go:597 与 testdata/grok_goal_quota_pty.txt:1：v1 observeNativeGrokGoal（workflow_goal.go:2928）不读额度字段，380 份 goal/state.json 的 status 只有 complete/active/budget_limited/user_paused/no_progress_paused/blocked/back_off_paused/infra_paused，workflow_goal_host_unix.go:240 不留 PTY 转录 → TestGrokGoalQuotaTerminal
+交互终态的正向验收必须覆盖实际 PTY 输出及其消费路径；字符串表文案、手写整行、或“没有转录”的说明都不能充当该验收 → internal/runner/grok.go:195、grok.go:244、grok.go:607、grok.go:632、grok.go:759、testdata/grok_goal_quota_pty_raw.bin:1 → TestGrokGoalQuotaTerminal

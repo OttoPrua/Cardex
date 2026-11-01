@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"cardex/internal/model"
 )
@@ -279,6 +280,11 @@ var (
 	// transportRe already accepts (connection error/reset, disconnected before).
 	plainTransportLine = regexp.MustCompile(`(?i)^(?:error:\s*)?(?:connection (?:reset(?: by peer)?|refused|closed|error)|socket (?:closed|error)|error sending request|tls (?:handshake|error)|unexpected eof|disconnected before(?: (?:receiving )?(?:a )?response)?|i/o timeout|econn(?:reset|refused)|stream disconnect|no route to host|network is unreachable|host is unreachable|temporary failure in name resolution|no such host|dns (?:lookup|resolution) (?:failed|error)|getaddrinfo\s+(?:enotfound|eai_again)(?:\s+[a-z0-9._:-]+)?|dial tcp:\s*lookup\s+[a-z0-9._-]+(?:\s+on\s+[^:;]+)?:\s*no such host|(?:read|write) tcp [^;]+:\s*(?:connection reset by peer|i/o timeout))$`)
 	plainTimeoutLine   = regexp.MustCompile(`(?i)^(?:(?:error|grok_build_process_error|codex_error|remote_codex_error):\s*)?(?:(?:步骤超时|远程步骤超时|远端步骤超时)[（(][^)）]*[)）]|context deadline exceeded|deadline exceeded \()$`)
+	// grokRateRetryStatusLine is the grok 1.0.40 interactive status row painted
+	// after an empty HTTP 429. The trailing class is that row's chrome
+	// (timers, ⇣token count, [stop]). A sentence that continues after the
+	// status is not the row.
+	grokRateRetryStatusLine = regexp.MustCompile(`^Rate limited \| Retrying \(attempt [0-9]+\)\.\.\.[0-9.s ⇣k\[\]top]*$`)
 )
 
 // acceptedBootstrapBeforeProviderRefusal is the exact PTY line v1 records.
@@ -591,10 +597,19 @@ func grokInteractiveQuotaLine(line string) bool {
 	}
 }
 
-// grokInteractiveQuotaTerminal reports the interactive card on a finished
-// line that is not the known prompt echo. finishTail treats a capture's last
-// line as finished; a streaming read leaves an unfinished tail unmatched.
+// grokInteractiveQuotaTerminal reports the interactive quota card on a
+// finished line that is not the known prompt echo, or on a committed TUI
+// frame. finishTail treats a capture's last line and the screen's current
+// frame as finished; a streaming read leaves an unfinished tail unmatched.
+// Newline sentences are the pager card. grok 1.0.40 also paints the status
+// with cursor addressing and commits it at ESC[?2026l. That transcript is
+// testdata/grok_goal_quota_pty_raw.bin.
 func grokInteractiveQuotaTerminal(output []byte, prompt string, finishTail bool) bool {
+	return grokInteractiveQuotaLines(output, prompt, finishTail) ||
+		grokInteractiveQuotaScreen(output, prompt, finishTail)
+}
+
+func grokInteractiveQuotaLines(output []byte, prompt string, finishTail bool) bool {
 	if !finishTail {
 		i := bytes.LastIndexByte(output, '\n')
 		if i < 0 {
@@ -604,10 +619,202 @@ func grokInteractiveQuotaTerminal(output []byte, prompt string, finishTail bool)
 	}
 	hit := false
 	walkNonEchoLines(output, prompt, func(line string) {
-		if grokInteractiveQuotaLine(line) {
+		if grokInteractiveQuotaLine(line) || grokRateRetryStatus(line) {
 			hit = true
 		}
 	})
+	return hit
+}
+
+// grokRateRetryStatus is the cursor-addressed "Rate limited | Retrying" row
+// after a leading spinner. The row is the whole status, not prose that
+// mentions those words.
+func grokRateRetryStatus(line string) bool {
+	s := strings.TrimSpace(line)
+	if s == "" {
+		return false
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	if size > 0 && r >= 0x2800 && r <= 0x28FF {
+		s = strings.TrimSpace(s[size:])
+	}
+	return grokRateRetryStatusLine.MatchString(s)
+}
+
+const (
+	grokGoalScreenRows = 24
+	grokGoalScreenCols = 80
+)
+
+// grokScreen is the 24×80 frame grok 1.0.40 used for the quota transcript.
+// One rune is one cell. Writes past the frame are dropped. A synchronized
+// update end (ESC[?2026l) commits the frame.
+type grokScreen struct {
+	cell []rune
+	r, c int
+}
+
+func newGrokScreen() *grokScreen {
+	s := &grokScreen{cell: make([]rune, grokGoalScreenRows*grokGoalScreenCols)}
+	for i := range s.cell {
+		s.cell[i] = ' '
+	}
+	return s
+}
+
+func (s *grokScreen) put(ch rune) {
+	switch ch {
+	case '\n':
+		s.r++
+		s.c = 0
+		if s.r >= grokGoalScreenRows {
+			copy(s.cell, s.cell[grokGoalScreenCols:])
+			for i := (grokGoalScreenRows - 1) * grokGoalScreenCols; i < len(s.cell); i++ {
+				s.cell[i] = ' '
+			}
+			s.r = grokGoalScreenRows - 1
+		}
+		return
+	case '\r':
+		s.c = 0
+		return
+	}
+	if ch < ' ' || s.r < 0 || s.c < 0 || s.r >= grokGoalScreenRows || s.c >= grokGoalScreenCols {
+		return
+	}
+	s.cell[s.r*grokGoalScreenCols+s.c] = ch
+	s.c++
+}
+
+func (s *grokScreen) cup(body string) {
+	row, col := 1, 1
+	if body != "" {
+		parts := strings.Split(body, ";")
+		row = vtParam(parts[0])
+		if len(parts) > 1 {
+			col = vtParam(parts[1])
+		}
+	}
+	s.r = row - 1
+	s.c = col - 1
+}
+
+func vtParam(s string) int {
+	if s == "" {
+		return 1
+	}
+	n := 0
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			return 1
+		}
+		n = n*10 + int(ch-'0')
+	}
+	if n == 0 {
+		return 1
+	}
+	return n
+}
+
+func (s *grokScreen) rowString(row int) string {
+	raw := s.cell[row*grokGoalScreenCols : (row+1)*grokGoalScreenCols]
+	end := len(raw)
+	for end > 0 && raw[end-1] == ' ' {
+		end--
+	}
+	if end == 0 {
+		return ""
+	}
+	return string(raw[:end])
+}
+
+func (s *grokScreen) showsInteractiveQuota(prompt string) bool {
+	echo := goalPromptEchoLines(prompt)
+	for row := 0; row < grokGoalScreenRows; row++ {
+		line := s.rowString(row)
+		if line == "" || grokQuotaEcho(line, echo) {
+			continue
+		}
+		if grokInteractiveQuotaLine(line) || grokRateRetryStatus(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func grokQuotaEcho(line string, echo []string) bool {
+	line = strings.TrimSpace(line)
+	for _, e := range echo {
+		if line == e {
+			return true
+		}
+	}
+	return false
+}
+
+// grokInteractiveQuotaScreen replays PTY bytes onto a 24×80 frame. A
+// committed synchronized update can carry the quota status. finishTail also
+// reads the frame left on screen at EOF. Cursor-addressed redraws stay in
+// the byte stream; this walk is what consumes them.
+func grokInteractiveQuotaScreen(output []byte, prompt string, finishTail bool) bool {
+	s := newGrokScreen()
+	hit := false
+	commit := func() {
+		if !hit && s.showsInteractiveQuota(prompt) {
+			hit = true
+		}
+	}
+	i := 0
+	for i < len(output) && !hit {
+		if output[i] != 0x1b {
+			r, size := utf8.DecodeRune(output[i:])
+			if r == utf8.RuneError && size == 1 {
+				i++
+				continue
+			}
+			s.put(r)
+			i += size
+			continue
+		}
+		if i+1 >= len(output) {
+			break
+		}
+		switch output[i+1] {
+		case ']':
+			j := i + 2
+			for j < len(output) && output[j] != 0x07 && output[j] != 0x1b {
+				j++
+			}
+			if j < len(output) && output[j] == 0x07 {
+				j++
+			} else if j+1 < len(output) && output[j] == 0x1b && output[j+1] == '\\' {
+				j += 2
+			}
+			i = j
+		case '[':
+			j := i + 2
+			for j < len(output) && (output[j] < 0x40 || output[j] > 0x7e) {
+				j++
+			}
+			if j >= len(output) {
+				i = len(output)
+				break
+			}
+			body := string(output[i+2 : j])
+			final := output[j]
+			i = j + 1
+			if final == 'H' && !strings.HasPrefix(body, "?") {
+				s.cup(body)
+			} else if final == 'l' && body == "?2026" {
+				commit()
+			}
+		default:
+			i += 2
+		}
+	}
+	if finishTail {
+		commit()
+	}
 	return hit
 }
 

@@ -1,0 +1,4 @@
+source: grok CLI binary grok-1.0.40
+geometry: 24 rows by 80 columns, TERM=xterm-256color
+method: one PTY session. A local CONNECT proxy answered POST https://cli-chat-proxy.grok.com/v1/responses with HTTP/1.1 429 Too Many Requests and an empty body (Content-Length: 0). That request was not forwarded.
+bytes: offsets 1918:4982 of the 4982-byte PTY transcript. The slice starts at the synchronized update (ESC [?2026h) before the status row is written and runs through the final ESC [?2026l. It keeps the cursor-addressed redraw ESC [15;6HR ESC [15;8Hte limited | Retrying (attempt …), the later row Retry failed: Request failed (HTTP 429)., and this transcript's own shape: no CR and no LF. The pager sentence is not in these bytes.

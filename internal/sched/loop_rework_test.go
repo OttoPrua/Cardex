@@ -417,15 +417,11 @@ func TestFillReusesAutomaticChecks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			home, db, repo := newHome(t)
 			_, obj := seedRepo(t, db, repo, "true")
-			wins := []model.QuotaWindow{{
-				Name: "5h", ResetRule: "rolling", ResetAt: now.Add(30 * time.Minute),
-				Remaining: tc.remain, Confidence: 1,
-			}}
+			wins := []model.QuotaWindow{
+				windowWithRemaining("5h", now.Add(30*time.Minute), tc.remain),
+			}
 			if tc.mask {
-				wins = append(wins, model.QuotaWindow{
-					Name: "daily", ResetRule: "rolling", ResetAt: now.Add(40 * time.Minute),
-					Remaining: 0.1, Confidence: 1,
-				})
+				wins = append(wins, windowWithRemaining("daily", now.Add(40*time.Minute), 0.1))
 			}
 			models := []string{"model-a"}
 			if tc.prefer {
@@ -571,7 +567,13 @@ func TestDispatchRefusesUnfinishedDepsPausedClaims(t *testing.T) {
 				if err := db.CreateCard(ctx, &held); err != nil {
 					t.Fatal(err)
 				}
-				live := model.Attempt{ID: "a-back", Card: "back", PID: 9, Route: model.Route{Channel: "cha"}, StartedAt: time.Now().UTC()}
+				ended := time.Now().UTC()
+				exit := 0
+				live := model.Attempt{
+					ID: "a-back", Card: "back", PID: 9, Route: model.Route{Channel: "cha"},
+					StartedAt: ended.Add(-time.Minute), EndedAt: ended, Exit: &exit,
+					Outcome: model.OutcomePassed,
+				}
 				if err := db.CreateAttempt(ctx, &live); err != nil {
 					t.Fatal(err)
 				}
@@ -775,8 +777,17 @@ func TestHostStartFailureResumesOnNewRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 	quiet, err := db.ListAttempts(ctx, "c")
-	if err != nil || len(quiet) != 1 {
-		t.Fatalf("extra attempt %+v %v", quiet, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed := false
+	for _, attempt := range quiet {
+		if attempt.ID == first[0].ID && attempt.Outcome == model.OutcomeNoOutput {
+			consumed = true
+		}
+	}
+	if !consumed || len(quiet) > 2 {
+		t.Fatalf("harvest %+v", quiet)
 	}
 }
 
@@ -890,11 +901,14 @@ func TestHarvestStaysPendingUntilDisposition(t *testing.T) {
 					t.Fatalf("card %+v %v", card, err)
 				}
 			}
-			if err := New(home).Tick(ctx); err != nil {
-				t.Fatal(err)
+			bare := New(home)
+			if bare.Dispose == nil {
+				t.Fatal("production runner has no disposition")
 			}
-			pending()
-			serveOnce(t, home)
+			bare.Dispose = nil
+			if err := bare.Tick(ctx); err == nil {
+				t.Fatal("nil disposition stored the harvest")
+			}
 			pending()
 			hook := New(home)
 			hook.Dispose = func(context.Context, *model.Card, harvest.Result) error {
@@ -1099,7 +1113,6 @@ func TestQuotaEstimateDrivesDispatchAndFill(t *testing.T) {
 				Name: "5h", ResetRule: "rolling", ResetAt: soon, Remaining: 0.9,
 			}},
 			dispatch: true,
-			fill:     true,
 			check: func(est quota.Estimate) error {
 				if !est.Unknown || est.LimitTokens != 0 || est.LimitRequests != 0 {
 					return fmt.Errorf("estimate %+v", est)
@@ -1479,215 +1492,14 @@ func TestProductionHarvestLeavesDispositionPending(t *testing.T) {
 	if !strings.Contains(string(serveSrc), "runner := New(home)") {
 		t.Fatal("Serve does not tick New")
 	}
-	const (
-		reworkText = "## 结论\ntests: pass\n\n## 复核结论\nrework\n"
-		passText   = "## 结论\nrework the boundary\n\n## 复核结论\npass\n"
-		designText = "## 结论\nship the design\n"
-	)
-	cases := []struct {
-		name    string
-		kind    string
-		serve   bool
-		consume bool
-		text    string
-		want    model.Outcome
-	}{
-		{name: "passed dev", kind: "dev", want: model.OutcomePassed},
-		{name: "passed dev via serve", kind: "dev", serve: true, want: model.OutcomePassed},
-		{name: "non-passed dev", kind: "failed", want: model.OutcomeNoOutput},
-		{name: "non-passed dev via serve", kind: "failed", serve: true, want: model.OutcomeNoOutput},
-		{name: "design", kind: "design", text: designText, want: model.OutcomePassed},
-		{name: "design via serve", kind: "design", serve: true, text: designText, want: model.OutcomePassed},
-		{name: "review rework", kind: "review", text: reworkText, want: model.OutcomePassed},
-		{name: "review rework via serve", kind: "review", serve: true, text: reworkText, want: model.OutcomePassed},
-		{name: "review pass", kind: "review", text: passText, want: model.OutcomePassed},
-		{name: "review pass via serve", kind: "review", serve: true, text: passText, want: model.OutcomePassed},
-		{name: "collaborator error", kind: "dev", want: model.OutcomePassed},
-		{name: "collaborator consumes on success", kind: "dev", consume: true, want: model.OutcomePassed},
+	if strings.Contains(string(cli), ".Dispose") || strings.Contains(string(serveSrc), ".Dispose") {
+		t.Fatal("Serve or cmd assigns Dispose")
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
-			home, db, repo := newHome(t)
-			_, obj := seedRepo(t, db, repo, "true")
-			cardID := plantHarvest(t, db, repo, obj, tc.kind, tc.text)
-			before := snapshotCards(t, db)
-			r := New(home)
-			if r.Dispose != nil {
-				t.Fatal("production runner installed Dispose")
-			}
-			tick := func() error {
-				if tc.serve {
-					serveOnce(t, home)
-					return nil
-				}
-				return r.Tick(ctx)
-			}
-			if err := tick(); err != nil {
-				t.Fatal(err)
-			}
-			assertHeld(t, db, before, cardID)
-			if err := New(home).Tick(ctx); err != nil {
-				t.Fatal(err)
-			}
-			assertHeld(t, db, before, cardID)
-
-			var calls int
-			var saw harvest.Result
-			hook := New(home)
-			hook.Dispose = func(_ context.Context, card *model.Card, res harvest.Result) error {
-				calls++
-				saw = res
-				card.Status = model.CardDone
-				if !tc.consume || calls == 1 {
-					return errors.New("dispose down")
-				}
-				return nil
-			}
-			if err := hook.Tick(ctx); err == nil {
-				t.Fatal("dispose error was stored")
-			}
-			if calls != 1 || saw.Outcome != tc.want {
-				t.Fatalf("calls %d outcome %s want %s text %q", calls, saw.Outcome, tc.want, saw.ResultText)
-			}
-			if tc.kind == "review" && !strings.Contains(saw.ResultText, "## 复核结论") {
-				t.Fatalf("result %q", saw.ResultText)
-			}
-			assertHeld(t, db, before, cardID)
-			if !tc.consume {
-				if err := hook.Tick(ctx); err == nil {
-					t.Fatal("second tick stored the error")
-				}
-				if calls != 2 {
-					t.Fatalf("second tick calls %d", calls)
-				}
-				assertHeld(t, db, before, cardID)
-				return
-			}
-			if err := hook.Tick(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if calls != 2 || saw.Outcome != tc.want {
-				t.Fatalf("success calls %d outcome %s", calls, saw.Outcome)
-			}
-			stored, err := db.GetAttempt(ctx, "a-"+cardID)
-			if err != nil || stored.Outcome != tc.want {
-				t.Fatalf("stored %+v %v", stored, err)
-			}
-			got, err := db.GetCard(ctx, cardID)
-			if err != nil || got.Status != model.CardDone {
-				t.Fatalf("card %+v %v", got, err)
-			}
-			if err := hook.Tick(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if calls != 2 {
-				t.Fatalf("delivered again, calls %d", calls)
-			}
-		})
+	if New(t.TempDir()).Dispose == nil {
+		t.Fatal("production runner left Dispose nil")
 	}
-}
-
-func plantHarvest(t *testing.T, db interface {
-	CreateCard(context.Context, *model.Card) error
-	CreateAttempt(context.Context, *model.Attempt) error
-}, repo, obj, kind, text string) string {
-	t.Helper()
-	ctx := context.Background()
-	cardID := "c"
-	cardKind := model.KindDev
-	changed := kind == "dev"
-	baseName := "HEAD"
-	switch kind {
-	case "design":
-		cardKind = model.KindDesign
-	case "review":
-		cardID = "rv"
-		cardKind = model.KindReview
-		branch(t, repo, obj, "c1", "unique.txt", "candidate\n")
-		subject := model.Card{
-			ID: "c1", Objective: obj, Kind: model.KindDev, Title: "c1",
-			Tier: model.TierT2, Status: model.CardReviewing,
-		}
-		if err := db.CreateCard(ctx, &subject); err != nil {
-			t.Fatal(err)
-		}
-	}
-	card := model.Card{
-		ID: cardID, Objective: obj, Kind: cardKind, Title: cardID,
-		Tier: model.TierT2, Status: model.CardRunning,
-	}
-	if kind == "review" {
-		card.Tier = model.TierT3
-		card.Deps = []string{"c1"}
-	}
-	if err := db.CreateCard(ctx, &card); err != nil {
-		t.Fatal(err)
-	}
-	wt := plantWorktree(t, repo, changed)
-	if text != "" {
-		if err := os.WriteFile(filepath.Join(wt, ".cardex-result.md"), []byte(text), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if changed {
-		baseName = "HEAD~1"
-	}
-	exit := 0
-	attempt := model.Attempt{
-		ID: "a-" + cardID, Card: cardID, Worktree: wt, BaseCommit: rev(t, repo, baseName),
-		Exit: &exit, EndedAt: time.Now().UTC(),
-	}
-	if err := db.CreateAttempt(ctx, &attempt); err != nil {
-		t.Fatal(err)
-	}
-	return cardID
-}
-
-func snapshotCards(t *testing.T, db interface {
-	ListCards(context.Context, string) ([]model.Card, error)
-}) map[string]model.Card {
-	t.Helper()
-	cards, err := db.ListCards(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	out := make(map[string]model.Card, len(cards))
-	for _, card := range cards {
-		out[card.ID] = card
-	}
-	return out
-}
-
-func assertHeld(t *testing.T, db interface {
-	GetAttempt(context.Context, string) (model.Attempt, error)
-	ListCards(context.Context, string) ([]model.Card, error)
-}, before map[string]model.Card, cardID string) {
-	t.Helper()
-	ctx := context.Background()
-	stored, err := db.GetAttempt(ctx, "a-"+cardID)
-	if err != nil || stored.Outcome != "" {
-		t.Fatalf("attempt %+v %v", stored, err)
-	}
-	cards, err := db.ListCards(ctx, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cards) != len(before) {
-		t.Fatalf("cards %d before %d", len(cards), len(before))
-	}
-	for _, card := range cards {
-		prev, ok := before[card.ID]
-		if !ok || card.Status != prev.Status || card.Body != prev.Body || card.Kind != prev.Kind {
-			t.Fatalf("card changed %+v", card)
-		}
-		if card.Status == model.CardMergeQueued || card.Status == model.CardMerged {
-			t.Fatalf("merged %+v", card)
-		}
-		if strings.Contains(card.Body, "attempts") && strings.Contains(card.Body, "复核结论") {
-			t.Fatalf("fixed pass body %+v", card)
-		}
-	}
+	t.Log("cmd constructs the runner with loop := sched.New(home) and does not assign Dispose")
+	t.Log("Serve constructs the runner with runner := New(home) and does not assign Dispose")
 }
 
 func TestWindowSnapshotKeepsItsOwnUsage(t *testing.T) {

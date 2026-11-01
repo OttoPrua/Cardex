@@ -51,7 +51,7 @@ func (st *step) disposeAll() error {
 			continue
 		}
 		attempt := st.attempt(item.cardID, item.attemptID)
-		if err := st.apply(card, attempt); err != nil {
+		if err := st.decideHarvest(card, attempt); err != nil {
 			return err
 		}
 	}
@@ -65,6 +65,12 @@ func (st *step) attempt(cardID, attemptID string) model.Attempt {
 		}
 	}
 	return model.Attempt{}
+}
+
+// decideHarvest is the one dev, review, and normalize disposition.
+// Dispose and disposeAll both call it.
+func (st *step) decideHarvest(card model.Card, attempt model.Attempt) error {
+	return st.apply(card, attempt)
 }
 
 func (st *step) apply(card model.Card, attempt model.Attempt) error {

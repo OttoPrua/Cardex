@@ -34,7 +34,7 @@ type quotaHit struct {
 	reset    time.Time
 }
 
-func recordSnapshot(ctx context.Context, led *quota.Ledger, ch model.Channel, now time.Time) error {
+func recordSnapshot(ctx context.Context, led *quota.Ledger, ch model.Channel, now time.Time) (int64, error) {
 	var spans []snapSpan
 	for _, w := range ch.QuotaWindows {
 		if w.LimitTokens <= 0 {
@@ -55,13 +55,23 @@ func recordSnapshot(ctx context.Context, led *quota.Ledger, ch model.Channel, no
 		}
 		spans = append(spans, snapSpan{start: start, end: end, used: used})
 	}
+	var wanted int64
+	for _, sp := range spans {
+		wanted += sp.used
+	}
+	var placed int64
 	for _, ev := range attributeSnapshots(spans, now) {
+		placed += ev.tokens
 		usage := model.Usage{Tokens: ev.tokens, Source: "snapshot", Confidence: 1}
 		if err := led.Record(ctx, ch.ID, usage, ev.at, ev.at); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return nil
+	omitted := wanted - placed
+	if omitted < 0 {
+		omitted = 0
+	}
+	return omitted, nil
 }
 
 func attributeSnapshots(spans []snapSpan, now time.Time) []snapEvent {

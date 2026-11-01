@@ -405,6 +405,14 @@ func TestTickMergeConflictAndRed(t *testing.T) {
 func TestTickAndServeTakeOverHost(t *testing.T) {
 	ctx := context.Background()
 	home, db, _ := newHome(t)
+	proj := model.Project{ID: "p", RepoPath: t.TempDir(), TestCmd: "true", DesignDir: "docs"}
+	obj := model.Objective{
+		ID: "o", Project: "p", Title: "o", Mode: model.ModeManual, FreezeMode: model.FreezeFast,
+		Status: model.ObjectiveActive, IntegrationBranch: "main",
+	}
+	if err := db.CreateProject(ctx, &proj); err != nil || db.CreateObjective(ctx, &obj) != nil {
+		t.Fatal("seed")
+	}
 	card := model.Card{ID: "c", Objective: "o", Kind: model.KindDev, Title: "c", Tier: model.TierT2, Status: model.CardRunning}
 	if err := db.CreateCard(ctx, &card); err != nil {
 		t.Fatal(err)
@@ -581,9 +589,9 @@ func channelNear(t *testing.T, db *store.Store, id string, reset time.Time, rema
 	ch := model.Channel{
 		ID: id, Runner: model.RunnerFake, Family: "alpha", Models: []string{"model-a"},
 		Concurrency: 2, Health: model.HealthOK, Tier: model.TierT1, Redline: redline,
-		QuotaWindows: []model.QuotaWindow{{
-			Name: "5h", ResetRule: "rolling", ResetAt: reset, Remaining: remaining, Confidence: 1,
-		}},
+		QuotaWindows: []model.QuotaWindow{
+			windowWithRemaining("5h", reset, remaining),
+		},
 	}
 	if err := db.CreateChannel(context.Background(), &ch); err != nil {
 		t.Fatal(err)
@@ -596,6 +604,21 @@ func channelNear(t *testing.T, db *store.Store, id string, reset time.Time, rema
 		t.Fatal(err)
 	}
 	return ch.ID
+}
+
+func windowWithRemaining(name string, reset time.Time, remaining float64) model.QuotaWindow {
+	const limit int64 = 100
+	used := int64((1 - remaining) * float64(limit))
+	if used < 0 {
+		used = 0
+	}
+	if used > limit {
+		used = limit
+	}
+	return model.QuotaWindow{
+		Name: name, ResetRule: "rolling", ResetAt: reset,
+		LimitTokens: limit, UsedTokens: used, Remaining: remaining, Confidence: 1,
+	}
 }
 
 func branch(t *testing.T, repo, obj, id, file, body string) {

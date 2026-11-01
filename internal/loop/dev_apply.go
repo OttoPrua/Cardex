@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"cardex/internal/model"
+	"cardex/internal/notify"
 	"cardex/internal/quota"
 	"cardex/internal/route"
+	"cardex/internal/workspace"
 )
 
 var clockRE = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})`)
@@ -70,7 +72,21 @@ func (st *step) attempt(cardID, attemptID string) model.Attempt {
 // decideHarvest is the one dev, review, and normalize disposition.
 // Dispose and disposeAll both call it.
 func (st *step) decideHarvest(card model.Card, attempt model.Attempt) error {
-	return st.apply(card, attempt)
+	if err := st.apply(card, attempt); err != nil {
+		return err
+	}
+	if !designKind(card.Kind) || !designFailureOutcome(attempt.Outcome) {
+		return nil
+	}
+	current := card
+	if saved, ok := st.snap.card(card.ID); ok {
+		current = saved
+	}
+	if err := finishDesignFailure(st.ctx, st.db, &current, attempt); err != nil {
+		return err
+	}
+	st.snap.putCard(current)
+	return nil
 }
 
 func (st *step) apply(card model.Card, attempt model.Attempt) error {
@@ -447,16 +463,74 @@ func (st *step) notice(id, kind, text string) {
 func (st *step) absorb(card model.Card, attempt model.Attempt) error {
 	switch card.Kind {
 	case model.KindPlan:
-		return st.absorbPlan(card, attempt)
+		return st.absorbListed(card, attempt, st.absorbPlan)
 	case model.KindReview:
 		return st.absorbReview(card, attempt)
 	case model.KindNormalize:
 		return st.absorbNormalize(card, attempt)
 	case model.KindReplan:
-		return st.absorbReplan(card, attempt)
+		return st.absorbListed(card, attempt, st.absorbReplan)
 	default:
 		return nil
 	}
+}
+
+// absorbListed applies a plan or replan card list when the result has one,
+// then absorbs design sections. A bad list leaves the card needing input and
+// does not mark it done. Design prose without a list only absorbs design output.
+func (st *step) absorbListed(card model.Card, attempt model.Attempt, apply func(model.Card, model.Attempt) error) error {
+	text := readResult(attempt)
+	_, hasList := sectionBody(text, "新卡")
+	list := ParseCardList(text, card.Node, nil)
+	prose := strings.Contains(text, "##") && !hasList && list.Bad
+	if !prose {
+		if err := apply(card, attempt); err != nil {
+			return err
+		}
+	}
+	if current, ok := st.snap.card(card.ID); ok && current.Status == model.CardNeedsInput {
+		return nil
+	}
+	return st.finishDesignFamily(card, attempt)
+}
+
+func (st *step) finishDesignFamily(card model.Card, attempt model.Attempt) error {
+	current := card
+	if saved, ok := st.snap.card(card.ID); ok {
+		current = saved
+		if len(card.Claims) > 0 {
+			current.Claims = append([]model.Claim(nil), card.Claims...)
+		}
+	}
+	d := Deps{Store: st.db, WS: workspace.Git{}, Notify: notify.Stub{}}
+	if err := d.applyDesign(st.ctx, st.snap.obj, current, readResult(attempt)); err != nil {
+		return err
+	}
+	if err := d.markPassedDone(st.ctx, current, model.OutcomePassed); err != nil {
+		return err
+	}
+	fresh, err := st.db.GetCard(st.ctx, card.ID)
+	if err != nil {
+		return err
+	}
+	merge, err := d.designFileChanged(st.ctx, fresh, current.Claims)
+	if err != nil {
+		return err
+	}
+	if merge && fresh.Status != model.CardMerged && fresh.Status != model.CardMergeQueued {
+		fresh.Status = model.CardMergeQueued
+		fresh.WaitReason = ""
+	}
+	if len(current.Claims) > 0 {
+		fresh.Claims = append([]model.Claim(nil), current.Claims...)
+	}
+	if err := st.saveCard(fresh); err != nil {
+		return err
+	}
+	if err := d.markAbsorbed(st.ctx, card.ID, nil); err != nil {
+		return err
+	}
+	return d.markAttempt(st.ctx, attempt.ID)
 }
 
 func (st *step) absorbPlan(card model.Card, attempt model.Attempt) error {
@@ -512,10 +586,6 @@ func (st *step) absorbPlan(card model.Card, attempt model.Attempt) error {
 			return err
 		}
 		ids = append(ids, created.ID)
-	}
-	card.Status = model.CardDone
-	if err := st.saveCard(card); err != nil {
-		return err
 	}
 	return st.event("card:"+card.ID, "plan_split", map[string]any{"node": card.Node, "cards": ids})
 }
@@ -665,8 +735,7 @@ func (st *step) absorbReplan(card model.Card, attempt model.Attempt) error {
 		}
 		st.snap.dropCard(id)
 	}
-	card.Status = model.CardDone
-	return st.saveCard(card)
+	return nil
 }
 
 func cardFromDraft(objective, node string, draft ListedCard) model.Card {

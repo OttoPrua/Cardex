@@ -1093,7 +1093,7 @@ func canDispatch(card model.Card) bool {
 func executionDepsDone(ctx context.Context, db *store.Store, card model.Card) bool {
 	skip := ""
 	switch card.Kind {
-	case model.KindReview, model.KindRepair, model.KindRebase:
+	case model.KindReview, model.KindRepair, model.KindRebase, model.KindNormalize:
 		if len(card.Deps) > 0 {
 			skip = strings.TrimSpace(card.Deps[0])
 		}

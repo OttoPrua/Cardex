@@ -50,8 +50,10 @@ func WithStore(ctx context.Context, db *store.Store) context.Context {
 
 // Dispose applies one harvested result. Dev, review, and normalize cards use
 // decideHarvest, the same decision as disposeAll. Design, research, plan,
-// replan, and spike cards use the design/research absorb path. The attempt
-// outcome is left for the caller to store after nil.
+// replan, and spike failures use that same decision, then any design-side
+// cleanup. A passing plan or replan applies its card list and absorbs design
+// output through that decision. Other design-family passes use absorbAttempt.
+// The attempt outcome is left for the caller to store after nil.
 func Dispose(ctx context.Context, card *model.Card, res harvest.Result) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -125,7 +127,7 @@ func disposeTx(ctx context.Context, db *store.Store, home string, card *model.Ca
 		attempt.Card = card.ID
 	}
 	if designKind(card.Kind) {
-		return nil, disposeDesign(ctx, db, card, attempt, res)
+		return disposeDesign(ctx, db, home, card, attempt, res)
 	}
 	return disposeDev(ctx, db, home, card, attempt, res)
 }
@@ -139,31 +141,106 @@ func designKind(kind model.CardKind) bool {
 	}
 }
 
-func disposeDesign(ctx context.Context, db *store.Store, card *model.Card, attempt model.Attempt, res harvest.Result) error {
+func disposeDesign(ctx context.Context, db *store.Store, home string, card *model.Card, attempt model.Attempt, res harvest.Result) ([]Notice, error) {
+	if designFailureOutcome(res.Outcome) {
+		return disposeDev(ctx, db, home, card, attempt, res)
+	}
+	if listedPlan(card.Kind, res) {
+		return disposeDev(ctx, db, home, card, attempt, res)
+	}
 	obj, err := db.GetObjective(ctx, card.Objective)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	d := Deps{Store: db, WS: workspace.Git{}, Notify: notify.Stub{}}
 	handled, err := d.attemptHandled(ctx, attempt.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !handled {
 		text := res.ResultText
 		if err := d.absorbAttempt(ctx, obj, *card, attempt.ID, attempt.BaseCommit, text, res.Outcome); err != nil {
-			return err
+			return nil, err
 		}
 		if err := markDevDisposed(ctx, db, attempt, res.Outcome); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	fresh, err := db.GetCard(ctx, card.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(fresh.Claims) == 0 && len(card.Claims) > 0 {
 		fresh.Claims = card.Claims
+	}
+	if strings.TrimSpace(fresh.AuthorFamily) == "" && strings.TrimSpace(card.AuthorFamily) != "" {
+		fresh.AuthorFamily = card.AuthorFamily
+	}
+	*card = fresh
+	return nil, nil
+}
+
+// designFailureOutcome is a design-family harvest §5 must dispose before consume.
+func designFailureOutcome(outcome model.Outcome) bool {
+	switch outcome {
+	case model.OutcomeTestsFailed, model.OutcomeNoOutput, model.OutcomeQuotaHit,
+		model.OutcomeAuthFailed, model.OutcomeTransport, model.OutcomeTimeout,
+		model.OutcomePermissionDenied, model.OutcomeRefusal, model.OutcomeBudgetLimited,
+		model.OutcomeViolation:
+		return true
+	default:
+		return false
+	}
+}
+
+// listedPlan is a passing plan or replan whose result can carry a card list
+// or design sections. Empty and header-less unusable text stays on absorbAttempt.
+func listedPlan(kind model.CardKind, res harvest.Result) bool {
+	if kind != model.KindPlan && kind != model.KindReplan {
+		return false
+	}
+	if res.Outcome != model.OutcomePassed {
+		return false
+	}
+	text := res.ResultText
+	if _, ok := sectionBody(text, "新卡"); ok {
+		return true
+	}
+	list := ParseCardList(text, "", nil)
+	if !list.Bad && (len(list.Cards) > 0 || len(list.Events) > 0 || len(list.Questions) > 0) {
+		return true
+	}
+	if designUnusable(text, res.Outcome) {
+		return false
+	}
+	return true
+}
+
+// finishDesignFailure records the design-side skip after §5 has succeeded.
+// A card that was sent back to work is not treated as a terminal research skip.
+func finishDesignFailure(ctx context.Context, db *store.Store, card *model.Card, attempt model.Attempt) error {
+	d := Deps{Store: db, WS: workspace.Git{}, Notify: notify.Stub{}}
+	fresh, err := db.GetCard(ctx, card.ID)
+	if err != nil {
+		return err
+	}
+	obj, err := db.GetObjective(ctx, fresh.Objective)
+	if err != nil {
+		return err
+	}
+	if fresh.Kind == model.KindResearch && terminalCard(fresh.Status) {
+		if err := d.disposeSkippedResearch(ctx, obj, fresh, attempt.ID, attempt.BaseCommit); err != nil {
+			return err
+		}
+	}
+	if err := d.markAttempt(ctx, attempt.ID); err != nil {
+		return err
+	}
+	if err := d.settleFrozenResearch(ctx, obj); err != nil {
+		return err
+	}
+	if len(fresh.Claims) == 0 && len(card.Claims) > 0 {
+		fresh.Claims = append([]model.Claim(nil), card.Claims...)
 	}
 	if strings.TrimSpace(fresh.AuthorFamily) == "" && strings.TrimSpace(card.AuthorFamily) != "" {
 		fresh.AuthorFamily = card.AuthorFamily

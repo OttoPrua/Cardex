@@ -26,3 +26,7 @@ Ledger.Record 不能把一笔用量只记入较短窗口。嵌套 5h/daily 里�
 无法同时表示的嵌套快照不是置信度 1 的满额 → internal/sched/loop.go:1215 internal/sched/quota_seed.go:70 → TestNestedSnapshotIsNotConfidentFull
 R3-C.md 不超过 40 行并保留接口请求与已知问题 → docs/v2/lane-notes/R3-C.md:11 → TestR3CLaneNoteStaysWithinLimit
 临近重置的已存剩余比例在没有 token 或请求上限时仍是填充余量，既无上限也无剩余比例的窗口仍未知 → internal/sched/loop.go:685 internal/sched/loop.go:695 internal/sched/loop.go:705 → TestBacklogFillStoredRatioWithoutCap
+设计类失败结局必须先做设计第 5 节的处置，成功后才消费 → internal/loop/dispose.go:145 internal/loop/dev_apply.go:74 → TestDesignFamilyFailureDisposition
+成功的 plan/replan 必须先应用卡清单并吸收设计产出，然后才消费 → internal/loop/dispose.go:148 internal/loop/dev_apply.go:481 → TestPlanAndReplanListsBothPaths
+本次收割实际改了节点文档或 context.md 的 design/plan/replan 要进入既有合并队列，用本次 claims，不能先标 done → internal/loop/design.go:1429 internal/loop/design.go:1442 → TestDesignFileEntersIntegration
+normalize 的 Deps[0] 原卡边不挡住派发，其他依赖和停止状态仍然挡住 → internal/sched/loop.go:1096 → TestNormalizeStartsThenDisposes

@@ -1114,6 +1114,61 @@ func TestGrokScreenEchoAndTruncation(t *testing.T) {
 	}
 }
 
+// TestGrokScrolledConsumedEchoStaysClosed is the scrolled complete-echo
+// boundary. Two in-order copies of the prompt may leave the 24×80 frame.
+// That must not reopen the boundary, and it must not swallow a later
+// independent rate-limit row. The same bytes without that row stay empty.
+// cursor, kimi, and agy have no screen frame and no scrolled-echo walk.
+func TestGrokScrolledConsumedEchoStaysClosed(t *testing.T) {
+	q := "You've hit the rate limit for your plan."
+	p := "explain\n/goal explain\n" + q + "\n/goal explain"
+	e := "/goal " + p + "\n"
+	rows := []struct {
+		name      string
+		n         int
+		addressed bool
+	}{
+		{name: "addressed_n0", n: 0, addressed: true},
+		{name: "addressed_n20", n: 20, addressed: true},
+		{name: "addressed_n24", n: 24, addressed: true},
+		{name: "addressed_n28", n: 28, addressed: true},
+		{name: "echoes_only_n0", n: 0},
+		{name: "echoes_only_n20", n: 20},
+		{name: "echoes_only_n24", n: 24},
+		{name: "echoes_only_n28", n: 28},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			pty := e + e + strings.Repeat("\n", row.n)
+			if row.addressed {
+				pty += "\x1b[10;1H" + q
+			}
+			pty += "\x1b[?2026l"
+			got := runner.Grok{Prompt: p}.Classify(0, []byte(pty))
+			dir := t.TempDir()
+			err, _ := driveSession(t, p, dir, []byte(pty))
+			if _, ok := runner.ReadGrokGoalSession(dir); ok {
+				t.Fatal("counterexample invented a session status")
+			}
+			if row.addressed {
+				if got != model.ErrorQuotaHit {
+					t.Fatalf("Classify=%q want %q", got, model.ErrorQuotaHit)
+				}
+				if err == nil || err.Error() != "grok goal quota_hit" {
+					t.Fatalf("Drive=%v want %q", err, "grok goal quota_hit")
+				}
+				return
+			}
+			if got != "" {
+				t.Fatalf("Classify=%q want empty", got)
+			}
+			if err == nil || err.Error() != "grok goal: no terminal" {
+				t.Fatalf("Drive=%v want %q", err, "grok goal: no terminal")
+			}
+		})
+	}
+}
+
 // TestGrokInteractiveQuota keeps the headless stderr line and the headless
 // error JSON off the interactive quota terminal. Completion, budget_limited,
 // and the host exit crash stay on their own channels. The positive card is

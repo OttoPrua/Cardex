@@ -437,11 +437,12 @@ func walkNonEchoLines(output []byte, prompt string, fn func(line string)) {
 // so a display indent is the same line. The screen keeps this walk as rows
 // scroll off. A later redraw of the known prompt is that echo again. A row
 // whose tail the frame dropped still consumes the echo line it prefixes, so
-// a prompt that has left the display does not stay open. When the first and
-// last prompt lines are the same text, only a scrolled leftover tail is held:
-// the next rows decide whether it closed that open echo or began a redraw.
-// A boundary already consumed in order is not held again. The next echo keeps
-// its first line, and a later diagnostic stays outside the old echo.
+// a prompt that has left the display does not stay open. A row that scrolls
+// off is consumed in order: a boundary finished that way stays closed, and a
+// later independent diagnostic stays outside that echo. When the first and
+// last prompt lines are the same text, only a residual tail still on the
+// current frame is held. The next on-screen rows decide whether it closed
+// that open echo or began a redraw. The next echo keeps its first line.
 type echoWalk struct {
 	echoLines     []string
 	echoIdx       int
@@ -463,12 +464,22 @@ func newEchoWalk(prompt string) echoWalk {
 }
 
 func (w *echoWalk) feed(item scanLine, fn func(scanLine)) {
+	w.consume(item, fn, true)
+}
+
+// feedScrolled consumes a row that has left the frame. That row is already
+// in order, so it must not be held as a residual tail still on screen.
+func (w *echoWalk) feedScrolled(item scanLine) {
+	w.consume(item, nil, false)
+}
+
+func (w *echoWalk) consume(item scanLine, fn func(scanLine), probeResidual bool) {
 	item.text = strings.TrimSpace(item.text)
-	if w.specHold {
+	if probeResidual && w.specHold {
 		w.feedSpec(item, fn)
 		return
 	}
-	if w.holdHeadTail(item) {
+	if probeResidual && w.holdHeadTail(item) {
 		w.specHold = true
 		w.spec = []scanLine{item}
 		return
@@ -839,7 +850,9 @@ func (s *grokScreen) put(ch rune) {
 		s.r++
 		s.c = 0
 		if s.r >= grokGoalScreenRows {
-			s.walk.feed(scanLine{text: s.rowString(0), cutOff: s.overflow[0]}, nil)
+			// This row has left. Consume it in order. Only an echo that is
+			// still open keeps a residual tail for the current frame.
+			s.walk.feedScrolled(scanLine{text: s.rowString(0), cutOff: s.overflow[0]})
 			if s.walk.echoIdx > 0 && !s.walk.matchedPrompt {
 				s.walk.leftover = true
 			}

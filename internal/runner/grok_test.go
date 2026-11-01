@@ -1232,86 +1232,86 @@ func TestGrokScrolledConsumedEchoStaysClosed(t *testing.T) {
 }
 
 // TestGrokAddressedCurrentCellEchoStaysClosed is the current-cell positioning
-// boundary. A CUP that names the cell the cursor already occupies is an
-// ordinary sequential write: before lines 4 and 8 only, or before every line
-// of two full echoes. Either way the consumed /goal boundary stays closed.
-// A later independent rate-limit row is quota_hit. The same bytes without
-// that row stay empty. cursor, kimi, and agy have no screen frame.
+// boundary. Two full /goal echoes occupy lines 1–8. A CUP that names the cell
+// the cursor already occupies is an ordinary sequential write: ESC[4;1H and
+// ESC[8;1H only, or the same kind of CUP before every line. The no-positioning
+// rows are the same bytes with those CUPs left out. A later independent
+// rate-limit row is quota_hit. The same bytes without that row stay empty.
+// cursor, kimi, and agy have no screen frame.
 func TestGrokAddressedCurrentCellEchoStaysClosed(t *testing.T) {
 	q := "You've hit the rate limit for your plan."
 	p := "explain\n/goal explain\n" + q + "\n/goal explain"
-	lines := []string{
-		"/goal explain",
-		"/goal explain",
-		q,
-		"/goal explain",
-		"/goal explain",
-		"/goal explain",
-		q,
-		"/goal explain",
+	echo := strings.Split("/goal "+p, "\n")
+	if len(echo) != 4 {
+		t.Fatalf("echo lines %d", len(echo))
 	}
-	position := func(every bool) string {
-		var b strings.Builder
-		for i, line := range lines {
-			row := i + 1
-			if every || row == 4 || row == 8 {
-				b.WriteString("\x1b[" + strconv.Itoa(row) + ";1H")
+	places := []string{"lines_4_8", "every_line", "newline_only"}
+	for _, place := range places {
+		for _, n := range []int{20, 24, 28} {
+			for _, quota := range []bool{true, false} {
+				name := place + "_n" + strconv.Itoa(n)
+				if quota {
+					name += "_quota"
+				}
+				t.Run(name, func(t *testing.T) {
+					var b strings.Builder
+					for i := 0; i < 2*len(echo); i++ {
+						row := i + 1
+						switch place {
+						case "every_line":
+							b.WriteString("\x1b[" + strconv.Itoa(row) + ";1H")
+						case "lines_4_8":
+							if row == 4 || row == 8 {
+								b.WriteString("\x1b[" + strconv.Itoa(row) + ";1H")
+							}
+						}
+						b.WriteString(echo[i%len(echo)])
+						b.WriteByte('\n')
+					}
+					b.WriteString(strings.Repeat("\n", n))
+					if quota {
+						b.WriteString("\x1b[10;1H" + q)
+					}
+					b.WriteString("\x1b[?2026l")
+					pty := b.String()
+					switch place {
+					case "lines_4_8":
+						if strings.Count(pty, "\x1b[4;1H") != 1 || strings.Count(pty, "\x1b[8;1H") != 1 {
+							t.Fatalf("lines 4 and 8 positioning missing in %q", pty)
+						}
+					case "every_line":
+						for row := 1; row <= 8; row++ {
+							if strings.Count(pty, "\x1b["+strconv.Itoa(row)+";1H") != 1 {
+								t.Fatalf("row %d positioning missing", row)
+							}
+						}
+					}
+					got := runner.Grok{Prompt: p}.Classify(0, []byte(pty))
+					dir := t.TempDir()
+					err, _ := driveSession(t, p, dir, []byte(pty))
+					_, sessionOK := runner.ReadGrokGoalSession(dir)
+					t.Logf("Classify=%q Drive=%v session=%v", got, err, sessionOK)
+					if sessionOK {
+						t.Fatal("counterexample invented a session status")
+					}
+					if quota {
+						if got != model.ErrorQuotaHit {
+							t.Fatalf("Classify=%q want %q", got, model.ErrorQuotaHit)
+						}
+						if err == nil || err.Error() != "grok goal quota_hit" {
+							t.Fatalf("Drive=%v want %q", err, "grok goal quota_hit")
+						}
+						return
+					}
+					if got != "" {
+						t.Fatalf("Classify=%q want empty", got)
+					}
+					if err == nil || err.Error() != "grok goal: no terminal" {
+						t.Fatalf("Drive=%v want %q", err, "grok goal: no terminal")
+					}
+				})
 			}
-			b.WriteString(line)
-			b.WriteByte('\n')
 		}
-		return b.String()
-	}
-	rows := []struct {
-		name  string
-		every bool
-		n     int
-		quota bool
-	}{
-		{name: "lines_4_8_n20_quota", n: 20, quota: true},
-		{name: "lines_4_8_n24_quota", n: 24, quota: true},
-		{name: "lines_4_8_n28_quota", n: 28, quota: true},
-		{name: "lines_4_8_n20", n: 20},
-		{name: "lines_4_8_n24", n: 24},
-		{name: "lines_4_8_n28", n: 28},
-		{name: "every_line_n20_quota", every: true, n: 20, quota: true},
-		{name: "every_line_n24_quota", every: true, n: 24, quota: true},
-		{name: "every_line_n28_quota", every: true, n: 28, quota: true},
-		{name: "every_line_n20", every: true, n: 20},
-		{name: "every_line_n24", every: true, n: 24},
-		{name: "every_line_n28", every: true, n: 28},
-	}
-	for _, row := range rows {
-		t.Run(row.name, func(t *testing.T) {
-			pty := position(row.every) + strings.Repeat("\n", row.n)
-			if row.quota {
-				pty += "\x1b[10;1H" + q
-			}
-			pty += "\x1b[?2026l"
-			got := runner.Grok{Prompt: p}.Classify(0, []byte(pty))
-			dir := t.TempDir()
-			err, _ := driveSession(t, p, dir, []byte(pty))
-			_, sessionOK := runner.ReadGrokGoalSession(dir)
-			t.Logf("Classify=%q Drive=%v session=%v", got, err, sessionOK)
-			if sessionOK {
-				t.Fatal("counterexample invented a session status")
-			}
-			if row.quota {
-				if got != model.ErrorQuotaHit {
-					t.Fatalf("Classify=%q want %q", got, model.ErrorQuotaHit)
-				}
-				if err == nil || err.Error() != "grok goal quota_hit" {
-					t.Fatalf("Drive=%v want %q", err, "grok goal quota_hit")
-				}
-				return
-			}
-			if got != "" {
-				t.Fatalf("Classify=%q want empty", got)
-			}
-			if err == nil || err.Error() != "grok goal: no terminal" {
-				t.Fatalf("Drive=%v want %q", err, "grok goal: no terminal")
-			}
-		})
 	}
 }
 

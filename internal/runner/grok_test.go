@@ -932,8 +932,11 @@ func TestGrokGoalQuotaTerminal(t *testing.T) {
 }
 
 // TestGrokScreenEchoAndTruncation is the screen-channel echo and truncation
-// table. Classify and Drive both see the bytes. Drive's copy includes the
-// synchronized-update end marker.
+// table. Classify and goal-mode Drive both see the bytes. cursor, kimi, and
+// agy have no screen frame; their Classify path is classifyScanned only.
+// Echo origin has to survive scroll, and a row's truncation flag has to
+// follow the current cells. Drive's copy includes the synchronized-update
+// end marker.
 func TestGrokScreenEchoAndTruncation(t *testing.T) {
 	sentence := "You've hit the rate limit for your plan."
 	if len(sentence) >= 80 {
@@ -941,11 +944,13 @@ func TestGrokScreenEchoAndTruncation(t *testing.T) {
 	}
 	padded := sentence + strings.Repeat(" ", 80-len(sentence)) + "is only an example"
 	sync := "\x1b[?2026l"
+	scrolledPrompt := "explain\n" + strings.Repeat("context line\n", 24) + sentence
 	rows := []struct {
-		name   string
-		prompt string
-		zero   bool
-		pty    string
+		name      string
+		prompt    string
+		zero      bool
+		pty       string
+		wantQuota bool
 	}{
 		{
 			name: "goal_echo_without_prompt",
@@ -962,6 +967,28 @@ func TestGrokScreenEchoAndTruncation(t *testing.T) {
 			prompt: "finish the card",
 			pty:    padded + "\n" + sync,
 		},
+		{
+			name:   "scrolled_prompt_echo",
+			prompt: scrolledPrompt,
+			pty:    "/goal " + scrolledPrompt + "\n" + sync,
+		},
+		{
+			name:      "indented_echo_then_real_quota",
+			prompt:    "explain",
+			pty:       "\x1b[1;4H/goal explain\x1b[2;4H" + sentence + sync,
+			wantQuota: true,
+		},
+		{
+			name: "scrolled_goal_echo_without_prompt",
+			zero: true,
+			pty:  "/goal explain\n" + strings.Repeat("context line\n", 24) + sentence + "\n" + sync,
+		},
+		{
+			name:      "quota_after_full_row_repaint",
+			prompt:    "explain",
+			pty:       "\x1b[10;1H" + strings.Repeat("x", 81) + "\x1b[10;1H" + strings.Repeat(" ", 80) + "\x1b[10;1H" + sentence + sync,
+			wantQuota: true,
+		},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -969,16 +996,26 @@ func TestGrokScreenEchoAndTruncation(t *testing.T) {
 			if !row.zero {
 				classify.Prompt = row.prompt
 			}
-			if got := classify.Classify(0, []byte(row.pty)); got == model.ErrorQuotaHit || got == model.ErrorBudgetLimited {
-				t.Fatalf("class %q", got)
-			}
+			got := classify.Classify(0, []byte(row.pty))
 			dir := t.TempDir()
 			err, _ := driveSession(t, row.prompt, dir, []byte(row.pty))
-			if err == nil || errors.Is(err, runner.ErrGrokQuotaHit) || errors.Is(err, runner.ErrGrokBudgetLimited) || errors.Is(err, runner.ErrGrokCrash) {
-				t.Fatalf("drive %v", err)
-			}
 			if _, ok := runner.ReadGrokGoalSession(dir); ok {
 				t.Fatal("counterexample invented a session status")
+			}
+			if row.wantQuota {
+				if got != model.ErrorQuotaHit {
+					t.Fatalf("Classify=%q want %q", got, model.ErrorQuotaHit)
+				}
+				if err == nil || err.Error() != runner.ErrGrokQuotaHit.Error() {
+					t.Fatalf("Drive=%v want %q", err, runner.ErrGrokQuotaHit)
+				}
+				return
+			}
+			if got != "" {
+				t.Fatalf("Classify=%q want empty", got)
+			}
+			if err == nil || err.Error() != "grok goal: no terminal" {
+				t.Fatalf("Drive=%v want %q", err, "grok goal: no terminal")
 			}
 		})
 	}

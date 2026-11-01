@@ -36,3 +36,5 @@ B2 未完成：额度终态只接受可追溯的交互转录或 v1 已写会话�
 拒收的真实 CLI 采集不留在树里，历史不改写 → docs/v2/lane-notes/R2-B.md:7、internal/runner/grok_test.go:693 → TestGrokGoalQuotaTerminal
 交互额度的正向验收只回放已有 screen 日志里的终端帧，并写明帧来源与嵌入的额度句 → internal/runner/grok.go:632、grok.go:767、testdata/grok_goal_quota_screen.provenance.txt:1 → TestGrokGoalQuotaTerminal
 屏幕解析沿用行解析的回显和正文排除，被帧截断的行不是完成的额度诊断 → internal/runner/grok.go:437、grok.go:715、grok.go:767（cursor.go:52、kimi.go:112、agy.go:44 无屏幕通道） → TestGrokScreenEchoAndTruncation
+屏幕回显来源必须随滚屏保留，屏幕文本与 prompt 用同一种 TrimSpace 比较，滚屏或显示缩进不能改变终态 → internal/runner/grok.go:452、grok.go:719、grok.go:793、grok.go:815（cursor.go:52、kimi.go:112、agy.go:44 无屏幕通道） → TestGrokScreenEchoAndTruncation
+截断标志必须反映当前行内容，写满最后一列的重绘清除旧标志，仍超出末列的正文保持截断 → internal/runner/grok.go:736、grok.go:742（cursor.go:52、kimi.go:112、agy.go:44 无屏幕通道） → TestGrokScreenEchoAndTruncation

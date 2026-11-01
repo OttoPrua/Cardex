@@ -893,7 +893,7 @@ func TestS23(t *testing.T) {
 }
 
 func TestRankingDefaultEntry(t *testing.T) {
-	// 缺省 schedules、卡上的 web、真实 prompt、nil Dispose 收割、批准后的新路由。
+	// 缺省每周入队、卡上的 web、来源和三项快照。调度 tick 本身不入队。
 	t.Run("no config file", func(t *testing.T) { runRankingProductionPath(t) })
 	t.Run("config without schedules", func(t *testing.T) {
 		assertRankingEnqueued(t, "{}\n", true, false, nil)
@@ -904,7 +904,7 @@ func TestRankingDefaultEntry(t *testing.T) {
 	t.Run("ranking_sources replaces the list", func(t *testing.T) {
 		assertRankingEnqueued(t, `{"ranking_sources":["自定义榜A","自定义榜B"]}`+"\n", true, false, []string{"自定义榜A", "自定义榜B"})
 	})
-	t.Run("manual tick still enqueues", func(t *testing.T) {
+	t.Run("tick does not enqueue", func(t *testing.T) {
 		assertRankingEnqueued(t, "", true, true, nil)
 	})
 }
@@ -916,33 +916,56 @@ func runRankingProductionPath(t *testing.T) {
 	useDefaultRunner(t, h)
 	stopLater(t, h)
 	ctx := context.Background()
+	now := time.Now()
 	obj, oldCh, oldModel, newModel := seedRankingWorld(t, h, true)
-	plantRankingExecutor(t, h, newModel)
-	var asked model.Question
-	var rank model.Card
-	mustTick(t, h, func() bool {
-		questions, err := h.DB.ListQuestions(ctx, obj)
-		if err != nil || len(questions) != 1 {
-			return false
-		}
-		asked = questions[0]
-		found, ok := findRankingCard(t, h, obj)
-		if !ok {
-			return false
-		}
-		rank = found
-		return strings.Contains(asked.Text, "新出现") && strings.Contains(asked.Text, newModel)
-	}, 30*time.Second)
+	if err := loop.ApplyDefaultSchedule(ctx, h.DB, h.Home, now); err != nil {
+		t.Fatal(err)
+	}
+	rank, ok := findRankingCard(t, h, obj)
+	if !ok {
+		t.Fatal("default ranking card missing")
+	}
 	if !cardRequires(rank, "web") {
 		t.Fatalf("ranking requires %+v", rank.Requires)
 	}
-	if rank.ID != loop.DefaultRankingCardID(time.Now()) {
+	if rank.ID != loop.DefaultRankingCardID(now) {
 		t.Fatalf("ranking id %s", rank.ID)
+	}
+	material, err := loop.RankingMaterial(h.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertDefaultRankingPrompt(t, material)
+	proposal := plantRankingExecutor(t, h, newModel)
+	exitCode := 0
+	if err := h.DB.CreateAttempt(ctx, &model.Attempt{
+		ID: "a-rank", Card: rank.ID, Route: model.Route{Channel: oldCh.ID, Model: oldModel},
+		EndedAt: now.UTC(), Exit: &exitCode,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.AbsorbHarvestedRanking(ctx, loop.Deps{Store: h.DB}, rank, loop.RankingHarvest{
+		AttemptID:  "a-rank",
+		Outcome:    model.OutcomePassed,
+		Acceptance: "passed",
+		ResultText: proposal,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	questions, err := h.DB.ListQuestions(ctx, obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(questions) != 1 {
+		t.Fatalf("questions %+v", questions)
+	}
+	asked := questions[0]
+	if !strings.Contains(asked.Text, "新出现") || !strings.Contains(asked.Text, newModel) {
+		t.Fatalf("question %s", asked.Text)
 	}
 	if !strings.Contains(asked.Text, "+ "+newModel) {
 		t.Fatalf("question missing diff %s", asked.Text)
 	}
-	assertDefaultRankingPrompt(t, attemptPrompt(t, h, rank.ID))
 	if models := positionModels(t, h); len(models) != 1 || models[0] != oldModel {
 		t.Fatalf("table changed before approval %v", models)
 	}
@@ -951,6 +974,9 @@ func runRankingProductionPath(t *testing.T) {
 	}
 	keptRoute := model.Route{Channel: "keep-ch", Model: "keep-model"}
 	if _, err := question.New(h.DB, nil).Answer(ctx, asked.ID, asked.Options[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.FollowRanking(ctx, h.DB); err != nil {
 		t.Fatal(err)
 	}
 	next := model.Card{
@@ -1013,20 +1039,29 @@ func assertRankingEnqueued(t *testing.T, config string, wantCard, manual bool, s
 			t.Fatal(err)
 		}
 	}
-	if sources != nil {
-		var rank model.Card
-		mustTick(t, h, func() bool {
-			found, ok := findRankingCard(t, h, obj)
-			if !ok || len(attemptsOf(t, h, found.ID)) == 0 {
-				return false
-			}
-			rank = found
-			return true
-		}, 30*time.Second)
-		if !cardRequires(rank, "web") {
-			t.Fatalf("requires %+v", rank.Requires)
+	if manual {
+		if err := h.Sched.Tick(ctx); err != nil {
+			t.Fatal(err)
 		}
-		text := attemptPrompt(t, h, rank.ID)
+		if _, ok := findRankingCard(t, h, obj); ok {
+			t.Fatal("tick enqueued a ranking card")
+		}
+	}
+	if err := loop.ApplyDefaultSchedule(ctx, h.DB, h.Home, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if sources != nil {
+		found, ok := findRankingCard(t, h, obj)
+		if !ok {
+			t.Fatal("ranking card missing")
+		}
+		if !cardRequires(found, "web") {
+			t.Fatalf("requires %+v", found.Requires)
+		}
+		text, err := loop.RankingMaterial(h.Home)
+		if err != nil {
+			t.Fatal(err)
+		}
 		for _, source := range sources {
 			if !strings.Contains(text, source) {
 				t.Fatalf("prompt missing %s\n%s", source, text)
@@ -1037,14 +1072,6 @@ func assertRankingEnqueued(t *testing.T, config string, wantCard, manual bool, s
 		}
 		assertRankingSnapshots(t, text)
 		return
-	}
-	if manual {
-		mustTick(t, h, func() bool {
-			_, ok := findRankingCard(t, h, obj)
-			return ok
-		}, 15*time.Second)
-	} else if err := h.Sched.Tick(ctx); err != nil {
-		t.Fatal(err)
 	}
 	found, ok := findRankingCard(t, h, obj)
 	if wantCard != ok {
@@ -1064,8 +1091,6 @@ func assertRankingEnqueued(t *testing.T, config string, wantCard, manual bool, s
 
 func useDefaultRunner(t *testing.T, h *Harness) {
 	t.Helper()
-	loop.InstallRankingProduction()
-	t.Cleanup(loop.PauseRankingProduction)
 	r := sched.New(h.Home)
 	if r.Dispose != nil {
 		t.Fatal("sched.New installed Dispose")
@@ -1125,7 +1150,7 @@ func seedRankingWorld(t *testing.T, h *Harness, auto bool) (obj string, oldCh mo
 	return obj, oldCh, oldModel, newModel
 }
 
-func plantRankingExecutor(t *testing.T, h *Harness, newModel string) {
+func plantRankingExecutor(t *testing.T, h *Harness, newModel string) string {
 	t.Helper()
 	proposal := `{"entries":[{"model":"` + newModel + `","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"新榜"}]}`
 	script, err := json.Marshal(map[string]any{
@@ -1144,6 +1169,7 @@ func plantRankingExecutor(t *testing.T, h *Harness, newModel string) {
 	if err := os.WriteFile(filepath.Join(dir, id+".json"), script, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return proposal
 }
 
 func findRankingCard(t *testing.T, h *Harness, obj string) (model.Card, bool) {

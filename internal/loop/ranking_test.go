@@ -339,6 +339,306 @@ func TestRankingAbsorbLooseAndApprove(t *testing.T) {
 	})
 }
 
+func TestRankingScheduleRequires(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	explicitWeb := ScheduleTask{Name: "configured", Kind: model.KindRanking, Every: week, Requires: []string{"web"}}
+	explicitFull := ScheduleTask{Name: "configured", Kind: model.KindRanking, Every: week, Requires: []string{"web", "tools"}}
+	cases := []struct {
+		name     string
+		config   string
+		tasks    []ScheduleTask
+		wantCard bool
+		wantReq  []string
+	}{
+		{name: "default weekly", wantCard: true, wantReq: []string{"web"}},
+		{name: "explicit web", tasks: []ScheduleTask{explicitWeb}, wantCard: true, wantReq: []string{"web"}},
+		{name: "explicit web and tools", tasks: []ScheduleTask{explicitFull}, wantCard: true, wantReq: []string{"web", "tools"}},
+		{name: "schedules key suppresses default", config: `{"schedules":[]}` + "\n", wantCard: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home, db := rankingHome(t)
+			if tc.config != "" {
+				if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(tc.config), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx := context.Background()
+			obj := &model.Objective{ID: "obj", Title: "ranking", Mode: model.ModeManual, FreezeMode: model.FreezeFast, Status: model.ObjectiveActive}
+			if err := db.CreateObjective(ctx, obj); err != nil {
+				t.Fatal(err)
+			}
+			tasks := tc.tasks
+			if tasks == nil {
+				var err error
+				tasks, err = DefaultSchedule(home)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, task := range tasks {
+				built := ScheduleCard(obj.ID, "preview-"+task.Name, task)
+				if !sameRequires(built.Requires, task.Requires) {
+					t.Fatalf("ScheduleCard requires %+v want %+v", built.Requires, task.Requires)
+				}
+			}
+			var err error
+			if tc.tasks != nil {
+				err = EnqueueRankingSchedule(ctx, db, obj.ID, tc.tasks, now)
+			} else {
+				err = ApplyDefaultSchedule(ctx, db, home, now)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			cards, err := db.ListCards(ctx, obj.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var found []model.Card
+			for _, card := range cards {
+				if card.Kind == model.KindRanking {
+					found = append(found, card)
+				}
+			}
+			if tc.wantCard != (len(found) == 1) {
+				t.Fatalf("ranking cards %+v want one=%v", found, tc.wantCard)
+			}
+			if !tc.wantCard {
+				return
+			}
+			if !sameRequires(found[0].Requires, tc.wantReq) {
+				t.Fatalf("stored requires %+v want %+v", found[0].Requires, tc.wantReq)
+			}
+		})
+	}
+}
+
+func TestRankingAbsorbHonorsHarvest(t *testing.T) {
+	text := `{"entries":[{"model":"new-model","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"榜单"}]}`
+	if strings.Contains(text, "##") {
+		t.Fatal("proposal fixture has a known section title")
+	}
+	cases := []struct {
+		name       string
+		outcome    model.Outcome
+		class      model.ErrorClass
+		acceptance string
+		status     model.CardStatus
+		wantAbsorb bool
+	}{
+		{name: "violation", outcome: model.OutcomeViolation, class: model.ErrorViolation, status: model.CardReady},
+		{name: "violation class", outcome: model.OutcomePassed, class: model.ErrorViolation, acceptance: "passed", status: model.CardReady},
+		{name: "budget_limited", outcome: model.OutcomeBudgetLimited, class: model.ErrorBudgetLimited, status: model.CardReady},
+		{name: "tests_failed", outcome: model.OutcomeTestsFailed, class: model.ErrorTestsFailed, acceptance: "failed", status: model.CardReady},
+		{name: "acceptance failed", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "failed", status: model.CardReady},
+		{name: "stopped failed", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "passed", status: model.CardFailed},
+		{name: "stopped canceled", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "passed", status: model.CardCanceled},
+		{name: "passed", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "passed", status: model.CardReady, wantAbsorb: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, db := rankingHome(t)
+			seedRanking(t, db, "old-model")
+			ctx := context.Background()
+			card, err := db.GetCard(ctx, "rank")
+			if err != nil {
+				t.Fatal(err)
+			}
+			card.Status = tc.status
+			if err := db.UpdateCard(ctx, &card); err != nil {
+				t.Fatal(err)
+			}
+			before := mustAttempt(t, db, "a-rank")
+			harvest := RankingHarvest{
+				AttemptID:  before.ID,
+				Outcome:    tc.outcome,
+				ErrorClass: tc.class,
+				Acceptance: tc.acceptance,
+				ResultText: text,
+			}
+			if err := AbsorbHarvestedRanking(ctx, Deps{Store: db}, card, harvest); err != nil {
+				t.Fatal(err)
+			}
+			if proposalCount(t) != 0 && !tc.wantAbsorb {
+				t.Fatalf("proposal created for %s", tc.name)
+			}
+			gotCard, err := db.GetCard(ctx, "rank")
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotAttempt := mustAttempt(t, db, "a-rank")
+			if !tc.wantAbsorb {
+				if proposalCount(t) != 0 {
+					t.Fatalf("proposals %d", proposalCount(t))
+				}
+				if len(mustQuestions(t, db)) != 0 {
+					t.Fatalf("questions %+v", mustQuestions(t, db))
+				}
+				if gotCard.Status != tc.status {
+					t.Fatalf("status %s", gotCard.Status)
+				}
+				if gotAttempt.Outcome != "" || gotAttempt.Route != before.Route {
+					t.Fatalf("attempt %+v", gotAttempt)
+				}
+				return
+			}
+			if proposalCount(t) != 1 {
+				t.Fatalf("proposals %d", proposalCount(t))
+			}
+			if gotCard.Status != model.CardDone {
+				t.Fatalf("status %s", gotCard.Status)
+			}
+			if gotAttempt.Outcome != model.OutcomePassed {
+				t.Fatalf("outcome %s", gotAttempt.Outcome)
+			}
+			if gotAttempt.Route != before.Route {
+				t.Fatalf("route %v", gotAttempt.Route)
+			}
+			questions := mustQuestions(t, db)
+			if len(questions) != 1 || !strings.Contains(questions[0].Text, "new-model") {
+				t.Fatalf("question %+v", questions)
+			}
+			if err := AbsorbHarvestedRanking(ctx, Deps{Store: db}, gotCard, harvest); err != nil {
+				t.Fatal(err)
+			}
+			if proposalCount(t) != 1 {
+				t.Fatalf("second tick proposals %d", proposalCount(t))
+			}
+			if len(mustQuestions(t, db)) != 1 {
+				t.Fatalf("second tick questions %d", len(mustQuestions(t, db)))
+			}
+			again := mustAttempt(t, db, "a-rank")
+			if again.Outcome != model.OutcomePassed || again.Route != before.Route {
+				t.Fatalf("second tick attempt %+v", again)
+			}
+		})
+	}
+}
+
+func TestRankingOpenDoesNotMaintain(t *testing.T) {
+	home, db := rankingHome(t)
+	ctx := context.Background()
+	obj := &model.Objective{ID: "obj", Title: "ranking", Mode: model.ModeManual, FreezeMode: model.FreezeFast, Status: model.ObjectiveActive}
+	if err := db.CreateObjective(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreatePositioning(ctx, &model.Positioning{
+		ID: "pos-old", Model: "old-model", Family: "oldfam", Tiers: []model.Tier{model.TierT2}, Preference: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	card := &model.Card{
+		ID: "rank-open", Objective: obj.ID, Kind: model.KindRanking, Tier: model.TierT2,
+		Title: "rank", Status: model.CardReady,
+	}
+	if err := db.CreateCard(ctx, card); err != nil {
+		t.Fatal(err)
+	}
+	exitCode := 0
+	work := t.TempDir()
+	result := `{"entries":[{"model":"new-model","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"榜单"}]}`
+	if err := os.WriteFile(filepath.Join(work, ".cardex-result.md"), []byte(result), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateAttempt(ctx, &model.Attempt{
+		ID: "a-open", Card: card.ID, Route: model.Route{Channel: "ch-old", Model: "old-model"},
+		Worktree: work, EndedAt: time.Now().UTC(), Exit: &exitCode,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateQuestion(ctx, &model.Question{
+		ID: "q-open", Objective: obj.ID, Scope: card.ID, ScopeKind: "card",
+		Kind: model.QuestionCustom, Text: "定位提案 prop-open\n", Options: []string{"批准"}, Answer: "批准",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	propDir := filepath.Join(home, "positioning", "proposals")
+	if err := os.MkdirAll(propDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"id": "prop-open", "status": "proposed",
+		"entries": []map[string]any{{"model": "new-model", "family": "newfam", "tiers": []string{"T2"}, "capabilities": []string{"web"}, "preference": 1}},
+		"diff":    "+ new-model\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(propDir, "prop-open.json"), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	beforeCards, err := db.ListCards(ctx, obj.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = opened.Close() })
+	if _, err := opened.ListObjectives(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	cards, err := opened.ListCards(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := opened.ListQuestions(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := opened.ListAttempts(ctx, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := opened.ListPositioning(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := opened.GetCard(ctx, card.ID); err != nil {
+		t.Fatal(err)
+	}
+	if len(cards) != len(beforeCards) {
+		t.Fatalf("cards %d want %d", len(cards), len(beforeCards))
+	}
+	for _, item := range cards {
+		if item.ID == DefaultRankingCardID(time.Now()) {
+			t.Fatalf("open enqueued %s", item.ID)
+		}
+		if item.ID == card.ID && item.Status != model.CardReady {
+			t.Fatalf("open changed card %+v", item)
+		}
+	}
+	attempt, err := opened.GetAttempt(ctx, "a-open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempt.Outcome != "" {
+		t.Fatalf("open stored outcome %s", attempt.Outcome)
+	}
+	questions, err := opened.ListQuestions(ctx, obj.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(questions) != 1 || questions[0].Answer != "批准" {
+		t.Fatalf("questions %+v", questions)
+	}
+	raw, err := os.ReadFile(filepath.Join(propDir, "prop-open.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != "proposed" {
+		t.Fatalf("proposal status %s", saved.Status)
+	}
+	if models := positioningModels(t, opened); len(models) != 1 || models[0] != "old-model" {
+		t.Fatalf("positioning %v", models)
+	}
+}
+
 func absorbRankingText(t *testing.T, db *store.Store, text string) {
 	t.Helper()
 	card, err := db.GetCard(context.Background(), "rank")
@@ -483,4 +783,35 @@ func hasWeb(requires []string) bool {
 		}
 	}
 	return false
+}
+
+func sameRequires(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func proposalCount(t *testing.T) int {
+	t.Helper()
+	dir := filepath.Join(os.Getenv("CARDEX_HOME"), "positioning", "proposals")
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			n++
+		}
+	}
+	return n
 }

@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -58,6 +59,110 @@ func DefaultRankingCardID(now time.Time) string {
 		secs = 1
 	}
 	return "sch-ranking-" + strconv.FormatInt(now.Unix()/secs, 10)
+}
+
+// ApplyDefaultSchedule enqueues the weekly ranking card when config.json has no
+// schedules key. The sched owner calls this from the schedule entry. Opening a
+// database does not.
+func ApplyDefaultSchedule(ctx context.Context, db *store.Store, home string, now time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if db == nil {
+		return errNilStore
+	}
+	tasks, err := DefaultSchedule(home)
+	if err != nil || len(tasks) == 0 {
+		return err
+	}
+	objectiveID, err := activeObjective(ctx, db)
+	if err != nil || objectiveID == "" {
+		return err
+	}
+	return EnqueueRankingSchedule(ctx, db, objectiveID, tasks, now)
+}
+
+// EnqueueRankingSchedule stores one card per ranking schedule definition.
+// Each card keeps that definition's full Requires list.
+func EnqueueRankingSchedule(ctx context.Context, db *store.Store, objectiveID string, tasks []ScheduleTask, now time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if db == nil {
+		return errNilStore
+	}
+	if strings.TrimSpace(objectiveID) == "" {
+		return nil
+	}
+	for _, task := range tasks {
+		if task.Kind != "" && task.Kind != model.KindRanking {
+			continue
+		}
+		id := rankingScheduleCardID(task, now)
+		if _, err := db.GetCard(ctx, id); err == nil {
+			continue
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		card := ScheduleCard(objectiveID, id, task)
+		if err := db.CreateCard(ctx, &card); err != nil {
+			if strings.Contains(err.Error(), "UNIQUE") {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+// ScheduleCard builds the card a ranking timer stores for one schedule definition.
+// Requires is a copy of that definition's list, including an explicit ["web"].
+func ScheduleCard(objectiveID, cardID string, task ScheduleTask) model.Card {
+	kind := task.Kind
+	if kind == "" {
+		kind = model.KindRanking
+	}
+	title := strings.TrimSpace(task.Name)
+	if title == "" {
+		title = string(kind)
+	}
+	return model.Card{
+		ID:        cardID,
+		Objective: objectiveID,
+		Kind:      kind,
+		Title:     title,
+		Tier:      model.DefaultTier(kind),
+		Status:    model.CardReady,
+		Requires:  append([]string(nil), task.Requires...),
+	}
+}
+
+func rankingScheduleCardID(task ScheduleTask, now time.Time) string {
+	if task.Name == "" || task.Name == "ranking" {
+		return DefaultRankingCardID(now)
+	}
+	every := task.Every
+	if every <= 0 {
+		every = week
+	}
+	secs := int64(every / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	return "sch-" + task.Name + "-" + strconv.FormatInt(now.Unix()/secs, 10)
+}
+
+func activeObjective(ctx context.Context, db *store.Store) (string, error) {
+	objs, err := db.ListObjectives(ctx, "")
+	if err != nil {
+		return "", err
+	}
+	for _, obj := range objs {
+		if obj.Status == model.ObjectiveActive {
+			return obj.ID, nil
+		}
+	}
+	return "", nil
 }
 
 // RankingMaterial is the ranking prompt text. A ranking_sources list in config.json
@@ -345,8 +450,96 @@ func FollowRanking(ctx context.Context, db *store.Store) error {
 	return nil
 }
 
+// RankingHarvest is one harvested ranking attempt. deliver passes it after harvest.
+// absorbAttempt passes it for a ranking card. Opening a database does not.
+type RankingHarvest struct {
+	AttemptID  string
+	Outcome    model.Outcome
+	ErrorClass model.ErrorClass
+	Acceptance string // "failed" is 验收失败. Empty or "passed" is not.
+	ResultText string
+}
+
+// AbsorbHarvestedRanking absorbs a ranking result only when the harvest passed.
+// violation, budget_limited, 验收失败, and a stopped card do not create a proposal
+// and do not mark the card done. A pass stores the attempt outcome, so a later
+// call does not absorb that same attempt again.
+func AbsorbHarvestedRanking(ctx context.Context, d Deps, card model.Card, harvest RankingHarvest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if card.Kind != model.KindRanking {
+		return nil
+	}
+	if d.Store == nil {
+		return errNilStore
+	}
+	if card.ID != "" {
+		fresh, err := d.Store.GetCard(ctx, card.ID)
+		if err != nil {
+			return err
+		}
+		if fresh.Status == model.CardFailed || fresh.Status == model.CardCanceled {
+			card.Status = fresh.Status
+		}
+		if card.Objective == "" {
+			card.Objective = fresh.Objective
+		}
+	}
+	if harvest.AttemptID != "" {
+		attempt, err := d.Store.GetAttempt(ctx, harvest.AttemptID)
+		if err != nil {
+			return err
+		}
+		if attempt.Outcome != "" {
+			return nil
+		}
+	}
+	if !rankingAbsorbable(card, harvest) {
+		return nil
+	}
+	if err := d.absorbRanking(ctx, card, harvest.ResultText); err != nil {
+		return err
+	}
+	if harvest.AttemptID == "" {
+		return nil
+	}
+	attempt, err := d.Store.GetAttempt(ctx, harvest.AttemptID)
+	if err != nil {
+		return err
+	}
+	attempt.Outcome = harvest.Outcome
+	if harvest.ErrorClass != "" {
+		attempt.ErrorClass = harvest.ErrorClass
+	}
+	return d.Store.UpdateAttempt(ctx, &attempt)
+}
+
+// rankingAbsorbable is the harvest decision. Store writes stay in AbsorbHarvestedRanking.
+func rankingAbsorbable(card model.Card, harvest RankingHarvest) bool {
+	if card.Kind != model.KindRanking {
+		return false
+	}
+	if card.Status == model.CardFailed || card.Status == model.CardCanceled {
+		return false
+	}
+	if harvest.Outcome != model.OutcomePassed {
+		return false
+	}
+	if harvest.ErrorClass != "" && harvest.ErrorClass != model.ErrorPassed {
+		return false
+	}
+	switch strings.TrimSpace(harvest.Acceptance) {
+	case "", "passed":
+		return true
+	default:
+		return false
+	}
+}
+
 // AbsorbRanking turns a ranking result into a positioning proposal and a question.
-// absorbAttempt does not dispatch ranking; the loop owner calls this from that dispatch.
+// Harvest gating lives in AbsorbHarvestedRanking. absorbAttempt does not dispatch
+// ranking; the loop owner calls AbsorbHarvestedRanking from that dispatch.
 func AbsorbRanking(ctx context.Context, d Deps, card model.Card, text string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -355,6 +548,10 @@ func AbsorbRanking(ctx context.Context, d Deps, card model.Card, text string) er
 		return nil
 	}
 	return d.absorbRanking(ctx, card, text)
+}
+
+func currentRankingHome() string {
+	return strings.TrimSpace(os.Getenv("CARDEX_HOME"))
 }
 
 func (d Deps) absorbRanking(ctx context.Context, card model.Card, text string) error {

@@ -8,7 +8,6 @@ import (
 
 	"cardex/internal/loop"
 	"cardex/internal/model"
-	_ "cardex/internal/sched" // ranking production binding linknames these collaborators
 	"cardex/internal/scorecard"
 	"cardex/internal/store"
 )

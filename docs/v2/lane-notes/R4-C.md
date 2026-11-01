@@ -10,10 +10,10 @@
 
 ## 接口请求
 
-- R3-C `internal/sched/loop.go`（本 lane 未改）：无 `schedules` 键时（732 行）调用 `loop.DefaultSchedule`（`ranking.go:41`）和 `loop.ApplyDefaultSchedule`（`ranking.go:67`）。`cardTemplate`（723 行）增加 `requires`，`enqueueTemplate`（813 行，建卡 843 行）抄到 `Card.Requires`。`promptText`（568 行）把 `r.Home` 传给 `loop.RankingMaterial`（`ranking.go:171`）。`deliver`（175 行）把真实收割的 outcome、error class 和结果原文（含 `result_unparsable`）传给 `loop.AbsorbHarvestedRanking`（`ranking.go:467`）。`sched.New`（65 行）保持 `Dispose` 为 nil。
-- R3-D `internal/prompt/build.go`（本 lane 未改）：`Build`（30 行）对 ranking 发出 `RankingMaterial`。不要反向 import loop。
-- R3-A `internal/loop/design.go`（本 lane 未改）：`absorbAttempt`（1527 行，默认分支 1608 行）把同一份真实收割结果（含 `result_unparsable`）传给 `loop.AbsorbHarvestedRanking`。不要加 ranking 分支，不要恢复 `absorbDelegated`。
-- `question.Answer`（`service.go:62`，本 lane 未改）回答「批准」后调用 `loop.FollowRanking`（`ranking.go:407`）。question 不能 import loop。
+- R3-C `internal/sched/loop.go`（本 lane 未改；这些入口现在都不调用下列函数）：无 `schedules` 键时，请在 `schedules`（732 行）调用 `loop.DefaultSchedule`（`ranking.go:41`）和 `loop.ApplyDefaultSchedule`（`ranking.go:67`），让默认每周 ranking 卡的 requires 含 `web`。请给 `cardTemplate`（723 行）增加 `requires`，并在 `enqueueTemplate`（813 行，建卡 843 行）把显式列表原样抄到 `Card.Requires`。请让 `promptText`（568 行）把 `r.Home` 传给 `loop.RankingMaterial`（`ranking.go:171`）。请让 `deliver`（175 行）把真实收割的 outcome、error class、验收结果和结果原文（含 `result_unparsable`）传给 `loop.AbsorbHarvestedRanking`（`ranking.go:467`）。`sched.New`（65 行）保持 `Dispose` 为 nil。
+- R3-D `internal/prompt/build.go`（本 lane 未改；`Build` 现在不附 ranking 材料）：请让 ranking 的 attempt prompt 带上 `loop.RankingMaterial`（`ranking.go:171`）。`Build`（30 行）不要反向 import loop；sched 的 `promptText` 可以调用它。
+- R3-A `internal/loop/design.go`（本 lane 未改；默认分支现在不吸收 ranking）：请让 `absorbAttempt`（1527 行，默认分支 1608 行）把同一份真实收割的 outcome、error class、验收结果和结果原文（含 `result_unparsable`）传给 `loop.AbsorbHarvestedRanking`（`ranking.go:467`）。不要加 ranking 分支，不要恢复 `absorbDelegated`。
+- `question.Answer`（`service.go:62`，本 lane 未改；回答后现在不推进定位）：请在回答「批准」后调用 `loop.FollowRanking`（`ranking.go:407`）。question 不能 import loop，由该文件的负责人接上。
 
 ## 转交
 
@@ -31,5 +31,5 @@ R4-D：不要给 `sched.New` 安装生产 `Dispose`，也不要把 TestS23 指�
 - ranking 定时任务的能力要求覆盖每条定时定义，显式 requires 含 web 也抄到卡上 → `internal/loop/ranking.go:136` → `TestRankingScheduleRequires`
 - 可宽松解析的格式差异不能在解析前被静默跳过（B6） → `internal/loop/ranking.go:528` → `TestRankingHarvestFormatStillAbsorbs`
 - 定时入队和结果吸收不由打开数据库触发 → `internal/loop/ranking.go:67`、`internal/loop/ranking.go:467` → `TestRankingOpenDoesNotMaintain`
-- ranking 的完成定义必须在调度、prompt 和批准入口成立（B1）；写域函数已覆盖，生产入口留在接口请求，本 lane 未改那些文件 → `internal/loop/ranking.go:41`、`internal/loop/ranking.go:136`、`internal/loop/ranking.go:171`、`internal/loop/ranking.go:407`、`docs/v2/lane-notes/R4-C.md:13` → `TestRankingScheduleRequires`、`TestRankingPromptSnapshots`、`TestRankingAbsorbLooseAndApprove`
-- ranking 的吸收必须接在真实收割结果上并记下 outcome（B4）；deliver 与 absorbAttempt 仍由负责人绑定，不安装 Dispose，TestS23 不指向缺失钩子 → `internal/loop/ranking.go:467`、`internal/loop/ranking.go:511`、`docs/v2/lane-notes/R4-C.md:20` → `TestRankingHarvestFormatStillAbsorbs`、`TestRankingAbsorbHonorsHarvest`
+- ranking 的完成定义必须在调度、prompt 和批准入口成立（B1）；写域函数已覆盖，sched、prompt.Build 和 question.Answer 仍见接口请求，本 lane 未改那些文件 → `internal/loop/ranking.go:41`、`internal/loop/ranking.go:136`、`internal/loop/ranking.go:171`、`internal/loop/ranking.go:407`、`docs/v2/lane-notes/R4-C.md:13`、`docs/v2/lane-notes/R4-C.md:14`、`docs/v2/lane-notes/R4-C.md:16` → `TestRankingScheduleRequires`、`TestRankingPromptSnapshots`、`TestRankingAbsorbLooseAndApprove`
+- ranking 的吸收必须接在真实收割结果上并记下 outcome（B4）；deliver 与 absorbAttempt 仍见接口请求，不安装 Dispose，TestS23 不指向缺失钩子 → `internal/loop/ranking.go:467`、`internal/loop/ranking.go:511`、`internal/loop/ranking.go:528`、`docs/v2/lane-notes/R4-C.md:13`、`docs/v2/lane-notes/R4-C.md:15`、`docs/v2/lane-notes/R4-C.md:20` → `TestRankingHarvestFormatStillAbsorbs`、`TestRankingAbsorbHonorsHarvest`

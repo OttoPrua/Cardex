@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -35,7 +36,152 @@ import (
 )
 
 func TestS01(t *testing.T) {
-	t.Skip("BUG-1: 调度入队不调用 classify.Classify，空 tier 只经 resolveTier 落到 kind 默认等级")
+	// 单卡闭环：空等级入队，经生产调度路由、派发、收割、异族复核，先进入合并队列再合并。
+	h := New(t)
+	t.Setenv("CARDEX_HOME", h.Home)
+	runner := sched.New(h.Home)
+	runner.Script = func(card model.Card) ([]byte, bool) {
+		if card.Kind == model.KindReview {
+			return []byte(scenarioReviewScript), true
+		}
+		return nil, false
+	}
+	h.Sched = runner
+	stopLater(t, h)
+	_, obj := bindProject(t, h, "true")
+	installRoutes(t, h)
+	card := model.Card{
+		ID: "c1", Objective: obj, Kind: model.KindDev, Title: "one",
+		Status: model.CardReady, Acceptance: []string{"true"},
+		Claims: []model.Claim{{Path: "answer.go", Symbol: "Answer"}},
+		Body: fakeScript("", nil, []map[string]string{{
+			"path": "answer.go", "name": "Answer", "body": "\treturn 7",
+		}}),
+	}
+	if err := h.DB.CreateCard(context.Background(), &card); err != nil {
+		t.Fatal(err)
+	}
+	if got := cardOf(t, h, "c1").Tier; got != model.TierNone {
+		t.Fatalf("tier %q filled before the schedule path", got)
+	}
+
+	transitions := watchCardStatus(t, h, "c1")
+	mustTick(t, h, func() bool {
+		attempts := attemptsOf(t, h, "c1")
+		return len(attempts) > 0 && attempts[0].Route.Channel != "" && attempts[0].Route.Model != ""
+	}, 20*time.Second)
+
+	mustTick(t, h, func() bool {
+		return cardOf(t, h, "c1").Status == model.CardMerged
+	}, 45*time.Second)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		seenMerged := false
+		for _, status := range transitions.snapshot() {
+			if status == model.CardMerged {
+				seenMerged = true
+			}
+		}
+		if seenMerged || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(transitions.stop)
+	transitions.wg.Wait()
+
+	devAttempt := attemptsOf(t, h, "c1")[0]
+	if devAttempt.Outcome != model.OutcomePassed {
+		t.Fatalf("harvest outcome %q\n%s", devAttempt.Outcome, diag(h))
+	}
+	dev := cardOf(t, h, "c1")
+	if dev.AuthorFamily == "" {
+		t.Fatalf("author family empty\n%s", diag(h))
+	}
+	devCh, err := h.DB.GetChannel(context.Background(), devAttempt.Route.Channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if devCh.Family != dev.AuthorFamily {
+		t.Fatalf("author family %q, dispatch channel family %q", dev.AuthorFamily, devCh.Family)
+	}
+	var review model.Card
+	for _, item := range cardsOf(t, h, obj) {
+		if item.Kind == model.KindReview {
+			review = item
+			break
+		}
+	}
+	if review.ID == "" || review.Status != model.CardDone {
+		t.Fatalf("review %+v\n%s", review, diag(h))
+	}
+	revAttempts := attemptsOf(t, h, review.ID)
+	if len(revAttempts) == 0 || revAttempts[0].Route.Channel == "" {
+		t.Fatalf("review was not dispatched\n%s", diag(h))
+	}
+	revCh, err := h.DB.GetChannel(context.Background(), revAttempts[0].Route.Channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revCh.Family == "" || revCh.Family == dev.AuthorFamily {
+		t.Fatalf("review family %q, author family %q", revCh.Family, dev.AuthorFamily)
+	}
+
+	seen := transitions.snapshot()
+	queuedAt, mergedAt := -1, -1
+	for i, status := range seen {
+		if status == model.CardMergeQueued && queuedAt < 0 {
+			queuedAt = i
+		}
+		if status == model.CardMerged && mergedAt < 0 {
+			mergedAt = i
+		}
+	}
+	if queuedAt < 0 || mergedAt < 0 || queuedAt >= mergedAt {
+		t.Fatalf("merge_queued must be observed before merged, saw %v", seen)
+	}
+}
+
+// statusWatch records card statuses as another store connection sees them during ticks.
+type statusWatch struct {
+	mu   sync.Mutex
+	seen []model.CardStatus
+	stop chan struct{}
+	wg   sync.WaitGroup
+}
+
+func (w *statusWatch) snapshot() []model.CardStatus {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]model.CardStatus, len(w.seen))
+	copy(out, w.seen)
+	return out
+}
+
+func watchCardStatus(t *testing.T, h *Harness, id string) *statusWatch {
+	t.Helper()
+	w := &statusWatch{stop: make(chan struct{})}
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		var last model.CardStatus
+		for {
+			select {
+			case <-w.stop:
+				return
+			default:
+			}
+			got, err := h.DB.GetCard(context.Background(), id)
+			if err == nil && got.Status != last {
+				w.mu.Lock()
+				w.seen = append(w.seen, got.Status)
+				last = got.Status
+				w.mu.Unlock()
+			}
+			time.Sleep(100 * time.Microsecond)
+		}
+	}()
+	return w
 }
 
 func TestS02(t *testing.T) {

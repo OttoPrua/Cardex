@@ -976,14 +976,19 @@ func runRankingProductionPath(t *testing.T) {
 	if !strings.Contains(res.ResultText, newModel) {
 		t.Fatalf("harvested text missing %s: %s", newModel, res.ResultText)
 	}
-	if err := loop.AbsorbHarvestedRanking(ctx, loop.Deps{Store: h.DB}, rank, loop.RankingHarvest{
+	harvested := loop.RankingHarvest{
 		AttemptID:  attempt.ID,
 		Outcome:    res.Outcome,
 		ErrorClass: res.ErrorClass,
 		Acceptance: harvestAcceptance(res.Evidence),
 		ResultText: res.ResultText,
-	}); err != nil {
+	}
+	if err := loop.AbsorbHarvestedRanking(ctx, loop.Deps{Store: h.DB}, rank, harvested); err != nil {
 		t.Fatal(err)
+	}
+	proposals := rankingProposalBodies(t, h.Home)
+	if len(proposals) != 1 || !strings.Contains(proposals[0], newModel) || !strings.Contains(proposals[0], "+ "+newModel) {
+		t.Fatalf("proposals %d", len(proposals))
 	}
 	questions, err := h.DB.ListQuestions(ctx, obj)
 	if err != nil {
@@ -992,7 +997,6 @@ func runRankingProductionPath(t *testing.T) {
 	if len(questions) != 1 {
 		t.Fatalf("questions %+v", questions)
 	}
-	t.Logf("one-question %s from harvested ranking result", questions[0].ID)
 	asked := questions[0]
 	if !strings.Contains(asked.Text, "新出现") || !strings.Contains(asked.Text, newModel) {
 		t.Fatalf("question %s", asked.Text)
@@ -1000,23 +1004,27 @@ func runRankingProductionPath(t *testing.T) {
 	if !strings.Contains(asked.Text, "+ "+newModel) {
 		t.Fatalf("question missing diff %s", asked.Text)
 	}
+	t.Logf("one proposal and question %s from the harvested ranking result", asked.ID)
 	if models := positionModels(t, h); len(models) != 1 || models[0] != oldModel {
 		t.Fatalf("table changed before approval %v", models)
 	}
 	if len(asked.Options) != 1 || asked.Options[0] != "批准" {
 		t.Fatalf("options %+v", asked.Options)
 	}
-	if err := h.Sched.Tick(ctx); err != nil {
+	if err := loop.AbsorbHarvestedRanking(ctx, loop.Deps{Store: h.DB}, rank, harvested); err != nil {
 		t.Fatal(err)
+	}
+	if again := rankingProposalBodies(t, h.Home); len(again) != 1 || again[0] != proposals[0] {
+		t.Fatalf("second absorb proposals %d", len(again))
 	}
 	repeated, err := h.DB.ListQuestions(ctx, obj)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(repeated) != 1 || repeated[0].ID != asked.ID {
-		t.Fatalf("second tick questions %+v", repeated)
+		t.Fatalf("second absorb questions %+v", repeated)
 	}
-	t.Log("second-tick after absorb created no extra proposal or question")
+	t.Log("second AbsorbHarvestedRanking added neither a proposal nor a question")
 	keptRoute := model.Route{Channel: "keep-ch", Model: "keep-model"}
 	if _, err := question.New(h.DB, nil).Answer(ctx, asked.ID, asked.Options[0]); err != nil {
 		t.Fatal(err)
@@ -1237,6 +1245,30 @@ func endedRankingAttempt(t *testing.T, h *Harness, cardID string) (model.Attempt
 		return attempt, path, true
 	}
 	return model.Attempt{}, "", false
+}
+
+func rankingProposalBodies(t *testing.T, home string) []string {
+	t.Helper()
+	dir := filepath.Join(home, "positioning", "proposals")
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bodies []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		bodies = append(bodies, string(body))
+	}
+	return bodies
 }
 
 func harvestAcceptance(evidence string) string {

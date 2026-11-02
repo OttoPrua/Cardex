@@ -17,7 +17,7 @@
 
 ## 转交
 
-R4-D：S23 现已派发 ranking 卡、跑 fake、收割结果文件并吸收；重复 tick 不新增提案；回答「批准」后仍由测试调用 `FollowRanking`。生产 `deliver`、`absorbAttempt`、`question.Answer` 仍未接通。不要给 `sched.New` 安装生产 `Dispose`，TestS23 不得调用这个为 nil 的 `Dispose` 钩子。
+R3-C、R3-A 和 question 的负责人接通 `deliver`、`absorbAttempt`、`question.Answer` 之后，S23 要改经那条正常入口观察提案、问题和批准：fake 写出结果，入口吸收成一份提案和一条问题，回答「批准」后新卡路由用新定位，已落库尝试路由不变。重复 tick 后同时断言提案数和问题数都不变。接通之前，S23 对同一份收割再调用 `AbsorbHarvestedRanking`（`scenarios_test.go:1014`），核对提案数和问题数仍为一；批准仍调用 `FollowRanking`。正常入口的重复 tick 核对留到接线完成之后。不要给 `sched.New` 安装 `Dispose`，不要恢复 `absorbDelegated`，不要给 `absorbAttempt` 加 ranking 分支。TestS23 不得调用为 nil 的 `Dispose`。
 
 ## 已知问题
 
@@ -35,3 +35,5 @@ R4-D：S23 现已派发 ranking 卡、跑 fake、收割结果文件并吸收；�
 - 收割元组在验收标签为 ok、空或 passed 时（含 result_unparsable）宽松解析成一份提案和一条写明差异并标出新模型的问题，畸形提案不硬拒绝；违规、预算用尽、验收失败（failed、timeout）和已停止的卡不建提案；同一 attempt 再吸收不新增提案或问题；已确定路线的尝试不变（B4） → 本轮写域无新位置 → TestRankingAbsorbHonorsHarvest、TestRankingHarvestFormatStillAbsorbs、TestRankingAbsorbLooseAndApprove
 - 显式 Requires（含 web）原样抄到定时卡；缺少 config.json 或没有 schedules 键时入队每周 ranking 且 requires 含 web，已有 schedules 键时不入队；ranking_sources 整份替换默认来源，并附当前定位表、各渠道模型和成绩单摘要；回答「批准」后批准提案且不改已落库尝试路由；打开数据库不入队、不吸收、不批准（B1） → 本轮写域无新位置 → TestRankingScheduleRequires、TestRankingPromptSnapshots、TestRankingAbsorbLooseAndApprove、TestRankingOpenDoesNotMaintain、TestS23
 - ranking 经 fake 执行后用真实收割原文吸收：验收标签 ok/空/passed 且 outcome 为 passed 或 result_unparsable 时宽松解析成一份提案和一条写明差异并标出新模型的问题，畸形提案不硬拒绝；违规、预算用尽、验收失败和已停止的卡不建提案；同一 attempt 再吸收与重复 tick 不新增提案或问题；已确定路线的尝试不变（B4） → internal/e2e/scenarios_test.go:912、internal/e2e/scenarios_test.go:979、internal/e2e/scenarios_test.go:1201 → TestS23、TestRankingDefaultEntry、TestRankingAbsorbHonorsHarvest、TestRankingHarvestFormatStillAbsorbs
+- 显式定时定义的 Requires（含 web）原样抄到新建卡上；没有配置文件或没有 schedules 键时入队默认每周 ranking 且 requires 含 web，已有 schedules 键时不入队；配置来源清单整份替换模板来源，材料同时包含当前定位表、各渠道模型清单和成绩单摘要；回答「批准」后批准提案且不改已落库尝试路由；打开数据库不入队、不吸收、不批准（B1） → 本轮写域无新位置 → TestRankingScheduleRequires、TestRankingPromptSnapshots、TestRankingAbsorbLooseAndApprove、TestRankingOpenDoesNotMaintain
+- 收割元组在验收标签为 ok、空或 passed 时（含 result_unparsable）宽松解析成一份提案和一条写明差异并标出新模型的问题，畸形提案不硬拒绝；违规、预算用尽、验收失败（failed、timeout）和已停止的卡不建提案；同一 attempt 再吸收不新增提案或问题；已确定路线的尝试不变（B4） → 本轮写域无新位置；S23 对同一份收割再调用 AbsorbHarvestedRanking，同时核对提案数与问题数仍为一（internal/e2e/scenarios_test.go:979、internal/e2e/scenarios_test.go:1014、internal/e2e/scenarios_test.go:1250） → TestS23、TestRankingAbsorbHonorsHarvest、TestRankingHarvestFormatStillAbsorbs

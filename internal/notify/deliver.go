@@ -71,8 +71,12 @@ func (s *Service) Deliver(ctx context.Context, msg Message) error {
 		return err
 	}
 	now := s.now()
+	home := homeOf(msg)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.hydrateLocked(home, msg.QuestionID); err != nil {
+		return err
+	}
 	state := s.sent[msg.QuestionID]
 	if !s.dueLocked(msg.QuestionID, now) {
 		if state.wakeSeq > 0 && state.wakeID != "" && !hermesAckCovers(homeOf(msg), msg.SubscriptionID, state.wakeID, state.digest) {
@@ -102,7 +106,26 @@ func (s *Service) Deliver(ctx context.Context, msg Message) error {
 		next.digest = s.hermesDigest
 	}
 	s.sent[msg.QuestionID] = next
+	if saveErr := saveReminder(home, msg.QuestionID, next); saveErr != nil {
+		return errors.Join(err, saveErr)
+	}
 	return err
+}
+
+// hydrateLocked loads this question's reminder bookkeeping from home when
+// this process has not seen it yet. A missing file means there was no delivery.
+func (s *Service) hydrateLocked(home, id string) error {
+	if _, ok := s.sent[id]; ok {
+		return nil
+	}
+	loaded, found, err := loadReminder(home, id)
+	if err != nil {
+		return err
+	}
+	if found {
+		s.sent[id] = loaded
+	}
+	return nil
 }
 
 // rewriteHermes writes the current delivery again. The reminder gap stays put,
@@ -201,16 +224,11 @@ func codexArgv(thread, message string) []string {
 }
 
 func larkArgv(chatID, message string) []string {
-	return []string{"lark-cli", "im", "send", "--chat-id", chatID, "--text", message}
+	return []string{"lark-cli", "im", "+messages-send", "--chat-id", chatID, "--text", message}
 }
 
 func safeQuestionName(id string) string {
-	name := filepath.Base(strings.ReplaceAll(id, string(filepath.Separator), "_"))
-	name = strings.ReplaceAll(name, "/", "_")
-	if name == "" || name == "." || name == ".." {
-		return "question"
-	}
-	return name
+	return deliveryIdentity(id)
 }
 
 func inboxPath(home, questionID string) string {

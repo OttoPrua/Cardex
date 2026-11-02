@@ -478,7 +478,9 @@ func TestImportContinuableBodyKeepsStepBoundaries(t *testing.T) {
 		{name: "workflow", rel: "workflows/flow.json", status: "running", prompts: []string{"A\nB", "C"}, step: 1, stepLine: "step: 1", completed: []string{"A\nB"}, remaining: []string{"C"}},
 		{name: "later", rel: "tasks/later.json", status: "queued", prompts: []string{"A", "B", "C\nD"}, step: 1, stepLine: "step: 1", completed: []string{"A"}, remaining: []string{"B", "C\nD"}},
 		{name: "past", rel: "tasks/past.json", status: "held", prompts: []string{"A\nB", "C"}, step: 4, stepLine: "step: 4", completed: []string{"A\nB", "C"}},
-		{name: "negative", rel: "tasks/negative.json", status: "running", prompts: []string{"A", "B\nC"}, step: -1, stepLine: "step: -1", completed: []string{"A", "B\nC"}},
+		{name: "negative", rel: "tasks/negative.json", status: "running", prompts: []string{"A", "B\nC"}, step: -1, stepLine: "step: -1", remaining: []string{"A", "B\nC"}},
+		{name: "negative-queued", rel: "tasks/negative-queued.json", status: "queued", prompts: []string{"A\nB", "C"}, step: -2, stepLine: "step: -2", remaining: []string{"A\nB", "C"}},
+		{name: "negative-held", rel: "tasks/negative-held.json", status: "held", prompts: []string{"A", "B\nC"}, step: -3, stepLine: "step: -3", remaining: []string{"A", "B\nC"}},
 		{name: "missing", rel: "tasks/missing.json", status: "queued", prompts: []string{"MISS"}, omitStep: true, stepLine: "step: 0", remaining: []string{"MISS"}},
 	}
 	v1 := t.TempDir()
@@ -535,6 +537,14 @@ func TestImportContinuableBodyKeepsStepBoundaries(t *testing.T) {
 			}
 			if strings.Join(card.Deps, ",") != strings.Join(want, ",") {
 				t.Fatalf("%s deps %v want %v", row.name, card.Deps, want)
+			}
+		}
+		if strings.HasPrefix(row.name, "negative") {
+			if card.Status != model.CardReady && card.Status != model.CardPaused {
+				t.Fatalf("%s status %s", row.name, card.Status)
+			}
+			if len(remaining) == 0 || len(completed) != 0 {
+				t.Fatalf("%s treated as all-complete completed %q remaining %q", row.name, completed, remaining)
 			}
 		}
 		bodies[row.name] = card.Body
@@ -638,4 +648,420 @@ func sameStrings(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+func TestImportDistinctStableIDs(t *testing.T) {
+	build := func(t *testing.T) (string, string) {
+		t.Helper()
+		v1 := t.TempDir()
+		writeV1(t, v1, "tasks/queued.json", map[string]any{
+			"id": "q1", "title": "Queue the ferry", "status": "queued", "project": "lumen",
+		})
+		writeV1(t, v1, "tasks/han.json", map[string]any{
+			"title": "Zhong card", "status": "queued", "project": "中文",
+		})
+		writeV1(t, v1, "tasks/xiang.json", map[string]any{
+			"title": "Xiang card", "status": "queued", "project": "项目",
+		})
+		writeV1(t, v1, "tasks/a.b.json", map[string]any{
+			"title": "Dot file", "status": "done", "project": "lumen",
+		})
+		writeV1(t, v1, "tasks/a-b.json", map[string]any{
+			"title": "Dash file", "status": "done", "project": "lumen",
+		})
+		return v1, snapshotTree(t, v1)
+	}
+	importOnce := func(t *testing.T, v1, v2 string) map[string]model.Card {
+		t.Helper()
+		if _, err := Import(context.Background(), v2, v1, false); err != nil {
+			t.Fatal(err)
+		}
+		db := openDB(t, v2)
+		bySource := map[string]model.Card{}
+		for _, card := range cardsOf(t, db) {
+			bySource[card.Legacy.SourcePath] = card
+		}
+		return bySource
+	}
+	v1, before := build(t)
+	v2 := t.TempDir()
+	bySource := importOnce(t, v1, v2)
+	db := openDB(t, v2)
+	wantSources := []string{"tasks/queued.json", "tasks/han.json", "tasks/xiang.json", "tasks/a.b.json", "tasks/a-b.json"}
+	if len(bySource) != len(wantSources) {
+		t.Fatalf("cards %d %#v", len(bySource), bySource)
+	}
+	for _, rel := range wantSources {
+		if _, ok := bySource[rel]; !ok {
+			t.Fatalf("missing %s", rel)
+		}
+	}
+	queued := bySource["tasks/queued.json"]
+	if queued.ID != "v1-q1" || queued.Objective != "v1-import-lumen" {
+		t.Fatalf("explicit id %+v", queued)
+	}
+	han, xiang := bySource["tasks/han.json"], bySource["tasks/xiang.json"]
+	if han.ID == xiang.ID || han.Objective == xiang.Objective {
+		t.Fatalf("collapsed cards %s %s objectives %s %s", han.ID, xiang.ID, han.Objective, xiang.Objective)
+	}
+	hanObj, err := db.GetObjective(context.Background(), han.Objective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xiangObj, err := db.GetObjective(context.Background(), xiang.Objective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hanObj.Project == xiangObj.Project || hanObj.ID == xiangObj.ID {
+		t.Fatalf("projects share an id %s %s", hanObj.Project, xiangObj.Project)
+	}
+	dot, dash := bySource["tasks/a.b.json"], bySource["tasks/a-b.json"]
+	if dot.ID == dash.ID || dot.ID == "" || dash.ID == "" {
+		t.Fatalf("filename ids %q %q", dot.ID, dash.ID)
+	}
+	cardsBefore := cardsOf(t, db)
+	objsBefore := objectivesOf(t, db)
+	if _, err := Import(context.Background(), v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	if again := cardsOf(t, db); len(again) != len(cardsBefore) {
+		t.Fatalf("second import cards %d want %d", len(again), len(cardsBefore))
+	}
+	if again := objectivesOf(t, db); len(again) != len(objsBefore) {
+		t.Fatalf("second import objectives %d want %d", len(again), len(objsBefore))
+	}
+	other := t.TempDir()
+	again := importOnce(t, v1, other)
+	for _, rel := range wantSources {
+		if again[rel].ID != bySource[rel].ID || again[rel].Objective != bySource[rel].Objective {
+			t.Fatalf("%s id %s/%s objective %s/%s", rel, again[rel].ID, bySource[rel].ID, again[rel].Objective, bySource[rel].Objective)
+		}
+	}
+	if after := snapshotTree(t, v1); after != before {
+		t.Fatal("import changed v1 bytes")
+	}
+}
+
+func TestImportSourceLocatesFile(t *testing.T) {
+	v1 := t.TempDir()
+	writeV1(t, v1, "tasks/queued.json", map[string]any{
+		"id": "q1", "title": "Queue the ferry", "status": "queued", "project": "lumen",
+	})
+	brokenPath := filepath.Join(v1, "tasks", "broken.json")
+	if err := os.WriteFile(brokenPath, []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, v1)
+	v2 := t.TempDir()
+	if _, err := Import(context.Background(), v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, v2)
+	bySource := map[string]model.Card{}
+	for _, card := range cardsOf(t, db) {
+		if card.Legacy.SourcePath == "" || strings.Contains(card.Legacy.SourcePath, v1) {
+			t.Fatalf("relative source changed %+v", card.Legacy)
+		}
+		bySource[card.Legacy.SourcePath] = card
+	}
+	for _, rel := range []string{"tasks/queued.json", "tasks/broken.json"} {
+		card, ok := bySource[rel]
+		if !ok {
+			t.Fatalf("missing %s", rel)
+		}
+		if card.Legacy.SourcePath != rel {
+			t.Fatalf("source %q", card.Legacy.SourcePath)
+		}
+		home, path := readLegacySource(t, db, card.ID)
+		if home != v1 || !strings.HasPrefix(path, home+string(filepath.Separator)) {
+			t.Fatalf("location home %q path %q v1 %q", home, path, v1)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := os.ReadFile(filepath.Join(v1, filepath.FromSlash(rel)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) || len(got) == 0 && rel == "tasks/queued.json" {
+			t.Fatalf("%s bytes %q", rel, got)
+		}
+	}
+	if _, err := Import(context.Background(), v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	if n := legacySourceCount(t, db, bySource["tasks/queued.json"].ID); n != 1 {
+		t.Fatalf("source events %d", n)
+	}
+	if after := snapshotTree(t, v1); after != before {
+		t.Fatal("import changed v1 bytes")
+	}
+}
+
+func TestImportSkipsWorkflowSidecars(t *testing.T) {
+	const (
+		hex32 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		hex20 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	v1 := t.TempDir()
+	writeV1(t, v1, "workflows/real.json", map[string]any{
+		"id": "w1", "title": "Live workflow", "status": "running", "project": "lumen",
+	})
+	writeV1(t, v1, "workflows/mod.progress.json", map[string]any{
+		"id": "prog1", "title": "Progress sidecar", "status": "queued", "project": "lumen",
+	})
+	writeV1(t, v1, "tasks/keep.progress.json", map[string]any{
+		"id": "taskprog", "title": "Task progress name", "status": "queued", "project": "lumen",
+	})
+	writeV1(t, v1, "archive/old.progress.json", map[string]any{
+		"id": "archprog", "title": "Archive progress name", "status": "done", "project": "lumen",
+	})
+	writeV1(t, v1, "workflows/claimed.design-receipt.json", map[string]any{
+		"id": "claim1", "title": "Not a sidecar", "status": "queued", "project": "lumen",
+		"role": "design", "read_only": true,
+	})
+	receipt := []byte(`{"role":"design","read_only":true,"status":"completed","runner":"grok","actual_runner":"grok","identity":"fixture-identity","session_id":"fixture-session","result_path":"/tmp/fixture-result","digest":"` + hex32 + `","input_identity":"fixture-input"}`)
+	preimage := []byte(`{"meaning":"fixture preimage","head":"` + hex20 + `","hashes":{"internal/lamp.go":"` + hex32 + `"}}`)
+	writeRaw(t, v1, "workflows/ok.design-receipt.json", receipt)
+	writeRaw(t, v1, "workflows/keep.retained-preimage-hashes.json", preimage)
+	writeRaw(t, v1, "workflows/broken.json", []byte("{"))
+	writeRaw(t, v1, "workflows/bad.design-receipt.json", []byte("{"))
+	writeRaw(t, v1, "workflows/notes.txt", []byte("not a record"))
+	writeRaw(t, v1, "tasks/readme.txt", []byte("not a record"))
+	writeV1(t, v1, "tasks/sub/hidden.json", map[string]any{
+		"id": "hidden", "title": "Nested", "status": "queued", "project": "lumen",
+	})
+	if err := os.MkdirAll(filepath.Join(v1, "workflows", "dir.json"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, v1)
+	v2 := t.TempDir()
+	report, err := Import(context.Background(), v2, v1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, v2)
+	bySource := map[string]model.Card{}
+	for _, card := range cardsOf(t, db) {
+		bySource[card.Legacy.SourcePath] = card
+	}
+	imported := []string{
+		"workflows/real.json",
+		"tasks/keep.progress.json",
+		"archive/old.progress.json",
+		"workflows/claimed.design-receipt.json",
+		"workflows/broken.json",
+		"workflows/bad.design-receipt.json",
+	}
+	skipped := []string{
+		"workflows/mod.progress.json",
+		"workflows/ok.design-receipt.json",
+		"workflows/keep.retained-preimage-hashes.json",
+		"workflows/notes.txt",
+		"tasks/readme.txt",
+		"tasks/sub/hidden.json",
+	}
+	if len(bySource) != len(imported) {
+		t.Fatalf("cards %d %#v", len(bySource), sourceKeys(bySource))
+	}
+	for _, rel := range imported {
+		if _, ok := bySource[rel]; !ok {
+			t.Fatalf("missing record %s", rel)
+		}
+	}
+	for _, rel := range skipped {
+		if _, ok := bySource[rel]; ok {
+			t.Fatalf("imported sidecar %s", rel)
+		}
+	}
+	if _, ok := bySource["workflows/dir.json"]; ok {
+		t.Fatal("imported a directory")
+	}
+	if bySource["workflows/broken.json"].Legacy.Status != "unparsed" || bySource["workflows/bad.design-receipt.json"].Legacy.Status != "unparsed" {
+		t.Fatalf("broken %+v %+v", bySource["workflows/broken.json"].Legacy, bySource["workflows/bad.design-receipt.json"].Legacy)
+	}
+	if bySource["workflows/broken.json"].Status == model.CardReady || bySource["workflows/real.json"].ID != "v1-w1" {
+		t.Fatalf("placement broken %+v real %s", bySource["workflows/broken.json"], bySource["workflows/real.json"].ID)
+	}
+	if report.Counts["v1:unparsed"] != 2 || report.Counts["v1:running"] != 1 || report.Counts["v1:queued"] != 2 || report.Counts["v1:done"] != 1 {
+		t.Fatalf("counts %#v", report.Counts)
+	}
+	for _, rel := range skipped {
+		for _, line := range report.Unparsed {
+			if strings.Contains(line, rel) {
+				t.Fatalf("skipped file counted %s in %q", rel, line)
+			}
+		}
+	}
+	if _, err := Import(context.Background(), v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	if again := cardsOf(t, db); len(again) != len(imported) {
+		t.Fatalf("second import cards %d", len(again))
+	}
+	if after := snapshotTree(t, v1); after != before {
+		t.Fatal("import changed v1 bytes")
+	}
+}
+
+func TestImportRefusesSourceDatabase(t *testing.T) {
+	writeOne := func(t *testing.T, dir string) {
+		t.Helper()
+		writeV1(t, dir, "tasks/queued.json", map[string]any{
+			"id": "q1", "title": "Queue the ferry", "status": "queued", "project": "lumen",
+		})
+	}
+	cases := []struct {
+		name  string
+		same  bool
+		setup func(t *testing.T) (v2, v1, watch string)
+	}{
+		{
+			name: "same path",
+			same: true,
+			setup: func(t *testing.T) (string, string, string) {
+				dir := t.TempDir()
+				writeOne(t, dir)
+				return dir, dir, dir
+			},
+		},
+		{
+			name: "dot alias",
+			same: true,
+			setup: func(t *testing.T) (string, string, string) {
+				dir := t.TempDir()
+				writeOne(t, dir)
+				return filepath.Join(dir, "."), dir, dir
+			},
+		},
+		{
+			name: "symlink v2",
+			same: true,
+			setup: func(t *testing.T) (string, string, string) {
+				dir := t.TempDir()
+				writeOne(t, dir)
+				link := filepath.Join(t.TempDir(), "alias")
+				if err := os.Symlink(dir, link); err != nil {
+					t.Fatal(err)
+				}
+				return link, dir, dir
+			},
+		},
+		{
+			name: "symlink v1",
+			same: true,
+			setup: func(t *testing.T) (string, string, string) {
+				dir := t.TempDir()
+				writeOne(t, dir)
+				link := filepath.Join(t.TempDir(), "alias")
+				if err := os.Symlink(dir, link); err != nil {
+					t.Fatal(err)
+				}
+				return dir, link, dir
+			},
+		},
+		{
+			name: "distinct directories",
+			setup: func(t *testing.T) (string, string, string) {
+				v1 := t.TempDir()
+				writeOne(t, v1)
+				return t.TempDir(), v1, v1
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v2, v1, watch := tc.setup(t)
+			before := snapshotTree(t, watch)
+			_, err := Import(context.Background(), v2, v1, false)
+			if tc.same {
+				if err == nil {
+					t.Fatal("same directory imported")
+				}
+				if _, statErr := os.Stat(filepath.Join(watch, "cardex.db")); !os.IsNotExist(statErr) {
+					t.Fatalf("database in source: %v", statErr)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			} else {
+				if _, statErr := os.Stat(filepath.Join(v2, "cardex.db")); err != nil {
+					t.Fatal(statErr)
+				}
+				if _, statErr := os.Stat(filepath.Join(v1, "cardex.db")); !os.IsNotExist(statErr) {
+					t.Fatalf("database in v1: %v", statErr)
+				}
+				db := openDB(t, v2)
+				if cards := cardsOf(t, db); len(cards) != 1 || cards[0].ID != "v1-q1" {
+					t.Fatalf("cards %+v", cards)
+				}
+			}
+			if after := snapshotTree(t, watch); after != before {
+				t.Fatal("source directory changed")
+			}
+		})
+	}
+}
+
+func readLegacySource(t *testing.T, db *store.Store, id string) (string, string) {
+	t.Helper()
+	var home, path string
+	var n int
+	for _, ev := range eventsOf(t, db, id) {
+		if ev.Type != legacySourceEvent {
+			continue
+		}
+		n++
+		var body struct {
+			Home string `json:"home"`
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal(ev.Data, &body); err != nil {
+			t.Fatal(err)
+		}
+		home, path = body.Home, body.Path
+	}
+	if n != 1 || home == "" || path == "" {
+		t.Fatalf("source events %d home %q path %q", n, home, path)
+	}
+	return home, path
+}
+
+func legacySourceCount(t *testing.T, db *store.Store, id string) int {
+	t.Helper()
+	n := 0
+	for _, ev := range eventsOf(t, db, id) {
+		if ev.Type == legacySourceEvent {
+			n++
+		}
+	}
+	return n
+}
+
+func eventsOf(t *testing.T, db *store.Store, id string) []model.Event {
+	t.Helper()
+	evs, err := db.ListEvents(context.Background(), "card:"+id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return evs
+}
+
+func writeRaw(t *testing.T, root, rel string, body []byte) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sourceKeys(cards map[string]model.Card) []string {
+	out := make([]string, 0, len(cards))
+	for rel := range cards {
+		out = append(out, rel)
+	}
+	return out
 }

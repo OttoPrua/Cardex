@@ -936,19 +936,52 @@ func runRankingProductionPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertDefaultRankingPrompt(t, material)
-	proposal := plantRankingExecutor(t, h, newModel)
-	exitCode := 0
-	if err := h.DB.CreateAttempt(ctx, &model.Attempt{
-		ID: "a-rank", Card: rank.ID, Route: model.Route{Channel: oldCh.ID, Model: oldModel},
-		EndedAt: now.UTC(), Exit: &exitCode,
-	}); err != nil {
+	plantRankingExecutor(t, h, rank.ID, newModel)
+	mustTick(t, h, func() bool {
+		_, _, ok := endedRankingAttempt(t, h, rank.ID)
+		return ok
+	}, 30*time.Second)
+	attempt, resultPath, ok := endedRankingAttempt(t, h, rank.ID)
+	if !ok {
+		t.Fatal("fake ranking did not write a result file")
+	}
+	t.Logf("fake-run wrote result file %s", resultPath)
+	rank, err = h.DB.GetCard(ctx, rank.ID)
+	if err != nil {
 		t.Fatal(err)
 	}
+	output, _ := os.ReadFile(filepath.Join(h.Home, "attempts", attempt.ID, "output.log"))
+	exitCode := 1
+	if attempt.Exit != nil {
+		exitCode = *attempt.Exit
+	}
+	res, err := harvest.Harvest(ctx, harvest.Input{
+		Attempt:    attempt,
+		Card:       rank,
+		Exit:       exitCode,
+		Output:     output,
+		ErrorClass: attempt.ErrorClass,
+		Repo:       attempt.Worktree,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ResultText != string(raw) {
+		t.Fatalf("harvested text %q want file %q", res.ResultText, raw)
+	}
+	if !strings.Contains(res.ResultText, newModel) {
+		t.Fatalf("harvested text missing %s: %s", newModel, res.ResultText)
+	}
 	if err := loop.AbsorbHarvestedRanking(ctx, loop.Deps{Store: h.DB}, rank, loop.RankingHarvest{
-		AttemptID:  "a-rank",
-		Outcome:    model.OutcomePassed,
-		Acceptance: "passed",
-		ResultText: proposal,
+		AttemptID:  attempt.ID,
+		Outcome:    res.Outcome,
+		ErrorClass: res.ErrorClass,
+		Acceptance: harvestAcceptance(res.Evidence),
+		ResultText: res.ResultText,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -959,7 +992,7 @@ func runRankingProductionPath(t *testing.T) {
 	if len(questions) != 1 {
 		t.Fatalf("questions %+v", questions)
 	}
-	t.Logf("single question %s from the proposal", questions[0].ID)
+	t.Logf("one-question %s from harvested ranking result", questions[0].ID)
 	asked := questions[0]
 	if !strings.Contains(asked.Text, "新出现") || !strings.Contains(asked.Text, newModel) {
 		t.Fatalf("question %s", asked.Text)
@@ -973,12 +1006,7 @@ func runRankingProductionPath(t *testing.T) {
 	if len(asked.Options) != 1 || asked.Options[0] != "批准" {
 		t.Fatalf("options %+v", asked.Options)
 	}
-	if err := loop.AbsorbHarvestedRanking(ctx, loop.Deps{Store: h.DB}, rank, loop.RankingHarvest{
-		AttemptID:  "a-rank",
-		Outcome:    model.OutcomePassed,
-		Acceptance: "passed",
-		ResultText: proposal,
-	}); err != nil {
+	if err := h.Sched.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
 	repeated, err := h.DB.ListQuestions(ctx, obj)
@@ -986,8 +1014,9 @@ func runRankingProductionPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(repeated) != 1 || repeated[0].ID != asked.ID {
-		t.Fatalf("second absorb questions %+v", repeated)
+		t.Fatalf("second tick questions %+v", repeated)
 	}
+	t.Log("second-tick after absorb created no extra proposal or question")
 	keptRoute := model.Route{Channel: "keep-ch", Model: "keep-model"}
 	if _, err := question.New(h.DB, nil).Answer(ctx, asked.ID, asked.Options[0]); err != nil {
 		t.Fatal(err)
@@ -1030,7 +1059,7 @@ func runRankingProductionPath(t *testing.T) {
 	if got.Route.Model != newModel || got.Route.Channel == "" {
 		t.Fatalf("new route %+v", got.Route)
 	}
-	t.Logf("new card routed to the approved model %s", got.Route.Model)
+	t.Logf("new-route model=%s", got.Route.Model)
 	t.Logf("previously stored route unchanged channel=%s model=%s", keptRoute.Channel, keptRoute.Model)
 }
 
@@ -1041,10 +1070,9 @@ func assertRankingEnqueued(t *testing.T, config string, wantCard, manual bool, s
 	useDefaultRunner(t, h)
 	stopLater(t, h)
 	ctx := context.Background()
-	var obj, newModel string
+	var obj string
 	if len(sources) > 0 {
-		obj, _, _, newModel = seedRankingWorld(t, h, !manual)
-		plantRankingExecutor(t, h, newModel)
+		obj, _, _, _ = seedRankingWorld(t, h, !manual)
 	} else {
 		var id string
 		_, id = bindProject(t, h, "true")
@@ -1170,7 +1198,7 @@ func seedRankingWorld(t *testing.T, h *Harness, auto bool) (obj string, oldCh mo
 	return obj, oldCh, oldModel, newModel
 }
 
-func plantRankingExecutor(t *testing.T, h *Harness, newModel string) string {
+func plantRankingExecutor(t *testing.T, h *Harness, cardID, newModel string) {
 	t.Helper()
 	proposal := `{"entries":[{"model":"` + newModel + `","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"新榜"}]}`
 	script, err := json.Marshal(map[string]any{
@@ -1185,11 +1213,43 @@ func plantRankingExecutor(t *testing.T, h *Harness, newModel string) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	id := loop.DefaultRankingCardID(time.Now())
-	if err := os.WriteFile(filepath.Join(dir, id+".json"), script, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, cardID+".json"), script, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return proposal
+}
+
+func endedRankingAttempt(t *testing.T, h *Harness, cardID string) (model.Attempt, string, bool) {
+	t.Helper()
+	for _, attempt := range attemptsOf(t, h, cardID) {
+		if attempt.Worktree == "" {
+			continue
+		}
+		path := filepath.Join(attempt.Worktree, ".cardex-result.md")
+		if _, err := os.Stat(path); err != nil {
+			continue
+		}
+		if attempt.EndedAt.IsZero() && attempt.Exit == nil {
+			continue
+		}
+		if host.LiveHost(attempt) {
+			continue
+		}
+		return attempt, path, true
+	}
+	return model.Attempt{}, "", false
+}
+
+func harvestAcceptance(evidence string) string {
+	const key = "acceptance="
+	i := strings.Index(evidence, key)
+	if i < 0 {
+		return ""
+	}
+	rest := evidence[i+len(key):]
+	if sp := strings.IndexAny(rest, " \t"); sp >= 0 {
+		rest = rest[:sp]
+	}
+	return rest
 }
 
 func findRankingCard(t *testing.T, h *Harness, obj string) (model.Card, bool) {

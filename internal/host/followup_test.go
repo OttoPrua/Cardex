@@ -343,3 +343,183 @@ func testFailStartPersists(t *testing.T) {
 		t.Fatal("missing host_finish")
 	}
 }
+
+// blockingUntilDoneManager blocks in Commit until the context it receives is
+// done, then returns that error. Returning immediately is not coverage.
+type blockingUntilDoneManager struct {
+	mu               sync.Mutex
+	calls            int
+	cancelledAtEntry bool
+	hasDL            bool
+	remain           time.Duration
+	err              error
+	waited           time.Duration
+	doneAt           time.Time
+	entered          chan struct{}
+}
+
+func newBlockingUntilDoneManager() *blockingUntilDoneManager {
+	return &blockingUntilDoneManager{entered: make(chan struct{})}
+}
+
+func (m *blockingUntilDoneManager) Commit(ctx context.Context, _, _ string) (string, error) {
+	start := time.Now()
+	dl, hasDL := ctx.Deadline()
+	var remain time.Duration
+	if hasDL {
+		remain = time.Until(dl)
+	}
+	m.mu.Lock()
+	m.calls++
+	m.cancelledAtEntry = ctx.Err() != nil
+	m.hasDL = hasDL
+	m.remain = remain
+	m.mu.Unlock()
+	close(m.entered)
+
+	<-ctx.Done()
+	doneAt := time.Now()
+	err := ctx.Err()
+	m.mu.Lock()
+	m.err = err
+	m.waited = time.Since(start)
+	m.doneAt = doneAt
+	m.mu.Unlock()
+	return "", err
+}
+
+func (m *blockingUntilDoneManager) Create(context.Context, workspace.CreateRequest) (workspace.Worktree, error) {
+	return workspace.Worktree{}, errors.New("not used")
+}
+
+func (m *blockingUntilDoneManager) Diff(context.Context, string, string) (workspace.Diff, error) {
+	return workspace.Diff{}, errors.New("not used")
+}
+
+func (m *blockingUntilDoneManager) Remove(context.Context, string) error {
+	return errors.New("not used")
+}
+
+func (m *blockingUntilDoneManager) BlockPush(context.Context, string) error {
+	return errors.New("not used")
+}
+
+func (m *blockingUntilDoneManager) snapshot() (calls int, cancelledAtEntry, hasDL bool, remain time.Duration, err error, waited time.Duration, doneAt time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls, m.cancelledAtEntry, m.hasDL, m.remain, m.err, m.waited, m.doneAt
+}
+
+func TestCommitDeadlineDoesNotDropExecutionResult(t *testing.T) {
+	const bound = time.Second
+	restore := host.SetResultPersistTimeoutForTest(bound)
+	t.Cleanup(restore)
+
+	for _, tc := range []struct {
+		name   string
+		pty    bool
+		cancel bool
+	}{
+		{name: "pipe"},
+		{name: "pty", pty: true},
+		{name: "cancel-while-commit-blocks", cancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testCommitDeadlineDoesNotDrop(t, bound, tc.pty, tc.cancel)
+		})
+	}
+}
+
+func testCommitDeadlineDoesNotDrop(t *testing.T, bound time.Duration, pty, cancelRun bool) {
+	t.Helper()
+	const wantExit = 6
+	home, id, _ := seedAttempt(t, 1, func(string) any {
+		doc := map[string]any{
+			"attempts": map[string]any{
+				"0": map[string]any{
+					"output":    "tokens=23\n",
+					"exit_code": wantExit,
+				},
+			},
+		}
+		if pty {
+			doc["needs_pty"] = true
+		}
+		return doc
+	})
+
+	ctx := context.Background()
+	var cancel context.CancelFunc
+	if cancelRun {
+		ctx, cancel = context.WithCancel(context.Background())
+		defer cancel()
+	}
+	mgr := newBlockingUntilDoneManager()
+	errc := make(chan error, 1)
+	go func() {
+		errc <- host.Run(host.WithWorkspace(ctx, mgr), home, id)
+	}()
+
+	var cancelAt time.Time
+	select {
+	case <-mgr.entered:
+		if cancelRun {
+			cancelAt = time.Now()
+			cancel()
+		}
+	case err := <-errc:
+		t.Fatalf("Run returned before Commit blocked: %v", err)
+	case <-time.After(8 * time.Second):
+		t.Fatal("Commit was not entered")
+	}
+
+	var runErr error
+	select {
+	case runErr = <-errc:
+	case <-time.After(8 * time.Second):
+		t.Fatal("Run did not finish after the commit deadline")
+	}
+	if runErr != nil {
+		t.Fatalf("Run failed after the commit deadline: %v", runErr)
+	}
+
+	calls, cancelledAtEntry, hasDL, remain, commitErr, waited, doneAt := mgr.snapshot()
+	if calls != 1 || cancelledAtEntry || !hasDL {
+		t.Fatalf("commit calls=%d cancelledAtEntry=%v hasDeadline=%v", calls, cancelledAtEntry, hasDL)
+	}
+	if remain <= 0 || remain > bound+100*time.Millisecond {
+		t.Fatalf("commit deadline remain %s, want within test bound %s", remain, bound)
+	}
+	if !errors.Is(commitErr, context.DeadlineExceeded) {
+		t.Fatalf("commit err %v", commitErr)
+	}
+	if waited < bound/2 {
+		t.Fatalf("commit returned in %s without exhausting its deadline", waited)
+	}
+	if cancelRun && !doneAt.After(cancelAt.Add(bound/2)) {
+		t.Fatalf("commit finished at %s, run cancelled at %s", doneAt, cancelAt)
+	}
+
+	logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, events := loadAttempt(t, home, id)
+	if attempt.Exit == nil || *attempt.Exit != wantExit || attempt.EndedAt.IsZero() {
+		t.Fatalf("exit %#v ended %v", attempt.Exit, attempt.EndedAt)
+	}
+	wantUsage := runner.Fake{}.ParseUsage(logb)
+	if attempt.Usage != wantUsage || wantUsage.Tokens == 0 {
+		t.Fatalf("usage %+v want %+v log %q", attempt.Usage, wantUsage, logb)
+	}
+	if attempt.HeadCommit != "" {
+		t.Fatalf("head %q", attempt.HeadCommit)
+	}
+	if _, ok := eventType(events, "host_finish"); !ok {
+		t.Fatal("missing host_finish")
+	}
+	ev, ok := eventType(events, "workspace_commit")
+	if !ok || !strings.Contains(string(ev.Data), context.DeadlineExceeded.Error()) {
+		t.Fatalf("commit event %s", ev.Data)
+	}
+}

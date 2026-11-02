@@ -88,15 +88,10 @@ func overlayKimiPermissionConfig(raw string) string {
 			inTable = true
 		}
 		if !inTable {
-			drop := false
-			for key := range values {
-				if strings.HasPrefix(trimmed, key+" ") || strings.HasPrefix(trimmed, key+"=") {
-					drop = true
-					break
+			if key, ok := kimiAssignKey(trimmed); ok {
+				if _, drop := values[key]; drop {
+					continue
 				}
-			}
-			if drop {
-				continue
 			}
 		}
 		kept = append(kept, line)
@@ -107,6 +102,20 @@ func overlayKimiPermissionConfig(raw string) string {
 		"",
 	}
 	return strings.Join(append(prefix, kept...), "\n")
+}
+
+// kimiAssignKey is the top-level key of one assignment. Whitespace between the
+// key and "=" , including a tab, still names that key.
+func kimiAssignKey(line string) (string, bool) {
+	key, _, ok := strings.Cut(line, "=")
+	if !ok {
+		return "", false
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return "", false
+	}
+	return key, true
 }
 
 func (Kimi) Classify(_ int, output []byte) model.ErrorClass {

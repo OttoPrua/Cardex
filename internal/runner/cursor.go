@@ -40,13 +40,16 @@ func (Cursor) Build(spec LaunchSpec) ([]string, []string, error) {
 }
 
 func cursorPrivilegeWidening(args []string) bool {
-	for _, arg := range args {
-		switch arg {
-		case "--auto-review", "--force", "--yolo":
-			return true
-		}
+	return privilegeWidening(args, cursorPrivilegeFlag, true, false)
+}
+
+func cursorPrivilegeFlag(arg string) bool {
+	switch arg {
+	case "--auto-review", "--force", "--yolo":
+		return true
+	default:
+		return false
 	}
-	return false
 }
 
 func (Cursor) Classify(_ int, output []byte) model.ErrorClass {

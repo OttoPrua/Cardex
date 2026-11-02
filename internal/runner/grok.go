@@ -74,7 +74,26 @@ func (Grok) Capabilities() []string { return []string{"goal_mode"} }
 
 func (g Grok) NeedsPTY() bool { return g.GoalMode }
 
-func (Grok) WritablePaths() []string { return userPath(".grok") }
+func (Grok) WritablePaths() []string {
+	home := grokHome()
+	if home == "" {
+		return nil
+	}
+	return []string{home}
+}
+
+// grokHome is the existing GROK_HOME, or ~/.grok when that variable is unset.
+// Goal launch env and WritablePaths both use this so one cannot replace the other.
+func grokHome() string {
+	if home := strings.TrimSpace(os.Getenv("GROK_HOME")); home != "" {
+		return home
+	}
+	paths := userPath(".grok")
+	if len(paths) == 0 {
+		return ""
+	}
+	return paths[0]
+}
 
 // promptArg is the prompt file's text. Cursor, Kimi, and AGY pass it on argv.
 // Headless grok keeps the path on --prompt-file. An empty path is an empty prompt.
@@ -137,20 +156,55 @@ func (g Grok) buildGoal(spec LaunchSpec) ([]string, []string, error) {
 }
 
 func grokPrivilegeWidening(args []string) bool {
-	for i, arg := range args {
-		switch arg {
-		case "--always-approve", "--yolo", "--skip-permissions", "--dangerously-skip-permissions":
-			return true
-		case "--permission-mode":
-			if i+1 < len(args) {
-				switch args[i+1] {
-				case "dontAsk", "bypassPermissions", "yolo", "always-approve":
-					return true
-				}
+	return privilegeWidening(args, grokPrivilegeFlag, false, true)
+}
+
+func grokPrivilegeFlag(arg string) bool {
+	switch arg {
+	case "--always-approve", "--yolo", "--skip-permissions", "--dangerously-skip-permissions":
+		return true
+	default:
+		return false
+	}
+}
+
+// privilegeWidening rejects privilege flags in flag position. An option value
+// is not a flag. positionalBody skips the final argv slot, which is the prompt
+// text. checkPermission still rejects a privilege operand of --permission-mode.
+func privilegeWidening(args []string, flag func(string) bool, positionalBody, checkPermission bool) bool {
+	for i := 0; i < len(args); i++ {
+		if positionalBody && i == len(args)-1 {
+			break
+		}
+		arg := args[i]
+		if checkPermission && arg == "--permission-mode" && i+1 < len(args) {
+			switch args[i+1] {
+			case "dontAsk", "bypassPermissions", "yolo", "always-approve":
+				return true
 			}
+			i++
+			continue
+		}
+		if optionTakesValue(arg) && i+1 < len(args) {
+			i++
+			continue
+		}
+		if flag(arg) {
+			return true
 		}
 	}
 	return false
+}
+
+func optionTakesValue(arg string) bool {
+	switch arg {
+	case "--model", "--output-format", "--sandbox", "--permission-mode",
+		"--prompt-file", "--cwd", "--workspace", "--prompt", "--mode",
+		"--effort", "--reasoning-effort":
+		return true
+	default:
+		return false
+	}
 }
 
 // grokGoalObserveEvery is how often Drive re-reads the session while a PTY
@@ -190,14 +244,22 @@ func (g Grok) Drive(ctx context.Context, rw io.ReadWriter) error {
 		if termOK {
 			return term
 		}
+		eof := errors.Is(err, io.EOF)
 		if n > 0 {
 			pty = append(pty, tmp[:n]...)
-			if grokInteractiveQuotaTerminal(pty, g.Prompt, errors.Is(err, io.EOF)) {
+			if grokInteractiveQuotaTerminal(pty, g.Prompt, eof) {
 				return ErrGrokQuotaHit
 			}
 		}
+		// A reader can return the quota sentence with a nil error and no
+		// newline, then 0, io.EOF. That empty read still finishes the tail.
+		// It does not commit an uncommitted screen frame: the frame's own
+		// synchronized-update end is what commits it.
+		if n == 0 && eof && grokInteractiveQuotaLines(pty, g.Prompt, true) {
+			return ErrGrokQuotaHit
+		}
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if eof {
 				break
 			}
 			return err
@@ -336,7 +398,9 @@ func classifyScanned(output []byte, prompt string, quota *regexp.Regexp, before 
 // included. A complete JSON error record outside that span is still scanned.
 // Assistant JSON and an unfinished record are not error facts. The caller
 // passes the whole capture, so the last line is at EOF even without a newline.
-// Nested fields are not walked.
+// A nested error object's message, msg, and text are read. Other nested
+// fields are not. One complete multi-line JSON document is the same record
+// as its JSONL line.
 func errorScan(output []byte, prompt string) string {
 	return scanOutput(output, prompt)
 }
@@ -356,7 +420,30 @@ func scanOutput(output []byte, prompt string) string {
 			parts = append(parts, line)
 		}
 	})
+	parts = append(parts, documentErrorFields(output, prompt)...)
 	return strings.Join(parts, "\n")
+}
+
+// documentErrorFields reads one complete multi-line JSON document. A single
+// line is already handled by the line walk. The document is not read when it
+// is the known prompt echo.
+func documentErrorFields(output []byte, prompt string) []string {
+	trim := bytes.TrimSpace(output)
+	if len(trim) == 0 || trim[0] != '{' || !bytes.Contains(trim, []byte("\n")) || !json.Valid(trim) {
+		return nil
+	}
+	if prompt != "" {
+		echo := "/goal " + strings.TrimRight(prompt, "\r\n")
+		echo = strings.TrimRight(strings.ReplaceAll(echo, "\r\n", "\n"), "\r")
+		if strings.TrimSpace(string(trim)) == strings.TrimSpace(echo) {
+			return nil
+		}
+	}
+	var obj map[string]any
+	if json.Unmarshal(trim, &obj) != nil || len(obj) == 0 {
+		return nil
+	}
+	return errorFields(obj)
 }
 
 // goalPromptEchoLines is the echo Drive writes for a known prompt:
@@ -721,7 +808,30 @@ func errorFields(obj map[string]any) []string {
 	}
 	var parts []string
 	for _, key := range []string{"message", "error", "result", "content"} {
+		if key == "error" {
+			parts = append(parts, errorValueText(obj[key])...)
+			continue
+		}
 		if s, ok := stringValue(obj[key]); ok && strings.TrimSpace(s) != "" {
+			parts = append(parts, strings.TrimSpace(s))
+		}
+	}
+	return parts
+}
+
+// errorValueText is a string error or the message, msg, or text inside an
+// error object. v1 antigravityErrorText reads those nested fields.
+func errorValueText(v any) []string {
+	if s, ok := stringValue(v); ok && strings.TrimSpace(s) != "" {
+		return []string{strings.TrimSpace(s)}
+	}
+	nested, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	var parts []string
+	for _, key := range []string{"message", "msg", "text"} {
+		if s, ok := stringValue(nested[key]); ok && strings.TrimSpace(s) != "" {
 			parts = append(parts, strings.TrimSpace(s))
 		}
 	}
@@ -1163,7 +1273,7 @@ func finalGoalUpdate(path, goalID string) (status, verdict, sessionID string, ok
 			continue
 		}
 		if heldJSONRecord(line) {
-			return "", "", "", false
+			continue
 		}
 		var rec struct {
 			Params struct {
@@ -1177,7 +1287,7 @@ func finalGoalUpdate(path, goalID string) (status, verdict, sessionID string, ok
 			} `json:"params"`
 		}
 		if json.Unmarshal([]byte(line), &rec) != nil {
-			return "", "", "", false
+			continue
 		}
 		if rec.Params.Update.SessionUpdate != "goal_updated" {
 			continue
@@ -1230,24 +1340,34 @@ func findUsage(output []byte, aliases map[string]string) (raw map[string]json.Ra
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		if line == "" || line[0] != '{' {
-			continue
+		if n, parsed := usageTokens(line, aliases); parsed {
+			raw, tokens, ok = nil, n, true
 		}
-		var obj map[string]json.RawMessage
-		if json.Unmarshal([]byte(line), &obj) != nil {
-			continue
-		}
-		usageRaw, exists := obj["usage"]
-		if !exists || strings.TrimSpace(string(usageRaw)) == "" || strings.TrimSpace(string(usageRaw)) == "null" {
-			continue
-		}
-		n, parsed := tokensFromUsage(usageRaw, aliases)
-		if !parsed {
-			continue
-		}
-		raw, tokens, ok = nil, n, true
 	}
-	return raw, tokens, ok
+	if ok {
+		return raw, tokens, ok
+	}
+	// One complete multi-line document carries the same usage object as the
+	// equivalent JSONL line. JSONL already returned above.
+	if n, parsed := usageTokens(string(bytes.TrimSpace(output)), aliases); parsed {
+		return nil, n, true
+	}
+	return nil, 0, false
+}
+
+func usageTokens(doc string, aliases map[string]string) (int64, bool) {
+	if doc == "" || doc[0] != '{' {
+		return 0, false
+	}
+	var obj map[string]json.RawMessage
+	if json.Unmarshal([]byte(doc), &obj) != nil {
+		return 0, false
+	}
+	usageRaw, exists := obj["usage"]
+	if !exists || strings.TrimSpace(string(usageRaw)) == "" || strings.TrimSpace(string(usageRaw)) == "null" {
+		return 0, false
+	}
+	return tokensFromUsage(usageRaw, aliases)
 }
 
 func tokensFromUsage(raw json.RawMessage, aliases map[string]string) (int64, bool) {

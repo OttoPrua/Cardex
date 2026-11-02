@@ -1,0 +1,5 @@
+Copied 2026-11-02 from v1 cmd/cardex. Tests read these excerpts only.
+v1_grok_test_excerpt.txt: cmd/cardex/grok_test.go fakeGrokBuild quota line
+v1_workflow_goal_excerpt.txt: cmd/cardex/workflow_goal.go func observeNativeGrokGoal
+v1_failure_class_excerpt.txt: cmd/cardex/failure_class_test.go "signal: killed"
+v1_grok_process_excerpt.txt: cmd/cardex/grok.go status.Signaled()

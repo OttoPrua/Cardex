@@ -3,7 +3,6 @@ package positioning
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -470,15 +469,10 @@ func TestEmptyPublishHidesVersionRow(t *testing.T) {
 	if err := st.Approve(ctx, empty.ID); err != nil {
 		t.Fatal(err)
 	}
-	published, ok, err := st.db.PositioningPublishedVersion(ctx)
-	if err != nil || !ok || published <= seed[0].Version {
-		t.Fatalf("empty version %d ok %v err %v seed %d", published, ok, err, seed[0].Version)
-	}
 	cleared, err := st.Current(ctx)
 	if err != nil || len(cleared) != 0 {
 		t.Fatalf("empty current %+v err %v", cleared, err)
 	}
-	assertNoVersionRow(t, st)
 	nextProp, err := st.Propose(ctx, []model.Positioning{{
 		Model: "opus", Family: "anthropic", Tiers: []model.Tier{model.TierT2}, Preference: 1,
 	}})
@@ -489,10 +483,9 @@ func TestEmptyPublishHidesVersionRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	next, err := st.Current(ctx)
-	if err != nil || len(next) != 1 || next[0].Model != "opus" || next[0].Version <= published {
-		t.Fatalf("later version %+v empty was %d err %v", next, published, err)
+	if err != nil || len(next) != 1 || next[0].Model != "opus" || next[0].ID == versionRowID || next[0].Version <= seed[0].Version+1 {
+		t.Fatalf("later version %+v seed %d err %v", next, seed[0].Version, err)
 	}
-	assertNoVersionRow(t, st)
 }
 
 func openPositioning(t *testing.T, cfg string) *Home {
@@ -509,19 +502,99 @@ func openPositioning(t *testing.T, cfg string) *Home {
 	return st
 }
 
-func assertNoVersionRow(t *testing.T, st *Home) {
-	t.Helper()
+func TestCurrentAndProposeReadOneSnapshot(t *testing.T) {
 	ctx := context.Background()
-	rows, err := st.db.ListPositioning(ctx)
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name    string
+		publish bool
+		entry   string
+	}{
+		{name: "current old rows", publish: true, entry: "current"},
+		{name: "propose old rows", publish: true, entry: "propose"},
+		{name: "current first approve", publish: false, entry: "current"},
+		{name: "propose first approve", publish: false, entry: "propose"},
 	}
-	for _, row := range rows {
-		if row.ID == versionRowID || row.Model == versionRowID {
-			t.Fatalf("version row %+v", row)
-		}
-	}
-	if _, err := st.db.GetPositioning(ctx, versionRowID); !errors.Is(err, sql.ErrNoRows) {
-		t.Fatalf("get version row %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			cfg := []byte(`{"positioning":[{"id":"p1","model":"opus","family":"anthropic","tiers":["T3"],"capabilities":["web"],"preference":1}]}`)
+			if err := os.WriteFile(filepath.Join(home, "config.json"), cfg, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			a, err := Open(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = a.Close() })
+			b, err := Open(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = b.Close() })
+
+			if tc.publish {
+				first, err := a.Propose(ctx, []model.Positioning{{
+					ID: "old", Model: "opus", Family: "anthropic", Tiers: []model.Tier{model.TierT3},
+					Capabilities: []string{"web"}, Preference: 1,
+				}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := a.Approve(ctx, first.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := a.Current(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gap, err := b.Propose(ctx, []model.Positioning{{
+				ID: "new", Model: "sonnet", Family: "openai", Tiers: []model.Tier{model.TierT2}, Preference: 2,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var approveErr error
+			currentAfterContent = func() {
+				approveErr = b.Approve(ctx, gap.ID)
+			}
+			t.Cleanup(func() { currentAfterContent = nil })
+
+			probe := []model.Positioning{{
+				ID: "probe", Model: "probe", Family: "probe", Tiers: []model.Tier{model.TierT1}, Preference: 1,
+			}}
+			var got []model.Positioning
+			var prop Proposal
+			if tc.entry == "current" {
+				got, err = a.Current(ctx)
+			} else {
+				prop, err = a.Propose(ctx, probe)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if approveErr != nil {
+				t.Fatalf("overlap approve: %v", approveErr)
+			}
+			currentAfterContent = nil
+
+			after, err := a.Current(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(after) != 1 || after[0].Model != "sonnet" || samePositioningSnapshot(before, after) {
+				t.Fatalf("approved snapshot %+v before %+v", after, before)
+			}
+			if tc.entry == "current" {
+				if !samePositioningSnapshot(got, before) && !samePositioningSnapshot(got, after) {
+					t.Fatalf("current %+v matches neither before %+v nor after %+v", got, before, after)
+				}
+				return
+			}
+			if prop.Diff != summarize(before, probe) && prop.Diff != summarize(after, probe) {
+				t.Fatalf("diff %q matches neither snapshot", prop.Diff)
+			}
+		})
 	}
 }

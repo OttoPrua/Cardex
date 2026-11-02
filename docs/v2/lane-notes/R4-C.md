@@ -1,0 +1,39 @@
+# R4-C
+
+## 做了什么
+
+`scorecard.Compute` 按尝试的 route.model × 卡的 kind × tier 聚合。复核通过率记被复核卡。样本少于 5 写样本不足。没有 `schedules` 键时 `DefaultSchedule` 是每周 ranking，requires 含 `web`。`ScheduleCard` 把定时定义的 `Requires` 原样抄到卡上。`RankingMaterial` 替换来源并附定位表、渠道清单和成绩单摘要。`AbsorbHarvestedRanking` 在验收标签为 `ok`、空或 `passed` 时，对 `passed` 和 `result_unparsable` 宽松解析；违规、预算用尽、验收失败（`failed`、`timeout`）和已停止的卡不建提案。同一 attempt 再吸收不新增提案或问题。`FollowRanking` 在「批准」后调 `Approve`，不改已落库路由。打开数据库不入队、不吸收、不批准。
+
+## 没做什么，以及原因
+
+没有改 sched、prompt 拼装、question、harvest，也没有改 `design.go`。没有 `absorbDelegated`，没有给 `sched.New` 装 `Dispose`。TestS23 不调用这个为 nil 的钩子；派发到重复 tick 的闭环记在转交。没有抓榜，没有改定位表结构、路由或成绩单 CLI。
+
+## 接口请求
+
+- R3-C `internal/sched/loop.go`（本 lane 未改；这些入口现在都不调用下列函数）：无 `schedules` 键时，请在 `schedules`（732 行）调用 `loop.DefaultSchedule`（`ranking.go:41`）和 `loop.ApplyDefaultSchedule`（`ranking.go:67`），让默认每周 ranking 卡的 requires 含 `web`。请给 `cardTemplate`（723 行）增加 `requires`，并在 `enqueueTemplate`（813 行，建卡 843 行）把显式列表原样抄到 `Card.Requires`。请让 `promptText`（568 行）把 `r.Home` 传给 `loop.RankingMaterial`（`ranking.go:171`）。请让 `deliver`（175 行）把真实收割的 outcome、error class、验收标签（`ok`、`failed` 或 `timeout`）和结果原文（含 `result_unparsable`）传给 `loop.AbsorbHarvestedRanking`（`ranking.go:467`）。`sched.New`（65 行）保持 `Dispose` 为 nil。在 `schedules`、`enqueueTemplate`、`promptText` 和 `deliver` 上核对：显式 `requires` 含 `web` 被抄上卡；没有 `schedules` 键时入队每周 ranking，已有 `schedules` 时不入队；同一 attempt 再吸收不新增提案或问题。
+- R3-D `internal/prompt/build.go`（本 lane 未改；`Build` 现在不附 ranking 材料）：请让 ranking 的 attempt prompt 带上 `loop.RankingMaterial`（`ranking.go:171`）。材料是固定来源清单（配置清单整份替换）加上当前定位表、各渠道模型和成绩单摘要。`Build`（30 行）不要反向 import loop；sched 的 `promptText` 可以调用它。在 `Build` 的 ranking 产物上核对这四项。
+- R3-A `internal/loop/design.go`（本 lane 未改；默认分支现在不吸收 ranking）：请让 `absorbAttempt`（1527 行，默认分支 1608 行）把同一份真实收割的 outcome、error class、验收标签（`ok`、`failed` 或 `timeout`）和结果原文（含 `result_unparsable`）传给 `loop.AbsorbHarvestedRanking`（`ranking.go:467`）。不要加 ranking 分支，不要恢复 `absorbDelegated`，不要安装 `Dispose`。在该默认路径核对：验收标签 `ok` 会吸收，`failed` 与 `timeout`、违规、预算用尽和已停止的卡不建提案，同一 attempt 再吸收不新增提案或问题。
+- `question.Answer`（`service.go:62`，76 行只保存回答；本 lane 未改）：请在回答「批准」后调用 `loop.FollowRanking`（`ranking.go:407`）。在该入口核对提案被批准且已落库尝试路由不变。question 不能 import loop，由该文件的负责人接上。
+
+## 转交
+
+R3-C、R3-A 和 question 的负责人接通 `deliver`、`absorbAttempt`、`question.Answer` 之后，S23 要改经那条正常入口观察提案、问题和批准：fake 写出结果，入口吸收成一份提案和一条问题，回答「批准」后新卡路由用新定位，已落库尝试路由不变。重复 tick 后同时断言提案数和问题数都不变。接通之前，S23 对同一份收割再调用 `AbsorbHarvestedRanking`（`scenarios_test.go:1014`），核对提案数和问题数仍为一；批准仍调用 `FollowRanking`。正常入口的重复 tick 核对留到接线完成之后。不要给 `sched.New` 安装 `Dispose`，不要恢复 `absorbDelegated`，不要给 `absorbAttempt` 加 ranking 分支。TestS23 不得调用为 nil 的 `Dispose`。
+
+## 已知问题
+
+`schedules`、`cardTemplate`、`promptText`、`deliver`、`prompt.Build`、`absorbAttempt`、`question.Answer` 仍不调用上述函数。`ranking_sources` 仍会触发未知顶层键警告。R3-B `breaker.go` `knownTop`（183 行）尚未加入 `ranking_sources`。N1：同一张卡上已有的定位问题会让后来的尝试跳过解析并直接完成（`absorbRanking`，`ranking.go:569`），本轮不修。N2：生产路径认可的复核通过可能不写成绩单事件 `loop.review_pass`（`absorbReview` 的 pass 只保存状态，`dev_apply.go:530`），本轮不修。
+
+## 修复记录
+
+- 显式 Requires（含 web）原样抄到定时卡；缺少 config.json 或没有 schedules 键时入队每周 ranking 且 requires 含 web，已有 schedules 键时不入队；ranking_sources 整份替换默认来源，并附当前定位表、各渠道模型和成绩单摘要；回答「批准」后批准提案且不改已落库尝试路由；打开数据库不入队、不吸收、不批准（B1） → internal/loop/ranking.go:41、internal/loop/ranking.go:67、internal/loop/ranking.go:136、internal/loop/ranking.go:171、internal/loop/ranking.go:407 → TestRankingScheduleRequires、TestRankingPromptSnapshots、TestRankingAbsorbLooseAndApprove、TestRankingOpenDoesNotMaintain
+- passed 与 result_unparsable 的收割元组（outcome、错误类、验收结果、结果原文）宽松解析成一份提案和一条写明差异并标出新模型的问题，畸形提案不硬拒绝；违规、预算用尽、验收失败和已停止的卡不建提案；同一 attempt 再吸收不新增提案或问题（B4） → internal/loop/ranking.go:467、internal/loop/ranking.go:494、internal/loop/ranking.go:519、internal/loop/ranking.go:528、internal/loop/ranking.go:630、internal/loop/ranking.go:784 → TestRankingHarvestFormatStillAbsorbs、TestRankingAbsorbHonorsHarvest、TestRankingAbsorbLooseAndApprove
+- 显式 Requires（含 web）原样抄到定时卡；缺少 config.json 或没有 schedules 键时入队每周 ranking 且 requires 含 web，已有 schedules 键时不入队；ranking_sources 整份替换默认来源，并附当前定位表、各渠道模型和成绩单摘要；回答「批准」后批准提案且不改已落库尝试路由；打开数据库不入队、不吸收、不批准（B1） → 本轮写域无新位置 → TestRankingScheduleRequires、TestRankingPromptSnapshots、TestRankingAbsorbLooseAndApprove、TestRankingOpenDoesNotMaintain
+- passed 与 result_unparsable 在验收标签为 ok、passed 或空时宽松解析成一份提案和一条写明差异并标出新模型的问题，畸形提案不硬拒绝；违规、预算用尽、验收失败（failed、timeout）和已停止的卡不建提案；同一 attempt 再吸收不新增提案或问题（B4） → internal/loop/ranking.go:536 → TestRankingAbsorbHonorsHarvest、TestRankingHarvestFormatStillAbsorbs
+- 显式 Requires（含 web）原样抄到定时卡；缺少 config.json 或没有 schedules 键时入队每周 ranking 且 requires 含 web，已有 schedules 键时不入队；ranking_sources 整份替换默认来源，并附当前定位表、各渠道模型和成绩单摘要；回答「批准」后批准提案且不改已落库尝试路由；打开数据库不入队、不吸收、不批准（B1） → 本轮写域无新位置 → TestRankingScheduleRequires、TestRankingPromptSnapshots、TestRankingAbsorbLooseAndApprove、TestRankingOpenDoesNotMaintain
+- 收割元组在验收标签为 ok、空或 passed 时（含 result_unparsable）宽松解析成一份提案和一条写明差异并标出新模型的问题，畸形提案不硬拒绝；违规、预算用尽、验收失败（failed、timeout）和已停止的卡不建提案；同一 attempt 再吸收不新增提案或问题；已确定路线的尝试不变（B4） → 本轮写域无新位置 → TestRankingAbsorbHonorsHarvest、TestRankingHarvestFormatStillAbsorbs、TestRankingAbsorbLooseAndApprove
+- 显式定时定义的 Requires（含 web）原样抄到新建卡上；没有配置文件或没有 schedules 键时入队默认每周 ranking 且 requires 含 web，已有 schedules 键时不入队；ranking_sources 整份替换模板来源，prompt 同时包含当前定位表、各渠道模型清单和成绩单摘要；回答「批准」落库后批准提案且不改已落库尝试路由；打开数据库不入队、不吸收、不批准（B1） → 本轮写域无新位置 → TestRankingScheduleRequires、TestRankingPromptSnapshots、TestRankingAbsorbLooseAndApprove、TestRankingOpenDoesNotMaintain
+- 收割元组在验收标签为 ok、空或 passed 时（含 result_unparsable）宽松解析成一份提案和一条写明差异并标出新模型的问题，畸形提案不硬拒绝；违规、预算用尽、验收失败（failed、timeout）和已停止的卡不建提案；同一 attempt 再吸收不新增提案或问题；已确定路线的尝试不变（B4） → 本轮写域无新位置 → TestRankingAbsorbHonorsHarvest、TestRankingHarvestFormatStillAbsorbs、TestRankingAbsorbLooseAndApprove
+- 显式 Requires（含 web）原样抄到定时卡；缺少 config.json 或没有 schedules 键时入队每周 ranking 且 requires 含 web，已有 schedules 键时不入队；ranking_sources 整份替换默认来源，并附当前定位表、各渠道模型和成绩单摘要；回答「批准」后批准提案且不改已落库尝试路由；打开数据库不入队、不吸收、不批准（B1） → 本轮写域无新位置 → TestRankingScheduleRequires、TestRankingPromptSnapshots、TestRankingAbsorbLooseAndApprove、TestRankingOpenDoesNotMaintain、TestS23
+- ranking 经 fake 执行后用真实收割原文吸收：验收标签 ok/空/passed 且 outcome 为 passed 或 result_unparsable 时宽松解析成一份提案和一条写明差异并标出新模型的问题，畸形提案不硬拒绝；违规、预算用尽、验收失败和已停止的卡不建提案；同一 attempt 再吸收与重复 tick 不新增提案或问题；已确定路线的尝试不变（B4） → internal/e2e/scenarios_test.go:912、internal/e2e/scenarios_test.go:979、internal/e2e/scenarios_test.go:1201 → TestS23、TestRankingDefaultEntry、TestRankingAbsorbHonorsHarvest、TestRankingHarvestFormatStillAbsorbs
+- 显式定时定义的 Requires（含 web）原样抄到新建卡上；没有配置文件或没有 schedules 键时入队默认每周 ranking 且 requires 含 web，已有 schedules 键时不入队；配置来源清单整份替换模板来源，材料同时包含当前定位表、各渠道模型清单和成绩单摘要；回答「批准」后批准提案且不改已落库尝试路由；打开数据库不入队、不吸收、不批准（B1） → 本轮写域无新位置 → TestRankingScheduleRequires、TestRankingPromptSnapshots、TestRankingAbsorbLooseAndApprove、TestRankingOpenDoesNotMaintain
+- 收割元组在验收标签为 ok、空或 passed 时（含 result_unparsable）宽松解析成一份提案和一条写明差异并标出新模型的问题，畸形提案不硬拒绝；违规、预算用尽、验收失败（failed、timeout）和已停止的卡不建提案；同一 attempt 再吸收不新增提案或问题；已确定路线的尝试不变（B4） → 本轮写域无新位置；S23 对同一份收割再调用 AbsorbHarvestedRanking，同时核对提案数与问题数仍为一（internal/e2e/scenarios_test.go:979、internal/e2e/scenarios_test.go:1014、internal/e2e/scenarios_test.go:1250） → TestS23、TestRankingAbsorbHonorsHarvest、TestRankingHarvestFormatStillAbsorbs

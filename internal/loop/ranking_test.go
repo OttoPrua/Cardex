@@ -360,7 +360,7 @@ func TestRankingScheduleRequires(t *testing.T) {
 		wantCard bool
 		wantReq  []string
 	}{
-		{name: "default weekly", wantCard: true, wantReq: []string{"web"}},
+		{name: "missing config.json", wantCard: true, wantReq: []string{"web"}},
 		{name: "missing schedules key", config: "{}\n", wantCard: true, wantReq: []string{"web"}},
 		{name: "explicit web", tasks: []ScheduleTask{explicitWeb}, wantCard: true, wantReq: []string{"web"}},
 		{name: "explicit web and tools", tasks: []ScheduleTask{explicitFull}, wantCard: true, wantReq: []string{"web", "tools"}},
@@ -422,7 +422,13 @@ func TestRankingScheduleRequires(t *testing.T) {
 			if !sameRequires(found[0].Requires, tc.wantReq) {
 				t.Fatalf("stored requires %+v want %+v", found[0].Requires, tc.wantReq)
 			}
-			if tc.tasks == nil {
+			if tc.tasks == nil && tc.config == "" {
+				if _, statErr := os.Stat(filepath.Join(home, "config.json")); !os.IsNotExist(statErr) {
+					t.Fatalf("config.json present: %v", statErr)
+				}
+				t.Log("missing config.json")
+			}
+			if tc.config == "{}\n" {
 				t.Log("missing schedules key")
 			}
 			if hasWeb(found[0].Requires) && tc.tasks != nil {
@@ -549,6 +555,7 @@ func TestRankingHarvestFormatStillAbsorbs(t *testing.T) {
 	}{
 		{name: "untitled json", body: proposal, want: "absorb"},
 		{name: "prose json", body: prose, want: "absorb"},
+		{name: "malformed", body: "前言不是 JSON\n" + `{"entries":[{"model":"new-model","family":"newfam","tiers":["T2","nope"],"capabilities":["web"],"preference":1,"理由":"榜"},{"model":"partial"}]}` + "\n尾部 { 坏了\n", want: "absorb"},
 		{name: "passed", body: headed, want: "absorb"},
 		{name: "garbage", body: "this is not a proposal\n", want: "review"},
 		{name: "violation", body: headed, class: model.ErrorViolation, want: "skip"},
@@ -684,6 +691,9 @@ func TestRankingHarvestFormatStillAbsorbs(t *testing.T) {
 				questions := mustQuestions(t, db)
 				if len(questions) != 1 || !strings.Contains(questions[0].Text, "+ new-model") || !strings.Contains(questions[0].Text, "新出现") || !strings.Contains(questions[0].Text, "new-model") {
 					t.Fatalf("question %+v", questions)
+				}
+				if tc.name == "malformed" && !strings.Contains(questions[0].Text, "待复核") {
+					t.Fatalf("malformed proposal rejected %s", questions[0].Text)
 				}
 				if gotCard.Status != model.CardDone {
 					t.Fatalf("status %s", gotCard.Status)

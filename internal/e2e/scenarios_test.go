@@ -1361,10 +1361,14 @@ func assertRankingEnqueued(t *testing.T, config string, wantCard, manual bool, s
 func useDefaultRunner(t *testing.T, h *Harness) {
 	t.Helper()
 	r := sched.New(h.Home)
-	if r.Dispose != nil {
-		t.Fatal("sched.New installed Dispose")
+	if r.Dispose == nil {
+		t.Fatal("sched.New left Dispose nil")
 	}
-	t.Log("production runner Dispose is nil and is not called")
+	// Ranking observations go through AbsorbHarvestedRanking. A stored
+	// outcome would skip that absorption, so this scenario leaves the
+	// harvest pending and does not call the production hook.
+	r.Dispose = nil
+	t.Log("ranking scenario leaves production Dispose unset")
 	h.Sched = r
 }
 

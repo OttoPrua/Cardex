@@ -137,14 +137,3 @@ func agyDeniedCount(raw json.RawMessage) int {
 	}
 	return len(rows)
 }
-
-func jsonString(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return ""
-	}
-	var s string
-	if json.Unmarshal(raw, &s) != nil {
-		return ""
-	}
-	return s
-}

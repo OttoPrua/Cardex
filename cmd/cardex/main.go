@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -48,7 +47,7 @@ func main() {
 
 // Main runs one cardex invocation.
 func Main(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || hasHelp(args) {
+	if len(args) == 0 {
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
@@ -57,7 +56,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	if len(rest) == 0 {
+	if isGlobalHelp(rest) {
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
@@ -71,41 +70,43 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	case "card":
 		return cmdCard(home, asJSON, rest[1:], stdout, stderr)
 	case "node":
-		return unimplemented(stdout, "R3-A")
+		return cmdNode(home, asJSON, rest[1:], stdout, stderr)
 	case "question":
-		return unimplemented(stdout, "R3-A")
+		return cmdQuestion(home, asJSON, rest[1:], stdout, stderr)
 	case "channel":
-		return unimplemented(stdout, "R2-D")
+		return cmdChannel(home, asJSON, rest[1:], stdout, stderr)
 	case "route":
-		return unimplemented(stdout, "R2-D")
+		return cmdRoute(home, asJSON, rest[1:], stdout, stderr)
 	case "positioning":
-		return unimplemented(stdout, "R4-C")
+		return cmdPositioning(home, asJSON, rest[1:], stdout, stderr)
 	case "scorecard":
-		return unimplemented(stdout, "R4-C")
+		return cmdScorecard(home, rest[1:], stdout, stderr)
 	case "schedule":
-		return unimplemented(stdout, "R3-C")
+		return cmdSchedule(home, asJSON, rest[1:], stdout, stderr)
 	case "import-legacy":
-		return unimplemented(stdout, "R4-B")
+		return cmdImport(home, rest[1:], stdout, stderr)
 	case "doctor":
-		return unimplemented(stdout, "R4-B")
+		return cmdDoctor(home, rest[1:], stdout, stderr)
 	case "host":
-		return unimplemented(stdout, "R2-A")
+		return cmdHost(home, rest[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s", rest[0], usage)
 		return 2
 	}
 }
 
-func hasHelp(args []string) bool {
-	if len(args) > 0 && args[0] == "help" {
+// isGlobalHelp is true only when there is no command, or the command itself is help.
+// A later --help belongs to that command.
+func isGlobalHelp(rest []string) bool {
+	if len(rest) == 0 {
 		return true
 	}
-	for _, a := range args {
-		if a == "--help" || a == "-h" {
-			return true
-		}
+	switch rest[0] {
+	case "help", "--help", "-h":
+		return true
+	default:
+		return false
 	}
-	return false
 }
 
 func splitGlobal(args []string) (home string, asJSON bool, rest []string, err error) {
@@ -129,17 +130,11 @@ func splitGlobal(args []string) (home string, asJSON bool, rest []string, err er
 	return home, asJSON, rest, nil
 }
 
-func unimplemented(stdout io.Writer, lane string) int {
-	fmt.Fprintf(stdout, "未实现（由 %s 负责）\n", lane)
-	return 0
-}
-
 func cmdServe(home string, args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	addr := fs.String("addr", "127.0.0.1:0", "listen address")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	fs := newFlagSet("serve", "run the board and the scheduler loop until interrupted", "--addr", stdout, stderr)
+	addr := fs.String("addr", "127.0.0.1:0", "listen address; 8787 and 8788 are refused")
+	if code, ok := parseSet(fs, args); !ok {
+		return code
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

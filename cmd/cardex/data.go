@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -17,19 +16,18 @@ import (
 var objectiveQuestionWrite func(ctx context.Context, db *store.Store, q *model.Question) error
 
 func cmdProject(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "project requires add, list, show, or set")
-		return 2
+	if groupHelp(stdout, args, projectGroupUsage) {
+		return 0
 	}
 	switch args[0] {
 	case "add":
 		return projectAdd(home, asJSON, args[1:], stdout, stderr)
 	case "list":
-		return projectList(home, asJSON, stdout, stderr)
+		return projectList(home, asJSON, args[1:], stdout, stderr)
 	case "show":
 		return projectShow(home, asJSON, args[1:], stdout, stderr)
 	case "set":
-		return unimplemented(stdout, "R4-B")
+		return projectSet(home, asJSON, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown project verb %q\n", args[0])
 		return 2
@@ -37,8 +35,7 @@ func cmdProject(home string, asJSON bool, args []string, stdout, stderr io.Write
 }
 
 func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("project add", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("project add", "create a project record in the home database", "--json", stdout, stderr)
 	id := fs.String("id", "", "project id")
 	repo := fs.String("repo", "", "main checkout")
 	root := fs.String("worktree-root", "", "worktree root")
@@ -46,8 +43,8 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 	design := fs.String("design-dir", "", "design directory")
 	var forbidden stringsFlag
 	fs.Var(&forbidden, "forbidden", "forbidden path")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseSet(fs, args); !ok {
+		return code
 	}
 	if *repo == "" {
 		fmt.Fprintln(stderr, "--repo is required")
@@ -91,7 +88,11 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 	return emit(stdout, asJSON, p, p.ID+"\t"+p.RepoPath)
 }
 
-func projectList(home string, asJSON bool, stdout, stderr io.Writer) int {
+func projectList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("project list", "list stored projects", "--json", stdout, stderr)
+	if code, ok := parseSet(fs, args); !ok {
+		return code
+	}
 	db, err := openStore(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -113,7 +114,11 @@ func projectList(home string, asJSON bool, stdout, stderr io.Writer) int {
 }
 
 func projectShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 {
+	fs := newFlagSet("project show", "show one stored project", "<id> --json", stdout, stderr)
+	if code, ok := parseSet(fs, args); !ok {
+		return code
+	}
+	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "project show <id>")
 		return 2
 	}
@@ -123,7 +128,7 @@ func projectShow(home string, asJSON bool, args []string, stdout, stderr io.Writ
 		return 1
 	}
 	defer db.Close()
-	p, err := db.GetProject(context.Background(), args[0])
+	p, err := db.GetProject(context.Background(), fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -132,9 +137,8 @@ func projectShow(home string, asJSON bool, args []string, stdout, stderr io.Writ
 }
 
 func cmdObjective(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "objective requires a verb")
-		return 2
+	if groupHelp(stdout, args, objectiveGroupUsage) {
+		return 0
 	}
 	switch args[0] {
 	case "add":
@@ -143,8 +147,10 @@ func cmdObjective(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		return objectiveList(home, asJSON, args[1:], stdout, stderr)
 	case "show":
 		return objectiveShow(home, asJSON, args[1:], stdout, stderr)
-	case "set", "pause", "resume", "cancel":
-		return unimplemented(stdout, "R4-B")
+	case "set":
+		return objectiveSet(home, asJSON, args[1:], stdout, stderr)
+	case "pause", "resume", "cancel":
+		return objectiveTransition(home, asJSON, args[0], args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown objective verb %q\n", args[0])
 		return 2
@@ -152,8 +158,7 @@ func cmdObjective(home string, asJSON bool, args []string, stdout, stderr io.Wri
 }
 
 func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("objective add", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("objective add", "create an objective. origin comes from --origin, or from CARDEX_ORIGIN when the flag is absent", "--json", stdout, stderr)
 	id := fs.String("id", "", "objective id")
 	project := fs.String("project", "", "project id")
 	title := fs.String("title", "", "title")
@@ -165,14 +170,16 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	priority := fs.Int("priority", 0, "priority")
 	mode := fs.String("mode", string(model.ModeAuto), "auto or manual")
 	freeze := fs.String("freeze-mode", string(model.FreezeSafe), "safe or fast")
-	origin := fs.String("origin", "", "origin session")
+	originFlag := fs.String("origin", "", "origin session kind:id; a present flag wins over CARDEX_ORIGIN")
 	status := fs.String("status", string(model.ObjectiveActive), "status")
 	branch := fs.String("integration-branch", "", "integration branch")
 	channel := fs.String("channel", "", "explicit channel")
 	modelName := fs.String("model", "", "explicit model")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseSet(fs, args); !ok {
+		return code
 	}
+	_ = originFlag
+	origin := resolvedOrigin(args)
 	if *project == "" {
 		fmt.Fprintln(stderr, "--project is required")
 		return 2
@@ -206,7 +213,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		Acceptance: model.Acceptance{Commands: acceptance, Checklist: checks},
 		Budget:     model.Budget{SoftTokens: *soft, HardTokens: *hard},
 		Priority:   *priority, Mode: modeVal, FreezeMode: freezeVal,
-		Origin: *origin, Status: statusVal, IntegrationBranch: *branch,
+		Origin: origin, Status: statusVal, IntegrationBranch: *branch,
 		Channel: *channel, Model: *modelName,
 	}
 	if o.ID == "" {
@@ -249,15 +256,18 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	return emit(stdout, asJSON, o, o.ID+"\t"+o.Title)
+	line := o.ID + "\t" + o.Title
+	if o.Origin != "" {
+		line += "\t" + o.Origin
+	}
+	return emit(stdout, asJSON, o, line)
 }
 
 func objectiveList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("objective list", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("objective list", "list stored objectives, optionally for one project", "--json", stdout, stderr)
 	project := fs.String("project", "", "project id")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseSet(fs, args); !ok {
+		return code
 	}
 	db, err := openStore(home)
 	if err != nil {
@@ -280,7 +290,11 @@ func objectiveList(home string, asJSON bool, args []string, stdout, stderr io.Wr
 }
 
 func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 {
+	fs := newFlagSet("objective show", "show one stored objective, including its origin", "<id> --json", stdout, stderr)
+	if code, ok := parseSet(fs, args); !ok {
+		return code
+	}
+	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "objective show <id>")
 		return 2
 	}
@@ -290,18 +304,21 @@ func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	defer db.Close()
-	o, err := db.GetObjective(context.Background(), args[0])
+	o, err := db.GetObjective(context.Background(), fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	return emit(stdout, asJSON, o, o.ID+"\t"+o.Title)
+	line := o.ID + "\t" + o.Title
+	if o.Origin != "" {
+		line += "\t" + o.Origin
+	}
+	return emit(stdout, asJSON, o, line)
 }
 
 func cmdCard(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, "card requires a verb")
-		return 2
+	if groupHelp(stdout, args, cardGroupUsage) {
+		return 0
 	}
 	switch args[0] {
 	case "add":
@@ -311,7 +328,7 @@ func cmdCard(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	case "show":
 		return cardShow(home, asJSON, args[1:], stdout, stderr)
 	case "cancel", "retry", "pause", "resume", "revive":
-		return unimplemented(stdout, "R4-B")
+		return cardTransition(home, asJSON, args[0], args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown card verb %q\n", args[0])
 		return 2
@@ -319,8 +336,7 @@ func cmdCard(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 }
 
 func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("card add", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("card add", "create a card. origin comes from --origin, or from CARDEX_ORIGIN when the flag is absent", "--json", stdout, stderr)
 	id := fs.String("id", "", "card id")
 	objective := fs.String("objective", "", "objective id")
 	node := fs.String("node", "", "design node id")
@@ -335,9 +351,12 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	fs.Var(&claims, "claim", "path or path=symbol")
 	base := fs.String("base", "", "base commit")
 	status := fs.String("status", string(model.CardReady), "status")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	originFlag := fs.String("origin", "", "origin session kind:id; a present flag wins over CARDEX_ORIGIN")
+	if code, ok := parseSet(fs, args); !ok {
+		return code
 	}
+	_ = originFlag
+	origin := resolvedOrigin(args)
 	if *objective == "" {
 		fmt.Fprintln(stderr, "--objective is required")
 		return 2
@@ -395,15 +414,22 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	return emit(stdout, asJSON, c, c.ID+"\t"+c.Title)
+	if err := saveCardOrigin(context.Background(), db, c.ID, origin); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	line := c.ID + "\t" + c.Title
+	if origin != "" {
+		line += "\t" + origin
+	}
+	return emit(stdout, asJSON, cardView{Card: c, Origin: origin}, line)
 }
 
 func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("card list", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	fs := newFlagSet("card list", "list stored cards, optionally for one objective", "--json", stdout, stderr)
 	objective := fs.String("objective", "", "objective id")
-	if err := fs.Parse(args); err != nil {
-		return 2
+	if code, ok := parseSet(fs, args); !ok {
+		return code
 	}
 	db, err := openStore(home)
 	if err != nil {
@@ -426,7 +452,11 @@ func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 }
 
 func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 {
+	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", "<id> --json", stdout, stderr)
+	if code, ok := parseSet(fs, args); !ok {
+		return code
+	}
+	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "card show <id>")
 		return 2
 	}
@@ -436,12 +466,21 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		return 1
 	}
 	defer db.Close()
-	c, err := db.GetCard(context.Background(), args[0])
+	c, err := db.GetCard(context.Background(), fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	return emit(stdout, asJSON, c, c.ID+"\t"+c.Title)
+	origin, err := loadCardOrigin(context.Background(), db, c.ID)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	line := c.ID + "\t" + c.Title
+	if origin != "" {
+		line += "\t" + origin
+	}
+	return emit(stdout, asJSON, cardView{Card: c, Origin: origin}, line)
 }
 
 func emit(stdout io.Writer, asJSON bool, v any, line string) int {

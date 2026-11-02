@@ -34,37 +34,6 @@ func TestHelpListsCommands(t *testing.T) {
 	}
 }
 
-func TestUnimplementedLanes(t *testing.T) {
-	cases := []struct {
-		args []string
-		lane string
-	}{
-		{[]string{"project", "set"}, "R4-B"},
-		{[]string{"objective", "pause"}, "R4-B"},
-		{[]string{"card", "cancel"}, "R4-B"},
-		{[]string{"import-legacy", "--dry-run", "v1"}, "R4-B"},
-		{[]string{"doctor"}, "R4-B"},
-		{[]string{"node", "list"}, "R3-A"},
-		{[]string{"question", "show", "q"}, "R3-A"},
-		{[]string{"channel", "check"}, "R2-D"},
-		{[]string{"route", "explain", "c1"}, "R2-D"},
-		{[]string{"positioning", "approve", "p"}, "R4-C"},
-		{[]string{"scorecard"}, "R4-C"},
-		{[]string{"schedule", "run", "weekly"}, "R3-C"},
-		{[]string{"host", "attempt-1"}, "R2-A"},
-	}
-	for _, tc := range cases {
-		var out bytes.Buffer
-		if code := Main(tc.args, &out, io.Discard); code != 0 {
-			t.Fatalf("%v code %d", tc.args, code)
-		}
-		want := "未实现（由 " + tc.lane + " 负责）\n"
-		if out.String() != want {
-			t.Fatalf("%v got %q", tc.args, out.String())
-		}
-	}
-}
-
 func TestProjectObjectiveCardRoundTrip(t *testing.T) {
 	home := t.TempDir()
 	repo := t.TempDir()

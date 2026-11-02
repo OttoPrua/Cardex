@@ -17,7 +17,7 @@
 
 ## 转交
 
-R4-D：S23（`internal/e2e/scenarios_test.go:941` 手建已结束 attempt，947 行直接吸收，975 行再次调用辅助函数，991 行回答后 994 行才 `FollowRanking`）的派发 → fake 执行 → 收割 → 批准 → 新卡路由，以及重复 tick 不重复消费，属于 R3-C `deliver`、R3-A `absorbAttempt` 和 question 负责人。不要给 `sched.New` 安装生产 `Dispose`，TestS23 不得指向这个为 nil 的钩子。
+R4-D：S23（`internal/e2e/scenarios_test.go:941` 手建已结束 attempt，947 行直接吸收，975 行再次调用辅助函数，991 行回答后 994 行才 `FollowRanking`）的派发 → fake 执行 → 收割 → 批准 → 新卡路由，以及重复 tick 不重复消费，等 R3-C `deliver`、R3-A `absorbAttempt` 和 question 负责人接通。不要给 `sched.New` 安装生产 `Dispose`，TestS23 不得调用这个为 nil 的 `Dispose` 钩子。
 
 ## 已知问题
 

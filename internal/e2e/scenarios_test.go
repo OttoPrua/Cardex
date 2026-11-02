@@ -959,6 +959,7 @@ func runRankingProductionPath(t *testing.T) {
 	if len(questions) != 1 {
 		t.Fatalf("questions %+v", questions)
 	}
+	t.Logf("single question %s from the proposal", questions[0].ID)
 	asked := questions[0]
 	if !strings.Contains(asked.Text, "新出现") || !strings.Contains(asked.Text, newModel) {
 		t.Fatalf("question %s", asked.Text)
@@ -994,6 +995,7 @@ func runRankingProductionPath(t *testing.T) {
 	if err := loop.FollowRanking(ctx, h.DB); err != nil {
 		t.Fatal(err)
 	}
+	t.Log("not waiting for absorbAttempt ranking dispatch")
 	next := model.Card{
 		ID: "c-next", Objective: obj, Kind: model.KindDev, Tier: model.TierT2,
 		Title: "next", Status: model.CardReady, Acceptance: []string{"true"},
@@ -1028,6 +1030,8 @@ func runRankingProductionPath(t *testing.T) {
 	if got.Route.Model != newModel || got.Route.Channel == "" {
 		t.Fatalf("new route %+v", got.Route)
 	}
+	t.Logf("new card routed to the approved model %s", got.Route.Model)
+	t.Logf("previously stored route unchanged channel=%s model=%s", keptRoute.Channel, keptRoute.Model)
 }
 
 func assertRankingEnqueued(t *testing.T, config string, wantCard, manual bool, sources []string) {
@@ -1110,6 +1114,7 @@ func useDefaultRunner(t *testing.T, h *Harness) {
 	if r.Dispose != nil {
 		t.Fatal("sched.New installed Dispose")
 	}
+	t.Log("production runner Dispose is nil and is not called")
 	h.Sched = r
 }
 

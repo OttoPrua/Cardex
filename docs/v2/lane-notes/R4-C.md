@@ -17,7 +17,7 @@
 
 ## 转交
 
-R4-D：S23（`internal/e2e/scenarios_test.go:941` 手建已结束 attempt，947 行直接吸收，975 行再次调用辅助函数，991 行回答后 994 行才 `FollowRanking`）的派发 → fake 执行 → 收割 → 批准 → 新卡路由，以及重复 tick 不重复消费，等 R3-C `deliver`、R3-A `absorbAttempt` 和 question 负责人接通。不要给 `sched.New` 安装生产 `Dispose`，TestS23 不得调用这个为 nil 的 `Dispose` 钩子。
+R4-D：S23（`internal/e2e/scenarios_test.go:941` 手建已结束 attempt，947 行直接吸收，976 行再次调用辅助函数，992 行回答后 995 行才 `FollowRanking`）的派发 → fake 执行 → 收割 → 批准 → 新卡路由，以及重复 tick 不重复消费，等 R3-C `deliver`、R3-A `absorbAttempt` 和 question 负责人接通。不要给 `sched.New` 安装生产 `Dispose`，TestS23 不得调用这个为 nil 的 `Dispose` 钩子。
 
 ## 已知问题
 
@@ -30,4 +30,6 @@ R4-D：S23（`internal/e2e/scenarios_test.go:941` 手建已结束 attempt，947 
 - 显式 Requires（含 web）原样抄到定时卡；缺少 config.json 或没有 schedules 键时入队每周 ranking 且 requires 含 web，已有 schedules 键时不入队；ranking_sources 整份替换默认来源，并附当前定位表、各渠道模型和成绩单摘要；回答「批准」后批准提案且不改已落库尝试路由；打开数据库不入队、不吸收、不批准（B1） → 本轮写域无新位置 → TestRankingScheduleRequires、TestRankingPromptSnapshots、TestRankingAbsorbLooseAndApprove、TestRankingOpenDoesNotMaintain
 - passed 与 result_unparsable 在验收标签为 ok、passed 或空时宽松解析成一份提案和一条写明差异并标出新模型的问题，畸形提案不硬拒绝；违规、预算用尽、验收失败（failed、timeout）和已停止的卡不建提案；同一 attempt 再吸收不新增提案或问题（B4） → internal/loop/ranking.go:536 → TestRankingAbsorbHonorsHarvest、TestRankingHarvestFormatStillAbsorbs
 - 显式 Requires（含 web）原样抄到定时卡；缺少 config.json 或没有 schedules 键时入队每周 ranking 且 requires 含 web，已有 schedules 键时不入队；ranking_sources 整份替换默认来源，并附当前定位表、各渠道模型和成绩单摘要；回答「批准」后批准提案且不改已落库尝试路由；打开数据库不入队、不吸收、不批准（B1） → 本轮写域无新位置 → TestRankingScheduleRequires、TestRankingPromptSnapshots、TestRankingAbsorbLooseAndApprove、TestRankingOpenDoesNotMaintain
+- 收割元组在验收标签为 ok、空或 passed 时（含 result_unparsable）宽松解析成一份提案和一条写明差异并标出新模型的问题，畸形提案不硬拒绝；违规、预算用尽、验收失败（failed、timeout）和已停止的卡不建提案；同一 attempt 再吸收不新增提案或问题；已确定路线的尝试不变（B4） → 本轮写域无新位置 → TestRankingAbsorbHonorsHarvest、TestRankingHarvestFormatStillAbsorbs、TestRankingAbsorbLooseAndApprove
+- 显式定时定义的 Requires（含 web）原样抄到新建卡上；没有配置文件或没有 schedules 键时入队默认每周 ranking 且 requires 含 web，已有 schedules 键时不入队；ranking_sources 整份替换模板来源，prompt 同时包含当前定位表、各渠道模型清单和成绩单摘要；回答「批准」落库后批准提案且不改已落库尝试路由；打开数据库不入队、不吸收、不批准（B1） → 本轮写域无新位置 → TestRankingScheduleRequires、TestRankingPromptSnapshots、TestRankingAbsorbLooseAndApprove、TestRankingOpenDoesNotMaintain
 - 收割元组在验收标签为 ok、空或 passed 时（含 result_unparsable）宽松解析成一份提案和一条写明差异并标出新模型的问题，畸形提案不硬拒绝；违规、预算用尽、验收失败（failed、timeout）和已停止的卡不建提案；同一 attempt 再吸收不新增提案或问题；已确定路线的尝试不变（B4） → 本轮写域无新位置 → TestRankingAbsorbHonorsHarvest、TestRankingHarvestFormatStillAbsorbs、TestRankingAbsorbLooseAndApprove

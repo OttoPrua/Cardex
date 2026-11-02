@@ -399,60 +399,168 @@ func TestProposalDiffIncludesTierAndCapability(t *testing.T) {
 
 func TestApproveNormalizesTierAndMarksUnknown(t *testing.T) {
 	ctx := context.Background()
-	st := openPositioning(t, `{"positioning":[]}`)
-	lower, err := st.Propose(ctx, []model.Positioning{{
-		Model: "opus", Family: "anthropic", Tiers: []model.Tier{"t2"}, Preference: 1,
-	}})
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name   string
+		tiers  []model.Tier
+		want   []model.Tier
+		review bool
+	}{
+		{name: "t2", tiers: []model.Tier{"t2"}, want: []model.Tier{model.TierT2}},
+		{name: "spaced t2", tiers: []model.Tier{" t2 "}, want: []model.Tier{model.TierT2}},
+		{name: "spaced T3", tiers: []model.Tier{" T3 "}, want: []model.Tier{model.TierT3}},
+		{name: "unknown", tiers: []model.Tier{"not-a-tier"}, want: []model.Tier{}, review: true},
+		{name: "t2 and unknown", tiers: []model.Tier{"t2", "not-a-tier"}, want: []model.Tier{model.TierT2}, review: true},
 	}
-	if err := st.Approve(ctx, lower.ID); err != nil {
-		t.Fatal(err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openPositioning(t, `{"positioning":[]}`)
+			prop, err := st.Propose(ctx, []model.Positioning{{
+				Model: "opus", Family: "anthropic", Tiers: tc.tiers, Preference: 1,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Approve(ctx, prop.ID); err != nil {
+				t.Fatalf("irregular tier aborted approve: %v", err)
+			}
+			saved, err := st.readProposal(prop.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cur, err := st.Current(ctx)
+			if err != nil || len(cur) != 1 || !sameTiers(cur[0].Tiers, tc.want) {
+				t.Fatalf("published %+v want %v err %v", cur, tc.want, err)
+			}
+			for _, tier := range cur[0].Tiers {
+				raw := string(tier)
+				if raw == "t2" || raw == " T3 " || raw == "not-a-tier" || raw != strings.ToUpper(strings.TrimSpace(raw)) {
+					t.Fatalf("raw tier published %s", tier)
+				}
+			}
+			if tc.review {
+				if saved.Status != "待复核" || !strings.Contains(saved.Diff, "待复核") {
+					t.Fatalf("proposal not marked %+v", saved)
+				}
+				t.Log("待复核 without publishing the unknown token")
+				return
+			}
+			if saved.Status != "approved" {
+				t.Fatalf("status %s", saved.Status)
+			}
+			t.Logf("success canonical %s", joinTiers(tc.want))
+		})
 	}
-	cur, err := st.Current(ctx)
-	if err != nil || len(cur) != 1 || len(cur[0].Tiers) != 1 || cur[0].Tiers[0] != model.TierT2 {
-		t.Fatalf("t2 approved %+v err %v", cur, err)
-	}
+}
 
-	spaced, err := st.Propose(ctx, []model.Positioning{{
-		Model: "opus", Family: "anthropic", Tiers: []model.Tier{" t2 "}, Preference: 1,
-	}})
-	if err != nil {
-		t.Fatal(err)
+func TestApprovedEmptyVersionSurvivesReopen(t *testing.T) {
+	ctx := context.Background()
+	const seedModel = "seed-opus"
+	cfg := `{"positioning":[{"id":"seed","model":"seed-opus","family":"anthropic","tiers":["T3"],"preference":1}]}`
+	cases := []struct {
+		name  string
+		plant func(t *testing.T, home string)
+	}{
+		{name: "positioning_meta", plant: plantPositioningMetaVersion},
+		{name: "version carrier", plant: plantVersionCarrier},
 	}
-	if err := st.Approve(ctx, spaced.ID); err != nil {
-		t.Fatal(err)
-	}
-	cur, err = st.Current(ctx)
-	if err != nil || len(cur) != 1 || len(cur[0].Tiers) != 1 || cur[0].Tiers[0] != model.TierT2 {
-		t.Fatalf("spaced t2 %+v err %v", cur, err)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(cfg), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			st, err := Open(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.plant(t, home)
+			if err := st.Close(); err != nil {
+				t.Fatal(err)
+			}
+			st, err = Open(home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
 
-	bad, err := st.Propose(ctx, []model.Positioning{{
-		Model: "opus", Family: "anthropic", Tiers: []model.Tier{"t2", "not-a-tier"}, Preference: 1,
-	}})
+			cur, err := st.Current(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range cur {
+				if row.Model == seedModel || row.ID == "seed" {
+					t.Fatalf("Current substituted the seed: %+v", cur)
+				}
+			}
+			t.Logf("Current is not the seed: %+v", cur)
+
+			same, err := st.Propose(ctx, []model.Positioning{{
+				Model: seedModel, Family: "anthropic", Tiers: []model.Tier{model.TierT3}, Preference: 1,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if same.Diff == "" || strings.Contains(same.Diff, "- "+seedModel) {
+				t.Fatalf("Propose is based on the seed: %q", same.Diff)
+			}
+			if !strings.Contains(same.Diff, "+ "+seedModel) {
+				t.Fatalf("Propose diff %q", same.Diff)
+			}
+			t.Logf("Propose is not based on the seed: %q", same.Diff)
+
+			next, err := st.Propose(ctx, []model.Positioning{{
+				Model: "opus", Family: "anthropic", Tiers: []model.Tier{model.TierT2}, Preference: 1,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := st.Approve(ctx, next.ID); err != nil {
+				t.Fatal(err)
+			}
+			got, err := st.Current(ctx)
+			if err != nil || len(got) != 1 || got[0].Model != "opus" || got[0].Version <= 7 {
+				t.Fatalf("published version %+v err %v", got, err)
+			}
+			t.Logf("published version %d is greater than 7", got[0].Version)
+		})
+	}
+}
+
+func plantPositioningMetaVersion(t *testing.T, home string) {
+	t.Helper()
+	db := openHomeDB(t, home)
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS positioning_meta (id TEXT PRIMARY KEY, version INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO positioning_meta(id, version) VALUES ('version', 7)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM positioning`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func plantVersionCarrier(t *testing.T, home string) {
+	t.Helper()
+	db := openHomeDB(t, home)
+	defer db.Close()
+	if _, err := db.Exec(`DELETE FROM positioning`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO positioning(id, version, model, family, tiers, capabilities, preference) VALUES (?, 7, '', '', '[]', '[]', 0)`, versionRowID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func openHomeDB(t *testing.T, home string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(home, "cardex.db"))+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Approve(ctx, bad.ID); err != nil {
-		t.Fatalf("unknown tier aborted approve: %v", err)
-	}
-	saved, err := st.readProposal(bad.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if saved.Status != "待复核" || !strings.Contains(saved.Diff, "待复核") {
-		t.Fatalf("proposal not marked %+v", saved)
-	}
-	cur, err = st.Current(ctx)
-	if err != nil || len(cur) != 1 || len(cur[0].Tiers) != 1 || cur[0].Tiers[0] != model.TierT2 {
-		t.Fatalf("published raw tier %+v err %v", cur, err)
-	}
-	for _, tier := range cur[0].Tiers {
-		if string(tier) == "not-a-tier" || string(tier) == "t2" {
-			t.Fatalf("raw tier published %s", tier)
-		}
-	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
 }
 
 func TestEmptyPublishHidesVersionRow(t *testing.T) {

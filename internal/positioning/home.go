@@ -3,8 +3,10 @@ package positioning
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,11 +16,16 @@ import (
 
 	"cardex/internal/model"
 	"cardex/internal/store"
+	_ "modernc.org/sqlite"
 )
 
 // versionRowID stores the published table version when the approved table has
 // no model rows. Current leaves it out. List and Get still return the row.
 const versionRowID = "cardex.positioning.version"
+
+// positioningMetaID is the legacy independent version row in positioning_meta.
+// This package reads it and does not write that table.
+const positioningMetaID = "version"
 
 // publishAfterRead runs inside the publish transaction after the stored version
 // is read and before rows are replaced. Tests use it to overlap two approvals.
@@ -102,8 +109,12 @@ func (h *Home) Current(ctx context.Context) ([]model.Positioning, error) {
 }
 
 func (h *Home) currentLocked(ctx context.Context) ([]model.Positioning, error) {
+	published, err := h.independentVersion()
+	if err != nil {
+		return nil, err
+	}
 	var content, versioned []model.Positioning
-	err := h.db.WithTx(ctx, func(ctx context.Context) error {
+	err = h.db.WithTx(ctx, func(ctx context.Context) error {
 		var err error
 		content, err = h.db.ListPositioning(ctx)
 		if err != nil {
@@ -118,7 +129,7 @@ func (h *Home) currentLocked(ctx context.Context) ([]model.Positioning, error) {
 	if err != nil {
 		return nil, err
 	}
-	return h.rowsFromSnapshot(sharedSnapshot(content, versioned))
+	return h.rowsFromSnapshot(sharedSnapshot(content, versioned), published)
 }
 
 // sharedSnapshot is one committed positioning table. The two reads share a
@@ -144,11 +155,15 @@ func samePositioningSnapshot(a, b []model.Positioning) bool {
 	return true
 }
 
-func (h *Home) rowsFromSnapshot(rows []model.Positioning) ([]model.Positioning, error) {
-	if len(rows) == 0 {
+func (h *Home) rowsFromSnapshot(rows []model.Positioning, published int) ([]model.Positioning, error) {
+	visible := withoutVersionRow(rows)
+	stored := maxVersion(rows)
+	if len(visible) == 0 && stored == 0 && published > 0 {
+		stored = published
+	}
+	if len(visible) == 0 && stored == 0 {
 		return h.seedLocked()
 	}
-	visible := withoutVersionRow(rows)
 	if len(visible) == 0 {
 		return []model.Positioning{}, nil
 	}
@@ -168,6 +183,37 @@ func (h *Home) seedLocked() ([]model.Positioning, error) {
 		return nil, err
 	}
 	return stampVersion(cfg.Positioning, 0), nil
+}
+
+// independentVersion reads positioning_meta before a positioning transaction.
+// A missing table or row is zero. The connection is closed before the caller
+// starts a write transaction.
+func (h *Home) independentVersion() (int, error) {
+	return readIndependentVersion(filepath.Join(h.dir, "cardex.db"))
+}
+
+func readIndependentVersion(dbPath string) (int, error) {
+	dsn := "file:" + filepath.ToSlash(dbPath) + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	var present int
+	err = db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='positioning_meta'`).Scan(&present)
+	if err != nil {
+		return 0, err
+	}
+	if present == 0 {
+		return 0, nil
+	}
+	var version int
+	err = db.QueryRow(`SELECT version FROM positioning_meta WHERE id=?`, positioningMetaID).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && version <= 0) {
+		return 0, nil
+	}
+	return version, err
 }
 
 func stampVersion(in []model.Positioning, explicit int) []model.Positioning {
@@ -247,8 +293,12 @@ func (h *Home) publish(ctx context.Context, entries []model.Positioning) error {
 	var txErr error
 	delay := time.Millisecond
 	for i := 0; i < 40; i++ {
+		published, err := h.independentVersion()
+		if err != nil {
+			return err
+		}
 		txErr = h.db.WithTx(ctx, func(ctx context.Context) error {
-			return h.publishOnce(ctx, entries)
+			return h.publishOnce(ctx, entries, published)
 		})
 		if txErr == nil || !publishConflict(txErr) {
 			return txErr
@@ -263,19 +313,23 @@ func (h *Home) publish(ctx context.Context, entries []model.Positioning) error {
 	return txErr
 }
 
-func (h *Home) publishOnce(ctx context.Context, entries []model.Positioning) error {
+func (h *Home) publishOnce(ctx context.Context, entries []model.Positioning, published int) error {
 	rows, err := h.db.ListPositioning(ctx)
 	if err != nil {
 		return err
 	}
 	prev := maxVersion(rows)
 	if prev == 0 {
-		seed, err := h.seedLocked()
-		if err != nil {
-			return err
-		}
-		if len(seed) > 0 {
-			prev = seed[0].Version
+		if published > 0 {
+			prev = published
+		} else {
+			seed, err := h.seedLocked()
+			if err != nil {
+				return err
+			}
+			if len(seed) > 0 {
+				prev = seed[0].Version
+			}
 		}
 	}
 	if publishAfterRead != nil {

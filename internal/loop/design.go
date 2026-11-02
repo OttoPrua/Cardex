@@ -1421,27 +1421,51 @@ func (d Deps) markPassedDone(ctx context.Context, card model.Card, outcome model
 	case model.CardDone, model.CardMerged, model.CardMergeQueued:
 		return nil
 	}
-	obj, err := d.Store.GetObjective(ctx, fresh.Objective)
+	merge, err := d.designFileChanged(ctx, fresh, card.Claims)
 	if err != nil {
 		return err
+	}
+	if merge {
+		fresh.Status = model.CardMergeQueued
+		fresh.WaitReason = ""
+		if len(card.Claims) > 0 {
+			fresh.Claims = append([]model.Claim(nil), card.Claims...)
+		}
+		return d.Store.UpdateCard(ctx, &fresh)
+	}
+	fresh.Status = model.CardDone
+	return d.Store.UpdateCard(ctx, &fresh)
+}
+
+// designFileChanged reports a design, plan, or replan harvest that touches the
+// node document or context pack. Non-empty harvest claims replace the stored card.
+func (d Deps) designFileChanged(ctx context.Context, fresh model.Card, harvest []model.Claim) (bool, error) {
+	switch fresh.Kind {
+	case model.KindDesign, model.KindPlan, model.KindReplan:
+	default:
+		return false, nil
+	}
+	obj, err := d.Store.GetObjective(ctx, fresh.Objective)
+	if err != nil {
+		return false, err
 	}
 	var doc string
 	if fresh.Node != "" {
 		node, err := d.Store.GetNode(ctx, fresh.Node)
 		if err != nil {
-			return err
+			return false, err
 		}
 		doc = node.DocPath
 	}
 	dir, err := d.designDir(ctx, obj)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if recordsDesignFile(fresh, doc, dir+"/"+obj.ID+"/context.md") {
-		return nil
+	judged := fresh
+	if len(harvest) > 0 {
+		judged.Claims = harvest
 	}
-	fresh.Status = model.CardDone
-	return d.Store.UpdateCard(ctx, &fresh)
+	return recordsDesignFile(judged, doc, dir+"/"+obj.ID+"/context.md"), nil
 }
 
 func skippedOutcome(outcome model.Outcome, status model.CardStatus) bool {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -533,6 +534,92 @@ func TestInterruptedRepairChainStillCloses(t *testing.T) {
 				t.Fatalf("second step moved HEAD %s -> %s", head, again)
 			}
 		})
+	}
+}
+
+func TestQueueSameTargetAcceptanceIntervalsDoNotOverlap(t *testing.T) {
+	ctx := context.Background()
+	db, repo := openFixture(t)
+	mark := filepath.Join(t.TempDir(), "marks")
+	py := filepath.Join(t.TempDir(), "mark.py")
+	body := "import time\np = " + strconv.Quote(mark) + "\n" +
+		"def line(kind):\n" +
+		"    with open(p, 'a') as f:\n" +
+		"        f.write('%s %.6f\\n' % (kind, time.time()))\n" +
+		"line('start')\n" +
+		"time.sleep(0.5)\n" +
+		"line('end')\n"
+	if err := os.WriteFile(py, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	proj := seedProject(t, db, repo, "ps", "python3 "+py)
+	obj := seedObjective(t, db, repo, proj, "os", "integ")
+	c1 := commitCard(t, db, repo, obj, "integ", "c1", "a.txt", "one\n")
+	c2 := commitCard(t, db, repo, obj, "integ", "c2", "b.txt", "two\n")
+	q := New(db)
+	if err := q.Enqueue(ctx, c1.ID); err != nil || q.Enqueue(ctx, c2.ID) != nil {
+		t.Fatal("enqueue")
+	}
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		if err := q.Step(ctx, obj); err != nil {
+			t.Error(err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		if err := q.Step(ctx, obj); err != nil {
+			t.Error(err)
+		}
+	}()
+	close(start)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("same-target steps did not finish")
+	}
+	raw, err := os.ReadFile(mark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var starts, ends []float64
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			continue
+		}
+		value, err := strconv.ParseFloat(fields[1], 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch fields[0] {
+		case "start":
+			starts = append(starts, value)
+		case "end":
+			ends = append(ends, value)
+		}
+	}
+	if len(starts) != 2 || len(ends) != 2 {
+		t.Fatalf("marks %q", raw)
+	}
+	if starts[1] < ends[0] {
+		t.Fatalf("acceptance intervals overlap %q", raw)
+	}
+	for _, id := range []string{c1.ID, c2.ID} {
+		got, err := db.GetCard(ctx, id)
+		if err != nil || got.Status != model.CardMerged {
+			t.Fatalf("%s %+v %v", id, got, err)
+		}
 	}
 }
 

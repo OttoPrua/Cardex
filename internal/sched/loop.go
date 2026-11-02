@@ -3,6 +3,7 @@ package sched
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -45,7 +46,8 @@ var (
 	chooseRoute = route.Select
 )
 
-// Runner is one scheduler pass over a CARDEX_HOME. A nil Dispose leaves harvest pending.
+// Runner is one scheduler pass over a CARDEX_HOME.
+// A nil Dispose is an error and leaves the harvest unconsumed.
 type Runner struct {
 	Home   string
 	Now    func() time.Time
@@ -54,15 +56,21 @@ type Runner struct {
 	Notify func(ctx context.Context, msg notify.Message) error
 	Launch func(ctx context.Context, home, attemptID string) (int, error)
 	Script func(card model.Card) ([]byte, bool)
-	// Dispose receives each harvested result. The loop owner installs it.
-	// A nil hook leaves the attempt pending. A hook error leaves the attempt
-	// unconsumed and does not change the card. Sched does not create a review,
-	// enqueue a merge, or read pass/rework out of the result body.
+	// Dispose receives each harvested result. New installs loop.Dispose.
+	// A nil hook returns an error and leaves the attempt unconsumed.
+	// A hook error leaves the attempt unconsumed and does not change the card.
+	// Sched does not create a review, enqueue a merge, or read pass/rework.
 	Dispose func(ctx context.Context, card *model.Card, res harvest.Result) error
 }
 
-// New returns the production runner for home.
-func New(home string) *Runner { return &Runner{Home: home} }
+// New returns the production runner for home with loop.Dispose installed.
+func New(home string) *Runner {
+	r := &Runner{Home: home}
+	r.Dispose = func(ctx context.Context, card *model.Card, res harvest.Result) error {
+		return loop.Dispose(loop.WithHome(ctx, home), card, res)
+	}
+	return r
+}
 
 func (r *Runner) now() time.Time {
 	if r != nil && r.Now != nil {
@@ -168,14 +176,15 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 }
 
 // deliver hands the harvested result to the disposition collaborator.
-// The attempt is stored as consumed only after that call returns nil.
-// With no collaborator installed, the attempt stays pending and the card
-// is not written. Sched does not turn a passed dev into a review, enqueue
-// the reviewed card, or scan the body for pass/rework.
+// The attempt is stored as consumed, and the card is written, only after
+// that call returns nil. A nil collaborator is an error and changes nothing.
+// Sched does not turn a passed dev into a review, enqueue the reviewed card,
+// or scan the body for pass/rework.
 func (r *Runner) deliver(ctx context.Context, db *store.Store, card *model.Card, attempt *model.Attempt, res harvest.Result) error {
-	if r.Dispose == nil {
-		return nil
+	if r == nil || r.Dispose == nil {
+		return fmt.Errorf("sched: harvest disposition is not installed")
 	}
+	ctx = loop.WithStore(loop.WithAttempt(ctx, attempt.ID), db)
 	if err := r.Dispose(ctx, card, res); err != nil {
 		return err
 	}
@@ -669,39 +678,63 @@ func windowFills(ch model.Channel, est quota.Estimate, now time.Time) bool {
 	if est.Blocked && !est.Reset.IsZero() && now.Before(est.Reset) {
 		return false
 	}
+	// A stored remaining ratio is fill margin without a token or request cap.
+	// Routing still reports that window as unknown. A window with neither a
+	// cap nor a remaining ratio stays unknown and is not margin.
 	margin := ch.Redline + fillMargin
-	if !est.Unknown {
-		if est.Ratio <= margin {
-			return false
-		}
-		if resetSoon(est.Reset, now) {
-			return true
-		}
-		for _, w := range ch.QuotaWindows {
-			if (w.LimitTokens > 0 || w.LimitRequests > 0) && resetSoon(w.ResetAt, now) {
-				return true
-			}
-		}
+	if _, ok := fillRatio(ch, est, margin); !ok {
 		return false
 	}
-	// A limit-less window is unknown. Only an explicit positive remaining
-	// ratio can satisfy the fill predicate. Zero is not a known balance.
-	near := false
+	if ledgerRatioConfirmed(est) && resetSoon(est.Reset, now) {
+		return true
+	}
+	for _, w := range ch.QuotaWindows {
+		if !resetSoon(w.ResetAt, now) {
+			continue
+		}
+		if w.LimitTokens > 0 || w.LimitRequests > 0 || storedRemainingAbove(w, margin) {
+			return true
+		}
+	}
+	return false
+}
+
+// fillRatio is the remaining ratio §7.5 compares with redline plus the fill margin.
+// A capped ledger estimate supplies it, and the tightest stored remaining ratio
+// supplies it when no window has a cap. Confidence is not a separate cutoff.
+func fillRatio(ch model.Channel, est quota.Estimate, margin float64) (float64, bool) {
+	if est.LimitTokens > 0 || est.LimitRequests > 0 {
+		if est.Unknown || est.Ratio <= margin {
+			return 0, false
+		}
+		return est.Ratio, true
+	}
+	found := false
+	best := 0.0
 	for _, w := range ch.QuotaWindows {
 		if w.LimitTokens > 0 || w.LimitRequests > 0 || w.Remaining <= 0 {
 			continue
 		}
-		if w.Remaining <= ch.Redline {
-			return false
-		}
-		if !resetSoon(w.ResetAt, now) {
-			continue
-		}
-		if w.Remaining > margin {
-			near = true
+		if !found || w.Remaining < best {
+			best = w.Remaining
+			found = true
 		}
 	}
-	return near
+	if !found || best <= margin {
+		return 0, false
+	}
+	return best, true
+}
+
+func ledgerRatioConfirmed(est quota.Estimate) bool {
+	return !est.Unknown && (est.LimitTokens > 0 || est.LimitRequests > 0)
+}
+
+func storedRemainingAbove(w model.QuotaWindow, margin float64) bool {
+	if w.LimitTokens > 0 || w.LimitRequests > 0 {
+		return false
+	}
+	return w.Remaining > margin
 }
 
 func resetSoon(reset, now time.Time) bool {
@@ -755,7 +788,10 @@ func (r *Runner) schedules(ctx context.Context, db *store.Store) error {
 			continue
 		}
 		if err := enqueueTemplate(ctx, db, objs, entry, slot); err != nil {
-			return err
+			if werr := writeScheduleFault(r.Home, entry.Name, err); werr != nil {
+				return werr
+			}
+			continue
 		}
 		if err := os.MkdirAll(filepath.Join(r.Home, "schedules"), 0o755); err != nil {
 			return err
@@ -807,7 +843,24 @@ func strconvSlot(n int64) string {
 }
 
 func scheduleStamp(home, name string) string {
-	return filepath.Join(home, "schedules", safeName(name)+".last")
+	return filepath.Join(home, "schedules", scheduleIdentity(name)+".last")
+}
+
+func scheduleIdentity(name string) string {
+	return safeName(name) + "-" + nameDigest(name)
+}
+
+func nameDigest(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(sum[:8])
+}
+
+func writeScheduleFault(home, name string, reason error) error {
+	if err := os.MkdirAll(filepath.Join(home, "schedules"), 0o755); err != nil {
+		return err
+	}
+	body := "needs review: " + reason.Error() + "\n"
+	return os.WriteFile(filepath.Join(home, "schedules", scheduleIdentity(name)+".fault"), []byte(body), 0o644)
 }
 
 func enqueueTemplate(ctx context.Context, db *store.Store, objs []model.Objective, entry scheduleEntry, slot string) error {
@@ -824,19 +877,19 @@ func enqueueTemplate(ctx context.Context, db *store.Store, objs []model.Objectiv
 	if objID == "" {
 		return nil
 	}
-	kind := model.CardKind(tmpl.Kind)
+	kind := model.CardKind(strings.TrimSpace(tmpl.Kind))
 	if !kind.Valid() || kind == "" {
 		kind = model.KindRanking
 	}
-	tier := model.Tier(tmpl.Tier)
-	if tier == "" {
+	tier := model.Tier(strings.TrimSpace(tmpl.Tier))
+	if !tier.Valid() || tier == "" {
 		tier = model.DefaultTier(kind)
 	}
 	title := tmpl.Title
 	if title == "" {
 		title = entry.Name
 	}
-	id := "sch-" + safeName(entry.Name) + "-" + safeName(slot)
+	id := "sch-" + scheduleIdentity(entry.Name) + "-" + safeName(slot)
 	if _, err := db.GetCard(ctx, id); err == nil {
 		return nil
 	}
@@ -925,7 +978,18 @@ func (r *Runner) allow(ctx context.Context, db *store.Store, card *model.Card, o
 	if card.Kind == model.KindReview {
 		return true, nil
 	}
-	probe := append(append([]model.Card{}, occupy...), *card)
+	same, err := occupySameRepo(ctx, db, obj, occupy)
+	if err != nil {
+		return false, err
+	}
+	probe := make([]model.Card, 0, len(same)+1)
+	for _, item := range same {
+		if item.ID == card.ID {
+			continue
+		}
+		probe = append(probe, item)
+	}
+	probe = append(probe, *card)
 	conflicts, err := claims.Conflicts(probe, nil)
 	if err != nil {
 		return false, err
@@ -943,6 +1007,80 @@ func (r *Runner) allow(ctx context.Context, db *store.Store, card *model.Card, o
 	return true, nil
 }
 
+// occupySameRepo keeps occupants of the dispatching card's repository.
+// An empty repo path stays in the set. A card is not dropped for sharing its own id.
+func occupySameRepo(ctx context.Context, db *store.Store, obj model.Objective, occupy []model.Card) ([]model.Card, error) {
+	repos := map[string]string{}
+	mine, err := repoForObjective(ctx, db, obj, repos)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	out := make([]model.Card, 0, len(occupy))
+	for _, item := range occupy {
+		if item.ID != "" {
+			if seen[item.ID] {
+				continue
+			}
+			seen[item.ID] = true
+		}
+		other, err := repoForCard(ctx, db, item, repos)
+		if err != nil {
+			return nil, err
+		}
+		if mine != "" && other != "" && mine != other {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func repoForObjective(ctx context.Context, db *store.Store, obj model.Objective, cache map[string]string) (string, error) {
+	if obj.ID != "" {
+		if repo, ok := cache[obj.ID]; ok {
+			return repo, nil
+		}
+	}
+	projectID := strings.TrimSpace(obj.Project)
+	if projectID == "" && obj.ID != "" {
+		got, err := db.GetObjective(ctx, obj.ID)
+		if err != nil {
+			return "", err
+		}
+		projectID = strings.TrimSpace(got.Project)
+	}
+	repo := ""
+	if projectID != "" {
+		project, err := db.GetProject(ctx, projectID)
+		if err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(project.RepoPath) != "" {
+			repo = filepath.Clean(project.RepoPath)
+		}
+	}
+	if obj.ID != "" {
+		cache[obj.ID] = repo
+	}
+	return repo, nil
+}
+
+func repoForCard(ctx context.Context, db *store.Store, card model.Card, cache map[string]string) (string, error) {
+	id := strings.TrimSpace(card.Objective)
+	if id == "" {
+		return "", nil
+	}
+	if repo, ok := cache[id]; ok {
+		return repo, nil
+	}
+	obj, err := db.GetObjective(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	return repoForObjective(ctx, db, obj, cache)
+}
+
 func canDispatch(card model.Card) bool {
 	switch card.Status {
 	case model.CardReady, model.CardRunning:
@@ -955,7 +1093,7 @@ func canDispatch(card model.Card) bool {
 func executionDepsDone(ctx context.Context, db *store.Store, card model.Card) bool {
 	skip := ""
 	switch card.Kind {
-	case model.KindReview, model.KindRepair, model.KindRebase:
+	case model.KindReview, model.KindRepair, model.KindRebase, model.KindNormalize:
 		if len(card.Deps) > 0 {
 			skip = strings.TrimSpace(card.Deps[0])
 		}
@@ -1091,18 +1229,44 @@ func (r *Runner) quotaView(ctx context.Context, db *store.Store, channels []mode
 	if err != nil {
 		return nil, err
 	}
+	omitted := map[string]int64{}
 	for _, ch := range channels {
 		led.Configure(ch)
-		if err := r.seedChannel(ctx, led, ch, attempts, now); err != nil {
+		n, err := r.seedChannel(ctx, led, ch, attempts, now)
+		if err != nil {
 			return nil, err
 		}
+		if n > 0 {
+			omitted[ch.ID] = n
+		}
 	}
-	return led, nil
+	return uncertainView{Ledger: led, omitted: omitted}, nil
 }
 
-func (r *Runner) seedChannel(ctx context.Context, led *quota.Ledger, ch model.Channel, attempts []model.Attempt, now time.Time) error {
-	if err := recordSnapshot(ctx, led, ch, now); err != nil {
-		return err
+// uncertainView is the ledger dispatch and fill read.
+// A snapshot charge that could not be placed keeps represented usage and
+// marks the unexpressed part uncertain instead of a confidence-1 full window.
+type uncertainView struct {
+	*quota.Ledger
+	omitted map[string]int64
+}
+
+func (v uncertainView) Remaining(ctx context.Context, channelID string) (quota.Estimate, error) {
+	est, err := v.Ledger.Remaining(ctx, channelID)
+	if err != nil || v.omitted[channelID] <= 0 || est.Confidence < 1 {
+		return est, err
+	}
+	est.Confidence = 0
+	if est.UsedTokens == 0 {
+		est.Unknown = true
+	}
+	return est, nil
+}
+
+func (r *Runner) seedChannel(ctx context.Context, led *quota.Ledger, ch model.Channel, attempts []model.Attempt, now time.Time) (int64, error) {
+	omitted, err := recordSnapshot(ctx, led, ch, now)
+	if err != nil {
+		return 0, err
 	}
 	var hits []quotaHit
 	for i := range attempts {
@@ -1119,7 +1283,7 @@ func (r *Runner) seedChannel(ctx context.Context, led *quota.Ledger, ch model.Ch
 			ended = a.StartedAt
 		}
 		if err := led.Record(ctx, ch.ID, usage, a.StartedAt, ended); err != nil {
-			return err
+			return 0, err
 		}
 		if a.Outcome != model.OutcomeQuotaHit && a.ErrorClass != model.ErrorQuotaHit {
 			continue
@@ -1136,9 +1300,12 @@ func (r *Runner) seedChannel(ctx context.Context, led *quota.Ledger, ch model.Ch
 	}
 	reset, ok := effectiveQuotaBlock(hits, now)
 	if !ok {
-		return nil
+		return omitted, nil
 	}
-	return led.ObserveLimit(ctx, ch.ID, reset)
+	if err := led.ObserveLimit(ctx, ch.ID, reset); err != nil {
+		return 0, err
+	}
+	return omitted, nil
 }
 
 func attemptFinished(a model.Attempt) bool {

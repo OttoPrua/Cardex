@@ -456,10 +456,13 @@ func TestRankingAbsorbHonorsHarvest(t *testing.T) {
 		{name: "budget_limited", outcome: model.OutcomeBudgetLimited, class: model.ErrorBudgetLimited, status: model.CardReady},
 		{name: "tests_failed", outcome: model.OutcomeTestsFailed, class: model.ErrorTestsFailed, acceptance: "failed", status: model.CardReady},
 		{name: "acceptance failed", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "failed", status: model.CardReady},
+		{name: "acceptance timeout", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "timeout", status: model.CardReady},
 		{name: "stopped failed", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "passed", status: model.CardFailed},
 		{name: "stopped canceled", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "passed", status: model.CardCanceled},
 		{name: "result_unparsable", outcome: model.OutcomeResultUnparsable, class: model.ErrorResultUnparsable, acceptance: "passed", status: model.CardReady, wantAbsorb: true},
+		{name: "result_unparsable acceptance ok", outcome: model.OutcomeResultUnparsable, class: model.ErrorResultUnparsable, acceptance: "ok", status: model.CardReady, wantAbsorb: true},
 		{name: "passed", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "passed", status: model.CardReady, wantAbsorb: true},
+		{name: "passed acceptance ok", outcome: model.OutcomePassed, class: model.ErrorPassed, acceptance: "ok", status: model.CardReady, wantAbsorb: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -614,9 +617,12 @@ func TestRankingHarvestFormatStillAbsorbs(t *testing.T) {
 			if res.ResultText != tc.body {
 				t.Fatalf("result text %q", res.ResultText)
 			}
-			acceptance := ""
-			if strings.Contains(res.Evidence, "acceptance=failed") {
-				acceptance = "failed"
+			acceptance := acceptanceLabel(res.Evidence)
+			if tc.want == "absorb" && acceptance != "ok" {
+				t.Fatalf("harvest acceptance %q evidence %s", acceptance, res.Evidence)
+			}
+			if tc.name == "acceptance failure" && acceptance != "failed" {
+				t.Fatalf("harvest acceptance %q evidence %s", acceptance, res.Evidence)
 			}
 			got := RankingHarvest{
 				AttemptID:  before.ID,
@@ -1046,6 +1052,19 @@ func sameRequires(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+func acceptanceLabel(evidence string) string {
+	const key = "acceptance="
+	i := strings.Index(evidence, key)
+	if i < 0 {
+		return ""
+	}
+	rest := evidence[i+len(key):]
+	if sp := strings.IndexAny(rest, " \t"); sp >= 0 {
+		rest = rest[:sp]
+	}
+	return rest
 }
 
 func proposalCount(t *testing.T) int {

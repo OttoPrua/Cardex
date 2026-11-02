@@ -456,7 +456,7 @@ type RankingHarvest struct {
 	AttemptID  string
 	Outcome    model.Outcome
 	ErrorClass model.ErrorClass
-	Acceptance string // "failed" is 验收失败. Empty or "passed" is not.
+	Acceptance string // Harvest label ok, failed, or timeout. Empty and passed match ok.
 	ResultText string
 }
 
@@ -531,8 +531,9 @@ func rankingAbsorbable(card model.Card, harvest RankingHarvest) bool {
 	if harvest.ErrorClass != "" && harvest.ErrorClass != model.ErrorPassed && harvest.ErrorClass != model.ErrorResultUnparsable {
 		return false
 	}
+	// Harvest labels acceptance ok, failed, or timeout. ok, passed, and empty are not a failure.
 	switch strings.TrimSpace(harvest.Acceptance) {
-	case "", "passed":
+	case "", "passed", "ok":
 		return true
 	default:
 		return false

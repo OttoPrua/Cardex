@@ -66,6 +66,7 @@ func TestS25(t *testing.T) {
 
 	var stages []string
 	seen := map[string]bool{}
+	lastSummary := ""
 	note := func(name string, ok bool) {
 		if ok && !seen[name] {
 			seen[name] = true
@@ -110,6 +111,10 @@ func TestS25(t *testing.T) {
 			t.Logf("answered freeze %s with %s", q.ID, q.Options[0])
 		}
 		note("inventory", hasInventory(cards))
+		if summary := factSummaryText(cards); summary != "" && summary != lastSummary {
+			lastSummary = summary
+			t.Logf("fact summary %s", summary)
+		}
 		note("facts", factsLanded(cards, nodes))
 		note("frozen", directionFrozen(nodes))
 		note("module", hasModule(nodes))
@@ -168,9 +173,9 @@ func s25Script(h *Harness) func(model.Card) ([]byte, bool) {
 }
 
 const (
-	s25Inventory = "## 事实\n### Q0\n结论：仓库里有 answer.go\n证据：answer.go:1\n把握：高\n"
-	s25FactQuestion = "## 开放问题\n- [fact] 模块入口在哪\n## 结论\n需要先查入口\n"
-	s25Freezable = "## 结论\n可以冻结\n## 可冻结\n是\n"
+	s25Inventory     = "## 事实\n### Q0\n结论：仓库里有 answer.go\n证据：answer.go:1\n把握：高\n"
+	s25FactQuestion  = "## 开放问题\n- [fact] 模块入口在哪\n## 结论\n需要先查入口\n"
+	s25Freezable     = "## 结论\n可以冻结\n## 可冻结\n是\n"
 	s25DirectionPlan = "## 新卡\n[]\n## 子节点\n- [module] 账单\n## 结论\n方向先建模块\n"
 )
 
@@ -234,28 +239,124 @@ func hasInventory(cards []model.Card) bool {
 }
 
 func factsLanded(cards []model.Card, nodes []model.DesignNode) bool {
-	raised, answered := false, false
+	facts := answeredDirectionFacts(nodes)
+	if len(facts) == 0 {
+		return false
+	}
+	for _, card := range cards {
+		if card.Kind != model.KindDesign && card.Kind != model.KindPlan {
+			continue
+		}
+		if card.Title == "设计方向" {
+			continue
+		}
+		section, ok := factSection(card.Body)
+		if !ok || summaryBlank(section) {
+			continue
+		}
+		if sectionHasFacts(section, facts) && sectionHasQ0(section, nodes) {
+			return true
+		}
+	}
+	return false
+}
+
+func answeredDirectionFacts(nodes []model.DesignNode) []model.OpenQuestion {
+	raised := false
+	var out []model.OpenQuestion
 	for _, node := range nodes {
 		if node.Layer != model.LayerDirection {
 			continue
 		}
 		for _, q := range node.OpenQuestions {
-			if q.Type != model.OQFact || q.ID == "Q0" {
+			if q.Type != model.OQFact || q.ID == "" || q.ID == "Q0" {
 				continue
 			}
 			raised = true
-			if q.Status == model.OQAnswered {
-				answered = true
+			if q.Status == model.OQAnswered && q.Answer != "" && q.Evidence != "" {
+				out = append(out, q)
 			}
 		}
 	}
-	later := false
-	for _, card := range cards {
-		if card.Kind == model.KindDesign && card.Title == "设计" && strings.Contains(card.Body, "## 事实摘要") {
-			later = true
+	if !raised {
+		return nil
+	}
+	return out
+}
+
+func factSection(body string) (string, bool) {
+	const heading = "## 事实摘要"
+	i := strings.Index(body, heading)
+	if i < 0 {
+		return "", false
+	}
+	rest := body[i+len(heading):]
+	if j := strings.Index(rest, "\n## "); j >= 0 {
+		rest = rest[:j]
+	}
+	return strings.TrimSpace(rest), true
+}
+
+func summaryBlank(section string) bool {
+	s := strings.TrimSpace(section)
+	s = strings.ReplaceAll(s, " ", "")
+	s = strings.ReplaceAll(s, "\n", "")
+	s = strings.ReplaceAll(s, "\t", "")
+	return s == "" || s == "[]" || s == "null"
+}
+
+func sectionHasFacts(section string, facts []model.OpenQuestion) bool {
+	if len(facts) == 0 {
+		return false
+	}
+	for _, q := range facts {
+		if q.ID == "" || q.Answer == "" || q.Evidence == "" {
+			return false
+		}
+		if !strings.Contains(section, q.ID) || !strings.Contains(section, q.Answer) || !strings.Contains(section, q.Evidence) {
+			return false
 		}
 	}
-	return raised && answered && later
+	return true
+}
+
+// sectionHasQ0 requires Q0 when it is a fact. This scenario's inventory is that fact:
+// answer 「仓库里有 answer.go」, evidence answer.go:1.
+func sectionHasQ0(section string, nodes []model.DesignNode) bool {
+	for _, node := range nodes {
+		for _, q := range node.OpenQuestions {
+			if q.ID != "Q0" || q.Type != model.OQFact {
+				continue
+			}
+			if q.Answer == "" || q.Evidence == "" {
+				return false
+			}
+			return strings.Contains(section, q.ID) && strings.Contains(section, q.Answer) && strings.Contains(section, q.Evidence)
+		}
+	}
+	return strings.Contains(section, "Q0") && strings.Contains(section, "仓库里有 answer.go") && strings.Contains(section, "answer.go:1")
+}
+
+func factSummaryText(cards []model.Card) string {
+	var b strings.Builder
+	for _, card := range cards {
+		if card.Kind != model.KindDesign && card.Kind != model.KindPlan {
+			continue
+		}
+		section, ok := factSection(card.Body)
+		if !ok {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString(" | ")
+		}
+		b.WriteString(string(card.Kind))
+		b.WriteByte(' ')
+		b.WriteString(card.Title)
+		b.WriteString(": ")
+		b.WriteString(section)
+	}
+	return b.String()
 }
 
 func directionFrozen(nodes []model.DesignNode) bool {

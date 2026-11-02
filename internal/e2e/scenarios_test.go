@@ -36,10 +36,167 @@ import (
 )
 
 func TestS01(t *testing.T) {
-	// 单卡闭环：空等级入队，经生产调度路由、派发、收割、异族复核，先进入合并队列再合并。
+	// 单卡闭环：空等级在第一次派发前分级，路由使用分级结果，再收割、异族复核、合并。
+	t.Run("empty", func(t *testing.T) {
+		h, calls := s01Harness(t, "", func(context.Context, string, string) (string, error) {
+			return "TIER: T1\nREASON: small change\n", nil
+		})
+		obj := "obj"
+		transitions := watchCardStatus(t, h, "c1")
+		mustTick(t, h, func() bool {
+			attempts := attemptsOf(t, h, "c1")
+			return len(attempts) > 0 && attempts[0].Route.Channel != "" && attempts[0].Route.Model != ""
+		}, 20*time.Second)
+		dev := cardOf(t, h, "c1")
+		if dev.Tier != model.TierT1 || dev.Tier == model.TierNone {
+			t.Fatalf("stored tier %q, want classified T1", dev.Tier)
+		}
+		attempt := attemptsOf(t, h, "c1")[0]
+		if len(attempt.RouteReason.Candidates) == 0 {
+			t.Fatal("route reason has no candidate")
+		}
+		for _, cand := range attempt.RouteReason.Candidates {
+			if cand.Tier != model.TierT1 {
+				t.Fatalf("candidate tier %q, want T1 in %+v", cand.Tier, attempt.RouteReason.Candidates)
+			}
+		}
+		if *calls != 1 {
+			t.Fatalf("Call count %d, want 1", *calls)
+		}
+
+		mustTick(t, h, func() bool {
+			return cardOf(t, h, "c1").Status == model.CardMerged
+		}, 45*time.Second)
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			seenMerged := false
+			for _, status := range transitions.snapshot() {
+				if status == model.CardMerged {
+					seenMerged = true
+				}
+			}
+			if seenMerged || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		close(transitions.stop)
+		transitions.wg.Wait()
+
+		devAttempt := attemptsOf(t, h, "c1")[0]
+		if devAttempt.Outcome != model.OutcomePassed {
+			t.Fatalf("harvest outcome %q\n%s", devAttempt.Outcome, diag(h))
+		}
+		dev = cardOf(t, h, "c1")
+		if dev.AuthorFamily == "" {
+			t.Fatalf("author family empty\n%s", diag(h))
+		}
+		devCh, err := h.DB.GetChannel(context.Background(), devAttempt.Route.Channel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if devCh.Family != dev.AuthorFamily {
+			t.Fatalf("author family %q, dispatch channel family %q", dev.AuthorFamily, devCh.Family)
+		}
+		var review model.Card
+		for _, item := range cardsOf(t, h, obj) {
+			if item.Kind == model.KindReview {
+				review = item
+				break
+			}
+		}
+		if review.ID == "" || review.Status != model.CardDone {
+			t.Fatalf("review %+v\n%s", review, diag(h))
+		}
+		revAttempts := attemptsOf(t, h, review.ID)
+		if len(revAttempts) == 0 || revAttempts[0].Route.Channel == "" {
+			t.Fatalf("review was not dispatched\n%s", diag(h))
+		}
+		revCh, err := h.DB.GetChannel(context.Background(), revAttempts[0].Route.Channel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if revCh.Family == "" || revCh.Family == dev.AuthorFamily {
+			t.Fatalf("review family %q, author family %q", revCh.Family, dev.AuthorFamily)
+		}
+
+		seen := transitions.snapshot()
+		queuedAt, mergedAt := -1, -1
+		for i, status := range seen {
+			if status == model.CardMergeQueued && queuedAt < 0 {
+				queuedAt = i
+			}
+			if status == model.CardMerged && mergedAt < 0 {
+				mergedAt = i
+			}
+		}
+		if queuedAt < 0 || mergedAt < 0 || queuedAt >= mergedAt {
+			t.Fatalf("merge_queued must be observed before merged, saw %v", seen)
+		}
+	})
+	t.Run("preset", func(t *testing.T) {
+		h, calls := s01Harness(t, model.TierT3, func(context.Context, string, string) (string, error) {
+			return "TIER: T1\nREASON: should not run\n", nil
+		})
+		mustTick(t, h, func() bool {
+			attempts := attemptsOf(t, h, "c1")
+			return len(attempts) > 0 && attempts[0].Route.Channel != ""
+		}, 20*time.Second)
+		if *calls != 0 {
+			t.Fatalf("Call count %d, want 0", *calls)
+		}
+		got := cardOf(t, h, "c1")
+		if got.Tier != model.TierT3 {
+			t.Fatalf("stored tier %q, want preset T3", got.Tier)
+		}
+		attempt := attemptsOf(t, h, "c1")[0]
+		for _, cand := range attempt.RouteReason.Candidates {
+			if cand.Tier != model.TierT3 {
+				t.Fatalf("candidate tier %q, want T3", cand.Tier)
+			}
+		}
+	})
+	t.Run("call-failure", func(t *testing.T) {
+		h, calls := s01Harness(t, "", func(context.Context, string, string) (string, error) {
+			return "", context.DeadlineExceeded
+		})
+		mustTick(t, h, func() bool {
+			attempts := attemptsOf(t, h, "c1")
+			return len(attempts) > 0 && attempts[0].Route.Channel != ""
+		}, 20*time.Second)
+		if *calls != 1 {
+			t.Fatalf("Call count %d, want 1", *calls)
+		}
+		want := model.DefaultTier(model.KindDev)
+		got := cardOf(t, h, "c1")
+		if got.Tier != want || got.Tier == model.TierNone {
+			t.Fatalf("stored tier %q, want kind default %q", got.Tier, want)
+		}
+		attempt := attemptsOf(t, h, "c1")[0]
+		if len(attempt.RouteReason.Candidates) == 0 {
+			t.Fatal("route reason has no candidate")
+		}
+		for _, cand := range attempt.RouteReason.Candidates {
+			if cand.Tier != want {
+				t.Fatalf("candidate tier %q, want %q", cand.Tier, want)
+			}
+		}
+	})
+}
+
+func s01Harness(t *testing.T, tier model.Tier, call func(context.Context, string, string) (string, error)) (*Harness, *int) {
+	t.Helper()
 	h := New(t)
 	t.Setenv("CARDEX_HOME", h.Home)
+	calls := 0
 	runner := sched.New(h.Home)
+	runner.Classify = func(ctx context.Context, channelID, prompt string) (string, error) {
+		calls++
+		if channelID != "classifier" || prompt == "" {
+			t.Errorf("classify call %s %q", channelID, prompt)
+		}
+		return call(ctx, channelID, prompt)
+	}
 	runner.Script = func(card model.Card) ([]byte, bool) {
 		if card.Kind == model.KindReview {
 			return []byte(scenarioReviewScript), true
@@ -50,8 +207,9 @@ func TestS01(t *testing.T) {
 	stopLater(t, h)
 	_, obj := bindProject(t, h, "true")
 	installRoutes(t, h)
+	installClassifier(t, h)
 	card := model.Card{
-		ID: "c1", Objective: obj, Kind: model.KindDev, Title: "one",
+		ID: "c1", Objective: obj, Kind: model.KindDev, Title: "one", Tier: tier,
 		Status: model.CardReady, Acceptance: []string{"true"},
 		Claims: []model.Claim{{Path: "answer.go", Symbol: "Answer"}},
 		Body: fakeScript("", nil, []map[string]string{{
@@ -61,84 +219,20 @@ func TestS01(t *testing.T) {
 	if err := h.DB.CreateCard(context.Background(), &card); err != nil {
 		t.Fatal(err)
 	}
-	if got := cardOf(t, h, "c1").Tier; got != model.TierNone {
+	if got := cardOf(t, h, "c1").Tier; got != tier {
 		t.Fatalf("tier %q filled before the schedule path", got)
 	}
+	return h, &calls
+}
 
-	transitions := watchCardStatus(t, h, "c1")
-	mustTick(t, h, func() bool {
-		attempts := attemptsOf(t, h, "c1")
-		return len(attempts) > 0 && attempts[0].Route.Channel != "" && attempts[0].Route.Model != ""
-	}, 20*time.Second)
-
-	mustTick(t, h, func() bool {
-		return cardOf(t, h, "c1").Status == model.CardMerged
-	}, 45*time.Second)
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		seenMerged := false
-		for _, status := range transitions.snapshot() {
-			if status == model.CardMerged {
-				seenMerged = true
-			}
-		}
-		if seenMerged || time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(time.Millisecond)
+func installClassifier(t *testing.T, h *Harness) {
+	t.Helper()
+	ch := model.Channel{
+		ID: "classifier", Runner: model.RunnerFake, Family: "classifier",
+		Health: model.HealthOK, Concurrency: 1,
 	}
-	close(transitions.stop)
-	transitions.wg.Wait()
-
-	devAttempt := attemptsOf(t, h, "c1")[0]
-	if devAttempt.Outcome != model.OutcomePassed {
-		t.Fatalf("harvest outcome %q\n%s", devAttempt.Outcome, diag(h))
-	}
-	dev := cardOf(t, h, "c1")
-	if dev.AuthorFamily == "" {
-		t.Fatalf("author family empty\n%s", diag(h))
-	}
-	devCh, err := h.DB.GetChannel(context.Background(), devAttempt.Route.Channel)
-	if err != nil {
+	if err := h.DB.CreateChannel(context.Background(), &ch); err != nil {
 		t.Fatal(err)
-	}
-	if devCh.Family != dev.AuthorFamily {
-		t.Fatalf("author family %q, dispatch channel family %q", dev.AuthorFamily, devCh.Family)
-	}
-	var review model.Card
-	for _, item := range cardsOf(t, h, obj) {
-		if item.Kind == model.KindReview {
-			review = item
-			break
-		}
-	}
-	if review.ID == "" || review.Status != model.CardDone {
-		t.Fatalf("review %+v\n%s", review, diag(h))
-	}
-	revAttempts := attemptsOf(t, h, review.ID)
-	if len(revAttempts) == 0 || revAttempts[0].Route.Channel == "" {
-		t.Fatalf("review was not dispatched\n%s", diag(h))
-	}
-	revCh, err := h.DB.GetChannel(context.Background(), revAttempts[0].Route.Channel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if revCh.Family == "" || revCh.Family == dev.AuthorFamily {
-		t.Fatalf("review family %q, author family %q", revCh.Family, dev.AuthorFamily)
-	}
-
-	seen := transitions.snapshot()
-	queuedAt, mergedAt := -1, -1
-	for i, status := range seen {
-		if status == model.CardMergeQueued && queuedAt < 0 {
-			queuedAt = i
-		}
-		if status == model.CardMerged && mergedAt < 0 {
-			mergedAt = i
-		}
-	}
-	if queuedAt < 0 || mergedAt < 0 || queuedAt >= mergedAt {
-		t.Fatalf("merge_queued must be observed before merged, saw %v", seen)
 	}
 }
 

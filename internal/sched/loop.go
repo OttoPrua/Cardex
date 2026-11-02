@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"cardex/internal/claims"
+	"cardex/internal/classify"
 	"cardex/internal/harvest"
 	"cardex/internal/host"
 	"cardex/internal/loop"
@@ -61,6 +62,9 @@ type Runner struct {
 	// A hook error leaves the attempt unconsumed and does not change the card.
 	// Sched does not create a review, enqueue a merge, or read pass/rework.
 	Dispose func(ctx context.Context, card *model.Card, res harvest.Result) error
+	// Classify is the §7.4 single call. New leaves it nil.
+	// A nil call persists the kind default; v2 has no one-shot executor.
+	Classify classify.Call
 }
 
 // New returns the production runner for home with loop.Dispose installed.
@@ -400,6 +404,10 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err != nil {
 		return "", err
 	}
+	card, classified, err := r.classifyBeforeRoute(ctx, db, card)
+	if err != nil {
+		return "", err
+	}
 	rt, reason, err := chooseRoute(ctx, route.Request{
 		Card:         card,
 		Objective:    obj,
@@ -408,6 +416,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		Positioning:  pos,
 		InUse:        inUse,
 		Quota:        quotas,
+		Classified:   classified,
 		Now:          r.now(),
 	})
 	if err != nil {

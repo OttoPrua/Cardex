@@ -1,0 +1,1 @@
+grok_build_process_error: Unauthorized (401) from https://cli-chat-proxy.grok.com/v1/responses: Invalid or expired credentials (auth_kind=none, reason=no auth context)

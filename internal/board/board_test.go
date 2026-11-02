@@ -912,6 +912,175 @@ func TestSafeDotDotIDs(t *testing.T) {
 	}
 }
 
+func TestCyclicDesignParentsStayOnBoard(t *testing.T) {
+	db, _ := openHome(t)
+	ctx := context.Background()
+	must(t, db.CreateProject(ctx, &model.Project{ID: "p-cycle", RepoPath: t.TempDir()}))
+	must(t, db.CreateObjective(ctx, &model.Objective{
+		ID: "o-cycle", Project: "p-cycle", Title: "cyclic parents",
+		Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+	}))
+	links := []struct {
+		id     string
+		parent string
+	}{
+		{id: "aa-loop-kid", parent: "loop-d"},
+		{id: "aa-pair-kid", parent: "pair-a"},
+		{id: "chain-h", parent: ""},
+		{id: "chain-i", parent: "chain-h"},
+		{id: "chain-j", parent: "chain-i"},
+		{id: "loop-c", parent: "loop-e"},
+		{id: "loop-d", parent: "loop-c"},
+		{id: "loop-e", parent: "loop-d"},
+		{id: "pair-a", parent: "pair-b"},
+		{id: "pair-b", parent: "pair-a"},
+		{id: "self-g", parent: "self-g"},
+	}
+	stored := map[string]string{}
+	for _, link := range links {
+		stored[link.id] = link.parent
+		must(t, db.CreateNode(ctx, &model.DesignNode{
+			ID: link.id, Objective: "o-cycle", Parent: link.parent,
+			Layer: model.LayerModule, Status: model.NodeDrafting,
+		}))
+	}
+
+	for _, path := range []string{"/", "/api/work"} {
+		t.Run(path, func(t *testing.T) {
+			rec := do(t, http.MethodGet, path)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if strings.Contains(body, "Internal Server Error") || strings.Contains(body, "invalid character") {
+				t.Fatalf("board failed: %s", body)
+			}
+			if path == "/" {
+				for _, link := range links {
+					marker := "node " + link.id + " "
+					if strings.Count(body, marker) != 1 {
+						t.Fatalf("%s appears %d times", link.id, strings.Count(body, marker))
+					}
+					row := "node " + link.id + " status drafting open_questions 0 parent " + link.parent + " layer module"
+					if !strings.Contains(body, row) {
+						t.Fatalf("missing stored parent row %q", row)
+					}
+				}
+				assertDesignDisplay(t, stored, htmlDesignDisplay(t, body, "o-cycle"))
+				return
+			}
+			view := decode[currentView](t, rec)
+			if len(view.Objectives) != 1 || view.Objectives[0].ID != "o-cycle" {
+				t.Fatalf("objectives %#v", view.Objectives)
+			}
+			seen, display, cyclic := indexDesignForest(view.Objectives[0].Nodes)
+			if cyclic {
+				t.Fatal("display forest contains a cycle")
+			}
+			if len(seen) != len(links) {
+				t.Fatalf("saw %d nodes, stored %d", len(seen), len(links))
+			}
+			for _, link := range links {
+				got, ok := seen[link.id]
+				if !ok || got != 1 {
+					t.Fatalf("%s appearances %d", link.id, got)
+				}
+				if parent := displayParentField(view.Objectives[0].Nodes, link.id); parent != link.parent {
+					t.Fatalf("%s parent %q, stored %q", link.id, parent, link.parent)
+				}
+			}
+			assertDesignDisplay(t, stored, display)
+		})
+	}
+}
+
+func TestMalformedAttemptEventKeepsCardDetail(t *testing.T) {
+	db, _ := openHome(t)
+	ctx := context.Background()
+	must(t, db.CreateProject(ctx, &model.Project{ID: "p-ev-soft", RepoPath: t.TempDir()}))
+	must(t, db.CreateObjective(ctx, &model.Objective{
+		ID: "o-ev-soft", Project: "p-ev-soft", Title: "soft events",
+		Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+	}))
+	must(t, db.CreateCard(ctx, &model.Card{
+		ID: "c-soft", Objective: "o-ev-soft", Title: "soft event card",
+		Kind: model.KindDev, Status: model.CardRunning,
+	}))
+	must(t, db.CreateAttempt(ctx, &model.Attempt{
+		ID: "a-soft", Card: "c-soft", Index: 0,
+		Outcome: model.OutcomeTestsFailed, ErrorExcerpt: "soft-excerpt",
+		Exit: intPtr(17), BaseCommit: "base-event-f1", HeadCommit: "head-event-f1",
+	}))
+	events := []struct {
+		id   string
+		typ  string
+		data string
+		kind string
+	}{
+		{id: "e-obj", typ: "object", data: `{"ok-token":1}`, kind: "valid"},
+		{id: "e-arr", typ: "array", data: `["arr-token",2]`, kind: "valid"},
+		{id: "e-num", typ: "number", data: `424242`, kind: "valid"},
+		{id: "e-null", typ: "null", data: `null`, kind: "valid"},
+		{id: "e-str", typ: "json-string", data: `"json-string-token"`, kind: "valid"},
+		{id: "e-plain", typ: "plain", data: `plain-event-text`, kind: "invalid"},
+		{id: "e-cut", typ: "truncated", data: `{"truncated-json":`, kind: "invalid"},
+		{id: "e-empty", typ: "empty", data: ``, kind: "empty"},
+	}
+	for _, ev := range events {
+		must(t, db.AppendEvent(ctx, &model.Event{
+			ID: ev.id, Entity: "attempt:a-soft", Type: ev.typ, Data: json.RawMessage(ev.data),
+		}))
+	}
+
+	for _, path := range []string{"/cards/c-soft", "/api/cards/c-soft"} {
+		t.Run(path, func(t *testing.T) {
+			rec := do(t, http.MethodGet, path)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if strings.Contains(body, "Internal Server Error") || strings.Contains(body, "invalid character") {
+				t.Fatalf("card detail failed: %s", body)
+			}
+			if path == "/cards/c-soft" {
+				section := attemptSection(t, body, "a-soft")
+				assertContains(t, section,
+					"outcome tests_failed", "excerpt soft-excerpt", "exit 17",
+					"base base-event-f1", "head head-event-f1",
+					"plain-event-text", "truncated-json",
+					"ok-token", "arr-token", "424242", "json-string-token", "event null", "event empty",
+				)
+				return
+			}
+			var raw any
+			if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+				t.Fatal(err)
+			}
+			card := decode[cardView](t, rec)
+			if len(card.Attempts) != 1 {
+				t.Fatalf("attempts %#v", card.Attempts)
+			}
+			attempt := card.Attempts[0]
+			if attempt.ID != "a-soft" || attempt.Outcome != "tests_failed" || attempt.ErrorExcerpt != "soft-excerpt" {
+				t.Fatalf("attempt %#v", attempt)
+			}
+			if attempt.Exit == nil || *attempt.Exit != 17 || attempt.BaseCommit != "base-event-f1" || attempt.HeadCommit != "head-event-f1" {
+				t.Fatalf("evidence %#v", attempt)
+			}
+			if len(attempt.Events) != len(events) {
+				t.Fatalf("events %d", len(attempt.Events))
+			}
+			for _, ev := range events {
+				got := eventByType(attempt.Events, ev.typ)
+				if got.Type != ev.typ {
+					t.Fatalf("missing event %s in %#v", ev.typ, attempt.Events)
+				}
+				assertEventPayload(t, got.Data, ev.data, ev.kind)
+			}
+		})
+	}
+}
+
 func seedCurrent(t *testing.T) (*store.Store, string) {
 	t.Helper()
 	db, home := openHome(t)
@@ -1130,20 +1299,184 @@ func intPtr(n int) *int {
 	return &v
 }
 
-func assertNested(t *testing.T, html, parent, child string) {
-	t.Helper()
+func htmlNested(html, parent, child string) bool {
 	p := strings.Index(html, "node "+parent+" ")
 	c := strings.Index(html, "node "+child+" ")
 	if p < 0 || c < 0 || c < p {
-		t.Fatalf("expected %s inside %s; parent=%d child=%d", child, parent, p, c)
+		return false
 	}
 	between := html[p:c]
-	if strings.Contains(between, "</li>") {
-		t.Fatalf("%s is not nested inside %s\n%s", child, parent, between)
+	return !strings.Contains(between, "</li>") && strings.Contains(between, "<ul>")
+}
+
+func assertNested(t *testing.T, html, parent, child string) {
+	t.Helper()
+	if htmlNested(html, parent, child) {
+		return
 	}
-	if !strings.Contains(between, "<ul>") {
-		t.Fatalf("no child list between %s and %s\n%s", parent, child, between)
+	p := strings.Index(html, "node "+parent+" ")
+	c := strings.Index(html, "node "+child+" ")
+	t.Fatalf("expected %s inside %s; parent=%d child=%d", child, parent, p, c)
+}
+
+func htmlDesignDisplay(t *testing.T, body, objectiveID string) map[string]string {
+	t.Helper()
+	start := strings.Index(body, "objective "+objectiveID+" ")
+	if start < 0 {
+		t.Fatalf("missing objective %s", objectiveID)
 	}
+	section := body[start:]
+	end := strings.Index(section, "</article>")
+	if end < 0 {
+		t.Fatal("objective article did not finish")
+	}
+	section = section[:end]
+	display := map[string]string{}
+	var stack []string
+	for {
+		nodeRel := strings.Index(section, "node ")
+		closeRel := strings.Index(section, "</li>")
+		if nodeRel < 0 && closeRel < 0 {
+			break
+		}
+		if nodeRel >= 0 && (closeRel < 0 || nodeRel < closeRel) {
+			id := section[nodeRel+len("node "):]
+			sp := strings.IndexByte(id, ' ')
+			if sp < 0 {
+				t.Fatalf("malformed design row %q", id)
+			}
+			id = id[:sp]
+			parent := ""
+			if len(stack) > 0 {
+				parent = stack[len(stack)-1]
+			}
+			if _, ok := display[id]; ok {
+				t.Fatalf("duplicate html node %s", id)
+			}
+			display[id] = parent
+			stack = append(stack, id)
+			section = section[nodeRel+len("node ")+len(id):]
+			continue
+		}
+		if len(stack) == 0 {
+			t.Fatalf("html closed a design node that was not open: %q", section[:min(80, len(section))])
+		}
+		stack = stack[:len(stack)-1]
+		section = section[closeRel+len("</li>"):]
+	}
+	if len(stack) != 0 {
+		t.Fatalf("unclosed design nodes %v", stack)
+	}
+	return display
+}
+
+func assertDesignDisplay(t *testing.T, stored, display map[string]string) {
+	t.Helper()
+	if len(display) != len(stored) {
+		t.Fatalf("display nodes %d, stored %d (%#v)", len(display), len(stored), display)
+	}
+	for id := range stored {
+		if _, ok := display[id]; !ok {
+			t.Fatalf("display missing %s", id)
+		}
+	}
+	if display["chain-h"] != "" || display["chain-i"] != "chain-h" || display["chain-j"] != "chain-i" {
+		t.Fatalf("chain display %#v", display)
+	}
+	if display["aa-pair-kid"] != "pair-a" || display["aa-loop-kid"] != "loop-d" {
+		t.Fatalf("descendant display %#v", display)
+	}
+	if display["self-g"] != "" {
+		t.Fatalf("self-parent display parent %q", display["self-g"])
+	}
+	assertOneDisplayBackEdge(t, []string{"pair-a", "pair-b"}, stored, display)
+	assertOneDisplayBackEdge(t, []string{"loop-c", "loop-d", "loop-e"}, stored, display)
+}
+
+func indexDesignForest(nodes []nodeView) (map[string]int, map[string]string, bool) {
+	seen := map[string]int{}
+	display := map[string]string{}
+	cyclic := false
+	var walk func(nodeView, string, map[string]bool)
+	walk = func(n nodeView, parent string, stack map[string]bool) {
+		seen[n.ID]++
+		display[n.ID] = parent
+		if stack[n.ID] {
+			cyclic = true
+			return
+		}
+		stack[n.ID] = true
+		for _, child := range n.Children {
+			walk(child, n.ID, stack)
+		}
+		delete(stack, n.ID)
+	}
+	stack := map[string]bool{}
+	for _, n := range nodes {
+		walk(n, "", stack)
+	}
+	return seen, display, cyclic
+}
+
+func displayParentField(nodes []nodeView, id string) string {
+	n := nodeByID(nodes, id)
+	return n.Parent
+}
+
+func assertOneDisplayBackEdge(t *testing.T, cycle []string, stored, display map[string]string) {
+	t.Helper()
+	missing := 0
+	for _, id := range cycle {
+		if display[id] == stored[id] {
+			continue
+		}
+		missing++
+		if display[id] != "" {
+			t.Fatalf("%s display parent %q, stored %q", id, display[id], stored[id])
+		}
+	}
+	if missing != 1 {
+		t.Fatalf("cycle %v omitted %d display edges", cycle, missing)
+	}
+}
+
+func assertEventPayload(t *testing.T, got json.RawMessage, stored, kind string) {
+	t.Helper()
+	var have any
+	if err := json.Unmarshal(got, &have); err != nil {
+		t.Fatalf("%s data %q: %v", kind, got, err)
+	}
+	switch kind {
+	case "empty":
+		obj, ok := have.(map[string]any)
+		if !ok || len(obj) != 0 {
+			t.Fatalf("empty data %#v raw %s", have, got)
+		}
+	case "valid":
+		var want any
+		if err := json.Unmarshal([]byte(stored), &want); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(want, have) {
+			t.Fatalf("valid data got %#v (%s) want %#v", have, got, want)
+		}
+	case "invalid":
+		text, ok := have.(string)
+		if !ok || text != stored {
+			t.Fatalf("invalid data %#v raw %s want %q", have, got, stored)
+		}
+	default:
+		t.Fatalf("unknown payload kind %s", kind)
+	}
+}
+
+func eventByType(events []eventView, typ string) eventView {
+	for _, ev := range events {
+		if ev.Type == typ {
+			return ev
+		}
+	}
+	return eventView{}
 }
 
 func attemptSection(t *testing.T, body, id string) string {

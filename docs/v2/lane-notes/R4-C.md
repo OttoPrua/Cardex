@@ -6,7 +6,7 @@
 
 ## 没做什么，以及原因
 
-没有改 sched、prompt 拼装、question、harvest、e2e，也没有改 `design.go`。没有 `absorbDelegated`，没有给 `sched.New` 装 `Dispose`。没有抓榜，没有改定位表结构、路由或成绩单 CLI。
+没有改 sched、prompt 拼装、question、harvest，也没有改 `design.go`。没有 `absorbDelegated`，没有给 `sched.New` 装 `Dispose`。TestS23 不调用这个为 nil 的钩子；派发到重复 tick 的闭环记在转交。没有抓榜，没有改定位表结构、路由或成绩单 CLI。
 
 ## 接口请求
 
@@ -21,7 +21,7 @@ R4-D：S23（`internal/e2e/scenarios_test.go:941` 手建已结束 attempt，947 
 
 ## 已知问题
 
-`schedules`、`cardTemplate`、`promptText`、`deliver`、`prompt.Build`、`absorbAttempt`、`question.Answer` 仍不调用上述函数。`ranking_sources` 仍会触发未知顶层键警告。dev 路径的复核吸收仍不写 `loop.review_pass`。R3-B `breaker.go` `knownTop`（183 行）尚未加入 `ranking_sources`。
+`schedules`、`cardTemplate`、`promptText`、`deliver`、`prompt.Build`、`absorbAttempt`、`question.Answer` 仍不调用上述函数。`ranking_sources` 仍会触发未知顶层键警告。R3-B `breaker.go` `knownTop`（183 行）尚未加入 `ranking_sources`。N1：同一张卡上已有的定位问题会让后来的尝试跳过解析并直接完成（`absorbRanking`，`ranking.go:567`），本轮不修。N2：生产路径认可的复核通过可能不写成绩单事件 `loop.review_pass`（`absorbReview` 的 pass 只保存状态，`dev_apply.go:530`），本轮不修。
 
 ## 修复记录
 

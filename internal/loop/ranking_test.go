@@ -521,7 +521,7 @@ func TestRankingAbsorbHonorsHarvest(t *testing.T) {
 				t.Fatalf("route %v", gotAttempt.Route)
 			}
 			questions := mustQuestions(t, db)
-			if len(questions) != 1 || !strings.Contains(questions[0].Text, "new-model") {
+			if len(questions) != 1 || !strings.Contains(questions[0].Text, "差异") || !strings.Contains(questions[0].Text, "+ new-model") || !strings.Contains(questions[0].Text, "新出现") || !strings.Contains(questions[0].Text, "new-model") {
 				t.Fatalf("question %+v", questions)
 			}
 			if err := AbsorbHarvestedRanking(ctx, Deps{Store: db}, gotCard, harvest); err != nil {

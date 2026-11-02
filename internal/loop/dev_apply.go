@@ -90,7 +90,8 @@ func (st *step) decideHarvest(card model.Card, attempt model.Attempt) error {
 }
 
 func (st *step) apply(card model.Card, attempt model.Attempt) error {
-	if card.Kind == model.KindNormalize && attempt.Outcome != "" && attempt.Outcome != model.OutcomePassed {
+	// A violation voids the normalize attempt and leaves the original waiting.
+	if card.Kind == model.KindNormalize && attempt.Outcome != "" && attempt.Outcome != model.OutcomePassed && attempt.Outcome != model.OutcomeViolation {
 		if err := st.failNormalize(card); err != nil {
 			return err
 		}
@@ -221,14 +222,11 @@ func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 			return nil
 		}
 	}
+	derived := st.reviewFamily(attempt)
 	family := card.AuthorFamily
-	if family == "" {
-		if ch, ok := st.snap.channel(attempt.Route.Channel); ok {
-			family = ch.Family
-		}
-	}
-	if card.AuthorFamily == "" && family != "" {
-		card.AuthorFamily = family
+	if derived != "" && derived != card.AuthorFamily {
+		card.AuthorFamily = derived
+		family = derived
 	}
 	card.Status = model.CardReviewing
 	if err := st.saveCard(card); err != nil {
@@ -247,6 +245,24 @@ func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 	}
 	_, err := st.createCard(review)
 	return err
+}
+
+// reviewFamily is the positioning family of the attempt's model.
+// The channel family is used only when that model has no positioning row.
+// An empty family on an existing row is not replaced by the channel.
+func (st *step) reviewFamily(attempt model.Attempt) string {
+	name := strings.TrimSpace(attempt.Route.Model)
+	if name != "" {
+		for _, row := range st.snap.positioning {
+			if row.Model == name {
+				return strings.TrimSpace(row.Family)
+			}
+		}
+	}
+	if ch, ok := st.snap.channel(attempt.Route.Channel); ok {
+		return strings.TrimSpace(ch.Family)
+	}
+	return ""
 }
 
 func (st *step) createNormalize(card model.Card) error {
@@ -295,8 +311,20 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 		if attempt.Route.Channel != "" {
 			card.Channel = attempt.Route.Channel
 		}
+		if st.cfg.RetryBackoff > 0 && transportRetry(attempt.Outcome) {
+			return st.holdBackoff(card)
+		}
 		card.Status = model.CardReady
-		return st.saveCard(card)
+		if err := st.saveCard(card); err != nil {
+			return err
+		}
+		if transportRetry(attempt.Outcome) {
+			return st.event("card:"+card.ID, "retry_backoff", map[string]string{
+				"until":   st.now.UTC().Format(time.RFC3339Nano),
+				"channel": card.Channel,
+			})
+		}
+		return nil
 	}
 	if dec.OtherChannel {
 		channelID, modelName, ok, err := st.nextRoute(card, attempt.Route.Channel)
@@ -311,20 +339,87 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 			return st.openQuestion(model.QuestionCustom, card.ID, "card", "no other channel is available", true)
 		}
 		pin := keptPin(st.snap.events, card)
+		excluded := autoExcluded(st.snap.events, card.ID)
+		if attempt.Route.Channel != "" {
+			excluded[attempt.Route.Channel] = true
+		}
+		objChannel := st.snap.obj.Channel
+		if objChannel != "" && (objChannel == attempt.Route.Channel || excluded[objChannel]) {
+			st.snap.obj.Channel = ""
+			objChannel = ""
+		}
+		modelPin := card.Model
+		objModel := st.snap.obj.Model
+		card.Model = ""
+		st.snap.obj.Model = ""
 		card.Channel = channelID
 		card.Status = model.CardReady
 		if err := st.saveCard(card); err != nil {
 			return err
 		}
+		if err := st.saveObjective(); err != nil {
+			return err
+		}
 		return st.event("card:"+card.ID, "auto_route", map[string]string{
-			"channel": channelID,
-			"model":   modelName,
-			"exclude": attempt.Route.Channel,
-			"pin":     pin,
+			"channel":           channelID,
+			"model":             modelName,
+			"exclude":           attempt.Route.Channel,
+			"pin":               pin,
+			"model_pin":         modelPin,
+			"objective_channel": objChannel,
+			"objective_model":   objModel,
 		})
 	}
 	card.Status = model.CardReady
 	return st.saveCard(card)
+}
+
+func transportRetry(outcome model.Outcome) bool {
+	return outcome == model.OutcomeTransport || outcome == model.OutcomeTimeout
+}
+
+// holdBackoff keeps a same-channel transport or timeout retry off the ready
+// queue until RetryBackoff has elapsed. The deadline is the wait reason.
+func (st *step) holdBackoff(card model.Card) error {
+	until := st.now.UTC().Add(st.cfg.RetryBackoff)
+	card.Status = model.CardWaiting
+	card.WaitReason = "backoff:" + until.Format(time.RFC3339Nano)
+	if err := st.saveCard(card); err != nil {
+		return err
+	}
+	return st.event("card:"+card.ID, "retry_backoff", map[string]string{
+		"until":   until.Format(time.RFC3339Nano),
+		"channel": card.Channel,
+	})
+}
+
+// releaseBackoff promotes cards whose backoff deadline has arrived.
+// It runs before harvest disposition, so a deadline written in this step stays held.
+func (st *step) releaseBackoff() error {
+	for _, card := range append([]model.Card{}, st.snap.cards...) {
+		until, ok := backoffDeadline(card.WaitReason)
+		if !ok || card.Status != model.CardWaiting || until.After(st.now) {
+			continue
+		}
+		card.Status = model.CardReady
+		card.WaitReason = ""
+		if err := st.saveCard(card); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func backoffDeadline(reason string) (time.Time, bool) {
+	const prefix = "backoff:"
+	if !strings.HasPrefix(reason, prefix) {
+		return time.Time{}, false
+	}
+	until, err := time.Parse(time.RFC3339Nano, strings.TrimPrefix(reason, prefix))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return until, true
 }
 
 func (st *step) nextRoute(card model.Card, failed string) (string, string, bool, error) {
@@ -412,7 +507,9 @@ func (st *step) markAuth(ch model.Channel, excerpt string) error {
 	if excerpt != "" {
 		text += ": " + excerpt
 	}
-	st.notice("auth-"+ch.ID, "auth_failed", text)
+	if err := st.notice("auth-"+ch.ID, "auth_failed", text); err != nil {
+		return err
+	}
 	return st.event("channel:"+ch.ID, "notify", map[string]string{
 		"kind":    "auth_failed",
 		"channel": ch.ID,
@@ -445,18 +542,88 @@ func (st *step) openQuestion(kind model.QuestionKind, scope, scopeKind, text str
 	}
 	st.snap.questions = append(st.snap.questions, question)
 	if deliver {
-		st.notice(question.ID, string(kind), text)
+		if err := st.notice(question.ID, string(kind), text); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func (st *step) notice(id, kind, text string) {
+// queueRedelivery sends notices whose delivery never succeeded.
+// A notice already queued in this step is not added again.
+func (st *step) queueRedelivery() error {
+	type dueNotice struct {
+		kind      string
+		text      string
+		origin    string
+		objective string
+	}
+	due := map[string]dueNotice{}
+	delivered := map[string]bool{}
+	for _, event := range st.snap.events {
+		if !strings.HasPrefix(event.Entity, "notice:") {
+			continue
+		}
+		id := strings.TrimPrefix(event.Entity, "notice:")
+		switch event.Type {
+		case "notice_delivered":
+			delivered[id] = true
+		case "notice_due":
+			var data struct {
+				Kind      string `json:"kind"`
+				Text      string `json:"text"`
+				Origin    string `json:"origin"`
+				Objective string `json:"objective"`
+			}
+			if json.Unmarshal(event.Data, &data) != nil || !redeliverableKind(data.Kind) {
+				continue
+			}
+			due[id] = dueNotice{kind: data.Kind, text: data.Text, origin: data.Origin, objective: data.Objective}
+		}
+	}
+	queued := map[string]bool{}
+	for _, n := range st.notices {
+		queued[n.QuestionID] = true
+	}
+	for id, item := range due {
+		if id == "" || delivered[id] || queued[id] {
+			continue
+		}
+		origin := item.origin
+		if origin == "" {
+			origin = st.snap.obj.Origin
+		}
+		objective := item.objective
+		if objective == "" {
+			objective = st.snap.obj.ID
+		}
+		st.notices = append(st.notices, Notice{
+			QuestionID: id,
+			Origin:     origin,
+			Text:       item.text,
+			Kind:       item.kind,
+			Objective:  objective,
+		})
+	}
+	return nil
+}
+
+func (st *step) notice(id, kind, text string) error {
 	st.notices = append(st.notices, Notice{
 		QuestionID: id,
 		Origin:     st.snap.obj.Origin,
 		Text:       text,
 		Kind:       kind,
 		Objective:  st.snap.obj.ID,
+	})
+	if !redeliverableKind(kind) || id == "" || st.snap.hasEvent("notice:"+id, "notice_due") {
+		return nil
+	}
+	return st.event("notice:"+id, "notice_due", map[string]string{
+		"kind":      kind,
+		"text":      text,
+		"origin":    st.snap.obj.Origin,
+		"objective": st.snap.obj.ID,
 	})
 }
 
@@ -558,7 +725,7 @@ func (st *step) absorbPlan(card model.Card, attempt model.Attempt) error {
 			}
 		}
 	}
-	if err := st.hangQuestions(list.Questions); err != nil {
+	if err := st.hangQuestions(list.Questions, card.Node); err != nil {
 		return err
 	}
 	taken := map[string]bool{}
@@ -648,6 +815,9 @@ func (st *step) absorbNormalize(card model.Card, attempt model.Attempt) error {
 	if !ok {
 		return fmt.Errorf("normalize %s missing card %s", card.ID, card.Deps[0])
 	}
+	if st.snap.obj.Mode == model.ModeManual && designOriginal(parent.Kind) {
+		return st.absorbNormalizedOriginal(card, parent, attempt)
+	}
 	text := readResult(attempt)
 	for _, prior := range st.snap.attempts[parent.ID] {
 		if prior.Worktree == "" {
@@ -674,6 +844,52 @@ func (st *step) absorbNormalize(card model.Card, attempt model.Attempt) error {
 	return st.saveCard(card)
 }
 
+func designOriginal(kind model.CardKind) bool {
+	return kind == model.KindDesign || kind == model.KindPlan || kind == model.KindReplan
+}
+
+// absorbNormalizedOriginal applies a successful normalize onto a manual
+// design, plan, or replan card and finishes that card. A dev original keeps
+// the text backfill instead.
+func (st *step) absorbNormalizedOriginal(norm model.Card, parent model.Card, attempt model.Attempt) error {
+	text := readResult(attempt)
+	switch parent.Kind {
+	case model.KindDesign:
+		d := Deps{Store: st.db, WS: workspace.Git{}, Notify: notify.Stub{}}
+		if err := d.finishNormalizedSource(st.ctx, st.snap.obj, parent, text); err != nil {
+			return err
+		}
+	case model.KindPlan:
+		if err := st.absorbPlan(parent, attempt); err != nil {
+			return err
+		}
+		if current, ok := st.snap.card(parent.ID); ok && current.Status == model.CardNeedsInput {
+			break
+		}
+		if err := st.finishDesignFamily(parent, attempt); err != nil {
+			return err
+		}
+	case model.KindReplan:
+		if err := st.absorbReplan(parent, attempt); err != nil {
+			return err
+		}
+		if current, ok := st.snap.card(parent.ID); ok && current.Status == model.CardNeedsInput {
+			break
+		}
+		if err := st.finishDesignFamily(parent, attempt); err != nil {
+			return err
+		}
+	}
+	if fresh, err := st.db.GetCard(st.ctx, parent.ID); err == nil {
+		st.snap.putCard(fresh)
+	}
+	if nodes, err := st.db.ListNodes(st.ctx, st.snap.obj.ID); err == nil {
+		st.snap.nodes = nodes
+	}
+	norm.Status = model.CardDone
+	return st.saveCard(norm)
+}
+
 func (st *step) absorbReplan(card model.Card, attempt model.Attempt) error {
 	known := map[string]bool{}
 	for _, existing := range st.snap.cards {
@@ -694,7 +910,7 @@ func (st *step) absorbReplan(card model.Card, attempt model.Attempt) error {
 		}
 	}
 	change := PlanReplan(st.snap.cards, started, card.Node, list)
-	if err := st.hangQuestions(change.Questions); err != nil {
+	if err := st.hangQuestions(change.Questions, card.Node); err != nil {
 		return err
 	}
 	taken := map[string]bool{}
@@ -758,18 +974,26 @@ func cardFromDraft(objective, node string, draft ListedCard) model.Card {
 	}
 }
 
-func (st *step) hangQuestions(questions []ListQuestion) error {
+func (st *step) hangQuestions(questions []ListQuestion, current string) error {
 	for _, question := range questions {
-		node, ok := st.snap.node(question.Node)
+		text := question.Text
+		nodeID := question.Node
+		node, ok := st.snap.node(nodeID)
 		if !ok {
-			return fmt.Errorf("design question node %s missing", question.Node)
+			if nodeID != "" && !strings.Contains(text, nodeID) {
+				text += " (" + nodeID + ")"
+			}
+			node, ok = st.snap.node(current)
+			if !ok {
+				continue
+			}
 		}
-		if hasOpenText(node, question.Text) {
+		if hasOpenText(node, text) {
 			continue
 		}
 		node.OpenQuestions = append(node.OpenQuestions, model.OpenQuestion{
 			ID:     fmt.Sprintf("oq-%s-%d", node.ID, len(node.OpenQuestions)+1),
-			Text:   question.Text,
+			Text:   text,
 			Type:   model.OQDecision,
 			Status: model.OQOpen,
 		})
@@ -1069,19 +1293,8 @@ func stallAnchorKey(in BreakerInput, facts []AttemptFact) string {
 		}
 	}
 	anchor := first
-	merged := false
-	var lastMerge time.Time
-	for _, card := range in.Cards {
-		if card.Status != model.CardMerged {
-			continue
-		}
-		merged = true
-		if card.Latest.After(lastMerge) {
-			lastMerge = card.Latest
-		}
-	}
-	if merged && !lastMerge.IsZero() {
-		anchor = lastMerge
+	if !in.MergeAt.IsZero() {
+		anchor = in.MergeAt
 	}
 	if anchor.IsZero() {
 		return "none"
@@ -1186,6 +1399,14 @@ func (st *step) breakerInput(nodeID string) BreakerInput {
 				in.Spend += attempt.Usage.Tokens
 			}
 		}
+		for _, event := range st.snap.events {
+			if event.Entity != "card:"+card.ID || event.Type != "merge_success" {
+				continue
+			}
+			if event.TS.After(in.MergeAt) {
+				in.MergeAt = event.TS
+			}
+		}
 		in.Cards = append(in.Cards, NodeCard{ID: card.ID, Status: card.Status, Latest: latest})
 	}
 	return in
@@ -1261,7 +1482,9 @@ func (st *step) budgetLines() error {
 	obj := st.snap.obj
 	if SoftHit(spend, obj.Budget.SoftTokens) && !HardHit(spend, obj.Budget.HardTokens) {
 		if !st.snap.hasEvent("objective:"+obj.ID, "budget_reminder") {
-			st.notice("budget-reminder-"+obj.ID, "budget_reminder", "objective spend reached 80% of soft_tokens")
+			if err := st.notice("budget-reminder-"+obj.ID, "budget_reminder", "objective spend reached 80% of soft_tokens"); err != nil {
+				return err
+			}
 			if err := st.event("objective:"+obj.ID, "budget_reminder", map[string]int64{"spend": spend, "soft": obj.Budget.SoftTokens}); err != nil {
 				return err
 			}

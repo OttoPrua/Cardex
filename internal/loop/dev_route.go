@@ -77,18 +77,34 @@ func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, obj
 				probe.Channel = auto.pin
 			}
 		}
-		if excluded[probe.Channel] {
+		// A channel written after the automatic switch stays, even when an
+		// earlier exclude names it. Only the switch's own channel is cleared.
+		postEvent := auto.channel != "" && probe.Channel != "" && probe.Channel != auto.channel
+		if !postEvent && excluded[probe.Channel] {
 			probe.Channel = ""
 		}
-		if excluded[obj.Channel] {
+		if auto.hasObjChannel {
+			if obj.Channel != "" && obj.Channel == auto.objectiveChannel && excluded[obj.Channel] {
+				obj.Channel = ""
+			}
+		} else if excluded[obj.Channel] {
 			obj.Channel = ""
+		}
+	}
+	omit := failed
+	if !deciding && auto.channel != "" {
+		if probe.Channel != "" && probe.Channel != auto.channel && omit == probe.Channel {
+			omit = ""
+		}
+		if obj.Channel != "" && auto.hasObjChannel && obj.Channel != auto.objectiveChannel && omit == obj.Channel {
+			omit = ""
 		}
 	}
 	return route.Request{
 		Card:         probe,
 		Objective:    obj,
 		AuthorFamily: card.AuthorFamily,
-		Channels:     withoutChannel(channels, failed),
+		Channels:     withoutChannel(channels, omit),
 		Positioning:  rows,
 		InUse:        inUse,
 		Quota:        led,
@@ -142,9 +158,11 @@ func withoutChannel(channels []model.Channel, failed string) []model.Channel {
 }
 
 type autoChoice struct {
-	channel string
-	pin     string
-	exclude string
+	channel          string
+	pin              string
+	exclude          string
+	objectiveChannel string
+	hasObjChannel    bool
 }
 
 func latestAutoChoice(events []model.Event, cardID string) autoChoice {
@@ -154,14 +172,19 @@ func latestAutoChoice(events []model.Event, cardID string) autoChoice {
 			continue
 		}
 		var data struct {
-			Channel string `json:"channel"`
-			Pin     string `json:"pin"`
-			Exclude string `json:"exclude"`
+			Channel          string  `json:"channel"`
+			Pin              string  `json:"pin"`
+			Exclude          string  `json:"exclude"`
+			ObjectiveChannel *string `json:"objective_channel"`
 		}
 		if json.Unmarshal(event.Data, &data) != nil {
 			continue
 		}
 		last = autoChoice{channel: data.Channel, pin: data.Pin, exclude: data.Exclude}
+		if data.ObjectiveChannel != nil {
+			last.objectiveChannel = *data.ObjectiveChannel
+			last.hasObjChannel = true
+		}
 	}
 	return last
 }

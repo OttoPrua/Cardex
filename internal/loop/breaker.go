@@ -23,6 +23,7 @@ const (
 type Config struct {
 	ReworkLimit        int
 	TransportRetries   int
+	RetryBackoff       time.Duration
 	BreakerConsecutive int
 	BreakerSameError   int
 	BreakerRepair      int
@@ -38,6 +39,7 @@ func DefaultConfig() Config {
 	cfg := Config{
 		ReworkLimit:        2,
 		TransportRetries:   2,
+		RetryBackoff:       0,
 		BreakerConsecutive: 3,
 		BreakerSameError:   2,
 		BreakerRepair:      2,
@@ -110,7 +112,7 @@ func LoadConfig(home string) Config {
 		return cfg
 	}
 	known := map[string]bool{
-		"rework_limit": true, "transport_retries": true,
+		"rework_limit": true, "transport_retries": true, "retry_backoff_seconds": true,
 		"breaker_consecutive": true, "breaker_same_error": true, "breaker_repair": true,
 		"breaker_stall_hours": true, "breaker_spend_tokens": true, "budgets": true,
 	}
@@ -124,6 +126,9 @@ func LoadConfig(home string) Config {
 	}
 	if n, ok := intFrom(loop, "transport_retries"); ok && n > 0 {
 		cfg.TransportRetries = n
+	}
+	if n, ok := intFrom(loop, "retry_backoff_seconds"); ok && n >= 0 {
+		cfg.RetryBackoff = time.Duration(n) * time.Second
 	}
 	if n, ok := intFrom(loop, "breaker_consecutive"); ok && n > 0 {
 		cfg.BreakerConsecutive = n
@@ -240,12 +245,15 @@ type NodeCard struct {
 }
 
 // BreakerInput is one node's breaker check.
+// MergeAt is the latest persisted merge-success time on the node.
+// A merged status with no such time is not a merge time.
 type BreakerInput struct {
 	Attempts []AttemptFact
 	Cards    []NodeCard
 	Spend    int64
 	Now      time.Time
 	Config   Config
+	MergeAt  time.Time
 }
 
 // EvaluateBreaker reports the first matching design §6.5 condition.
@@ -398,17 +406,6 @@ func stalled(in BreakerInput, cfg Config) bool {
 		return false
 	}
 	var first time.Time
-	var lastMerge time.Time
-	merged := false
-	for _, card := range in.Cards {
-		if card.Status != model.CardMerged {
-			continue
-		}
-		merged = true
-		if card.Latest.After(lastMerge) {
-			lastMerge = card.Latest
-		}
-	}
 	for _, fact := range in.Attempts {
 		if fact.At.IsZero() {
 			continue
@@ -417,12 +414,12 @@ func stalled(in BreakerInput, cfg Config) bool {
 			first = fact.At
 		}
 	}
+	// A merge-success time is the only merge clock. Attempt end is not one.
+	// With no merge-success time, including a merged card that never recorded
+	// one, the anchor stays the first attempt.
 	anchor := first
-	if merged {
-		if lastMerge.IsZero() {
-			return false
-		}
-		anchor = lastMerge
+	if !in.MergeAt.IsZero() {
+		anchor = in.MergeAt
 	}
 	if anchor.IsZero() || in.Now.IsZero() {
 		return false

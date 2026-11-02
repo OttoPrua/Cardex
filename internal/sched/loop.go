@@ -255,6 +255,9 @@ func (r *Runner) mergeStep(ctx context.Context, db *store.Store) error {
 }
 
 func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool, error) {
+	if err := releaseDueBackoff(ctx, db, r.now()); err != nil {
+		return nil, err
+	}
 	used := map[string]bool{}
 	cards, err := db.ListCards(ctx, "")
 	if err != nil {

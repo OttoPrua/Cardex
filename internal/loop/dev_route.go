@@ -86,6 +86,9 @@ func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, obj
 		if auto.hasObjChannel {
 			if obj.Channel != "" && obj.Channel == auto.objectiveChannel && excluded[obj.Channel] {
 				obj.Channel = ""
+				if !auto.hasObjModel || obj.Model == auto.objectiveModel {
+					obj.Model = ""
+				}
 			}
 		} else if excluded[obj.Channel] {
 			obj.Channel = ""
@@ -163,6 +166,8 @@ type autoChoice struct {
 	exclude          string
 	objectiveChannel string
 	hasObjChannel    bool
+	objectiveModel   string
+	hasObjModel      bool
 }
 
 func latestAutoChoice(events []model.Event, cardID string) autoChoice {
@@ -176,6 +181,7 @@ func latestAutoChoice(events []model.Event, cardID string) autoChoice {
 			Pin              string  `json:"pin"`
 			Exclude          string  `json:"exclude"`
 			ObjectiveChannel *string `json:"objective_channel"`
+			ObjectiveModel   *string `json:"objective_model"`
 		}
 		if json.Unmarshal(event.Data, &data) != nil {
 			continue
@@ -184,6 +190,10 @@ func latestAutoChoice(events []model.Event, cardID string) autoChoice {
 		if data.ObjectiveChannel != nil {
 			last.objectiveChannel = *data.ObjectiveChannel
 			last.hasObjChannel = true
+		}
+		if data.ObjectiveModel != nil {
+			last.objectiveModel = *data.ObjectiveModel
+			last.hasObjModel = true
 		}
 	}
 	return last

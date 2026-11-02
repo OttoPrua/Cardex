@@ -343,21 +343,15 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 		if attempt.Route.Channel != "" {
 			excluded[attempt.Route.Channel] = true
 		}
+		// The objective pin stays stored. This card's own later request
+		// suppresses it when the recorded channel is one this card failed.
 		objChannel := st.snap.obj.Channel
-		if objChannel != "" && (objChannel == attempt.Route.Channel || excluded[objChannel]) {
-			st.snap.obj.Channel = ""
-			objChannel = ""
-		}
-		modelPin := card.Model
 		objModel := st.snap.obj.Model
+		modelPin := card.Model
 		card.Model = ""
-		st.snap.obj.Model = ""
 		card.Channel = channelID
 		card.Status = model.CardReady
 		if err := st.saveCard(card); err != nil {
-			return err
-		}
-		if err := st.saveObjective(); err != nil {
 			return err
 		}
 		return st.event("card:"+card.ID, "auto_route", map[string]string{
@@ -379,9 +373,14 @@ func transportRetry(outcome model.Outcome) bool {
 }
 
 // holdBackoff keeps a same-channel transport or timeout retry off the ready
-// queue until RetryBackoff has elapsed. The deadline is the wait reason.
+// queue until the backoff has elapsed. The first wait uses RetryBackoff.
+// A later wait on the same card is twice that base. The deadline is the wait reason.
 func (st *step) holdBackoff(card model.Card) error {
-	until := st.now.UTC().Add(st.cfg.RetryBackoff)
+	wait := st.cfg.RetryBackoff
+	if st.backoffHolds(card.ID) >= 1 {
+		wait *= 2
+	}
+	until := st.now.UTC().Add(wait)
 	card.Status = model.CardWaiting
 	card.WaitReason = "backoff:" + until.Format(time.RFC3339Nano)
 	if err := st.saveCard(card); err != nil {
@@ -408,6 +407,16 @@ func (st *step) releaseBackoff() error {
 		}
 	}
 	return nil
+}
+
+func (st *step) backoffHolds(cardID string) int {
+	n := 0
+	for _, event := range st.snap.events {
+		if event.Type == "retry_backoff" && event.Entity == "card:"+cardID {
+			n++
+		}
+	}
+	return n
 }
 
 func backoffDeadline(reason string) (time.Time, bool) {
@@ -1399,6 +1408,9 @@ func (st *step) breakerInput(nodeID string) BreakerInput {
 				in.Spend += attempt.Usage.Tokens
 			}
 		}
+		if card.Status == model.CardMerged {
+			in.MergeUnknown = true
+		}
 		for _, event := range st.snap.events {
 			if event.Entity != "card:"+card.ID || event.Type != "merge_success" {
 				continue
@@ -1408,6 +1420,9 @@ func (st *step) breakerInput(nodeID string) BreakerInput {
 			}
 		}
 		in.Cards = append(in.Cards, NodeCard{ID: card.ID, Status: card.Status, Latest: latest})
+	}
+	if !in.MergeAt.IsZero() {
+		in.MergeUnknown = false
 	}
 	return in
 }

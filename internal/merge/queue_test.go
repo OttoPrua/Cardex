@@ -324,6 +324,108 @@ func commitCard(t *testing.T, db *store.Store, repo, obj, base, id, file, body s
 	return seededCard{Card: card, Worktree: wt}
 }
 
+func TestMergeSuccessRecordedOnce(t *testing.T) {
+	ctx := context.Background()
+	db, repo := openFixture(t)
+	proj := seedProject(t, db, repo, "p", "true")
+	obj := seedObjective(t, db, repo, proj, "o", "main")
+	c := commitCard(t, db, repo, obj, "main", "c", "a.txt", "shipped\n")
+	q := New(db)
+	if err := q.Enqueue(ctx, c.Card.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Step(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetCard(ctx, c.Card.ID)
+	if err != nil || got.Status != model.CardMerged {
+		t.Fatalf("merged %+v %v", got, err)
+	}
+	events := mergeSuccesses(t, db, c.Card.ID)
+	if len(events) != 1 || events[0].TS.IsZero() || events[0].Entity != "card:"+c.Card.ID || events[0].Type != "merge_success" {
+		t.Fatalf("events %+v", events)
+	}
+	if err := q.Step(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	if again := mergeSuccesses(t, db, c.Card.ID); len(again) != 1 {
+		t.Fatalf("second visit %+v", again)
+	}
+}
+
+func TestMergeSuccessOnNewPredecessorOnly(t *testing.T) {
+	ctx := context.Background()
+	db, repo := openFixture(t)
+	proj := seedProject(t, db, repo, "p", "true")
+	obj := seedObjective(t, db, repo, proj, "o", "main")
+	c := commitCard(t, db, repo, obj, "main", "c", "a.txt", "shipped\n")
+	c.Card.Status = model.CardMerged
+	if err := db.UpdateCard(ctx, &c.Card); err != nil {
+		t.Fatal(err)
+	}
+	prior := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	if err := db.AppendEvent(ctx, &model.Event{Entity: "card:c", Type: "merge_success", TS: prior, Data: []byte(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+	rpWT := filepath.Join(t.TempDir(), "rp")
+	detachWorktree(t, c.Worktree)
+	addWorktree(t, repo, CardBranch(obj, "c"), rpWT)
+	rp := model.Card{
+		ID: "rp-c", Objective: obj, Kind: model.KindRepair, Title: "rp", Tier: model.TierT2,
+		Status: model.CardWaiting, Deps: []string{"c"},
+	}
+	tail := model.Card{
+		ID: "rp-rp-c", Objective: obj, Kind: model.KindRepair, Title: "tail", Tier: model.TierT2,
+		Status: model.CardMergeQueued, Deps: []string{"rp-c"},
+	}
+	if err := db.CreateCard(ctx, &rp); err != nil || db.CreateCard(ctx, &tail) != nil {
+		t.Fatal("cards")
+	}
+	for _, item := range []struct{ id, path string }{{"rp-c", rpWT}, {"rp-rp-c", rpWT}} {
+		attempt := model.Attempt{ID: "a-" + item.id, Card: item.id, Worktree: item.path, Branch: CardBranch(obj, "c")}
+		if err := db.CreateAttempt(ctx, &attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	q := New(db)
+	if err := q.Step(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	if got := mergeSuccesses(t, db, "c"); len(got) != 1 || !got[0].TS.Equal(prior) {
+		t.Fatalf("already merged %+v", got)
+	}
+	for _, id := range []string{"rp-c", "rp-rp-c"} {
+		events := mergeSuccesses(t, db, id)
+		card, err := db.GetCard(ctx, id)
+		if err != nil || card.Status != model.CardMerged || len(events) != 1 || events[0].TS.IsZero() {
+			t.Fatalf("%s %+v events %+v %v", id, card, events, err)
+		}
+	}
+	if err := q.Step(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"c", "rp-c", "rp-rp-c"} {
+		if n := len(mergeSuccesses(t, db, id)); n != 1 {
+			t.Fatalf("%s events %d", id, n)
+		}
+	}
+}
+
+func mergeSuccesses(t *testing.T, db *store.Store, cardID string) []model.Event {
+	t.Helper()
+	events, err := db.ListEvents(context.Background(), "card:"+cardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []model.Event
+	for _, event := range events {
+		if event.Type == "merge_success" {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
 func TestQueueRepairChainClosesCompletedCards(t *testing.T) {
 	ctx := context.Background()
 	db, repo := openFixture(t)

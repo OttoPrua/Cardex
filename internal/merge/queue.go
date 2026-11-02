@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"cardex/internal/model"
 	"cardex/internal/store"
@@ -142,12 +143,28 @@ func (q *Service) mergeOne(ctx context.Context, card *model.Card) error {
 	if err != nil {
 		return err
 	}
-	fresh.Status = model.CardMerged
-	fresh.WaitReason = ""
-	if err := q.DB.UpdateCard(ctx, &fresh); err != nil {
+	if err := q.markMerged(ctx, &fresh); err != nil {
 		return err
 	}
 	return q.closePredecessors(ctx, &fresh)
+}
+
+// markMerged records one new transition to merged. An already merged card is unchanged.
+func (q *Service) markMerged(ctx context.Context, card *model.Card) error {
+	if card.Status == model.CardMerged {
+		return nil
+	}
+	card.Status = model.CardMerged
+	card.WaitReason = ""
+	if err := q.DB.UpdateCard(ctx, card); err != nil {
+		return err
+	}
+	return q.DB.AppendEvent(ctx, &model.Event{
+		Entity: "card:" + card.ID,
+		Type:   "merge_success",
+		TS:     time.Now().UTC(),
+		Data:   []byte(`{}`),
+	})
 }
 
 // rootID is the card whose branch the repair chain continues. Deps point at
@@ -200,9 +217,7 @@ func (q *Service) closePredecessors(ctx context.Context, card *model.Card) error
 			return nil
 		}
 		if parent.Status != model.CardMerged {
-			parent.Status = model.CardMerged
-			parent.WaitReason = ""
-			if err := q.DB.UpdateCard(ctx, &parent); err != nil {
+			if err := q.markMerged(ctx, &parent); err != nil {
 				return err
 			}
 		}

@@ -2,29 +2,29 @@
 
 ## 做了什么
 
-同一条 `decideHarvest` 处置开发收割。`transport` / `timeout` 在 `retry_backoff_seconds` 大于 0 时写入 `retry_backoff`，卡在截止前保持 `waiting`；到点后的 `DevStep` 才把同一渠道放回 ready，次数仍受 `transport_retries` 限制，用尽后换渠道。默认 0，截止就是当前时刻，状态仍是 ready。复核 family 取成功尝试的模型在定位表里的 family，没有该行才用渠道 family；推出来的 family 非空且与卡上旧值不同就覆盖。整理结果为 violation 时作废该次尝试并派问题，原卡保持等待复核。一张清单里每个剩余的环各断一条边、各挂一个问题。清单点名的节点不存在时，问题挂到当前节点，正文仍写出原节点，本轮不回滚。auth、breaker、budget、budget_reminder、done 投递失败后，下一次 `DevStep` 按 `notice_due` 再投；成功写入 `notice_delivered`，不再重发。无进展熔断的锚点是该节点最新的 `merge_success`，没有这条事件时用第一次尝试的时间，合并状态本身不算合并时刻。失败换渠道时清掉卡和目标上的模型 pin，并清掉等于失败渠道或已排除渠道的目标渠道；这条 `auto_route` 记下的 pin 继续抑制。事件之后写上的渠道或模型保留，即使它曾被排除或低于红线。manual 目标上 design、plan、replan 的整理成功会吸收对应产出并收尾；开发卡仍只回写正文。
+同一条 decideHarvest 处置开发收割。未配置时同渠道 transport/timeout 第一次等 30 秒，同一张卡再等为基数的两倍；显式 retry_backoff_seconds（含 0）替换基数，0 仍当次 ready。截止前为 waiting；DevStep 与 dispatch 开头释放到期的 backoff:。次数用尽后换渠道且不等待。换渠道只改本卡渠道并清本卡模型 pin，不改存储的目标 Channel/Model；抑制只作用本卡这次请求，同目标另一张卡仍用目标显式渠道和模型。复核 family 取成功尝试的模型定位行。整理为 violation 时作废尝试并派问题。清单每个剩余环各断一条边并各挂问题；点名不存在的节点挂到当前节点。投递失败后按 notice_due 再投。新标 merged 时追加带时间的 merge_success。无进展：有该事件用最新时间；已合并但无该事件则未知、不熔断；从未合并用第一次尝试。manual 的 design、plan、replan 在 running 时整理成功也吸收并收尾；开发卡只回写。
 
 ## 没做什么，以及原因
 
-未改 `dispose.go`：`Dispose` 与批量路径都走 `decideHarvest`。未改 `design.go`、`api.go`、`internal/route`、`internal/sched`、`internal/merge`、`internal/model`、`internal/e2e`。未改排名、prompt、场景测试。默认退避是 0，因为调度测试要求 transport/timeout 当次即为 ready，那些测试不在本写域。
+未改 design.go、api.go、goals.md、design.md、internal/route。未改 Tick、Runner、New、launchCard、advance。合并的冲突、修复、变基、快进未改，只在新变为 merged 时记事件。未加 Exclude，未对显式 pin 做红线过滤。
 
 ## 接口请求
 
-调度在截止前不要派发：读卡的 `WaitReason`（`backoff:<RFC3339Nano>`）或 `card:<id>` 上的 `retry_backoff.until`。`internal/merge` 在把卡标为 merged 时追加 `merge_success`（entity `card:<id>`，TS 为成功时间）；目前只改状态，熔断看不到这次合并。`design.go` 的 `recoverUnparsed` 直接调用 `finishNormalizedSource`，不经过 `absorbNormalize`；设计环上的 plan/replan 清单仍不会在那条路径吸收。`route.Request` 仍没有 Exclude。显式指定不过滤红线，只检查健康状态；共享路由接线不在本 lane。`api.go` 的统一入口仍归 R3-C-F1。
+design.go recoverUnparsed（1362）直接 finishNormalizedSource，不经 absorbNormalize，plan/replan 清单仍不吸收。sched advance（loop.go:221）仍跳过非 auto。route.Request 仍无 Exclude。api.go 统一入口归 R3-C-F1。
 
 ## 已知问题
 
-自动模式下相同的 transport、timeout、quota、auth 摘录仍计入重复签名。连续失败那一条不计这些基础设施结果。`Dispose` 的时钟仍是墙上时间，只有 `DevStep` 接受 `WithClock`。
+自动模式下相同 transport、timeout、quota、auth 摘录仍计入重复签名；连续失败路径不计。Dispose 时钟是墙上时间，只有 DevStep 接受 WithClock。
 
 ## 修复记录
 
-同渠道 transport/timeout 在配置的退避截止前不可运行，到点后仍走原渠道，次数用尽才换渠道 → internal/loop/dev_apply.go:383, internal/loop/dev.go:207, internal/loop/breaker.go:130 → TestFollowupTransportBackoff
-复核排除的 family 来自成功尝试的模型定位行，没有该行才用渠道 family，过期的 AuthorFamily 被覆盖 → internal/loop/dev_apply.go:226, internal/loop/dev_apply.go:253 → TestFollowupReviewFamily
-清单中每个剩余的环各断开一条边并各挂一个问题；点名不存在的节点时问题挂到当前节点且正文保留原节点，本轮不失败 → internal/loop/outcome.go:332, internal/loop/dev_apply.go:977 → TestFollowupCardListCycles, TestFollowupUnknownNode
-整理结果为 violation 时作废该次尝试并派问题，原卡继续等待复核 → internal/loop/dev_apply.go:94 → TestFollowupNormalizeViolation
-auth、breaker、budget、done 投递失败后由持久状态再次投递，已经成功的不再投 → internal/loop/dev_apply.go:554, internal/loop/dev.go:107 → TestFollowupRedeliver
-无进展熔断从 merge_success 计时，节点从未记下合并成功时从第一次尝试计时 → internal/loop/breaker.go:404, internal/loop/dev_apply.go:1402 → TestFollowupStallAnchor
+未配置同渠道第一次退避 30 秒、再次为两倍；显式值含 0 替换基数；dispatch 释放到期 backoff:，第三次失败换渠道且不等待 → internal/loop/breaker.go:42, internal/loop/dev_apply.go:378, internal/sched/backoff.go:14, internal/sched/loop.go:258 → TestFollowupTransportBackoff, TestDispatchBackoffRelease, TestDispatchThirdTransportSwitches
+复核 family 取成功尝试的模型定位行，过期 AuthorFamily 被覆盖 → internal/loop/dev_apply.go:226 → TestFollowupReviewFamily
+清单每个剩余环各断一条边并各挂问题；点名不存在的节点挂当前节点 → internal/loop/dev_apply.go:731, internal/loop/outcome.go:379 → TestFollowupCardListCycles, TestFollowupUnknownNode
+整理为 violation 时作废尝试并派问题 → internal/loop/dev_apply.go:93 → TestFollowupNormalizeViolation
+投递失败后按 notice_due 再投，已成功的不再投 → internal/loop/dev_apply.go:580 → TestFollowupRedeliver
+新标 merged 追加带时间的 merge_success；已合并但无该事件不熔断，有事件用最新时间，从未合并用第一次尝试 → internal/merge/queue.go:153, internal/loop/breaker.go:411, internal/loop/dev_apply.go:1412 → TestFollowupStallAnchor, TestMergeSuccessRecordedOnce
 显式路由不过滤红线，只检查健康状态 → docs/v2/lane-notes/R3-B.md:16 → TestFollowupFailedRoutePins
-失败的自动换渠道清掉卡和目标上残留的模型 pin → internal/loop/dev_apply.go:351 → TestFollowupFailedRoutePins
-自动换渠道之后写上的渠道或模型保留，事件自己记下的 pin 继续抑制，低于红线的事后显式指定仍只检查健康 → internal/loop/dev_route.go:82 → TestFollowupFailedRoutePins
-manual 目标上整理成功后，design、plan、replan 原卡吸收该种产出并收尾，开发卡仍只回写正文 → internal/loop/dev_apply.go:854 → TestFollowupNormalizeAbsorb
+单张卡自动换渠道不清除目标 Channel 和 Model；抑制只作用本卡本次请求，同目标另一张卡仍选该显式渠道和模型 → internal/loop/dev_apply.go:348, internal/loop/dev_route.go:86 → TestFollowupFailedRoutePins
+换渠道之后写上的渠道或模型保留 → internal/loop/dev_route.go:82 → TestFollowupFailedRoutePins
+manual 的 design、plan、replan 原卡在 running 时整理成功也吸收并收尾，开发卡只回写 → internal/loop/dev_apply.go:863 → TestFollowupNormalizeAbsorb

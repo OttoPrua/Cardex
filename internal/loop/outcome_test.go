@@ -586,7 +586,7 @@ func TestDevStepOutcomeRows(t *testing.T) {
 					f.attempt(card, i, outcome, a.ID, "")
 					f.step()
 					got := f.mustCard("dev")
-					if got.Channel != a.ID || got.Status != model.CardReady || latestAuto(f, "dev").ok {
+					if got.Channel != a.ID || got.Status != model.CardWaiting || !strings.HasPrefix(got.WaitReason, "backoff:") || latestAuto(f, "dev").ok {
 						t.Fatalf("retry %d %+v route %+v", i, got, latestAuto(f, "dev"))
 					}
 				}

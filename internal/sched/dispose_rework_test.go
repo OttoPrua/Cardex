@@ -37,9 +37,9 @@ func TestDesignFamilyFailureDisposition(t *testing.T) {
 		{name: "no_output again", priors: []model.Attempt{{Index: 0, Outcome: model.OutcomeNoOutput, Route: model.Route{Channel: "cha"}}}, want: "question", question: "no output", same: true},
 		{name: "quota_hit", class: model.ErrorQuotaHit, output: "quota hit reset at " + resetAt, want: "switch"},
 		{name: "auth_failed", class: model.ErrorAuthFailed, output: "token rejected", want: "auth"},
-		{name: "transport", class: model.ErrorTransport, output: "reset", want: "same"},
+		{name: "transport", class: model.ErrorTransport, output: "reset", want: "backoff"},
 		{name: "transport switch", class: model.ErrorTransport, output: "reset", priors: transportPriors(2), want: "switch"},
-		{name: "timeout", class: model.ErrorTimeout, output: "slow", want: "same"},
+		{name: "timeout", class: model.ErrorTimeout, output: "slow", want: "backoff"},
 		{name: "timeout switch", class: model.ErrorTimeout, output: "slow", priors: transportPriors(2), want: "switch"},
 		{name: "permission_denied", class: model.ErrorPermissionDenied, output: "rm denied", want: "question", question: "rm denied", same: true},
 		{name: "refusal", class: model.ErrorRefusal, output: "no", want: "question", question: "refused", same: true},
@@ -143,6 +143,24 @@ func assertDesignFailure(t *testing.T, kind model.CardKind, accept bool, class m
 	case "switch":
 		if got.Channel != "chb" || !readyOrRunning(got.Status) {
 			t.Fatalf("card %+v", got)
+		}
+	case "backoff":
+		if got.Channel != "cha" || got.Status != model.CardWaiting || !strings.HasPrefix(got.WaitReason, "backoff:") {
+			t.Fatalf("card %+v", got)
+		}
+		until, err := time.Parse(time.RFC3339Nano, strings.TrimPrefix(got.WaitReason, "backoff:"))
+		if err != nil || !until.After(time.Now()) {
+			t.Fatalf("deadline %s %v", got.WaitReason, err)
+		}
+		released := got
+		released.WaitReason = "backoff:" + time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano)
+		if err := db.UpdateCard(ctx, &released); err != nil {
+			t.Fatal(err)
+		}
+		tickDefault(t, home)
+		again := mustCard(t, db, "c")
+		if again.Channel != "cha" || !readyOrRunning(again.Status) {
+			t.Fatalf("after expiry %+v", again)
 		}
 	case "same":
 		if got.Channel != "cha" || !readyOrRunning(got.Status) {

@@ -39,7 +39,7 @@ func DefaultConfig() Config {
 	cfg := Config{
 		ReworkLimit:        2,
 		TransportRetries:   2,
-		RetryBackoff:       0,
+		RetryBackoff:       30 * time.Second,
 		BreakerConsecutive: 3,
 		BreakerSameError:   2,
 		BreakerRepair:      2,
@@ -246,14 +246,15 @@ type NodeCard struct {
 
 // BreakerInput is one node's breaker check.
 // MergeAt is the latest persisted merge-success time on the node.
-// A merged status with no such time is not a merge time.
+// MergeUnknown is a merged card with no such event: the stall anchor is unknown.
 type BreakerInput struct {
-	Attempts []AttemptFact
-	Cards    []NodeCard
-	Spend    int64
-	Now      time.Time
-	Config   Config
-	MergeAt  time.Time
+	Attempts     []AttemptFact
+	Cards        []NodeCard
+	Spend        int64
+	Now          time.Time
+	Config       Config
+	MergeAt      time.Time
+	MergeUnknown bool
 }
 
 // EvaluateBreaker reports the first matching design §6.5 condition.
@@ -405,6 +406,11 @@ func stalled(in BreakerInput, cfg Config) bool {
 	if cfg.BreakerStall <= 0 || cfg.BreakerSpend <= 0 || in.Spend <= cfg.BreakerSpend {
 		return false
 	}
+	// A merged card with no merge_success has no clock. Do not treat that as
+	// "never merged" and do not stall.
+	if in.MergeUnknown {
+		return false
+	}
 	var first time.Time
 	for _, fact := range in.Attempts {
 		if fact.At.IsZero() {
@@ -414,9 +420,8 @@ func stalled(in BreakerInput, cfg Config) bool {
 			first = fact.At
 		}
 	}
-	// A merge-success time is the only merge clock. Attempt end is not one.
-	// With no merge-success time, including a merged card that never recorded
-	// one, the anchor stays the first attempt.
+	// A merge-success time is the stall clock, the latest when several exist.
+	// A node that has never merged uses the first attempt.
 	anchor := first
 	if !in.MergeAt.IsZero() {
 		anchor = in.MergeAt

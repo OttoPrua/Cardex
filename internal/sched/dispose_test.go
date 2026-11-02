@@ -283,7 +283,7 @@ func TestDefaultHarvestDisposition(t *testing.T) {
 			}, "", "connection reset", false, nil)
 			tickDefault(t, home)
 			got := mustCard(t, db, "c")
-			if got.Channel != "cha" || !readyOrRunning(got.Status) {
+			if got.Channel != "cha" || got.Status != model.CardWaiting || !strings.HasPrefix(got.WaitReason, "backoff:") {
 				t.Fatalf("card %+v", got)
 			}
 		}},
@@ -313,7 +313,7 @@ func TestDefaultHarvestDisposition(t *testing.T) {
 			}, "", "timed out", false, nil)
 			tickDefault(t, home)
 			got := mustCard(t, db, "c")
-			if got.Channel != "cha" || !readyOrRunning(got.Status) {
+			if got.Channel != "cha" || got.Status != model.CardWaiting || !strings.HasPrefix(got.WaitReason, "backoff:") {
 				t.Fatalf("card %+v", got)
 			}
 			if mustAttempt(t, db, "a-c").Outcome != model.OutcomeTimeout {

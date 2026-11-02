@@ -89,16 +89,25 @@ func TestFollowupTransportBackoff(t *testing.T) {
 
 			f.attempt(f.mustCard("dev"), 1, outcome, a.ID, "down")
 			f.stepAt(now.Add(time.Minute))
-			if got := f.mustCard("dev"); got.Status != model.CardWaiting || got.Channel != a.ID {
-				t.Fatalf("second hold %+v", got)
+			held = f.mustCard("dev")
+			if held.Status != model.CardWaiting || held.Channel != a.ID {
+				t.Fatalf("second hold %+v", held)
+			}
+			second, err := time.Parse(time.RFC3339Nano, strings.TrimPrefix(held.WaitReason, "backoff:"))
+			if err != nil || !second.Equal(now.Add(3*time.Minute)) {
+				t.Fatalf("second deadline %q err %v", held.WaitReason, err)
 			}
 			f.stepAt(now.Add(2 * time.Minute))
+			if got := f.mustCard("dev"); got.Status != model.CardWaiting || got.Channel != a.ID {
+				t.Fatalf("second hold released early %+v", got)
+			}
+			f.stepAt(now.Add(3 * time.Minute))
 			if got := f.mustCard("dev"); got.Status != model.CardReady || got.Channel != a.ID {
 				t.Fatalf("second release %+v", got)
 			}
 
 			f.attempt(f.mustCard("dev"), 2, outcome, a.ID, "down")
-			f.stepAt(now.Add(2 * time.Minute))
+			f.stepAt(now.Add(3 * time.Minute))
 			got := f.mustCard("dev")
 			routed := latestAuto(f, "dev")
 			if got.Status != model.CardReady || got.Channel != b.ID || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
@@ -107,8 +116,42 @@ func TestFollowupTransportBackoff(t *testing.T) {
 		})
 	}
 
+	t.Run("unset base waits 30s then 60s", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		a := f.channel("ch-a", "fam-a")
+		b := f.channel("ch-b", "fam-b")
+		card := f.card(model.Card{ID: "dev", Channel: a.ID})
+		now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+		f.attempt(card, 0, model.OutcomeTransport, a.ID, "down")
+		f.stepAt(now)
+		held := f.mustCard("dev")
+		until, err := time.Parse(time.RFC3339Nano, strings.TrimPrefix(held.WaitReason, "backoff:"))
+		if err != nil || held.Status != model.CardWaiting || held.Channel != a.ID || !until.Equal(now.Add(30*time.Second)) {
+			t.Fatalf("first %+v err %v", held, err)
+		}
+		f.stepAt(now.Add(30 * time.Second))
+		if got := f.mustCard("dev"); got.Status != model.CardReady || got.Channel != a.ID {
+			t.Fatalf("first release %+v", got)
+		}
+		f.attempt(f.mustCard("dev"), 1, model.OutcomeTransport, a.ID, "down")
+		f.stepAt(now.Add(30 * time.Second))
+		held = f.mustCard("dev")
+		until, err = time.Parse(time.RFC3339Nano, strings.TrimPrefix(held.WaitReason, "backoff:"))
+		if err != nil || held.Status != model.CardWaiting || !until.Equal(now.Add(90*time.Second)) {
+			t.Fatalf("second %+v err %v", held, err)
+		}
+		f.attempt(f.mustCard("dev"), 2, model.OutcomeTransport, a.ID, "down")
+		f.stepAt(now.Add(30 * time.Second))
+		got := f.mustCard("dev")
+		routed := latestAuto(f, "dev")
+		if got.Status != model.CardReady || got.Channel != b.ID || got.WaitReason != "" || !routed.ok || routed.channel != b.ID {
+			t.Fatalf("third switch %+v route %+v", got, routed)
+		}
+	})
+
 	t.Run("zero backoff stays ready on the same channel", func(t *testing.T) {
 		f := newFx(t, model.ModeManual)
+		f.writeConfig(`{"loop":{"retry_backoff_seconds":0}}`)
 		a := f.channel("ch-a", "fam-a")
 		card := f.card(model.Card{ID: "dev", Channel: a.ID})
 		now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
@@ -479,41 +522,38 @@ func TestFollowupRedeliver(t *testing.T) {
 
 func TestFollowupStallAnchor(t *testing.T) {
 	now := time.Date(2026, 11, 2, 18, 0, 0, 0, time.UTC)
-	stallCard := func(t *testing.T, status model.CardStatus, attemptAt, mergeAt time.Time, merge bool) *fx {
-		t.Helper()
-		f, ch := breakerWorld(t)
-		f.writeConfig(`{"loop":{"breaker_spend_tokens":10}}`)
-		card := f.card(model.Card{ID: "spike", Kind: model.KindSpike, Tier: model.TierT2, Channel: ch.ID, Status: status})
-		f.backdate(f.attempt(card, 0, model.OutcomePassed, ch.ID, ""), attemptAt, 11)
-		if merge {
-			ev := &model.Event{Entity: "card:" + card.ID, Type: "merge_success", TS: mergeAt, Data: []byte(`{}`)}
-			if err := f.db.AppendEvent(f.ctx, ev); err != nil {
-				t.Fatal(err)
-			}
-		}
-		f.stepAt(now)
-		return f
+	cases := []struct {
+		name      string
+		status    model.CardStatus
+		attemptAt time.Time
+		merges    []time.Time
+		wantStall bool
+	}{
+		{name: "latest merge_success is the anchor", status: model.CardMerged, attemptAt: now.Add(-8 * time.Hour), merges: []time.Time{now.Add(-7 * time.Hour), now.Add(-time.Hour)}, wantStall: false},
+		{name: "an old merge_success stalls a recent attempt", status: model.CardReady, attemptAt: now.Add(-time.Hour), merges: []time.Time{now.Add(-7 * time.Hour)}, wantStall: true},
+		{name: "merged without merge_success is unknown", status: model.CardMerged, attemptAt: now.Add(-7 * time.Hour), wantStall: false},
+		{name: "never merged uses the first attempt", status: model.CardReady, attemptAt: now.Add(-7 * time.Hour), wantStall: true},
 	}
-	t.Run("merged status without merge_success still stalls", func(t *testing.T) {
-		f := stallCard(t, model.CardMerged, now.Add(-7*time.Hour), time.Time{}, false)
-		questions := questionsKind(f, model.QuestionBreaker)
-		if len(questions) != 1 || !strings.Contains(questions[0].Text, "no merge within stall window") {
-			t.Fatalf("questions %+v", f.questions())
-		}
-	})
-	t.Run("a merge just recorded does not inherit an old attempt end", func(t *testing.T) {
-		f := stallCard(t, model.CardMerged, now.Add(-7*time.Hour), now, true)
-		if len(questionsKind(f, model.QuestionBreaker)) != 0 {
-			t.Fatalf("questions %+v", f.questions())
-		}
-	})
-	t.Run("an old merge_success stalls a recent attempt", func(t *testing.T) {
-		f := stallCard(t, model.CardReady, now.Add(-time.Hour), now.Add(-7*time.Hour), true)
-		questions := questionsKind(f, model.QuestionBreaker)
-		if len(questions) != 1 || !strings.Contains(questions[0].Text, "no merge within stall window") {
-			t.Fatalf("questions %+v", f.questions())
-		}
-	})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, ch := breakerWorld(t)
+			f.writeConfig(`{"loop":{"breaker_spend_tokens":10}}`)
+			card := f.card(model.Card{ID: "spike", Kind: model.KindSpike, Tier: model.TierT2, Channel: ch.ID, Status: tc.status})
+			f.backdate(f.attempt(card, 0, model.OutcomePassed, ch.ID, ""), tc.attemptAt, 11)
+			for _, at := range tc.merges {
+				ev := &model.Event{Entity: "card:" + card.ID, Type: "merge_success", TS: at, Data: []byte(`{}`)}
+				if err := f.db.AppendEvent(f.ctx, ev); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.stepAt(now)
+			questions := questionsKind(f, model.QuestionBreaker)
+			stalled := len(questions) == 1 && strings.Contains(questions[0].Text, "no merge within stall window")
+			if stalled != tc.wantStall {
+				t.Fatalf("stall %v questions %+v", tc.wantStall, f.questions())
+			}
+		})
+	}
 }
 
 func TestFollowupFailedRoutePins(t *testing.T) {
@@ -536,7 +576,7 @@ func TestFollowupFailedRoutePins(t *testing.T) {
 	f.step()
 	got := f.mustCard("c")
 	stored := f.objective()
-	if got.Channel != b.ID || got.Model != "" || stored.Model != "" || stored.Channel != "" {
+	if got.Channel != b.ID || got.Model != "" || stored.Channel != a.ID || stored.Model != "ma" {
 		t.Fatalf("card %+v objective %+v", got, stored)
 	}
 	req, err := routeRequestFrom(f.ctx, f.db, got, stored, time.Now().UTC(), "", false)
@@ -546,14 +586,32 @@ func TestFollowupFailedRoutePins(t *testing.T) {
 	if req.Card.Channel != "" || req.Card.Model != "" || req.Objective.Channel != "" || req.Objective.Model != "" {
 		t.Fatalf("event pin leaked %+v objective %+v", req.Card, req.Objective)
 	}
+	sib := f.card(model.Card{ID: "sib", Tier: model.TierT2, Status: model.CardReady})
+	sibReq, err := routeRequestFrom(f.ctx, f.db, sib, f.objective(), time.Now().UTC(), "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.objective().Channel != a.ID || f.objective().Model != "ma" || sibReq.Objective.Channel != a.ID || sibReq.Objective.Model != "ma" {
+		t.Fatalf("sibling request %+v objective %+v", sibReq.Objective, f.objective())
+	}
+	sibPicked, sibReason, err := route.Select(f.ctx, sibReq)
+	if err != nil || sibPicked.Channel != a.ID || sibPicked.Model != "ma" || !explicitPinResult(sibReason) {
+		t.Fatalf("sibling picked %+v reason %+v err %v", sibPicked, sibReason, err)
+	}
 
 	got.Channel = a.ID
 	got.Model = "ma"
 	if err := f.db.UpdateCard(f.ctx, &got); err != nil {
 		t.Fatal(err)
 	}
-	stored.Channel = a.ID
-	stored.Model = "ma"
+	c := f.channel("ch-c", "fam-c", "mc")
+	f.position("mc", "fam-c", model.TierT2)
+	c.Redline = 0.5
+	c.QuotaWindows[0].UsedTokens = 90
+	f.saveChannel(c)
+	stored = f.objective()
+	stored.Channel = c.ID
+	stored.Model = "mc"
 	if err := f.db.UpdateObjective(f.ctx, &stored); err != nil {
 		t.Fatal(err)
 	}
@@ -564,7 +622,7 @@ func TestFollowupFailedRoutePins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.Card.Channel != a.ID || req.Card.Model != "ma" || req.Objective.Channel != a.ID || req.Objective.Model != "ma" {
+	if req.Card.Channel != a.ID || req.Card.Model != "ma" || req.Objective.Channel != c.ID || req.Objective.Model != "mc" {
 		t.Fatalf("post-event pin card %+v objective %+v", req.Card, req.Objective)
 	}
 	picked, reason, err := route.Select(f.ctx, req)
@@ -633,4 +691,85 @@ func TestFollowupNormalizeAbsorb(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("manual design still running absorbs and finishes", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		ch := f.channel("ch-a", "a")
+		dir := writeResult(t, "## 开放问题\nshould the parser keep comments\n")
+		parent := f.card(model.Card{ID: "design", Kind: model.KindDesign, Status: model.CardRunning})
+		norm := f.card(model.Card{ID: "norm", Kind: model.KindNormalize, Tier: model.TierT1, Status: model.CardHarvesting, Deps: []string{parent.ID}})
+		attempt := f.attempt(norm, 0, model.OutcomePassed, ch.ID, "")
+		attempt.Worktree = dir
+		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
+			t.Fatal(err)
+		}
+		f.step()
+		got := f.mustCard("design")
+		if got.Status == model.CardRunning || got.Status == model.CardReady || got.Status == model.CardWaiting {
+			t.Fatalf("design left open %+v", got)
+		}
+		if got.Status != model.CardDone && got.Status != model.CardMergeQueued {
+			t.Fatalf("design %+v", got)
+		}
+		node, err := f.db.GetNode(f.ctx, f.node.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, question := range node.OpenQuestions {
+			if strings.Contains(question.Text, "should the parser keep comments") {
+				found = true
+			}
+		}
+		if !found || f.mustCard("norm").Status != model.CardDone {
+			t.Fatalf("node %+v norm %s", node.OpenQuestions, f.mustCard("norm").Status)
+		}
+	})
+
+	for _, kind := range []model.CardKind{model.KindPlan, model.KindReplan} {
+		t.Run("manual "+string(kind)+" still running absorbs and finishes", func(t *testing.T) {
+			f := newFx(t, model.ModeManual)
+			ch := f.channel("ch-a", "a")
+			dir := writeResult(t, `[{"key":"child","kind":"dev","title":"Child work"}]`)
+			parent := f.card(model.Card{ID: "src", Kind: kind, Status: model.CardRunning})
+			norm := f.card(model.Card{ID: "norm", Kind: model.KindNormalize, Tier: model.TierT1, Status: model.CardHarvesting, Deps: []string{parent.ID}})
+			attempt := f.attempt(norm, 0, model.OutcomePassed, ch.ID, "")
+			attempt.Worktree = dir
+			if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
+				t.Fatal(err)
+			}
+			f.step()
+			got := f.mustCard("src")
+			if got.Status == model.CardRunning || got.Status == model.CardReady || got.Status == model.CardWaiting {
+				t.Fatalf("%s left open %+v", kind, got)
+			}
+			if got.Status != model.CardDone && got.Status != model.CardMergeQueued {
+				t.Fatalf("%s %+v", kind, got)
+			}
+			if cardByTitle(f, "Child work").Title != "Child work" || f.mustCard("norm").Status != model.CardDone {
+				t.Fatalf("cards %+v", f.cards())
+			}
+		})
+	}
+
+	t.Run("dev original is only backfilled", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		ch := f.channel("ch-a", "a")
+		dir := writeResult(t, "normalized body\n")
+		parent := f.card(model.Card{ID: "dev", Status: model.CardRunning, Body: "old\n"})
+		norm := f.card(model.Card{ID: "norm", Kind: model.KindNormalize, Tier: model.TierT1, Status: model.CardHarvesting, Deps: []string{parent.ID}})
+		attempt := f.attempt(norm, 0, model.OutcomePassed, ch.ID, "")
+		attempt.Worktree = dir
+		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
+			t.Fatal(err)
+		}
+		f.step()
+		got := f.mustCard("dev")
+		if got.Status != model.CardRunning || !strings.Contains(got.Body, "normalized body") || got.Status == model.CardDone {
+			t.Fatalf("dev %+v", got)
+		}
+		if f.mustCard("norm").Status != model.CardDone {
+			t.Fatalf("norm %s", f.mustCard("norm").Status)
+		}
+	})
 }

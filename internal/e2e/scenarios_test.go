@@ -1148,11 +1148,23 @@ func TestS23(t *testing.T) {
 		t.Fatalf("options %+v", asked.Options)
 	}
 	t.Logf("harvest created one proposal and one question %s", asked.ID)
+	rank, ok = findRankingCard(t, h, obj)
+	if !ok || rank.Status == model.CardWaiting || rank.Status == model.CardRunning {
+		t.Fatalf("ranking status %s", rank.Status)
+	}
+	for _, card := range cardsOf(t, h, obj) {
+		if card.Kind == model.KindNormalize {
+			t.Fatalf("normalize card %+v", card)
+		}
+	}
 	if models := positionModels(t, h); len(models) != 1 || models[0] != oldModel {
 		t.Fatalf("table changed before approval %v", models)
 	}
-	if _, err := runnerOf(t, h).Questions(h.DB).Answer(ctx, asked.ID, "批准"); err != nil {
+	if _, err := question.New(h.DB, nil).Answer(ctx, asked.ID, "批准"); err != nil {
 		t.Fatal(err)
+	}
+	if models := positionModels(t, h); len(models) != 1 || models[0] != oldModel {
+		t.Fatalf("unhooked answer updated the table %v", models)
 	}
 	keptRoute := model.Route{Channel: "keep-ch", Model: "keep-model"}
 	next := model.Card{

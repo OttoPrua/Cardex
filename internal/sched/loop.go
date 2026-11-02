@@ -123,6 +123,10 @@ func (r *Runner) Tick(ctx context.Context) error {
 	if err := r.mergeStep(ctx, db); err != nil {
 		return err
 	}
+	// A stored 批准 from question.New is applied here, before dispatch, so this tick routes with the new table.
+	if err := loop.FollowRanking(loop.WithHome(ctx, r.Home), db); err != nil {
+		return err
+	}
 	if _, err := r.dispatch(ctx, db); err != nil {
 		return err
 	}
@@ -546,7 +550,7 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 		if err != nil {
 			return err
 		}
-		in.Ranking = material
+		in.ReworkNote = material
 	}
 	text, err := r.promptText(ctx, in)
 	if err != nil {

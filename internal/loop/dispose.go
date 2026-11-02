@@ -127,7 +127,7 @@ func disposeTx(ctx context.Context, db *store.Store, home string, card *model.Ca
 		attempt.Card = card.ID
 	}
 	if card.Kind == model.KindRanking {
-		return disposeRanking(ctx, db, card, attempt, res)
+		return disposeRanking(ctx, db, home, card, attempt, res)
 	}
 	if designKind(card.Kind) {
 		return disposeDesign(ctx, db, home, card, attempt, res)
@@ -135,17 +135,45 @@ func disposeTx(ctx context.Context, db *store.Store, home string, card *model.Ca
 	return disposeDev(ctx, db, home, card, attempt, res)
 }
 
-func disposeRanking(ctx context.Context, db *store.Store, card *model.Card, attempt model.Attempt, res harvest.Result) ([]Notice, error) {
-	err := AbsorbHarvestedRanking(ctx, Deps{Store: db}, *card, RankingHarvest{
+func disposeRanking(ctx context.Context, db *store.Store, home string, card *model.Card, attempt model.Attempt, res harvest.Result) ([]Notice, error) {
+	harvested := RankingHarvest{
 		AttemptID:  attempt.ID,
 		Outcome:    res.Outcome,
 		ErrorClass: res.ErrorClass,
 		Acceptance: acceptanceFromEvidence(res.Evidence),
 		ResultText: res.ResultText,
-	})
+	}
+	fresh, err := db.GetCard(ctx, card.ID)
 	if err != nil {
 		return nil, err
 	}
+	stopped := fresh.Status == model.CardFailed || fresh.Status == model.CardCanceled
+	if rankingAbsorbable(fresh, harvested) {
+		if err := AbsorbHarvestedRanking(ctx, Deps{Store: db}, fresh, harvested); err != nil {
+			return nil, err
+		}
+		if err := ensureDevDisposed(ctx, db, attempt, res.Outcome); err != nil {
+			return nil, err
+		}
+		return refreshDisposedCard(ctx, db, card)
+	}
+	if stopped {
+		if err := ensureDevDisposed(ctx, db, attempt, res.Outcome); err != nil {
+			return nil, err
+		}
+		return refreshDisposedCard(ctx, db, card)
+	}
+	done, err := attemptDisposed(ctx, db, attempt.ID)
+	if err != nil {
+		return nil, err
+	}
+	if done {
+		return refreshDisposedCard(ctx, db, card)
+	}
+	return disposeDev(ctx, db, home, card, attempt, rankingFailureResult(res))
+}
+
+func refreshDisposedCard(ctx context.Context, db *store.Store, card *model.Card) ([]Notice, error) {
 	fresh, err := db.GetCard(ctx, card.ID)
 	if err != nil {
 		return nil, err
@@ -158,6 +186,67 @@ func disposeRanking(ctx context.Context, db *store.Store, card *model.Card, atte
 	}
 	*card = fresh
 	return nil, nil
+}
+
+func ensureDevDisposed(ctx context.Context, db *store.Store, attempt model.Attempt, outcome model.Outcome) error {
+	done, err := attemptDisposed(ctx, db, attempt.ID)
+	if err != nil || done {
+		return err
+	}
+	return markDevDisposed(ctx, db, attempt, outcome)
+}
+
+func attemptDisposed(ctx context.Context, db *store.Store, attemptID string) (bool, error) {
+	events, err := db.ListEvents(ctx, "attempt:"+attemptID)
+	if err != nil {
+		return false, err
+	}
+	for _, event := range events {
+		if event.Type == "dev_disposed" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// rankingFailureResult keeps an outcome Decide already disposes. Acceptance
+// failed or timeout, and a blocking error class on a passing outcome, use that same row.
+func rankingFailureResult(res harvest.Result) harvest.Result {
+	if designFailureOutcome(res.Outcome) {
+		return res
+	}
+	switch strings.TrimSpace(acceptanceFromEvidence(res.Evidence)) {
+	case "", "ok", "passed":
+	default:
+		res.Outcome = model.OutcomeTestsFailed
+		if res.ErrorClass == "" || res.ErrorClass == model.ErrorPassed || res.ErrorClass == model.ErrorResultUnparsable {
+			res.ErrorClass = model.ErrorTestsFailed
+		}
+		return res
+	}
+	switch res.ErrorClass {
+	case model.ErrorTestsFailed:
+		res.Outcome = model.OutcomeTestsFailed
+	case model.ErrorRefusal:
+		res.Outcome = model.OutcomeRefusal
+	case model.ErrorBudgetLimited:
+		res.Outcome = model.OutcomeBudgetLimited
+	case model.ErrorViolation:
+		res.Outcome = model.OutcomeViolation
+	case model.ErrorNoOutput:
+		res.Outcome = model.OutcomeNoOutput
+	case model.ErrorQuotaHit:
+		res.Outcome = model.OutcomeQuotaHit
+	case model.ErrorAuthFailed:
+		res.Outcome = model.OutcomeAuthFailed
+	case model.ErrorTransport:
+		res.Outcome = model.OutcomeTransport
+	case model.ErrorTimeout:
+		res.Outcome = model.OutcomeTimeout
+	case model.ErrorPermissionDenied:
+		res.Outcome = model.OutcomePermissionDenied
+	}
+	return res
 }
 
 func acceptanceFromEvidence(evidence string) string {

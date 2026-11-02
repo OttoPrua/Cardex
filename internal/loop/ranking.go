@@ -572,13 +572,13 @@ func (d Deps) absorbRanking(ctx context.Context, card model.Card, text string) e
 	var prop positioning.Proposal
 	var current []model.Positioning
 	if len(parsed.entries) > 0 {
-		// An older 定位提案 question is not a duplicate. Skip this proposal only
-		// when the same entries are already stored.
-		stored, err := proposalStored(home, parsed.entries)
+		// Another card's proposal is not a duplicate. Skip only when this card
+		// already has the question and a finished status for these entries.
+		handled, err := d.rankingAlreadyHandled(ctx, home, card, parsed.entries)
 		if err != nil {
 			return err
 		}
-		if stored {
+		if handled {
 			return nil
 		}
 		table, err := positioning.Open(home)
@@ -616,25 +616,33 @@ func (d Deps) absorbRanking(ctx context.Context, card model.Card, text string) e
 	return d.finishRanking(ctx, card.ID, status, reason)
 }
 
-func proposalStored(home string, entries []model.Positioning) (bool, error) {
-	if strings.TrimSpace(home) == "" || len(entries) == 0 {
+func (d Deps) rankingAlreadyHandled(ctx context.Context, home string, card model.Card, entries []model.Positioning) (bool, error) {
+	if d.Store == nil || card.ID == "" || len(entries) == 0 {
 		return false, nil
 	}
-	dir := filepath.Join(home, "positioning", "proposals")
-	list, err := os.ReadDir(dir)
+	fresh, err := d.Store.GetCard(ctx, card.ID)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
+		return false, err
+	}
+	questions, err := d.Store.ListQuestions(ctx, fresh.Objective)
+	if err != nil {
 		return false, err
 	}
 	want := proposalEntriesKey(entries)
-	for _, entry := range list {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+	matched := false
+	for _, q := range questions {
+		if q.Scope != fresh.ID {
 			continue
 		}
-		body, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		id := proposalID(q.Text)
+		if id == "" || strings.TrimSpace(home) == "" {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(home, "positioning", "proposals", id+".json"))
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			return false, err
 		}
 		var saved struct {
@@ -644,10 +652,19 @@ func proposalStored(home string, entries []model.Positioning) (bool, error) {
 			continue
 		}
 		if proposalEntriesKey(saved.Entries) == want {
-			return true, nil
+			matched = true
+			break
 		}
 	}
-	return false, nil
+	if !matched {
+		return false, nil
+	}
+	if fresh.Status != model.CardDone && fresh.Status != model.CardNeedsInput {
+		if err := d.finishRanking(ctx, fresh.ID, model.CardDone, ""); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
 }
 
 func proposalEntriesKey(entries []model.Positioning) string {

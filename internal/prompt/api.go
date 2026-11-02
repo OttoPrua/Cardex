@@ -14,5 +14,4 @@ type Input struct {
 	Repo       string               // 读取 context.md 和节点文档的仓库。
 	Revision   string               // 读取文档所用的提交，通常是集成分支 HEAD。
 	DesignDir  string               // 设计文档目录；空则 docs/design/。
-	Ranking    string               // 调用方传入的 ranking 材料。空则不替换种类前言。
 }

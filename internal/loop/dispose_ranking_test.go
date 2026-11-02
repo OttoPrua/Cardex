@@ -122,3 +122,133 @@ func disposeRankingText(t *testing.T, home string, db *store.Store, attemptID st
 		t.Fatal(err)
 	}
 }
+
+func TestRankingHarvestDisposition(t *testing.T) {
+	valid := `{"entries":[{"model":"corrected-model","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"修正"}]}`
+	rows := []struct {
+		name     string
+		outcome  model.Outcome
+		class    model.ErrorClass
+		evidence string
+		text     string
+		absorb   bool
+	}{
+		{name: "passed", outcome: model.OutcomePassed, class: model.ErrorPassed, evidence: "acceptance=ok", text: valid, absorb: true},
+		{name: "format result_unparsable", outcome: model.OutcomeResultUnparsable, class: model.ErrorResultUnparsable, evidence: "acceptance=ok", text: valid, absorb: true},
+		{name: "tests_failed", outcome: model.OutcomeTestsFailed, class: model.ErrorTestsFailed, evidence: "acceptance=failed", text: valid},
+		{name: "refusal", outcome: model.OutcomeRefusal, class: model.ErrorRefusal, evidence: "acceptance=ok", text: valid},
+		{name: "violation", outcome: model.OutcomeViolation, class: model.ErrorViolation, text: valid},
+		{name: "budget_limited", outcome: model.OutcomeBudgetLimited, class: model.ErrorBudgetLimited, text: valid},
+		{name: "acceptance failed", outcome: model.OutcomePassed, class: model.ErrorPassed, evidence: "acceptance=failed", text: valid},
+		{name: "acceptance timeout", outcome: model.OutcomePassed, class: model.ErrorPassed, evidence: "acceptance=timeout", text: valid},
+		{name: "violation class", outcome: model.OutcomePassed, class: model.ErrorViolation, evidence: "acceptance=ok", text: valid},
+		{name: "no_output", outcome: model.OutcomeNoOutput, class: model.ErrorNoOutput, text: valid},
+		{name: "permission_denied", outcome: model.OutcomePermissionDenied, class: model.ErrorPermissionDenied, text: valid},
+		{name: "transport", outcome: model.OutcomeTransport, class: model.ErrorTransport, text: valid},
+		{name: "timeout", outcome: model.OutcomeTimeout, class: model.ErrorTimeout, text: valid},
+		{name: "quota_hit", outcome: model.OutcomeQuotaHit, class: model.ErrorQuotaHit, text: valid},
+		{name: "auth_failed", outcome: model.OutcomeAuthFailed, class: model.ErrorAuthFailed, text: valid},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			home, db := rankingHome(t)
+			seedRanking(t, db, "old-model")
+			ctx := context.Background()
+			ch := model.Channel{
+				ID: "ch-old", Runner: model.RunnerFake, Family: "oldfam", SourceGroup: "oldfam",
+				Models: []string{"old-route"}, Concurrency: 4, Health: model.HealthOK, Tier: model.TierT2,
+			}
+			if err := db.CreateChannel(ctx, &ch); err != nil {
+				t.Fatal(err)
+			}
+			card, err := db.GetCard(ctx, "rank")
+			if err != nil {
+				t.Fatal(err)
+			}
+			card.Status = model.CardRunning
+			if err := db.UpdateCard(ctx, &card); err != nil {
+				t.Fatal(err)
+			}
+			disposeRankingText(t, home, db, "a-rank", row.outcome, row.class, row.evidence, row.text)
+			if !attemptHasDisposed(t, db, "a-rank") {
+				t.Fatal("missing dev_disposed")
+			}
+			got, err := db.GetCard(ctx, "rank")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status == model.CardRunning || got.Status == model.CardWaiting {
+				t.Fatalf("status %s", got.Status)
+			}
+			questions := mustQuestions(t, db)
+			if row.absorb {
+				if proposalCount(t) != 1 || len(questions) != 1 {
+					t.Fatalf("proposals %d questions %+v", proposalCount(t), questions)
+				}
+				if got.Status != model.CardDone {
+					t.Fatalf("status %s", got.Status)
+				}
+			} else if !rankingFailureSettled(got, questions) {
+				t.Fatalf("not reworked or questioned %+v questions %+v", got, questions)
+			}
+			if proposalCount(t) != 0 && !row.absorb {
+				t.Fatalf("failure stored a proposal")
+			}
+			if err := devStep(ctx, "obj"); err != nil {
+				t.Fatal(err)
+			}
+			if err := devStep(ctx, "obj"); err != nil {
+				t.Fatal(err)
+			}
+			cards, err := db.ListCards(ctx, "obj")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range cards {
+				if item.Kind == model.KindNormalize {
+					t.Fatalf("normalize card %+v", item)
+				}
+			}
+			after, err := db.GetCard(ctx, "rank")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Status == model.CardWaiting {
+				t.Fatalf("second pass moved ranking to waiting: %s", after.WaitReason)
+			}
+			disposeRankingText(t, home, db, "a-rank", row.outcome, row.class, row.evidence, row.text)
+			if row.absorb && (proposalCount(t) != 1 || len(mustQuestions(t, db)) != 1) {
+				t.Fatalf("second dispose proposals %d questions %d", proposalCount(t), len(mustQuestions(t, db)))
+			}
+		})
+	}
+}
+
+func rankingFailureSettled(card model.Card, questions []model.Question) bool {
+	if card.Status == model.CardRunning || card.Status == model.CardWaiting {
+		return false
+	}
+	if card.ReworkCount > 0 || card.Status == model.CardReady || card.Status == model.CardNeedsInput {
+		for _, q := range questions {
+			if q.Scope == card.ID && strings.TrimSpace(q.Answer) == "" {
+				return true
+			}
+		}
+		return card.ReworkCount > 0 || card.Status == model.CardReady || card.Status == model.CardNeedsInput
+	}
+	return false
+}
+
+func attemptHasDisposed(t *testing.T, db *store.Store, attemptID string) bool {
+	t.Helper()
+	events, err := db.ListEvents(context.Background(), "attempt:"+attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == "dev_disposed" {
+			return true
+		}
+	}
+	return false
+}

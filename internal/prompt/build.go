@@ -35,8 +35,11 @@ func Build(ctx context.Context, in Input) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(in.Ranking) != "" {
-		preface = in.Ranking
+	// Ranking material arrives on ReworkNote, an input Build already accepted.
+	// The source block marks that text as the preface. A normal rework note stays on the card.
+	if in.Card.Kind == model.KindRanking && strings.Contains(in.ReworkNote, "<!-- sources:start -->") {
+		preface = in.ReworkNote
+		in.ReworkNote = ""
 	}
 	contextBytes, err := loadContext(ctx, in)
 	if err != nil {

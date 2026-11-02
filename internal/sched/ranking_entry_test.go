@@ -159,26 +159,18 @@ func TestRankingPromptFromBuild(t *testing.T) {
 func TestRankingApproveHook(t *testing.T) {
 	rows := []struct {
 		name    string
-		hooked  bool
 		answer  string
 		approve bool
 	}{
-		{name: "批准", hooked: true, answer: "批准", approve: true},
-		{name: "other answer", hooked: true, answer: "驳回", approve: false},
-		{name: "stored route", hooked: true, answer: "批准", approve: true},
-		{name: "unhooked", hooked: false, answer: "批准", approve: false},
+		{name: "批准", answer: "批准", approve: true},
+		{name: "other answer", answer: "驳回", approve: false},
+		{name: "stored route", answer: "批准", approve: true},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := context.Background()
 			home, db, q, kept := seedRankingApproval(t)
-			var got model.Question
-			var err error
-			if row.hooked {
-				got, err = New(home).Questions(db).Answer(ctx, q.ID, row.answer)
-			} else {
-				got, err = question.New(db, nil).Answer(ctx, q.ID, row.answer)
-			}
+			got, err := question.New(db, nil).Answer(ctx, q.ID, row.answer)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -189,24 +181,27 @@ func TestRankingApproveHook(t *testing.T) {
 			if err == nil || empty.Answer != row.answer {
 				t.Fatalf("empty answer err %v stored %q", err, empty.Answer)
 			}
-			rows, err := db.ListPositioning(ctx)
+			if positioningHas(t, db, "approved-model") {
+				t.Fatal("answer updated the positioning table")
+			}
+			r := New(home)
+			r.Launch = func(context.Context, string, string) (int, error) { return 7, nil }
+			if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if positioningHas(t, db, "approved-model") != row.approve {
+				t.Fatalf("after tick approved=%v want %v", positioningHas(t, db, "approved-model"), row.approve)
+			}
+			wantModel := "old-model"
+			if row.approve {
+				wantModel = "approved-model"
+			}
+			attempts, err := db.ListAttempts(ctx, "c-next")
 			if err != nil {
 				t.Fatal(err)
 			}
-			var models []string
-			for _, item := range rows {
-				if item.Model != "" {
-					models = append(models, item.Model)
-				}
-			}
-			has := false
-			for _, modelName := range models {
-				if modelName == "approved-model" {
-					has = true
-				}
-			}
-			if has != row.approve {
-				t.Fatalf("positioning %v approve %v", models, row.approve)
+			if len(attempts) != 1 || attempts[0].Route.Model != wantModel {
+				t.Fatalf("dispatched route %+v want %s", attempts, wantModel)
 			}
 			attempt, err := db.GetAttempt(ctx, kept)
 			if err != nil {
@@ -215,9 +210,23 @@ func TestRankingApproveHook(t *testing.T) {
 			if attempt.Route.Channel != "keep-ch" || attempt.Route.Model != "keep-model" {
 				t.Fatalf("stored route changed %+v", attempt.Route)
 			}
-			t.Logf("answer %s approve %v route %+v", row.answer, row.approve, attempt.Route)
+			t.Logf("answer %s approve %v dispatched %s kept %+v", row.answer, row.approve, attempts[0].Route.Model, attempt.Route)
 		})
 	}
+}
+
+func positioningHas(t *testing.T, db *store.Store, modelName string) bool {
+	t.Helper()
+	rows, err := db.ListPositioning(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range rows {
+		if item.Model == modelName {
+			return true
+		}
+	}
+	return false
 }
 
 func TestDeliverDoesNotAbsorbRanking(t *testing.T) {
@@ -244,13 +253,29 @@ func TestDeliverDoesNotAbsorbRanking(t *testing.T) {
 
 func seedRankingApproval(t *testing.T) (string, *store.Store, model.Question, string) {
 	t.Helper()
-	home, db, _ := newHome(t)
+	home, db, repo := newHome(t)
 	t.Setenv("CARDEX_HOME", home)
 	ctx := context.Background()
-	obj := model.Objective{
-		ID: "o", Title: "o", Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeFast,
+	_, objID := seedRepo(t, db, repo, "true")
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte("{\"schedules\":[]}\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if err := db.CreateObjective(ctx, &obj); err != nil {
+	for _, spec := range []struct{ id, modelName string }{
+		{"ch-old", "old-model"},
+		{"ch-new", "approved-model"},
+	} {
+		ch := model.Channel{
+			ID: spec.id, Runner: model.RunnerFake, Family: "fam", SourceGroup: "fam",
+			Models: []string{spec.modelName}, Concurrency: 4, Health: model.HealthOK, Tier: model.TierT2,
+		}
+		if err := db.CreateChannel(ctx, &ch); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.CreatePositioning(ctx, &model.Positioning{
+		ID: "pos-old", Model: "old-model", Family: "fam",
+		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	table, err := positioning.Open(home)
@@ -258,8 +283,7 @@ func seedRankingApproval(t *testing.T) (string, *store.Store, model.Question, st
 		t.Fatal(err)
 	}
 	prop, err := table.Propose(ctx, []model.Positioning{{
-		Model: "approved-model", Family: "fam", Tiers: []model.Tier{model.TierT2},
-		Capabilities: []string{"web"}, Preference: 1,
+		Model: "approved-model", Family: "fam", Tiers: []model.Tier{model.TierT2}, Preference: 1,
 	}})
 	if closeErr := table.Close(); err == nil {
 		err = closeErr
@@ -268,14 +292,14 @@ func seedRankingApproval(t *testing.T) (string, *store.Store, model.Question, st
 		t.Fatal(err)
 	}
 	q := model.Question{
-		Objective: obj.ID, Scope: "rank", ScopeKind: "card", Kind: model.QuestionCustom,
+		Objective: objID, Scope: "rank", ScopeKind: "card", Kind: model.QuestionCustom,
 		Text:    "定位提案 " + prop.ID + "\n差异：\n+ approved-model\n",
 		Options: []string{"批准", "驳回"},
 	}
 	if err := db.CreateQuestion(ctx, &q); err != nil {
 		t.Fatal(err)
 	}
-	keep := model.Card{ID: "keep", Objective: obj.ID, Kind: model.KindDev, Title: "keep", Status: model.CardDone}
+	keep := model.Card{ID: "keep", Objective: objID, Kind: model.KindDev, Title: "keep", Status: model.CardDone}
 	if err := db.CreateCard(ctx, &keep); err != nil {
 		t.Fatal(err)
 	}
@@ -283,6 +307,13 @@ func seedRankingApproval(t *testing.T) (string, *store.Store, model.Question, st
 		ID: "a-keep", Card: keep.ID, Route: model.Route{Channel: "keep-ch", Model: "keep-model"},
 		Outcome: model.OutcomePassed, EndedAt: time.Now().UTC(),
 	}); err != nil {
+		t.Fatal(err)
+	}
+	next := model.Card{
+		ID: "c-next", Objective: objID, Kind: model.KindDev, Tier: model.TierT2,
+		Title: "next", Status: model.CardReady, Acceptance: []string{"true"},
+	}
+	if err := db.CreateCard(ctx, &next); err != nil {
 		t.Fatal(err)
 	}
 	return home, db, q, "a-keep"

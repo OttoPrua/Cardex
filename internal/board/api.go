@@ -143,7 +143,7 @@ func serveHistory(w http.ResponseWriter, r *http.Request, asJSON bool) {
 		return
 	}
 	q := r.URL.Query()
-	page, _ := strconv.Atoi(q.Get("page"))
+	page := parsePage(q.Get("page"))
 	view, err := loadHistory(r.Context(), db, q.Get("q"), q.Get("status"), page)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -170,7 +170,11 @@ func serveLog(w http.ResponseWriter, r *http.Request, id string) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	path := filepath.Join(home, "attempts", id, "output.log")
+	path, ok := attemptLogPath(home, id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 	body, err := readTail(path, logTailBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -200,7 +204,31 @@ func writeJSON(w http.ResponseWriter, v any) {
 }
 
 func safeID(id string) bool {
-	return id != "" && id != "." && id != ".." && !strings.ContainsAny(id, `/\`) && !strings.Contains(id, "..")
+	return id != "" && id != "." && id != ".." && !strings.ContainsAny(id, `/\\`)
+}
+
+func parsePage(raw string) int {
+	if strings.TrimSpace(raw) == "" {
+		return 1
+	}
+	n, err := strconv.ParseInt(raw, 10, strconv.IntSize)
+	if err != nil || n < 1 {
+		return 1
+	}
+	return int(n)
+}
+
+func attemptLogPath(home, id string) (string, bool) {
+	if !safeID(id) {
+		return "", false
+	}
+	cleanHome := filepath.Clean(home)
+	joined := filepath.Clean(filepath.Join(cleanHome, "attempts", id, "output.log"))
+	want := cleanHome + string(filepath.Separator) + "attempts" + string(filepath.Separator) + id + string(filepath.Separator) + "output.log"
+	if joined != want {
+		return "", false
+	}
+	return joined, true
 }
 
 func readTail(path string, n int) ([]byte, error) {
@@ -276,19 +304,21 @@ func resolveHome() (string, error) {
 }
 
 func homeFromArgs(args []string) string {
+	home := ""
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		if a == "--home" {
-			if i+1 < len(args) {
-				return args[i+1]
+		switch {
+		case a == "--home":
+			if i+1 >= len(args) {
+				continue
 			}
-			return ""
-		}
-		if strings.HasPrefix(a, "--home=") {
-			return strings.TrimPrefix(a, "--home=")
+			i++
+			home = args[i]
+		case strings.HasPrefix(a, "--home="):
+			home = strings.TrimPrefix(a, "--home=")
 		}
 	}
-	return ""
+	return home
 }
 
 var errNotFound = errors.New("board: not found")

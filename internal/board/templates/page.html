@@ -29,11 +29,7 @@ setInterval(function () {
 <article class="objective">
 <h2>{{.Title}}</h2>
 <p>objective {{.ID}} status {{.Status}}</p>
-<ul>
-{{range .Nodes}}
-<li>node {{.ID}} status {{.Status}} open_questions {{.OpenQuestionCount}}</li>
-{{end}}
-</ul>
+{{template "design-nodes" .Nodes}}
 </article>
 {{end}}
 <h3>卡</h3>
@@ -84,7 +80,7 @@ setInterval(function () {
 <p>health {{.Health}} redline {{.Redline}} occupied {{.Occupied}} concurrency {{.Concurrency}}</p>
 <ul>
 {{range .Windows}}
-<li>window {{.Name}} remaining {{.Remaining}} confidence {{.Confidence}} reset {{.ResetAt}}</li>
+<li>window {{.Name}} remaining {{.RemainingLabel}} confidence {{.Confidence}} reset {{.ResetAt}}</li>
 {{end}}
 </ul>
 </article>
@@ -99,6 +95,8 @@ setInterval(function () {
 <ul>
 {{range .Attempts}}
 <li>attempt {{.ID}} outcome {{.Outcome}} excerpt {{.ErrorExcerpt}} ended {{.Ended}}
+{{with .Exit}}exit {{.}} {{end}}base {{.BaseCommit}} head {{.HeadCommit}}
+{{range .Events}}event {{.Type}} {{.DataText}} {{end}}
 <pre class="route-reason">{{.RouteReasonJSON}}</pre>
 <a href="{{.LogTailURL}}">output.log</a>
 </li>
@@ -122,4 +120,14 @@ setInterval(function () {
 {{end}}
 </ul>
 </section>
+{{end}}
+
+{{define "design-nodes"}}
+<ul>
+{{range .}}
+<li class="design-node">node {{.ID}} status {{.Status}} open_questions {{.OpenQuestionCount}} parent {{.Parent}} layer {{.Layer}}
+{{if .Children}}{{template "design-nodes" .Children}}{{end}}
+</li>
+{{end}}
+</ul>
 {{end}}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -124,7 +125,7 @@ func TestViewsHTMLAndJSON(t *testing.T) {
 	if main.Health != "degraded" || main.Redline != 0.25 || main.Occupied != 1 || main.Concurrency != 4 {
 		t.Fatalf("channel %#v", main)
 	}
-	if len(main.Windows) != 2 || main.Windows[0].Name != "5h" || main.Windows[0].Remaining != 0.5 || main.Windows[0].Confidence != 1 || main.Windows[0].ResetAt != "2026-10-31T12:00:00Z" {
+	if len(main.Windows) != 2 || main.Windows[0].Name != "5h" || main.Windows[0].Remaining == nil || *main.Windows[0].Remaining != 0.5 || main.Windows[0].Confidence != 1 || main.Windows[0].ResetAt != "2026-10-31T12:00:00Z" {
 		t.Fatalf("windows %#v", main.Windows)
 	}
 	idle := channelByID(channels.Channels, "ch-idle")
@@ -545,6 +546,372 @@ func TestHomeFlagOverridesEnv(t *testing.T) {
 	}
 }
 
+func TestDesignTreeKeepsParentAndLayer(t *testing.T) {
+	db, _ := openHome(t)
+	ctx := context.Background()
+	must(t, db.CreateProject(ctx, &model.Project{ID: "p-tree", RepoPath: t.TempDir()}))
+	must(t, db.CreateObjective(ctx, &model.Objective{
+		ID: "o-tree", Project: "p-tree", Title: "nested design",
+		Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+	}))
+	must(t, db.CreateNode(ctx, &model.DesignNode{
+		ID: "d-root", Objective: "o-tree", Layer: model.LayerDirection, Status: model.NodeDrafting,
+	}))
+	must(t, db.CreateNode(ctx, &model.DesignNode{
+		ID: "m-mid", Objective: "o-tree", Parent: "d-root", Layer: model.LayerModule, Status: model.NodeFrozen,
+	}))
+	must(t, db.CreateNode(ctx, &model.DesignNode{
+		ID: "det-leaf", Objective: "o-tree", Parent: "m-mid", Layer: model.LayerDetail, Status: model.NodeDrafting,
+	}))
+
+	for _, path := range []string{"/", "/api/work"} {
+		t.Run(path, func(t *testing.T) {
+			rec := do(t, http.MethodGet, path)
+			if path == "/" {
+				body := rec.Body.String()
+				assertContains(t, body,
+					"node d-root status drafting open_questions 0 parent  layer direction",
+					"node m-mid status frozen open_questions 0 parent d-root layer module",
+					"node det-leaf status drafting open_questions 0 parent m-mid layer detail",
+				)
+				assertNested(t, body, "d-root", "m-mid")
+				assertNested(t, body, "m-mid", "det-leaf")
+				return
+			}
+			view := decode[currentView](t, rec)
+			if len(view.Objectives) != 1 || len(view.Objectives[0].Nodes) != 1 {
+				t.Fatalf("roots %#v", view.Objectives)
+			}
+			root := view.Objectives[0].Nodes[0]
+			if root.ID != "d-root" || root.Parent != "" || root.Layer != "direction" || len(root.Children) != 1 {
+				t.Fatalf("direction %#v", root)
+			}
+			mid := root.Children[0]
+			if mid.ID != "m-mid" || mid.Parent != "d-root" || mid.Layer != "module" || len(mid.Children) != 1 {
+				t.Fatalf("module %#v", mid)
+			}
+			leaf := mid.Children[0]
+			if leaf.ID != "det-leaf" || leaf.Parent != "m-mid" || leaf.Layer != "detail" || len(leaf.Children) != 0 {
+				t.Fatalf("detail %#v", leaf)
+			}
+		})
+	}
+}
+
+func TestCardShowsOutcomeEvidence(t *testing.T) {
+	db, _ := openHome(t)
+	ctx := context.Background()
+	must(t, db.CreateProject(ctx, &model.Project{ID: "p-ev", RepoPath: t.TempDir()}))
+	must(t, db.CreateObjective(ctx, &model.Objective{
+		ID: "o-ev", Project: "p-ev", Title: "evidence",
+		Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+	}))
+	must(t, db.CreateCard(ctx, &model.Card{
+		ID: "c-evidence", Objective: "o-ev", Title: "evidence card", Kind: model.KindDev, Status: model.CardRunning,
+	}))
+	reason := model.RouteReason{
+		Filtered: []model.FilteredCandidate{{Channel: "ch", Model: "m", Reason: "evidence-route"}},
+	}
+	must(t, db.CreateAttempt(ctx, &model.Attempt{
+		ID: "a-unset", Card: "c-evidence", Index: 0, RouteReason: reason,
+		Outcome: model.OutcomePassed, ErrorExcerpt: "unset-excerpt",
+	}))
+	must(t, db.CreateAttempt(ctx, &model.Attempt{
+		ID: "a-zero", Card: "c-evidence", Index: 1, RouteReason: reason,
+		Exit: intPtr(0), BaseCommit: "base-zero", HeadCommit: "head-zero",
+		Outcome: model.OutcomePassed, ErrorExcerpt: "zero-excerpt",
+	}))
+	must(t, db.CreateAttempt(ctx, &model.Attempt{
+		ID: "a-seven", Card: "c-evidence", Index: 2, RouteReason: reason,
+		Exit: intPtr(7), BaseCommit: "base-seven", HeadCommit: "head-seven",
+		Outcome: model.OutcomeTestsFailed, ErrorExcerpt: "seven-excerpt",
+	}))
+	must(t, db.AppendEvent(ctx, &model.Event{
+		ID: "e-zero", Entity: "attempt:a-zero", Type: "zeroed", Data: json.RawMessage(`{"n":0}`),
+	}))
+	must(t, db.AppendEvent(ctx, &model.Event{
+		ID: "e-seven", Entity: "attempt:a-seven", Type: "harvested", Data: json.RawMessage(`{"verdict":"pass-token"}`),
+	}))
+	must(t, db.AppendEvent(ctx, &model.Event{
+		ID: "e-noise", Entity: "card:c-evidence", Type: "noise", Data: json.RawMessage(`{"nope":"card-event-noise"}`),
+	}))
+
+	for _, path := range []string{"/cards/c-evidence", "/api/cards/c-evidence"} {
+		t.Run(path, func(t *testing.T) {
+			rec := do(t, http.MethodGet, path)
+			body := rec.Body.String()
+			if strings.Contains(body, "card-event-noise") {
+				t.Fatalf("unrelated event leaked: %s", body)
+			}
+			if path == "/cards/c-evidence" {
+				unset := attemptSection(t, body, "a-unset")
+				if strings.Contains(unset, "exit") {
+					t.Fatalf("unset exit invented: %s", unset)
+				}
+				assertContains(t, unset, "outcome passed", "excerpt unset-excerpt", "evidence-route", `href="/attempts/a-unset/output.log"`)
+				zero := attemptSection(t, body, "a-zero")
+				assertContains(t, zero, "exit 0", "base base-zero", "head head-zero", "event zeroed", "&#34;n&#34;:0")
+				seven := attemptSection(t, body, "a-seven")
+				assertContains(t, seven, "outcome tests_failed", "excerpt seven-excerpt", "exit 7", "base base-seven", "head head-seven", "event harvested", "pass-token")
+				return
+			}
+			card := decode[cardView](t, rec)
+			unset := attemptByID(card.Attempts, "a-unset")
+			if unset.Exit != nil || unset.BaseCommit != "" || unset.HeadCommit != "" || len(unset.Events) != 0 {
+				t.Fatalf("unset %#v", unset)
+			}
+			if unset.Outcome != "passed" || unset.ErrorExcerpt != "unset-excerpt" || unset.LogTailURL != "/attempts/a-unset/output.log" {
+				t.Fatalf("unset kept fields %#v", unset)
+			}
+			if !strings.Contains(body, `"exit":null`) {
+				t.Fatalf("unset exit not null: %s", body)
+			}
+			zero := attemptByID(card.Attempts, "a-zero")
+			if zero.Exit == nil || *zero.Exit != 0 || zero.BaseCommit != "base-zero" || zero.HeadCommit != "head-zero" {
+				t.Fatalf("zero %#v", zero)
+			}
+			if len(zero.Events) != 1 || zero.Events[0].Type != "zeroed" || string(zero.Events[0].Data) != `{"n":0}` {
+				t.Fatalf("zero events %#v", zero.Events)
+			}
+			seven := attemptByID(card.Attempts, "a-seven")
+			if seven.Exit == nil || *seven.Exit != 7 || seven.BaseCommit != "base-seven" || seven.HeadCommit != "head-seven" {
+				t.Fatalf("seven %#v", seven)
+			}
+			if seven.Outcome != "tests_failed" || seven.ErrorExcerpt != "seven-excerpt" {
+				t.Fatalf("seven outcome %#v", seven)
+			}
+			if len(seven.Events) != 1 || seven.Events[0].Type != "harvested" || !strings.Contains(string(seven.Events[0].Data), "pass-token") {
+				t.Fatalf("seven events %#v", seven.Events)
+			}
+		})
+	}
+}
+
+func TestHistoryPageClamp(t *testing.T) {
+	db, _ := openHome(t)
+	ctx := context.Background()
+	must(t, db.CreateProject(ctx, &model.Project{ID: "p-page", RepoPath: t.TempDir()}))
+	must(t, db.CreateObjective(ctx, &model.Objective{
+		ID: "o-page", Project: "p-page", Title: "paging",
+		Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+	}))
+	must(t, db.WithTx(ctx, func(ctx context.Context) error {
+		for i := 0; i <= historyPageSize; i++ {
+			id := "edge-" + leftPad(i, 3)
+			if err := db.CreateCard(ctx, &model.Card{
+				ID: id, Objective: "o-page", Title: id, Kind: model.KindDev, Status: model.CardDone,
+				Legacy: model.Legacy{SourcePath: "v1/" + id},
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}))
+
+	cases := []struct {
+		name     string
+		page     string
+		wantPage int
+		wantID   string
+		absent   string
+	}{
+		{"max int", "9223372036854775807", 2, "edge-050", "edge-000"},
+		{"parse overflow", "9223372036854775808", 1, "edge-000", "edge-050"},
+		{"negative", "-1", 1, "edge-000", "edge-050"},
+		{"min int", "-9223372036854775808", 1, "edge-000", "edge-050"},
+	}
+	for _, tc := range cases {
+		for _, prefix := range []string{"/history", "/api/history"} {
+			t.Run(tc.name+" "+prefix, func(t *testing.T) {
+				rec := do(t, http.MethodGet, prefix+"?page="+tc.page)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status %d body %s", rec.Code, rec.Body.String())
+				}
+				body := rec.Body.String()
+				if !strings.Contains(body, tc.wantID) || strings.Contains(body, tc.absent) {
+					t.Fatalf("page items want %s absent %s", tc.wantID, tc.absent)
+				}
+				if prefix == "/api/history" {
+					view := decode[historyView](t, rec)
+					if view.Page != tc.wantPage || view.Total != historyPageSize+1 {
+						t.Fatalf("page=%d total=%d", view.Page, view.Total)
+					}
+					if tc.wantPage == 2 && len(view.Items) != 1 {
+						t.Fatalf("last page len %d", len(view.Items))
+					}
+					return
+				}
+				marker := "page " + strconv.Itoa(tc.wantPage) + " page_size"
+				if !strings.Contains(body, marker) {
+					t.Fatalf("html missing %q", marker)
+				}
+			})
+		}
+	}
+}
+
+func TestHomeLastWins(t *testing.T) {
+	old := os.Args
+	t.Cleanup(func() { os.Args = old })
+	envHome := t.TempDir()
+	homeA := t.TempDir()
+	homeB := t.TempDir()
+	seedCard(t, envHome, "env-only-card")
+	seedCard(t, homeA, "home-a-card")
+	seedCard(t, homeB, "home-b-card")
+	t.Setenv("CARDEX_HOME", envHome)
+
+	cases := []struct {
+		name   string
+		args   []string
+		want   string
+		absent []string
+	}{
+		{"serve example", []string{"cardex", "--home", homeA, "serve", "--home", homeB}, "home-b-card", []string{"home-a-card", "env-only-card"}},
+		{"repeat spaced", []string{"cardex", "--home", homeA, "--home", homeB, "serve"}, "home-b-card", []string{"home-a-card", "env-only-card"}},
+		{"repeat equals", []string{"cardex", "--home=" + homeA, "serve", "--home=" + homeB}, "home-b-card", []string{"home-a-card", "env-only-card"}},
+		{"mixed spaced then equals", []string{"cardex", "--home", homeA, "serve", "--home=" + homeB}, "home-b-card", []string{"home-a-card", "env-only-card"}},
+		{"mixed equals then spaced", []string{"cardex", "--home=" + homeA, "serve", "--home", homeB}, "home-b-card", []string{"home-a-card", "env-only-card"}},
+		{"flag over env", []string{"cardex", "--home", homeA, "serve"}, "home-a-card", []string{"env-only-card", "home-b-card"}},
+		{"env only", []string{"cardex", "serve"}, "env-only-card", []string{"home-a-card", "home-b-card"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Args = tc.args
+			body := do(t, http.MethodGet, "/api/work").Body.String()
+			if !strings.Contains(body, tc.want) {
+				t.Fatalf("missing %s in %s", tc.want, body)
+			}
+			for _, id := range tc.absent {
+				if strings.Contains(body, id) {
+					t.Fatalf("body has %s, want %s", id, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestQuotaUnknownVersusExhausted(t *testing.T) {
+	db, _ := openHome(t)
+	ctx := context.Background()
+	must(t, db.CreateChannel(ctx, &model.Channel{
+		ID: "ch-quota", Runner: model.RunnerFake, Family: "fake", Tier: model.TierT1, Health: model.HealthOK,
+		QuotaWindows: []model.QuotaWindow{
+			{Name: "uncapped", Remaining: 0.9, Confidence: 0.2, ResetAt: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)},
+			{Name: "empty", LimitTokens: 100, Remaining: 0, Confidence: 0.3, ResetAt: time.Date(2026, 12, 2, 0, 0, 0, 0, time.UTC)},
+			{Name: "partial", LimitRequests: 10, Remaining: 0.4, Confidence: 0.8, ResetAt: time.Date(2026, 12, 3, 0, 0, 0, 0, time.UTC)},
+		},
+	}))
+
+	for _, path := range []string{"/channels", "/api/channels"} {
+		t.Run(path, func(t *testing.T) {
+			rec := do(t, http.MethodGet, path)
+			body := rec.Body.String()
+			if strings.Contains(body, "0.9") {
+				t.Fatalf("uncapped remaining was shown: %s", body)
+			}
+			if path == "/channels" {
+				assertContains(t, body,
+					"window uncapped remaining 未知 confidence 0.2 reset 2026-12-01T00:00:00Z",
+					"window empty remaining 0 confidence 0.3 reset 2026-12-02T00:00:00Z",
+					"window partial remaining 0.4 confidence 0.8 reset 2026-12-03T00:00:00Z",
+				)
+				uncapped := windowLine(t, body, "uncapped")
+				if strings.Contains(uncapped, "remaining 0") {
+					t.Fatalf("unknown rendered as zero: %s", uncapped)
+				}
+				empty := windowLine(t, body, "empty")
+				if strings.Contains(empty, "未知") {
+					t.Fatalf("exhausted rendered as unknown: %s", empty)
+				}
+				return
+			}
+			view := decode[channelsView](t, rec)
+			ch := channelByID(view.Channels, "ch-quota")
+			if len(ch.Windows) != 3 {
+				t.Fatalf("windows %#v", ch.Windows)
+			}
+			uncapped, empty, partial := ch.Windows[0], ch.Windows[1], ch.Windows[2]
+			if uncapped.Name != "uncapped" || uncapped.Remaining != nil || uncapped.Confidence != 0.2 || uncapped.ResetAt != "2026-12-01T00:00:00Z" {
+				t.Fatalf("unknown %#v", uncapped)
+			}
+			if empty.Name != "empty" || empty.Remaining == nil || *empty.Remaining != 0 || empty.Confidence != 0.3 {
+				t.Fatalf("exhausted %#v", empty)
+			}
+			if partial.Remaining == nil || *partial.Remaining != 0.4 || partial.Confidence != 0.8 || partial.ResetAt != "2026-12-03T00:00:00Z" {
+				t.Fatalf("partial %#v", partial)
+			}
+			if !strings.Contains(body, `"name":"uncapped"`) || !strings.Contains(body, `"remaining":null`) {
+				t.Fatalf("unknown json %s", body)
+			}
+			if !strings.Contains(body, `"name":"empty"`) || !strings.Contains(body, `"remaining":0`) {
+				t.Fatalf("exhausted json %s", body)
+			}
+		})
+	}
+}
+
+func TestSafeDotDotIDs(t *testing.T) {
+	db, home := openHome(t)
+	ctx := context.Background()
+	must(t, db.CreateProject(ctx, &model.Project{ID: "p-id", RepoPath: home}))
+	must(t, db.CreateObjective(ctx, &model.Objective{
+		ID: "o-id", Project: "p-id", Title: "ids",
+		Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+	}))
+	must(t, db.CreateCard(ctx, &model.Card{
+		ID: "c..1", Objective: "o-id", Title: "card-dotdot-title", Kind: model.KindDev, Status: model.CardReady,
+	}))
+	must(t, db.CreateAttempt(ctx, &model.Attempt{
+		ID: "a..1", Card: "c..1", Index: 0, Outcome: model.OutcomePassed,
+	}))
+	dir := filepath.Join(home, "attempts", "a..1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "output.log"), []byte("LOG_DOTDOT_OK"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "output.log"), []byte("OUTSIDE_SECRET_HOME"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "attempts", "output.log"), []byte("OUTSIDE_SECRET_ATTEMPTS"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/cards/c..1", "/api/cards/c..1"} {
+		rec := doRaw(t, path)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "card-dotdot-title") {
+			t.Fatalf("%s status %d body %s", path, rec.Code, rec.Body.String())
+		}
+	}
+	logRec := doRaw(t, "/attempts/a..1/output.log")
+	if logRec.Code != http.StatusOK || logRec.Body.String() != "LOG_DOTDOT_OK" {
+		t.Fatalf("log status %d body %q", logRec.Code, logRec.Body.String())
+	}
+
+	bad := []string{
+		"/cards/", "/cards/.", "/cards/..", "/cards/a/b", "/cards/a\\b",
+		"/api/cards/", "/api/cards/.", "/api/cards/..", "/api/cards/a/b", "/api/cards/a\\b",
+		"/attempts//output.log", "/attempts/./output.log", "/attempts/../output.log",
+		"/attempts/a/b/output.log", "/attempts/a\\b/output.log",
+	}
+	for _, path := range bad {
+		t.Run(path, func(t *testing.T) {
+			rec := doRaw(t, path)
+			body := rec.Body.String()
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status %d body %s", rec.Code, body)
+			}
+			for _, secret := range []string{"LOG_DOTDOT_OK", "OUTSIDE_SECRET_HOME", "OUTSIDE_SECRET_ATTEMPTS", "card-dotdot-title"} {
+				if strings.Contains(body, secret) {
+					t.Fatalf("leaked %s from %s", secret, path)
+				}
+			}
+		})
+	}
+}
+
 func seedCurrent(t *testing.T) (*store.Store, string) {
 	t.Helper()
 	db, home := openHome(t)
@@ -634,15 +1001,15 @@ func seedCurrent(t *testing.T) (*store.Store, string) {
 		ID: "ch-main", Runner: model.RunnerFake, Family: "fake", Tier: model.TierT2, Health: model.HealthDegraded,
 		Concurrency: 4, Redline: 0.25,
 		QuotaWindows: []model.QuotaWindow{
-			{Name: "5h", Remaining: 0.5, Confidence: 1, ResetAt: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)},
-			{Name: "weekly", Remaining: 0.25, Confidence: 0.5, ResetAt: time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)},
+			{Name: "5h", LimitTokens: 1000, Remaining: 0.5, Confidence: 1, ResetAt: time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)},
+			{Name: "weekly", LimitTokens: 1000, Remaining: 0.25, Confidence: 0.5, ResetAt: time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)},
 		},
 	}))
 	must(t, db.CreateChannel(ctx, &model.Channel{
 		ID: "ch-idle", Runner: model.RunnerFake, Family: "fake", Tier: model.TierT1, Health: model.HealthOK,
 		Concurrency: 2, Redline: 0.5,
 		QuotaWindows: []model.QuotaWindow{
-			{Name: "daily", Remaining: 1, Confidence: 1, ResetAt: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)},
+			{Name: "daily", LimitRequests: 10, Remaining: 1, Confidence: 1, ResetAt: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)},
 		},
 	}))
 	must(t, db.CreateQuestion(ctx, &model.Question{
@@ -749,6 +1116,63 @@ func do(t *testing.T, method, path string) *httptest.ResponseRecorder {
 	return rec
 }
 
+func doRaw(t *testing.T, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://board.test/", nil)
+	req.URL.Path = path
+	Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func intPtr(n int) *int {
+	v := n
+	return &v
+}
+
+func assertNested(t *testing.T, html, parent, child string) {
+	t.Helper()
+	p := strings.Index(html, "node "+parent+" ")
+	c := strings.Index(html, "node "+child+" ")
+	if p < 0 || c < 0 || c < p {
+		t.Fatalf("expected %s inside %s; parent=%d child=%d", child, parent, p, c)
+	}
+	between := html[p:c]
+	if strings.Contains(between, "</li>") {
+		t.Fatalf("%s is not nested inside %s\n%s", child, parent, between)
+	}
+	if !strings.Contains(between, "<ul>") {
+		t.Fatalf("no child list between %s and %s\n%s", parent, child, between)
+	}
+}
+
+func attemptSection(t *testing.T, body, id string) string {
+	t.Helper()
+	marker := "attempt " + id
+	i := strings.Index(body, marker)
+	if i < 0 {
+		t.Fatalf("missing %s", marker)
+	}
+	rest := body[i:]
+	j := strings.Index(rest, "</li>")
+	if j < 0 {
+		t.Fatalf("missing end of %s", id)
+	}
+	return rest[:j]
+}
+
+func windowLine(t *testing.T, body, name string) string {
+	t.Helper()
+	marker := "window " + name + " "
+	for _, line := range strings.Split(body, "\n") {
+		if strings.Contains(line, marker) {
+			return line
+		}
+	}
+	t.Fatalf("missing %s", marker)
+	return ""
+}
+
 func decode[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 	t.Helper()
 	if rec.Code != http.StatusOK {
@@ -799,6 +1223,9 @@ func nodeByID(nodes []nodeView, id string) nodeView {
 	for _, n := range nodes {
 		if n.ID == id {
 			return n
+		}
+		if child := nodeByID(n.Children, id); child.ID == id {
+			return child
 		}
 	}
 	return nodeView{}

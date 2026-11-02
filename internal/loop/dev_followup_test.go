@@ -52,120 +52,127 @@ func countNotices(ns []Notice, kind string) int {
 }
 
 func TestFollowupTransportBackoff(t *testing.T) {
-	for _, outcome := range []model.Outcome{model.OutcomeTransport, model.OutcomeTimeout} {
-		t.Run(string(outcome), func(t *testing.T) {
-			f := newFx(t, model.ModeManual)
-			f.writeConfig(`{"loop":{"retry_backoff_seconds":60}}`)
-			a := f.channel("ch-a", "fam-a", "ma")
-			b := f.channel("ch-b", "fam-b", "mb")
-			f.position("ma", "fam-a", model.TierT2)
-			f.position("mb", "fam-b", model.TierT2)
-			card := f.card(model.Card{ID: "dev", Channel: a.ID, Tier: model.TierT2})
-			now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+	// Distinct excerpts keep an auto breaker from folding the retries into one
+	// repeated signature and pausing the card before the wait can be observed.
+	for _, mode := range []model.ObjectiveMode{model.ModeManual, model.ModeAuto} {
+		for _, outcome := range []model.Outcome{model.OutcomeTransport, model.OutcomeTimeout} {
+			t.Run(string(mode)+"/"+string(outcome), func(t *testing.T) {
+				f := newFx(t, mode)
+				f.writeConfig(`{"loop":{"retry_backoff_seconds":60}}`)
+				a := f.channel("ch-a", "fam-a", "ma")
+				b := f.channel("ch-b", "fam-b", "mb")
+				f.position("ma", "fam-a", model.TierT2)
+				f.position("mb", "fam-b", model.TierT2)
+				card := f.card(model.Card{ID: "dev", Channel: a.ID, Tier: model.TierT2})
+				now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
 
-			f.attempt(card, 0, outcome, a.ID, "down")
+				f.attempt(card, 0, outcome, a.ID, "down-0")
+				f.stepAt(now)
+				held := f.mustCard("dev")
+				if held.Status != model.CardWaiting || held.Channel != a.ID || !strings.HasPrefix(held.WaitReason, "backoff:") {
+					t.Fatalf("first hold %+v", held)
+				}
+				until, err := time.Parse(time.RFC3339Nano, strings.TrimPrefix(held.WaitReason, "backoff:"))
+				if err != nil || !until.Equal(now.Add(time.Minute)) {
+					t.Fatalf("deadline %q err %v", held.WaitReason, err)
+				}
+				if len(f.events("retry_backoff")) != 1 || len(f.events("auto_route")) != 0 {
+					t.Fatalf("events backoff %d auto %d", len(f.events("retry_backoff")), len(f.events("auto_route")))
+				}
+
+				f.stepAt(now.Add(30 * time.Second))
+				if got := f.mustCard("dev"); got.Status != model.CardWaiting || got.Channel != a.ID {
+					t.Fatalf("ran before the deadline %+v", got)
+				}
+
+				f.stepAt(now.Add(time.Minute))
+				if got := f.mustCard("dev"); got.Status != model.CardReady || got.Channel != a.ID || got.WaitReason != "" {
+					t.Fatalf("after deadline %+v", got)
+				}
+
+				f.attempt(f.mustCard("dev"), 1, outcome, a.ID, "down-1")
+				f.stepAt(now.Add(time.Minute))
+				held = f.mustCard("dev")
+				if held.Status != model.CardWaiting || held.Channel != a.ID {
+					t.Fatalf("second hold %+v", held)
+				}
+				second, err := time.Parse(time.RFC3339Nano, strings.TrimPrefix(held.WaitReason, "backoff:"))
+				if err != nil || !second.Equal(now.Add(3*time.Minute)) {
+					t.Fatalf("second deadline %q err %v", held.WaitReason, err)
+				}
+				f.stepAt(now.Add(2 * time.Minute))
+				if got := f.mustCard("dev"); got.Status != model.CardWaiting || got.Channel != a.ID {
+					t.Fatalf("second hold released early %+v", got)
+				}
+				f.stepAt(now.Add(3 * time.Minute))
+				if got := f.mustCard("dev"); got.Status != model.CardReady || got.Channel != a.ID {
+					t.Fatalf("second release %+v", got)
+				}
+
+				f.attempt(f.mustCard("dev"), 2, outcome, a.ID, "down-2")
+				f.stepAt(now.Add(3 * time.Minute))
+				got := f.mustCard("dev")
+				routed := latestAuto(f, "dev")
+				if got.Status != model.CardReady || got.Channel != b.ID || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
+					t.Fatalf("switch %+v route %+v", got, routed)
+				}
+				if stored := f.objective(); stored.Channel != "" || stored.Model != "" {
+					t.Fatalf("objective route cleared %+v", stored)
+				}
+			})
+		}
+
+		t.Run(string(mode)+"/unset base waits 30s then 60s", func(t *testing.T) {
+			f := newFx(t, mode)
+			a := f.channel("ch-a", "fam-a")
+			b := f.channel("ch-b", "fam-b")
+			card := f.card(model.Card{ID: "dev", Channel: a.ID})
+			now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+			f.attempt(card, 0, model.OutcomeTransport, a.ID, "down-0")
 			f.stepAt(now)
 			held := f.mustCard("dev")
-			if held.Status != model.CardWaiting || held.Channel != a.ID || !strings.HasPrefix(held.WaitReason, "backoff:") {
-				t.Fatalf("first hold %+v", held)
-			}
 			until, err := time.Parse(time.RFC3339Nano, strings.TrimPrefix(held.WaitReason, "backoff:"))
-			if err != nil || !until.Equal(now.Add(time.Minute)) {
-				t.Fatalf("deadline %q err %v", held.WaitReason, err)
+			if err != nil || held.Status != model.CardWaiting || held.Channel != a.ID || !until.Equal(now.Add(30*time.Second)) {
+				t.Fatalf("first %+v err %v", held, err)
 			}
-			if len(f.events("retry_backoff")) != 1 || len(f.events("auto_route")) != 0 {
-				t.Fatalf("events backoff %d auto %d", len(f.events("retry_backoff")), len(f.events("auto_route")))
-			}
-
 			f.stepAt(now.Add(30 * time.Second))
-			if got := f.mustCard("dev"); got.Status != model.CardWaiting || got.Channel != a.ID {
-				t.Fatalf("ran before the deadline %+v", got)
-			}
-
-			f.stepAt(now.Add(time.Minute))
-			if got := f.mustCard("dev"); got.Status != model.CardReady || got.Channel != a.ID || got.WaitReason != "" {
-				t.Fatalf("after deadline %+v", got)
-			}
-
-			f.attempt(f.mustCard("dev"), 1, outcome, a.ID, "down")
-			f.stepAt(now.Add(time.Minute))
-			held = f.mustCard("dev")
-			if held.Status != model.CardWaiting || held.Channel != a.ID {
-				t.Fatalf("second hold %+v", held)
-			}
-			second, err := time.Parse(time.RFC3339Nano, strings.TrimPrefix(held.WaitReason, "backoff:"))
-			if err != nil || !second.Equal(now.Add(3*time.Minute)) {
-				t.Fatalf("second deadline %q err %v", held.WaitReason, err)
-			}
-			f.stepAt(now.Add(2 * time.Minute))
-			if got := f.mustCard("dev"); got.Status != model.CardWaiting || got.Channel != a.ID {
-				t.Fatalf("second hold released early %+v", got)
-			}
-			f.stepAt(now.Add(3 * time.Minute))
 			if got := f.mustCard("dev"); got.Status != model.CardReady || got.Channel != a.ID {
-				t.Fatalf("second release %+v", got)
+				t.Fatalf("first release %+v", got)
 			}
-
-			f.attempt(f.mustCard("dev"), 2, outcome, a.ID, "down")
-			f.stepAt(now.Add(3 * time.Minute))
+			f.attempt(f.mustCard("dev"), 1, model.OutcomeTransport, a.ID, "down-1")
+			f.stepAt(now.Add(30 * time.Second))
+			held = f.mustCard("dev")
+			until, err = time.Parse(time.RFC3339Nano, strings.TrimPrefix(held.WaitReason, "backoff:"))
+			if err != nil || held.Status != model.CardWaiting || !until.Equal(now.Add(90*time.Second)) {
+				t.Fatalf("second %+v err %v", held, err)
+			}
+			f.attempt(f.mustCard("dev"), 2, model.OutcomeTransport, a.ID, "down-2")
+			f.stepAt(now.Add(30 * time.Second))
 			got := f.mustCard("dev")
 			routed := latestAuto(f, "dev")
-			if got.Status != model.CardReady || got.Channel != b.ID || !routed.ok || routed.channel != b.ID || routed.exclude != a.ID {
-				t.Fatalf("switch %+v route %+v", got, routed)
+			if got.Status != model.CardReady || got.Channel != b.ID || got.WaitReason != "" || !routed.ok || routed.channel != b.ID {
+				t.Fatalf("third switch %+v route %+v", got, routed)
+			}
+		})
+
+		t.Run(string(mode)+"/zero backoff stays ready on the same channel", func(t *testing.T) {
+			f := newFx(t, mode)
+			f.writeConfig(`{"loop":{"retry_backoff_seconds":0}}`)
+			a := f.channel("ch-a", "fam-a")
+			card := f.card(model.Card{ID: "dev", Channel: a.ID})
+			now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+			f.attempt(card, 0, model.OutcomeTransport, a.ID, "down-0")
+			f.stepAt(now)
+			got := f.mustCard("dev")
+			if got.Status != model.CardReady || got.Channel != a.ID || got.WaitReason != "" {
+				t.Fatalf("default hold %+v", got)
+			}
+			events := f.events("retry_backoff")
+			if len(events) != 1 || !strings.Contains(string(events[0].Data), now.Format(time.RFC3339Nano)) {
+				t.Fatalf("deadline event %+v", events)
 			}
 		})
 	}
-
-	t.Run("unset base waits 30s then 60s", func(t *testing.T) {
-		f := newFx(t, model.ModeManual)
-		a := f.channel("ch-a", "fam-a")
-		b := f.channel("ch-b", "fam-b")
-		card := f.card(model.Card{ID: "dev", Channel: a.ID})
-		now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
-		f.attempt(card, 0, model.OutcomeTransport, a.ID, "down")
-		f.stepAt(now)
-		held := f.mustCard("dev")
-		until, err := time.Parse(time.RFC3339Nano, strings.TrimPrefix(held.WaitReason, "backoff:"))
-		if err != nil || held.Status != model.CardWaiting || held.Channel != a.ID || !until.Equal(now.Add(30*time.Second)) {
-			t.Fatalf("first %+v err %v", held, err)
-		}
-		f.stepAt(now.Add(30 * time.Second))
-		if got := f.mustCard("dev"); got.Status != model.CardReady || got.Channel != a.ID {
-			t.Fatalf("first release %+v", got)
-		}
-		f.attempt(f.mustCard("dev"), 1, model.OutcomeTransport, a.ID, "down")
-		f.stepAt(now.Add(30 * time.Second))
-		held = f.mustCard("dev")
-		until, err = time.Parse(time.RFC3339Nano, strings.TrimPrefix(held.WaitReason, "backoff:"))
-		if err != nil || held.Status != model.CardWaiting || !until.Equal(now.Add(90*time.Second)) {
-			t.Fatalf("second %+v err %v", held, err)
-		}
-		f.attempt(f.mustCard("dev"), 2, model.OutcomeTransport, a.ID, "down")
-		f.stepAt(now.Add(30 * time.Second))
-		got := f.mustCard("dev")
-		routed := latestAuto(f, "dev")
-		if got.Status != model.CardReady || got.Channel != b.ID || got.WaitReason != "" || !routed.ok || routed.channel != b.ID {
-			t.Fatalf("third switch %+v route %+v", got, routed)
-		}
-	})
-
-	t.Run("zero backoff stays ready on the same channel", func(t *testing.T) {
-		f := newFx(t, model.ModeManual)
-		f.writeConfig(`{"loop":{"retry_backoff_seconds":0}}`)
-		a := f.channel("ch-a", "fam-a")
-		card := f.card(model.Card{ID: "dev", Channel: a.ID})
-		now := time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
-		f.attempt(card, 0, model.OutcomeTransport, a.ID, "down")
-		f.stepAt(now)
-		got := f.mustCard("dev")
-		if got.Status != model.CardReady || got.Channel != a.ID || got.WaitReason != "" {
-			t.Fatalf("default hold %+v", got)
-		}
-		events := f.events("retry_backoff")
-		if len(events) != 1 || !strings.Contains(string(events[0].Data), now.Format(time.RFC3339Nano)) {
-			t.Fatalf("deadline event %+v", events)
-		}
-	})
 }
 
 func TestFollowupReviewFamily(t *testing.T) {

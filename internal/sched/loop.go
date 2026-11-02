@@ -22,6 +22,7 @@ import (
 	"cardex/internal/model"
 	"cardex/internal/notify"
 	"cardex/internal/prompt"
+	"cardex/internal/question"
 	"cardex/internal/quota"
 	"cardex/internal/route"
 	"cardex/internal/store"
@@ -61,6 +62,8 @@ type Runner struct {
 	// A hook error leaves the attempt unconsumed and does not change the card.
 	// Sched does not create a review, enqueue a merge, or read pass/rework.
 	Dispose func(ctx context.Context, card *model.Card, res harvest.Result) error
+	// rankAnswer runs after Questions stores an answer. New approves 批准.
+	rankAnswer func(ctx context.Context, db *store.Store, q model.Question) error
 }
 
 // New returns the production runner for home with loop.Dispose installed.
@@ -69,7 +72,25 @@ func New(home string) *Runner {
 	r.Dispose = func(ctx context.Context, card *model.Card, res harvest.Result) error {
 		return loop.Dispose(loop.WithHome(ctx, home), card, res)
 	}
+	r.rankAnswer = func(ctx context.Context, db *store.Store, q model.Question) error {
+		if strings.TrimSpace(q.Answer) != "批准" {
+			return nil
+		}
+		return loop.FollowRanking(loop.WithHome(ctx, home), db)
+	}
 	return r
+}
+
+// Questions returns the question service for db with the hook New registered.
+// An unhooked question.New only stores the answer.
+func (r *Runner) Questions(db *store.Store) question.Service {
+	svc := question.New(db, nil)
+	if r != nil && r.rankAnswer != nil {
+		question.AfterAnswer(svc, func(ctx context.Context, q model.Question) error {
+			return r.rankAnswer(ctx, db, q)
+		})
+	}
+	return svc
 }
 
 func (r *Runner) now() time.Time {
@@ -513,13 +534,21 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	text, err := r.promptText(ctx, prompt.Input{
+	in := prompt.Input{
 		Card:       card,
 		Objective:  obj,
 		ReworkNote: card.ReworkNote,
 		Repo:       repo,
 		Revision:   attempt.BaseCommit,
-	})
+	}
+	if card.Kind == model.KindRanking {
+		material, err := loop.RankingMaterial(r.Home)
+		if err != nil {
+			return err
+		}
+		in.Ranking = material
+	}
+	text, err := r.promptText(ctx, in)
 	if err != nil {
 		return err
 	}
@@ -760,15 +789,23 @@ type cardTemplate struct {
 	Body       string   `json:"body"`
 	Tier       string   `json:"tier"`
 	Acceptance []string `json:"acceptance"`
+	Requires   []string `json:"requires"`
 }
 
 func (r *Runner) schedules(ctx context.Context, db *store.Store) error {
 	raw, err := os.ReadFile(filepath.Join(r.Home, "config.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return loop.ApplyDefaultSchedule(ctx, db, r.Home, r.now())
 		}
 		return err
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		return nil
+	}
+	if _, set := top["schedules"]; !set {
+		return loop.ApplyDefaultSchedule(ctx, db, r.Home, r.now())
 	}
 	var file scheduleFile
 	if err := json.Unmarshal(raw, &file); err != nil {
@@ -896,6 +933,7 @@ func enqueueTemplate(ctx context.Context, db *store.Store, objs []model.Objectiv
 	card := model.Card{
 		ID: id, Objective: objID, Kind: kind, Title: title, Body: tmpl.Body,
 		Tier: tier, Status: model.CardReady, Acceptance: tmpl.Acceptance,
+		Requires: append([]string(nil), tmpl.Requires...),
 	}
 	return db.CreateCard(ctx, &card)
 }

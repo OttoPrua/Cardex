@@ -35,6 +35,9 @@ func Build(ctx context.Context, in Input) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if strings.TrimSpace(in.Ranking) != "" {
+		preface = in.Ranking
+	}
 	contextBytes, err := loadContext(ctx, in)
 	if err != nil {
 		return "", err

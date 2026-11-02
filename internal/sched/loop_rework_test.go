@@ -796,6 +796,9 @@ func TestHostStartFailureResumesOnNewRunner(t *testing.T) {
 func TestNotifyUsesObjectiveOriginAndReminds(t *testing.T) {
 	ctx := context.Background()
 	home, db, _ := newHome(t)
+	if err := db.CreateProject(ctx, &model.Project{ID: "p"}); err != nil {
+		t.Fatal(err)
+	}
 	obj := model.Objective{
 		ID: "o", Project: "p", Title: "o", Mode: model.ModeManual, FreezeMode: model.FreezeFast,
 		Status: model.ObjectiveActive, Origin: "codex:thread-9", IntegrationBranch: "main",

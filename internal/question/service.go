@@ -24,6 +24,18 @@ func New(st *store.Store, deliver notify.Deliverer) Service {
 type svc struct {
 	store   *store.Store
 	deliver notify.Deliverer
+	after   func(context.Context, model.Question) error
+}
+
+// AfterAnswer registers fn on s. fn runs after a non-empty answer is stored.
+// A service that is not the one New returns ignores fn. Callers that never
+// register still only save the answer. An empty answer is still not stored.
+func AfterAnswer(s Service, fn func(context.Context, model.Question) error) {
+	impl, ok := s.(*svc)
+	if !ok || impl == nil {
+		return
+	}
+	impl.after = fn
 }
 
 func (s *svc) Create(ctx context.Context, q model.Question) (model.Question, error) {
@@ -76,6 +88,11 @@ func (s *svc) Answer(ctx context.Context, id, option string) (model.Question, er
 	q.Answer = option
 	if err := s.store.UpdateQuestion(ctx, &q); err != nil {
 		return model.Question{}, err
+	}
+	if s.after != nil {
+		if err := s.after(ctx, q); err != nil {
+			return q, err
+		}
 	}
 	return q, nil
 }

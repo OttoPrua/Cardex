@@ -126,10 +126,51 @@ func disposeTx(ctx context.Context, db *store.Store, home string, card *model.Ca
 	if attempt.Card == "" {
 		attempt.Card = card.ID
 	}
+	if card.Kind == model.KindRanking {
+		return disposeRanking(ctx, db, card, attempt, res)
+	}
 	if designKind(card.Kind) {
 		return disposeDesign(ctx, db, home, card, attempt, res)
 	}
 	return disposeDev(ctx, db, home, card, attempt, res)
+}
+
+func disposeRanking(ctx context.Context, db *store.Store, card *model.Card, attempt model.Attempt, res harvest.Result) ([]Notice, error) {
+	err := AbsorbHarvestedRanking(ctx, Deps{Store: db}, *card, RankingHarvest{
+		AttemptID:  attempt.ID,
+		Outcome:    res.Outcome,
+		ErrorClass: res.ErrorClass,
+		Acceptance: acceptanceFromEvidence(res.Evidence),
+		ResultText: res.ResultText,
+	})
+	if err != nil {
+		return nil, err
+	}
+	fresh, err := db.GetCard(ctx, card.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(fresh.Claims) == 0 && len(card.Claims) > 0 {
+		fresh.Claims = append([]model.Claim(nil), card.Claims...)
+	}
+	if strings.TrimSpace(fresh.AuthorFamily) == "" && strings.TrimSpace(card.AuthorFamily) != "" {
+		fresh.AuthorFamily = card.AuthorFamily
+	}
+	*card = fresh
+	return nil, nil
+}
+
+func acceptanceFromEvidence(evidence string) string {
+	const key = "acceptance="
+	i := strings.Index(evidence, key)
+	if i < 0 {
+		return ""
+	}
+	rest := evidence[i+len(key):]
+	if sp := strings.IndexAny(rest, " \t\n"); sp >= 0 {
+		rest = rest[:sp]
+	}
+	return rest
 }
 
 func designKind(kind model.CardKind) bool {

@@ -6,9 +6,9 @@ S01 在 launchCard 第一次派发前对空 tier 调用 classify.Classify，把�
 
 | 场景 | 状态 |
 | --- | --- |
-| S01–S22 S24 S25 S26 | 通过 |
-| S23 | 通过。状态以 R4-C-F1 为准。集成前若只走辅助函数，不是 R4-D 缺陷 |
-| 故障五类 | 通过。非 darwin 的 S24 仍跳过 sandbox-exec is macOS only |
+| S01–S22 S24 S25 S26 | 本轮 go test 未通过：sandbox-exec 退出 71 |
+| S23 | 未改。状态以 R4-C-F1 为准。集成前若只走辅助函数，不是 R4-D 缺陷。本轮排名执行器同样是 sandbox-exec 退出 71 |
+| 故障五类 | 本轮 go test 未通过：sandbox-exec 退出 71。断言未放宽 |
 
 ## 没做什么，以及原因
 
@@ -18,7 +18,7 @@ S01 在 launchCard 第一次派发前对空 tier 调用 classify.Classify，把�
 
 v2 没有单次调用执行器，Channel 没有 classifier 槽。launchCard 只按 id classifier 取渠道名，Runner.Classify 在 New 里保持 nil，分级渠道不会调用模型。请给 Channel 加分级槽并提供一次调用，不要在 runner 里新写。
 TestSignalGuard 源码扫描退出码 1。写域外命中 cmd/cardex/cli_surface_test.go:1216、1222、1225、1226、1237，internal/host/host_test.go:170、429，internal/host/run.go:497（ws.Signal() 只读 WaitStatus）。不改这些文件，扫描仍匹配 `.Signal(`。
-本环境 `/usr/bin/sandbox-exec` 退出码 71：`sandbox_apply: Operation not permitted`。因此 TestS25、TestFaults、其余会启动执行器的 e2e、host、sched 测试，以及 internal/sandbox 的 Wrap 测试，都以 exit 71 失败。断言未放宽。需改 internal/sandbox/wrap_darwin.go 与 internal/host/run.go:158，不在本写域。
+本环境 `/usr/bin/sandbox-exec` 退出码 71：`sandbox_apply: Operation not permitted`。`go build ./...` 与 `go vet ./...` 为 0，`go test ./...` 退出 1。TestFaults（faults_test.go:84）、TestS25（s25_flow_test.go:132）、TestS01、TestS02、TestS04、TestS05、TestS20、TestS23、TestRankingDefaultEntry、TestTickDispatchClaimsAndSecondTick（loop_test.go:65 的 ErrorExcerpt）、TestTickManualMergesWithoutAutoCards（loop_test.go:152，dev 卡 no_output；design-auto 由测试在 loop_test.go:123 建成 needs_input）以及 internal/host 里启动执行器的测试，都是执行器没跑起来。TestS24（scenarios_test.go:1911）的失败文本是 inside.txt 不存在，因为配置文件还没套上。需改 internal/sandbox/wrap_darwin.go:15 与 internal/host/run.go:158。二者不在本写域。断言未放宽。套件没有通过。
 
 ## 已知问题
 

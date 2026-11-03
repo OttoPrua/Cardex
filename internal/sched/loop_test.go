@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -47,6 +48,7 @@ func TestTickDispatchClaimsAndSecondTick(t *testing.T) {
 	mk("c3", "Foo")
 	r := New(home)
 	r.Prompt = func(context.Context, prompt.Input) (string, error) { return "PROMPT-OK", nil }
+	trackLaunch(t, r)
 	if err := r.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +73,6 @@ func TestTickDispatchClaimsAndSecondTick(t *testing.T) {
 			t.Fatalf("prompt %s %v", body, err)
 		}
 		running++
-		t.Cleanup(func() { killHost(home, attempt.ID, attempt.PID) })
 	}
 	if running != 2 {
 		t.Fatalf("running %d", running)
@@ -193,6 +194,7 @@ func TestTickFill(t *testing.T) {
 		}
 		r := New(home)
 		r.Now = func() time.Time { return now }
+		trackLaunch(t, r)
 		if err := r.Tick(ctx); err != nil {
 			t.Fatal(readLog(home, err))
 		}
@@ -204,7 +206,6 @@ func TestTickFill(t *testing.T) {
 		if err != nil || len(attempts) != 1 || attempts[0].Route.Channel != ch {
 			t.Fatalf("attempt %+v %v", attempts, err)
 		}
-		t.Cleanup(func() { killHost(home, attempts[0].ID, attempts[0].PID) })
 		if err := r.Tick(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -423,7 +424,7 @@ func TestTickAndServeTakeOverHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = host.SignalGroup(cmd.Process.Pid, syscall.SIGKILL)
 		_ = cmd.Wait()
 	})
 	attempt := model.Attempt{ID: "a-live", Card: "c", PID: cmd.Process.Pid, StartedAt: time.Now().UTC()}
@@ -469,7 +470,7 @@ func TestTickAndServeTakeOverHost(t *testing.T) {
 		t.Fatal("serve killed or lost the host")
 	}
 
-	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	_ = host.SignalGroup(cmd.Process.Pid, syscall.SIGKILL)
 	_ = cmd.Wait()
 	if err := r.Tick(ctx); err != nil {
 		t.Fatal(err)
@@ -665,23 +666,101 @@ func rev(t *testing.T, repo, name string) string {
 }
 
 func processAlive(pid int) bool {
-	if pid <= 0 {
+	if pid <= 1 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
+	err := host.SignalProcess(pid, 0)
 	return err == nil || err == syscall.EPERM
 }
 
+var (
+	launchedMu   sync.Mutex
+	launchedByID = map[string]int{}
+)
+
+func rememberLaunch(id string, pid int) {
+	if pid <= 1 || id == "" {
+		return
+	}
+	launchedMu.Lock()
+	launchedByID[id] = pid
+	launchedMu.Unlock()
+}
+
+func knownLaunch(id string, pid int) bool {
+	launchedMu.Lock()
+	got, ok := launchedByID[id]
+	launchedMu.Unlock()
+	return ok && got == pid && pid > 1
+}
+
+func forgetLaunch(id string) {
+	launchedMu.Lock()
+	delete(launchedByID, id)
+	launchedMu.Unlock()
+}
+
+func executorPGID(home, id string) int {
+	b, err := os.ReadFile(filepath.Join(home, "attempts", id, "executor.pgid"))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || n <= 1 {
+		return 0
+	}
+	return n
+}
+
+func signalStarted(home, id string, pid int) {
+	if !knownLaunch(id, pid) {
+		return
+	}
+	if pgid := executorPGID(home, id); pgid > 1 {
+		_ = host.SignalGroup(pgid, syscall.SIGKILL)
+	}
+	_ = host.SignalGroup(pid, syscall.SIGKILL)
+	_ = host.SignalProcess(pid, syscall.SIGKILL)
+}
+
 func killHost(home, id string, pid int) {
-	if b, err := os.ReadFile(filepath.Join(home, "attempts", id, "executor.pgid")); err == nil {
-		if pgid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pgid > 0 {
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+	signalStarted(home, id, pid)
+}
+
+func trackLaunch(t *testing.T, r *Runner) {
+	t.Helper()
+	inner := r.Launch
+	var mu sync.Mutex
+	type started struct {
+		home, id string
+		pid      int
+	}
+	var mine []started
+	r.Launch = func(ctx context.Context, home, id string) (int, error) {
+		var pid int
+		var err error
+		if inner != nil {
+			pid, err = inner(ctx, home, id)
+		} else {
+			pid, err = launchDetached(home, id)
 		}
+		if err == nil && pid > 1 {
+			rememberLaunch(id, pid)
+			mu.Lock()
+			mine = append(mine, started{home: home, id: id, pid: pid})
+			mu.Unlock()
+		}
+		return pid, err
 	}
-	if pid > 0 {
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-	}
+	t.Cleanup(func() {
+		mu.Lock()
+		got := append([]started(nil), mine...)
+		mu.Unlock()
+		for _, item := range got {
+			killHost(item.home, item.id, item.pid)
+			forgetLaunch(item.id)
+		}
+	})
 }
 
 func eventsOf(t *testing.T, db *store.Store, attemptID, kind string) bool {

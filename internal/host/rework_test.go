@@ -358,7 +358,7 @@ func groupAlive(pgid int) bool {
 	if pgid <= 1 {
 		return false
 	}
-	err := syscall.Kill(-pgid, 0)
+	err := host.SignalGroup(pgid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
@@ -615,6 +615,7 @@ func TestReconcileReapsOrphanAfterHardDuration(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(exe)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = append(os.Environ(),
 		"CARDEX_HOST_REEXEC=1",
 		"CARDEX_REEXEC_HOME="+home,
@@ -631,10 +632,10 @@ func TestReconcileReapsOrphanAfterHardDuration(t *testing.T) {
 	waited := false
 	t.Cleanup(func() {
 		if pgid > 1 && groupAlive(pgid) {
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+			_ = host.SignalGroup(pgid, syscall.SIGKILL)
 		}
 		if !waited && cmd.Process != nil {
-			_ = cmd.Process.Kill()
+			_ = host.SignalProcess(cmd.Process.Pid, syscall.SIGKILL)
 			_, _ = cmd.Process.Wait()
 		}
 	})
@@ -653,7 +654,7 @@ func TestReconcileReapsOrphanAfterHardDuration(t *testing.T) {
 	if pgid <= 1 || !groupAlive(pgid) {
 		t.Fatalf("executor group did not start: %s", logs.String())
 	}
-	if err := syscall.Kill(hostPID, syscall.SIGKILL); err != nil {
+	if err := host.SignalProcess(hostPID, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
 	_ = cmd.Wait()
@@ -672,7 +673,7 @@ func TestReconcileReapsOrphanAfterHardDuration(t *testing.T) {
 	}
 	livePGID := sleeper.Process.Pid
 	t.Cleanup(func() {
-		_ = syscall.Kill(-livePGID, syscall.SIGKILL)
+		_ = host.SignalGroup(livePGID, syscall.SIGKILL)
 		_ = sleeper.Wait()
 	})
 	db, err := store.Open(filepath.Join(home, "cardex.db"))

@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"syscall"
 	"time"
@@ -54,9 +55,15 @@ func reconcile(ctx context.Context, home string) error {
 }
 
 func processAlive(pid int) bool {
-	if pid <= 0 {
+	if pid <= 1 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
+	if pid == os.Getpid() {
+		return true
+	}
+	if pgid, err := syscall.Getpgid(pid); err == nil && pgid == syscall.Getpgrp() {
+		return true
+	}
+	err := SignalProcess(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }

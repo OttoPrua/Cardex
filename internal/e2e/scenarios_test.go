@@ -2427,33 +2427,102 @@ func gitOut(t *testing.T, repo string, args ...string) string {
 }
 
 func processAlive(pid int) bool {
-	if pid <= 0 {
+	if pid <= 1 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
+	err := host.SignalProcess(pid, 0)
 	return err == nil || err == syscall.EPERM
+}
+
+type e2eStart struct {
+	home string
+	id   string
+	pid  int
+}
+
+var (
+	e2eMu      sync.Mutex
+	e2eStarted = map[string]e2eStart{}
+)
+
+func rememberE2E(item e2eStart) {
+	if item.pid <= 1 || item.id == "" {
+		return
+	}
+	e2eMu.Lock()
+	e2eStarted[item.id] = item
+	e2eMu.Unlock()
+}
+
+func takeE2E(id string) (e2eStart, bool) {
+	e2eMu.Lock()
+	item, ok := e2eStarted[id]
+	e2eMu.Unlock()
+	return item, ok && item.pid > 1
+}
+
+func forgetE2E(id string) {
+	e2eMu.Lock()
+	delete(e2eStarted, id)
+	e2eMu.Unlock()
+}
+
+func executorPGID(home, id string) int {
+	b, err := os.ReadFile(filepath.Join(home, "attempts", id, "executor.pgid"))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || n <= 1 {
+		return 0
+	}
+	return n
+}
+
+func signalE2E(item e2eStart) {
+	if _, ok := takeE2E(item.id); !ok || item.pid <= 1 {
+		return
+	}
+	if pgid := executorPGID(item.home, item.id); pgid > 1 {
+		_ = host.SignalGroup(pgid, syscall.SIGKILL)
+	}
+	_ = host.SignalGroup(item.pid, syscall.SIGKILL)
+	_ = host.SignalProcess(item.pid, syscall.SIGKILL)
+	forgetE2E(item.id)
 }
 
 func stopLater(t *testing.T, h *Harness) {
 	t.Helper()
+	r, ok := h.Sched.(*sched.Runner)
+	if !ok || r == nil {
+		return
+	}
+	inner := r.Launch
+	r.Launch = func(ctx context.Context, home, id string) (int, error) {
+		var pid int
+		var err error
+		if inner != nil {
+			pid, err = inner(ctx, home, id)
+		} else {
+			pid, err = sched.LaunchHost(home, id)
+		}
+		if err == nil && pid > 1 {
+			rememberE2E(e2eStart{home: home, id: id, pid: pid})
+		}
+		return pid, err
+	}
 	t.Cleanup(func() { stopAttempts(h) })
 }
 
 func stopAttempts(h *Harness) {
-	attempts, err := h.DB.ListAttempts(context.Background(), "")
-	if err != nil {
-		return
+	e2eMu.Lock()
+	items := make([]e2eStart, 0, len(e2eStarted))
+	for _, item := range e2eStarted {
+		items = append(items, item)
 	}
-	for _, attempt := range attempts {
-		if b, err := os.ReadFile(filepath.Join(h.Home, "attempts", attempt.ID, "executor.pgid")); err == nil {
-			if pgid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pgid > 0 {
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
-			}
-		}
-		if attempt.PID > 0 {
-			_ = syscall.Kill(-attempt.PID, syscall.SIGKILL)
-			_ = syscall.Kill(attempt.PID, syscall.SIGKILL)
-		}
+	e2eMu.Unlock()
+	for _, item := range items {
+		signalE2E(item)
 	}
 }
 

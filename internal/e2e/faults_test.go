@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -519,15 +518,11 @@ func waitCard(t *testing.T, h *Harness, cond func() bool, timeout time.Duration)
 }
 
 func killAttempt(h *Harness, attempt model.Attempt) {
-	if b, err := os.ReadFile(filepath.Join(h.Home, "attempts", attempt.ID, "executor.pgid")); err == nil {
-		if pgid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pgid > 0 {
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
-		}
+	item, ok := takeE2E(attempt.ID)
+	if !ok || item.pid != attempt.PID {
+		return
 	}
-	if attempt.PID > 0 {
-		_ = syscall.Kill(-attempt.PID, syscall.SIGKILL)
-		_ = syscall.Kill(attempt.PID, syscall.SIGKILL)
-	}
+	signalE2E(item)
 }
 
 func attemptsByIndex(t *testing.T, h *Harness, cardID string) []model.Attempt {

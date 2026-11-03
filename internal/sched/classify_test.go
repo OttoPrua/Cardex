@@ -82,18 +82,10 @@ func TestLaunchClassifiesEmptyTier(t *testing.T) {
 			if tc.via == "fill" {
 				r.Now = func() time.Time { return now }
 			}
+			trackLaunch(t, r)
 			if err := r.Tick(ctx); err != nil {
 				t.Fatal(readLog(home, err))
 			}
-			t.Cleanup(func() {
-				attempts, err := db.ListAttempts(context.Background(), "")
-				if err != nil {
-					return
-				}
-				for _, attempt := range attempts {
-					killHost(home, attempt.ID, attempt.PID)
-				}
-			})
 			got, err := db.GetCard(ctx, "c1")
 			if err != nil {
 				t.Fatal(err)

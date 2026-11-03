@@ -74,7 +74,7 @@ func processGroupAlive(pgid int) bool {
 	if pgid <= 1 {
 		return false
 	}
-	err := syscall.Kill(-pgid, 0)
+	err := SignalGroup(pgid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
@@ -178,6 +178,6 @@ func killGroup(pid int) {
 	if pid <= 1 {
 		return
 	}
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	_ = SignalGroup(pid, syscall.SIGKILL)
+	_ = SignalProcess(pid, syscall.SIGKILL)
 }

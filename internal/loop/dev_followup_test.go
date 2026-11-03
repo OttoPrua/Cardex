@@ -530,16 +530,18 @@ func TestFollowupRedeliver(t *testing.T) {
 func TestFollowupStallAnchor(t *testing.T) {
 	now := time.Date(2026, 11, 2, 18, 0, 0, 0, time.UTC)
 	cases := []struct {
-		name      string
-		status    model.CardStatus
-		attemptAt time.Time
-		merges    []time.Time
-		wantStall bool
+		name          string
+		status        model.CardStatus
+		attemptAt     time.Time
+		merges        []time.Time
+		mergedMissing bool
+		wantStall     bool
 	}{
 		{name: "latest merge_success is the anchor", status: model.CardMerged, attemptAt: now.Add(-8 * time.Hour), merges: []time.Time{now.Add(-7 * time.Hour), now.Add(-time.Hour)}, wantStall: false},
 		{name: "an old merge_success stalls a recent attempt", status: model.CardReady, attemptAt: now.Add(-time.Hour), merges: []time.Time{now.Add(-7 * time.Hour)}, wantStall: true},
 		{name: "merged without merge_success is unknown", status: model.CardMerged, attemptAt: now.Add(-7 * time.Hour), wantStall: false},
 		{name: "never merged uses the first attempt", status: model.CardReady, attemptAt: now.Add(-7 * time.Hour), wantStall: true},
+		{name: "a merged card missing its own time stays unknown", status: model.CardMerged, attemptAt: now.Add(-8 * time.Hour), merges: []time.Time{now.Add(-7 * time.Hour)}, mergedMissing: true, wantStall: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -553,11 +555,17 @@ func TestFollowupStallAnchor(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			if tc.mergedMissing {
+				f.card(model.Card{ID: "merged-gap", Status: model.CardMerged, Channel: ch.ID})
+			}
 			f.stepAt(now)
 			questions := questionsKind(f, model.QuestionBreaker)
 			stalled := len(questions) == 1 && strings.Contains(questions[0].Text, "no merge within stall window")
 			if stalled != tc.wantStall {
 				t.Fatalf("stall %v questions %+v", tc.wantStall, f.questions())
+			}
+			if tc.mergedMissing && f.mustCard("sib").Status != model.CardReady {
+				t.Fatalf("ready card %s", f.mustCard("sib").Status)
 			}
 		})
 	}

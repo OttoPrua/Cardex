@@ -1376,6 +1376,9 @@ func replanDeps(split string) []string {
 
 func (st *step) breakerInput(nodeID string) BreakerInput {
 	in := BreakerInput{Now: st.now, Config: st.cfg}
+	var mergedLatest, otherLatest time.Time
+	mergedCards := 0
+	mergedMissing := false
 	for _, card := range st.snap.cards {
 		if card.Node != nodeID {
 			continue
@@ -1408,22 +1411,36 @@ func (st *step) breakerInput(nodeID string) BreakerInput {
 				in.Spend += attempt.Usage.Tokens
 			}
 		}
-		if card.Status == model.CardMerged {
-			in.MergeUnknown = true
-		}
+		cardMerge := time.Time{}
 		for _, event := range st.snap.events {
-			if event.Entity != "card:"+card.ID || event.Type != "merge_success" {
+			if event.Entity != "card:"+card.ID || event.Type != "merge_success" || !event.TS.After(cardMerge) {
 				continue
 			}
-			if event.TS.After(in.MergeAt) {
-				in.MergeAt = event.TS
+			cardMerge = event.TS
+		}
+		if card.Status == model.CardMerged {
+			mergedCards++
+			if cardMerge.IsZero() {
+				mergedMissing = true
+			} else if cardMerge.After(mergedLatest) {
+				mergedLatest = cardMerge
 			}
+		} else if cardMerge.After(otherLatest) {
+			otherLatest = cardMerge
 		}
 		in.Cards = append(in.Cards, NodeCard{ID: card.ID, Status: card.Status, Latest: latest})
 	}
-	if !in.MergeAt.IsZero() {
-		in.MergeUnknown = false
+	// A merged card with no time of its own keeps the node clock unknown.
+	// Another card's event must not clear that or become the clock.
+	if mergedMissing {
+		in.MergeUnknown = true
+		return in
 	}
+	if mergedCards > 0 {
+		in.MergeAt = mergedLatest
+		return in
+	}
+	in.MergeAt = otherLatest
 	return in
 }
 

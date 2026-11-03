@@ -245,8 +245,8 @@ type NodeCard struct {
 }
 
 // BreakerInput is one node's breaker check.
-// MergeAt is the latest persisted merge-success time on the node.
-// MergeUnknown is a merged card with no such event: the stall anchor is unknown.
+// MergeAt is the known stall clock: the latest merge-success time among this node's merged cards when every one of them has a time, or a non-merged card's time when the node has never merged.
+// MergeUnknown stays set while any merged card has no merge-success time of its own. Another card's event does not clear it.
 type BreakerInput struct {
 	Attempts     []AttemptFact
 	Cards        []NodeCard

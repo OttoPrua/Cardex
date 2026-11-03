@@ -19,6 +19,7 @@ S01 在 launchCard 第一次派发前对空 tier 调用 classify.Classify，把�
 v2 没有单次调用执行器，Channel 没有 classifier 槽。launchCard 只按 id classifier 取渠道名，Runner.Classify 在 New 里保持 nil，分级渠道不会调用模型。请给 Channel 加分级槽并提供一次调用，不要在 runner 里新写。
 TestSignalGuard 源码扫描退出码 1。写域外命中 cmd/cardex/cli_surface_test.go:1216、1222、1225、1226、1237，internal/host/host_test.go:170、429，internal/host/run.go:497（ws.Signal() 只读 WaitStatus）。不改这些文件，扫描仍匹配 `.Signal(`。
 本环境 `/usr/bin/sandbox-exec` 退出码 71：`sandbox_apply: Operation not permitted`。`go build ./...` 与 `go vet ./...` 为 0，`go test ./...` 退出 1。TestFaults（faults_test.go:84）、TestS25（s25_flow_test.go:132）、TestS01、TestS02、TestS04、TestS05、TestS20、TestS23、TestRankingDefaultEntry、TestTickDispatchClaimsAndSecondTick（loop_test.go:65 的 ErrorExcerpt）、TestTickManualMergesWithoutAutoCards（loop_test.go:152，dev 卡 no_output；design-auto 由测试在 loop_test.go:123 建成 needs_input）以及 internal/host 里启动执行器的测试，都是执行器没跑起来。TestS24（scenarios_test.go:1911）的失败文本是 inside.txt 不存在，因为配置文件还没套上。需改 internal/sandbox/wrap_darwin.go:15 与 internal/host/run.go:158。二者不在本写域。断言未放宽。套件没有通过。
+实测摘录：TestTickManualMergesWithoutAutoCards 尝试 ae2174a84fc392033 exit=71 outcome=no_output，excerpt 与 output.log 均为 "sandbox-exec: sandbox_apply: Operation not permitted"。TestS23 尝试 a07fefed5d7d1c0c7 exit=71，excerpt 与 output.log 同句。TestRankingDefaultEntry/no_config_file 尝试 a6dbbc69feefab073 exit=71，excerpt 与 output.log 同句。
 
 ## 已知问题
 

@@ -408,19 +408,19 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err != nil {
 		return "", err
 	}
-	rt, reason, err := chooseRoute(ctx, route.Request{
-		Card:         card,
-		Objective:    obj,
-		AuthorFamily: card.AuthorFamily,
-		Channels:     channels,
-		Positioning:  pos,
-		InUse:        inUse,
-		Quota:        quotas,
-		Classified:   classified,
-		Now:          r.now(),
-	})
+	// dispatch and fill ignore ErrNoCandidate and ErrPinnedUnavailable.
+	// A stored channel that is missing, not ok, or blocked until a future reset
+	// is released on this request only. The objective row is not written.
+	rt, reason, rel, settled, err := r.chooseLaunchRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
 	if err != nil {
 		return "", err
+	}
+	if settled {
+		return "", nil
+	}
+	if rel.released {
+		card.Channel = rt.Channel
+		card.Model = rt.Model
 	}
 	attemptID, err := newID("a")
 	if err != nil {
@@ -480,6 +480,11 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	card.WaitReason = ""
 	if err := db.UpdateCard(ctx, &card); err != nil {
 		return "", err
+	}
+	if rel.released {
+		if err := appendPinRelease(ctx, db, r.now(), card.ID, rel, rt); err != nil {
+			return "", err
+		}
 	}
 	if inUse != nil && rt.Channel != "" {
 		inUse[rt.Channel]++

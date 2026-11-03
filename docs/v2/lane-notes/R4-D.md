@@ -17,6 +17,8 @@ S01 在 launchCard 第一次派发前对空 tier 调用 classify.Classify，把�
 ## 接口请求
 
 v2 没有单次调用执行器，Channel 没有 classifier 槽。launchCard 只按 id classifier 取渠道名，Runner.Classify 在 New 里保持 nil，分级渠道不会调用模型。请给 Channel 加分级槽并提供一次调用，不要在 runner 里新写。
+TestSignalGuard 源码扫描退出码 1。写域外命中 cmd/cardex/cli_surface_test.go:1216、1222、1225、1226、1237，internal/host/host_test.go:170、429，internal/host/run.go:497（ws.Signal() 只读 WaitStatus）。不改这些文件，扫描仍匹配 `.Signal(`。
+本环境 `/usr/bin/sandbox-exec` 退出码 71：`sandbox_apply: Operation not permitted`。因此 TestS25、TestFaults、其余会启动执行器的 e2e、host、sched 测试，以及 internal/sandbox 的 Wrap 测试，都以 exit 71 失败。断言未放宽。需改 internal/sandbox/wrap_darwin.go 与 internal/host/run.go:158，不在本写域。
 
 ## 已知问题
 
@@ -27,3 +29,11 @@ v2 没有单次调用执行器，Channel 没有 classifier 槽。launchCard 只�
 空 tier 在第一次派发前分级，结果写回卡并交给路由；已有 tier 不调用 Call；Call 为空、失败或无法解析时持久化 kind 默认 tier → internal/sched/classify.go:19 internal/sched/loop.go:407 → TestLaunchClassifiesEmptyTier TestS01
 后续设计或计划卡的 ## 事实摘要 必须含所答问题的 id、答案和证据，Q0 为 fact 时也含 Q0；只有标题或空列表不算 → internal/e2e/s25_flow_test.go:241 → TestS25
 故障套件用一个可复现种子批量注入多卡并覆盖五类；终态后继续调度，用库中的卡状态和事件证明不重复合并；空计数不是证据；无问题的 needs_input 不能跳过 → internal/e2e/faults_test.go:24 → TestFaults
+2026-11-04 02:01、02:21、04:22：`go test ./internal/sched/ -run 'TestLaunchUnusableChannel...'` 三次 `syscall.Kill(-1, SIGKILL)`，杀掉 278、262、191 个 launchd 任务。seedQuotaBlock 写入 PID 1，stopLaunchHosts 遍历全部尝试，killHost 在 pid>0 时向 -pid 发 SIGKILL。
+pid 或 pgid ≤ 1、本进程、本进程组拒绝且不调用系统调用；系统调用经 signalKill 注入 → internal/host/signal.go:18 internal/host/signal.go:27 internal/host/signal.go:34 → TestSignalGuard
+killGroup、processGroupAlive、processAlive、runAcceptance 取消只走该入口 → internal/host/deadline.go:177 internal/host/deadline.go:73 internal/host/reconcile.go:57 internal/harvest/harvest.go:142 → TestSignalGuard
+清理只向本次 Launch 记下的 pid 发信号，不遍历尝试表；seedQuotaBlock 的 PID 为 0；占坑用测试启动的 sleep → internal/sched/loop_test.go:726 internal/sched/loop_rework_test.go:485 internal/sched/launch_pin_test.go:407 internal/e2e/scenarios_test.go:2517 internal/e2e/faults_test.go:520 → TestLaunchUnusableChannel
+指定渠道缺失、健康不是 ok、或在已知重置前被封锁，才放开本次请求副本；余量低于红线不放开；写回卡的渠道和模型，事件 pin_released；目标 Channel 与 Model 不改；无候选则 needs_input 且同一原因只问一次，不 failed，不增加尝试；backlog 与健康未封锁的指定保持原路 → internal/sched/launch_route.go:141 internal/sched/loop.go:414 → TestLaunchUnusableChannel
+B2 仍成立：后续设计或计划卡的 ## 事实摘要 含所答问题 id、答案和证据，Q0 为 fact 时含 Q0；只查标题不算 → internal/e2e/s25_flow_test.go:308 internal/e2e/s25_flow_test.go:325 → TestS25
+B3 仍成立：种子 20261102 一批注入 transport、截断流、quota、auth、以及 host kill 后 serve 重启；终态后继续调度，用卡行和事件证明不重复合并 → internal/e2e/faults_test.go:19 → TestFaults
+S23 未改。状态以 R4-C-F1 为准。集成前若只走辅助函数，不是 R4-D 缺陷。

@@ -311,7 +311,8 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 		if attempt.Route.Channel != "" {
 			card.Channel = attempt.Route.Channel
 		}
-		if st.cfg.RetryBackoff > 0 && transportRetry(attempt.Outcome) {
+		// Ranking harvest must leave a settled status, so it does not take the dev backoff hold.
+		if st.cfg.RetryBackoff > 0 && transportRetry(attempt.Outcome) && card.Kind != model.KindRanking {
 			return st.holdBackoff(card)
 		}
 		card.Status = model.CardReady
@@ -1569,6 +1570,11 @@ func (st *step) allFrozen() bool {
 
 func (st *step) anyUnfinished() bool {
 	for _, card := range st.snap.cards {
+		// The weekly ranking card stays on the active objective until it can run.
+		// It is not that objective's unfinished work.
+		if card.Kind == model.KindRanking && strings.HasPrefix(card.ID, "sch-ranking-") {
+			continue
+		}
 		switch card.Status {
 		case model.CardMerged, model.CardDone, model.CardFailed, model.CardCanceled:
 		default:

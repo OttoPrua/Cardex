@@ -74,15 +74,14 @@ func (s *Service) Deliver(ctx context.Context, msg Message) error {
 	home := homeOf(msg)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.hydrateLocked(home, msg.QuestionID); err != nil {
-		return err
-	}
+	// A recoverable ledger fault is a diagnostic. It does not return before the hops.
+	diag := s.hydrateLocked(home, msg.QuestionID)
 	state := s.sent[msg.QuestionID]
 	if !s.dueLocked(msg.QuestionID, now) {
 		if state.wakeSeq > 0 && state.wakeID != "" && !hermesAckCovers(homeOf(msg), msg.SubscriptionID, state.wakeID, state.digest) {
-			return s.rewriteHermes(msg, now, state.wakeSeq)
+			return errors.Join(diag, s.rewriteHermes(msg, now, state.wakeSeq))
 		}
-		return nil
+		return diag
 	}
 	seq := state.wakeSeq + 1
 	if seq < 1 {
@@ -107,25 +106,23 @@ func (s *Service) Deliver(ctx context.Context, msg Message) error {
 	}
 	s.sent[msg.QuestionID] = next
 	if saveErr := saveReminder(home, msg.QuestionID, next); saveErr != nil {
-		return errors.Join(err, saveErr)
+		return errors.Join(diag, err, saveErr)
 	}
-	return err
+	return errors.Join(diag, err)
 }
 
 // hydrateLocked loads this question's reminder bookkeeping from home when
 // this process has not seen it yet. A missing file means there was no delivery.
+// A format fault still installs any record that parsed.
 func (s *Service) hydrateLocked(home, id string) error {
 	if _, ok := s.sent[id]; ok {
 		return nil
 	}
 	loaded, found, err := loadReminder(home, id)
-	if err != nil {
-		return err
-	}
 	if found {
 		s.sent[id] = loaded
 	}
-	return nil
+	return err
 }
 
 // rewriteHermes writes the current delivery again. The reminder gap stays put,

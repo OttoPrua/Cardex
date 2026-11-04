@@ -444,7 +444,7 @@ func TestPositioningApproveUsesStore(t *testing.T) {
 func TestScheduleRunEnqueuesOnce(t *testing.T) {
 	home := t.TempDir()
 	repo := t.TempDir()
-	bin, marker := sentinelBin(t, "grok-build", "codex", "claude", "cursor", "kimi-cli", "agy", "opencode")
+	bin, marker := sentinelBin(t, "grok", "cursor-agent", "kimi", "codex", "claude", "agy", "opencode")
 	t.Setenv("PATH", bin)
 	mustHome(t, home, "project", "add", "--id", "p1", "--repo", repo)
 	mustHome(t, home, "objective", "add", "--id", "o1", "--project", "p1", "--title", "Sweep", "--mode", "manual")
@@ -1054,7 +1054,7 @@ func noteUses(notes []loopReopenNote, id string) bool {
 
 func TestHostUnknownAttempt(t *testing.T) {
 	home := t.TempDir()
-	bin, marker := sentinelBin(t, "grok-build", "codex", "claude", "cursor", "kimi-cli", "agy", "opencode")
+	bin, marker := sentinelBin(t, "grok", "cursor-agent", "kimi", "codex", "claude", "agy", "opencode")
 	t.Setenv("PATH", bin)
 	code, out, errb := callCLI(t, []string{"--home", home, "host", "missing-attempt"})
 	if code == 0 {
@@ -1074,7 +1074,7 @@ func TestHostUnknownAttempt(t *testing.T) {
 
 func TestDoctorFindingsContinue(t *testing.T) {
 	home := t.TempDir()
-	bin, marker := sentinelBin(t, "grok-build")
+	bin, marker := sentinelBin(t, "grok")
 	t.Setenv("PATH", bin)
 	mustHome(t, home, "channel", "set", "--id", "zero", "--runner", "grok", "--redline", "0", "--window", "daily:fixed:10", "--model", "m-zero")
 	mustHome(t, home, "channel", "set", "--id", "one", "--runner", "grok", "--redline", "1", "--window", "weekly:rolling:10", "--model", "m-one")
@@ -1118,7 +1118,7 @@ func TestDoctorFindingsContinue(t *testing.T) {
 	if gitAt < 0 || laterAt < gitAt {
 		t.Fatalf("later binary was not reported after git\n%s", out)
 	}
-	if strings.Contains(joined, "grok-build is not on PATH") {
+	if strings.Contains(joined, "grok is not on PATH") {
 		t.Fatalf("present binary reported missing\n%s", joined)
 	}
 	if strings.Contains(joined, "redline 0 is outside") || strings.Contains(joined, "redline 1 is outside") {
@@ -1142,6 +1142,279 @@ func TestDoctorFindingsContinue(t *testing.T) {
 	if !strings.Contains(joined, "tier T1") || !strings.Contains(joined, "tier T2") || !strings.Contains(joined, "tier T3") {
 		t.Fatalf("tiers\n%s", joined)
 	}
+}
+
+func TestSoftBusinessValues(t *testing.T) {
+	setup := func(t *testing.T) string {
+		t.Helper()
+		home := t.TempDir()
+		repo := t.TempDir()
+		mustHome(t, home, "project", "add", "--id", "p1", "--repo", repo)
+		mustHome(t, home, "objective", "add", "--id", "o1", "--project", "p1", "--title", "Ferry", "--mode", "manual", "--freeze-mode", "safe", "--priority", "1")
+		mustHome(t, home, "channel", "set", "--id", "ch1", "--runner", "grok", "--redline", "0.25", "--concurrency", "1", "--health", "ok", "--window", "daily:fixed:10", "--model", "m")
+		return home
+	}
+	objectiveOf := func(t *testing.T, home string) model.Objective {
+		t.Helper()
+		code, out, errb := callCLI(t, []string{"--home", home, "--json", "objective", "show", "o1"})
+		if code != 0 {
+			t.Fatalf("show %d %s", code, errb)
+		}
+		var obj model.Objective
+		if err := json.Unmarshal([]byte(out), &obj); err != nil {
+			t.Fatal(err)
+		}
+		return obj
+	}
+	channelOf := func(t *testing.T, home, id string) model.Channel {
+		t.Helper()
+		code, out, errb := callCLI(t, []string{"--home", home, "--json", "channel", "show", id})
+		if code != 0 {
+			t.Fatalf("show %d %s", code, errb)
+		}
+		var ch model.Channel
+		if err := json.Unmarshal([]byte(out), &ch); err != nil {
+			t.Fatal(err)
+		}
+		return ch
+	}
+	t.Run("unknown mode", func(t *testing.T) {
+		home := setup(t)
+		code, out, errb := callCLI(t, []string{"--home", home, "objective", "set", "--id", "o1", "--mode", "NOPE", "--priority", "7"})
+		if code != 0 {
+			t.Fatalf("exit %d %s", code, errb)
+		}
+		if !strings.Contains(out+errb, "needs correction: mode NOPE") {
+			t.Fatalf("report\n%s\n%s", out, errb)
+		}
+		obj := objectiveOf(t, home)
+		if obj.Mode != model.ModeManual || obj.Priority != 7 || obj.FreezeMode != model.FreezeSafe {
+			t.Fatalf("mode %s freeze %s priority %d", obj.Mode, obj.FreezeMode, obj.Priority)
+		}
+	})
+	t.Run("unknown freeze-mode", func(t *testing.T) {
+		home := setup(t)
+		code, out, errb := callCLI(t, []string{"--home", home, "objective", "set", "--id", "o1", "--freeze-mode", "LOOSE", "--priority", "4"})
+		if code != 0 {
+			t.Fatalf("exit %d %s", code, errb)
+		}
+		if !strings.Contains(out+errb, "needs correction: freeze-mode LOOSE") {
+			t.Fatalf("report\n%s\n%s", out, errb)
+		}
+		obj := objectiveOf(t, home)
+		if obj.FreezeMode != model.FreezeSafe || obj.Mode != model.ModeManual || obj.Priority != 4 {
+			t.Fatalf("mode %s freeze %s priority %d", obj.Mode, obj.FreezeMode, obj.Priority)
+		}
+	})
+	t.Run("unknown mode keeps valid freeze", func(t *testing.T) {
+		home := setup(t)
+		code, out, errb := callCLI(t, []string{"--home", home, "objective", "set", "--id", "o1", "--mode", "NOPE", "--freeze-mode", "fast", "--priority", "9"})
+		if code != 0 {
+			t.Fatalf("exit %d %s", code, errb)
+		}
+		if !strings.Contains(out+errb, "needs correction: mode NOPE") || strings.Contains(out+errb, "freeze-mode") {
+			t.Fatalf("report\n%s\n%s", out, errb)
+		}
+		obj := objectiveOf(t, home)
+		if obj.Mode != model.ModeManual || obj.FreezeMode != model.FreezeFast || obj.Priority != 9 {
+			t.Fatalf("mode %s freeze %s priority %d", obj.Mode, obj.FreezeMode, obj.Priority)
+		}
+	})
+	t.Run("json reports mode without breaking the record", func(t *testing.T) {
+		home := setup(t)
+		code, out, errb := callCLI(t, []string{"--home", home, "--json", "objective", "set", "--id", "o1", "--mode", "NOPE", "--priority", "6"})
+		if code != 0 {
+			t.Fatalf("exit %d %s", code, errb)
+		}
+		if strings.Contains(out, "needs correction") || !strings.Contains(errb, "needs correction: mode NOPE") {
+			t.Fatalf("stdout %s\nstderr %s", out, errb)
+		}
+		var obj model.Objective
+		if err := json.Unmarshal([]byte(out), &obj); err != nil {
+			t.Fatal(err)
+		}
+		if obj.Mode != model.ModeManual || obj.Priority != 6 {
+			t.Fatalf("%+v", obj)
+		}
+	})
+	t.Run("unparseable window", func(t *testing.T) {
+		home := setup(t)
+		code, out, errb := callCLI(t, []string{"--home", home, "channel", "set", "--id", "ch1", "--redline", "0.5", "--window", "daily:fixed:nope"})
+		if code != 0 {
+			t.Fatalf("exit %d %s", code, errb)
+		}
+		if !strings.Contains(out+errb, "needs correction: window daily:fixed:nope") {
+			t.Fatalf("report\n%s\n%s", out, errb)
+		}
+		ch := channelOf(t, home, "ch1")
+		if ch.Redline != 0.5 || ch.Runner != model.RunnerGrok || len(ch.QuotaWindows) != 1 || ch.QuotaWindows[0].Name != "daily" {
+			t.Fatalf("%+v", ch)
+		}
+	})
+	t.Run("mixed windows", func(t *testing.T) {
+		home := setup(t)
+		code, out, errb := callCLI(t, []string{"--home", home, "channel", "set", "--id", "ch1", "--concurrency", "2", "--window", "weekly:rolling:3", "--window", ":fixed"})
+		if code != 0 {
+			t.Fatalf("exit %d %s", code, errb)
+		}
+		if !strings.Contains(out+errb, "needs correction: window :fixed") {
+			t.Fatalf("report\n%s\n%s", out, errb)
+		}
+		ch := channelOf(t, home, "ch1")
+		if ch.Concurrency != 2 || len(ch.QuotaWindows) != 1 || ch.QuotaWindows[0].Name != "weekly" || ch.QuotaWindows[0].LimitTokens != 3 {
+			t.Fatalf("%+v", ch)
+		}
+	})
+	t.Run("unrecognized runner", func(t *testing.T) {
+		home := setup(t)
+		code, out, errb := callCLI(t, []string{"--home", home, "channel", "set", "--id", "ch1", "--runner", "nope", "--redline", "0.5"})
+		if code != 0 {
+			t.Fatalf("exit %d %s", code, errb)
+		}
+		if !strings.Contains(out+errb, "needs correction: runner nope") {
+			t.Fatalf("report\n%s\n%s", out, errb)
+		}
+		ch := channelOf(t, home, "ch1")
+		if ch.Runner != model.RunnerGrok || ch.Redline != 0.5 {
+			t.Fatalf("%+v", ch)
+		}
+	})
+	t.Run("unrecognized health", func(t *testing.T) {
+		home := setup(t)
+		code, out, errb := callCLI(t, []string{"--home", home, "channel", "set", "--id", "ch1", "--health", "banana", "--concurrency", "4"})
+		if code != 0 {
+			t.Fatalf("exit %d %s", code, errb)
+		}
+		if !strings.Contains(out+errb, "needs correction: health banana") {
+			t.Fatalf("report\n%s\n%s", out, errb)
+		}
+		ch := channelOf(t, home, "ch1")
+		if ch.Health != model.HealthOK || ch.Concurrency != 4 {
+			t.Fatalf("%+v", ch)
+		}
+	})
+	t.Run("create with unrecognized runner", func(t *testing.T) {
+		home := setup(t)
+		code, out, errb := callCLI(t, []string{"--home", home, "channel", "set", "--id", "ch-new", "--runner", "nope", "--redline", "0.5"})
+		if code != 0 {
+			t.Fatalf("exit %d %s", code, errb)
+		}
+		if !strings.Contains(out+errb, "needs correction: runner nope") {
+			t.Fatalf("report\n%s\n%s", out, errb)
+		}
+		ch := channelOf(t, home, "ch-new")
+		if ch.Runner != model.RunnerGrok || ch.Redline != 0.5 {
+			t.Fatalf("%+v", ch)
+		}
+	})
+	t.Run("missing runner still exits 2", func(t *testing.T) {
+		home := setup(t)
+		code, _, _ := callCLI(t, []string{"--home", home, "channel", "set", "--id", "ch-empty", "--redline", "0.5"})
+		if code != 2 {
+			t.Fatalf("exit %d", code)
+		}
+		code, out, errb := callCLI(t, []string{"--home", home, "channel", "list"})
+		if code != 0 {
+			t.Fatalf("list %d %s", code, errb)
+		}
+		if strings.Contains(out, "ch-empty") {
+			t.Fatalf("created %s", out)
+		}
+	})
+	t.Run("missing objective id still exits 2", func(t *testing.T) {
+		home := setup(t)
+		code, _, _ := callCLI(t, []string{"--home", home, "objective", "set", "--mode", "manual", "--priority", "3"})
+		if code != 2 {
+			t.Fatalf("exit %d", code)
+		}
+		obj := objectiveOf(t, home)
+		if obj.Priority != 1 {
+			t.Fatalf("priority %d", obj.Priority)
+		}
+	})
+	t.Run("unknown verb still exits 2", func(t *testing.T) {
+		home := setup(t)
+		code, _, _ := callCLI(t, []string{"--home", home, "objective", "explode"})
+		if code != 2 {
+			t.Fatalf("exit %d", code)
+		}
+	})
+	t.Run("bad flag syntax still exits 2", func(t *testing.T) {
+		home := setup(t)
+		code, _, _ := callCLI(t, []string{"--home", home, "objective", "set", "--id", "o1", "--priority", "nope"})
+		if code != 2 {
+			t.Fatalf("exit %d", code)
+		}
+		obj := objectiveOf(t, home)
+		if obj.Priority != 1 {
+			t.Fatalf("priority %d", obj.Priority)
+		}
+	})
+}
+
+func TestDoctorExecutorNames(t *testing.T) {
+	real := []string{"grok", "cursor-agent", "kimi"}
+	display := []string{"grok-build", "cursor", "kimi-cli"}
+	kept := []string{"codex", "claude", "agy", "opencode", "git", "sandbox-exec"}
+	assertSuggestions := func(t *testing.T, out string) {
+		t.Helper()
+		lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+		for i, line := range lines {
+			if !strings.HasPrefix(line, "problem: ") {
+				continue
+			}
+			if i+1 >= len(lines) || !strings.HasPrefix(lines[i+1], "suggestion: ") || strings.TrimPrefix(lines[i+1], "suggestion: ") == "" {
+				t.Fatalf("problem without suggestion: %s\n%s", line, out)
+			}
+		}
+	}
+	t.Run("real binaries", func(t *testing.T) {
+		home := t.TempDir()
+		bin, marker := sentinelBin(t, real...)
+		t.Setenv("PATH", bin)
+		code, out, errb := callCLI(t, []string{"--home", home, "doctor"})
+		if code != 0 {
+			t.Fatalf("exit %d\n%s\n%s", code, out, errb)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("doctor executed a PATH binary: %v", err)
+		}
+		assertSuggestions(t, out)
+		joined := out + errb
+		for _, name := range real {
+			if strings.Contains(joined, name+" is not on PATH") {
+				t.Fatalf("%s reported missing\n%s", name, out)
+			}
+		}
+		for _, name := range kept {
+			if !strings.Contains(out, name+" is not on PATH") {
+				t.Fatalf("missing %s\n%s", name, out)
+			}
+		}
+	})
+	t.Run("display names", func(t *testing.T) {
+		home := t.TempDir()
+		bin, marker := sentinelBin(t, display...)
+		t.Setenv("PATH", bin)
+		code, out, errb := callCLI(t, []string{"--home", home, "doctor"})
+		if code != 0 {
+			t.Fatalf("exit %d\n%s\n%s", code, out, errb)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("doctor executed a PATH binary: %v", err)
+		}
+		assertSuggestions(t, out)
+		for _, name := range real {
+			if !strings.Contains(out, name+" is not on PATH") {
+				t.Fatalf("real name %s not reported\n%s", name, out)
+			}
+		}
+		for _, name := range display {
+			if strings.Contains(out, name+" is not on PATH") {
+				t.Fatalf("display name looked up %s\n%s", name, out)
+			}
+		}
+	})
 }
 
 func TestImportLegacyCLI(t *testing.T) {

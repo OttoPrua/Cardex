@@ -2,6 +2,8 @@ package importer
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -146,27 +148,32 @@ func continuableStatus(status string) bool {
 	}
 }
 
-// continuableBody keeps every v1 prompt and the current step on the card.
-// Card has no step column, so the step is the first line. A valid step leaves
-// earlier prompts as historical context and the prompt at that index, internal
-// newlines included, plus any later prompts as the remaining work. Each prompt
-// keeps its own length-prefixed step boundary. A missing step arrives as 0.
-// A negative or past-the-end step stays a soft empty remainder: the prompts
-// are still in the body, and nothing is rejected.
+// continuableBody keeps every v1 prompt and the recorded step on the card.
+// Card has no step column, so the step is the first line and stays the raw
+// value, including a negative one. A negative step is read as 0: nothing is
+// completed and every prompt stays pending. A missing step arrives as 0.
+// An in-range step leaves earlier prompts completed and the prompt at that
+// index, internal newlines included, plus later prompts pending. A step past
+// the last prompt leaves every prompt completed. Each prompt keeps its
+// length-prefixed boundary.
 func continuableBody(prompts []string, step int) string {
+	effective := step
+	if effective < 0 {
+		effective = 0
+	}
 	var b strings.Builder
 	b.WriteString("step: ")
 	b.WriteString(strconv.Itoa(step))
 	b.WriteByte('\n')
 	b.WriteString("## 已完成\n")
 	history := len(prompts)
-	if step >= 0 && step <= len(prompts) {
-		history = step
+	if effective <= len(prompts) {
+		history = effective
 	}
 	writePromptSteps(&b, prompts, 0, history)
 	b.WriteString("## 待执行\n")
-	if step >= 0 && step < len(prompts) {
-		writePromptSteps(&b, prompts, step, len(prompts))
+	if effective < len(prompts) {
+		writePromptSteps(&b, prompts, effective, len(prompts))
 	}
 	return b.String()
 }
@@ -257,6 +264,8 @@ func projectID(project string) string {
 	return "v1proj-" + sanitize(project)
 }
 
+// sanitize keeps a safe token unchanged. Any other raw value gets a digest of
+// the original so distinct inputs that would otherwise fold together stay distinct.
 func sanitize(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -268,8 +277,12 @@ func sanitize(s string) string {
 		}
 	}
 	out := strings.Trim(b.String(), "-")
-	if out == "" {
-		return "x"
+	if out == s && out != "" {
+		return out
 	}
-	return out
+	if out == "" {
+		out = "x"
+	}
+	sum := sha256.Sum256([]byte(s))
+	return out + "-" + hex.EncodeToString(sum[:])
 }

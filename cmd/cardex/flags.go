@@ -40,6 +40,16 @@ func groupHelp(stdout io.Writer, args []string, text string) bool {
 	return false
 }
 
+func finishSoft(stdout, stderr io.Writer, asJSON bool, notes []string, v any, line string) int {
+	for _, note := range notes {
+		fmt.Fprintf(stderr, "needs correction: %s\n", note)
+		if !asJSON {
+			fmt.Fprintf(stdout, "needs correction: %s\n", note)
+		}
+	}
+	return emit(stdout, asJSON, v, line)
+}
+
 func flagSeen(fs *flag.FlagSet, name string) bool {
 	seen := false
 	fs.Visit(func(f *flag.Flag) {

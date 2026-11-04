@@ -113,21 +113,22 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	var notes []string
 	if flagSeen(fs, "mode") {
 		val, ok := normalizeObjectiveMode(*mode)
 		if !ok {
-			fmt.Fprintln(stderr, "unrecognized mode")
-			return 2
+			notes = append(notes, "mode "+*mode)
+		} else {
+			o.Mode = val
 		}
-		o.Mode = val
 	}
 	if flagSeen(fs, "freeze-mode") {
 		val, ok := normalizeFreezeMode(*freeze)
 		if !ok {
-			fmt.Fprintln(stderr, "unrecognized freeze-mode")
-			return 2
+			notes = append(notes, "freeze-mode "+*freeze)
+		} else {
+			o.FreezeMode = val
 		}
-		o.FreezeMode = val
 	}
 	if flagSeen(fs, "soft-tokens") {
 		o.Budget.SoftTokens = *soft
@@ -142,7 +143,7 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	return emit(stdout, asJSON, o, o.ID+"\t"+o.Title)
+	return finishSoft(stdout, stderr, asJSON, notes, o, o.ID+"\t"+o.Title)
 }
 
 func objectiveTransition(home string, asJSON bool, verb string, args []string, stdout, stderr io.Writer) int {

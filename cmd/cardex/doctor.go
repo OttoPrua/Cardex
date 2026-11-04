@@ -85,7 +85,7 @@ func toolFindings() []finding {
 	var out []finding
 	out = append(out, lookupFinding("git", "install git and put it on PATH")...)
 	out = append(out, lookupFinding("sandbox-exec", "on macOS this ships with the system; elsewhere install it or run doctor on macOS. doctor only looks it up and does not run it")...)
-	for _, name := range []string{"grok-build", "codex", "claude", "cursor", "kimi-cli", "agy", "opencode"} {
+	for _, name := range []string{"grok", "codex", "claude", "cursor-agent", "kimi", "agy", "opencode"} {
 		out = append(out, lookupFinding(name, "install "+name+" or add it to PATH. doctor only looks up the name and does not run it")...)
 	}
 	return out

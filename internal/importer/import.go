@@ -3,6 +3,7 @@ package importer
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"cardex/internal/model"
 	"cardex/internal/store"
 )
+
+const legacySourceEvent = "legacy_source"
 
 func importHome(ctx context.Context, v2Home, v1Home string, dryRun bool) (Report, error) {
 	if err := ctx.Err(); err != nil {
@@ -65,6 +68,13 @@ func importHome(ctx context.Context, v2Home, v1Home string, dryRun bool) (Report
 	if strings.TrimSpace(v2Home) == "" {
 		return Report{}, errors.New("v2 home is required")
 	}
+	same, err := sameDirectory(v2Home, v1Home)
+	if err != nil {
+		return Report{}, err
+	}
+	if same {
+		return Report{}, errors.New("v2 home and v1 home are the same directory")
+	}
 	db, err := store.Open(filepath.Join(v2Home, "cardex.db"))
 	if err != nil {
 		return Report{}, err
@@ -93,27 +103,123 @@ func importHome(ctx context.Context, v2Home, v1Home string, dryRun bool) (Report
 
 func listV1(root string) ([]string, error) {
 	var out []string
-	for _, dir := range []string{"tasks", "archive", "workflows"} {
-		entries, err := os.ReadDir(filepath.Join(root, dir))
+	for _, dir := range []string{"tasks", "archive"} {
+		names, err := jsonRecords(filepath.Join(root, dir))
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
 			return nil, err
 		}
-		for _, ent := range entries {
-			if ent.IsDir() {
-				continue
-			}
-			name := ent.Name()
-			if !strings.HasSuffix(strings.ToLower(name), ".json") {
-				continue
-			}
+		for _, name := range names {
 			out = append(out, dir+"/"+name)
 		}
 	}
+	names, err := jsonRecords(filepath.Join(root, "workflows"))
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range names {
+		if strings.HasSuffix(name, ".progress.json") {
+			continue
+		}
+		if knownWorkflowSidecar(filepath.Join(root, "workflows", name), name) {
+			continue
+		}
+		out = append(out, "workflows/"+name)
+	}
 	sort.Strings(out)
 	return out, nil
+}
+
+func jsonRecords(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var names []string
+	for _, ent := range entries {
+		name := ent.Name()
+		if ent.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		names = append(names, name)
+	}
+	return names, nil
+}
+
+// knownWorkflowSidecar matches v1 scanWorkflows: progress files are skipped by
+// the caller. design-receipt and retained-preimage files are sidecars only when
+// they carry that shape and none of the workflow record fields.
+func knownWorkflowSidecar(path, name string) bool {
+	if !strings.HasSuffix(name, ".design-receipt.json") && !strings.HasSuffix(name, ".retained-preimage-hashes.json") {
+		return false
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return false
+	}
+	for _, key := range workflowRecordKeys {
+		for field := range fields {
+			if strings.EqualFold(field, key) {
+				return false
+			}
+		}
+	}
+	hashOK := func(value string, size int) bool {
+		b, err := hex.DecodeString(value)
+		return err == nil && len(b) == size
+	}
+	if strings.HasSuffix(name, ".design-receipt.json") {
+		var receipt struct {
+			Role          string `json:"role"`
+			Runner        string `json:"runner"`
+			ActualRunner  string `json:"actual_runner"`
+			Identity      string `json:"identity"`
+			SessionID     string `json:"session_id"`
+			Digest        string `json:"digest"`
+			InputIdentity string `json:"input_identity"`
+			ReadOnly      *bool  `json:"read_only"`
+			Status        string `json:"status"`
+			ResultPath    string `json:"result_path"`
+		}
+		if json.Unmarshal(raw, &receipt) != nil {
+			return false
+		}
+		return receipt.Role == "design" && receipt.ReadOnly != nil && *receipt.ReadOnly && receipt.Status == "completed" &&
+			receipt.Runner != "" && receipt.ActualRunner != "" && receipt.Identity != "" && receipt.SessionID != "" && receipt.ResultPath != "" &&
+			hashOK(receipt.Digest, 32) && strings.TrimSpace(receipt.InputIdentity) != ""
+	}
+	if len(fields) != 3 {
+		return false
+	}
+	var preimage struct {
+		Meaning string            `json:"meaning"`
+		Head    string            `json:"head"`
+		Hashes  map[string]string `json:"hashes"`
+	}
+	if json.Unmarshal(raw, &preimage) != nil || strings.TrimSpace(preimage.Meaning) == "" || !hashOK(preimage.Head, 20) || len(preimage.Hashes) == 0 {
+		return false
+	}
+	for item, value := range preimage.Hashes {
+		if strings.TrimSpace(item) == "" || !hashOK(value, 32) {
+			return false
+		}
+	}
+	return true
+}
+
+var workflowRecordKeys = []string{
+	"schema", "id", "mode", "module_id", "goal_id", "goal", "parent_id", "repo", "worktree", "write_domain",
+	"writer_engine", "writer_work_class", "writer_model", "writer_route_class", "reviewer_engine", "effect_gates",
+	"current_round", "max_rounds", "writer_task_id", "reviewer_task_id", "integration_task_id", "terminal_criteria",
+	"candidate", "review", "progress", "material_notify", "design_lineage", "design_session", "manager_session",
+	"owner_design_entry", "design_task_id", "direction_task_ids", "native_goal_task_ids", "acceptance_task_id",
+	"acceptance_coverage", "goal_completed", "extra_round_grants", "extra_round_consumptions", "created_at", "updated_at",
 }
 
 func readRecord(path string) (*v1Record, string) {
@@ -185,10 +291,68 @@ func writeRow(ctx context.Context, db *store.Store, v1Home, id string, pl placem
 	if err := db.CreateCard(ctx, &card); err != nil {
 		return err
 	}
+	if err := writeLegacySource(ctx, db, v1Home, id, pl.Legacy.SourcePath); err != nil {
+		return err
+	}
 	if pl.Hint.empty() {
 		return nil
 	}
 	return writeHint(ctx, db, id, pl.Hint)
+}
+
+func writeLegacySource(ctx context.Context, db *store.Store, v1Home, cardID, rel string) error {
+	entity := "card:" + cardID
+	existing, err := db.ListEvents(ctx, entity)
+	if err != nil {
+		return err
+	}
+	for _, ev := range existing {
+		if ev.Type == legacySourceEvent {
+			return nil
+		}
+	}
+	home, path := legacySourceLocation(v1Home, rel)
+	data, err := json.Marshal(struct {
+		Home string `json:"home"`
+		Path string `json:"path"`
+	}{Home: home, Path: path})
+	if err != nil {
+		return err
+	}
+	return db.AppendEvent(ctx, &model.Event{
+		Entity: entity,
+		Type:   legacySourceEvent,
+		Data:   data,
+	})
+}
+
+func legacySourceLocation(v1Home, rel string) (home, path string) {
+	home = v1Home
+	if abs, err := filepath.Abs(v1Home); err == nil {
+		home = abs
+	}
+	return home, filepath.Join(home, filepath.FromSlash(rel))
+}
+
+func sameDirectory(a, b string) (bool, error) {
+	ia, err := os.Stat(a)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	ib, err := os.Stat(b)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !ia.IsDir() || !ib.IsDir() {
+		return false, nil
+	}
+	return os.SameFile(ia, ib), nil
 }
 
 func writeHint(ctx context.Context, db *store.Store, cardID string, hint routeHint) error {

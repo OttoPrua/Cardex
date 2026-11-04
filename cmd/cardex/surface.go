@@ -553,14 +553,26 @@ func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	ctx := context.Background()
 	ch, err := db.GetChannel(ctx, *id)
 	missing := err != nil
+	var notes []string
 	if missing {
-		ch = model.Channel{ID: *id, Health: model.HealthOK, Runner: model.RunnerName(*runner)}
-		if !ch.Runner.Valid() || ch.Runner == "" || ch.Runner == model.RunnerFake {
+		raw := strings.TrimSpace(*runner)
+		val := model.RunnerName(raw)
+		if raw == "" || val == model.RunnerFake {
 			fmt.Fprintln(stderr, "--runner is required when creating a channel")
 			return 2
 		}
+		if !val.Valid() {
+			notes = append(notes, "runner "+*runner)
+			val = model.RunnerGrok
+		}
+		ch = model.Channel{ID: *id, Health: model.HealthOK, Runner: val}
 	} else if flagSeen(fs, "runner") {
-		ch.Runner = model.RunnerName(*runner)
+		val := model.RunnerName(strings.TrimSpace(*runner))
+		if val.Valid() && val != "" {
+			ch.Runner = val
+		} else {
+			notes = append(notes, "runner "+*runner)
+		}
 	}
 	if flagSeen(fs, "redline") {
 		ch.Redline = *redline
@@ -569,18 +581,25 @@ func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 		ch.Concurrency = *concurrency
 	}
 	if flagSeen(fs, "health") {
-		ch.Health = model.Health(*health)
+		val := model.Health(strings.TrimSpace(*health))
+		if val.Valid() {
+			ch.Health = val
+		} else {
+			notes = append(notes, "health "+*health)
+			if !ch.Health.Valid() {
+				ch.Health = model.HealthOK
+			}
+		}
 	}
 	if flagSeen(fs, "model") {
 		ch.Models = models
 	}
 	if flagSeen(fs, "window") {
-		parsed, err := parseWindows(windows)
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 2
+		parsed, bad := splitWindows(windows)
+		notes = append(notes, bad...)
+		if len(parsed) > 0 {
+			ch.QuotaWindows = parsed
 		}
-		ch.QuotaWindows = parsed
 	}
 	if ch.Health == "" {
 		ch.Health = model.HealthOK
@@ -594,7 +613,21 @@ func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	return emit(stdout, asJSON, ch, ch.ID+"\t"+string(ch.Runner))
+	return finishSoft(stdout, stderr, asJSON, notes, ch, ch.ID+"\t"+string(ch.Runner))
+}
+
+func splitWindows(raw []string) ([]model.QuotaWindow, []string) {
+	var good []model.QuotaWindow
+	var bad []string
+	for _, item := range raw {
+		parsed, err := parseWindows([]string{item})
+		if err != nil {
+			bad = append(bad, "window "+item)
+			continue
+		}
+		good = append(good, parsed...)
+	}
+	return good, bad
 }
 
 func parseWindows(raw []string) ([]model.QuotaWindow, error) {

@@ -2,9 +2,11 @@ package question
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"cardex/internal/model"
 	"cardex/internal/notify"
@@ -48,17 +50,50 @@ func (s *svc) Create(ctx context.Context, q model.Question) (model.Question, err
 	if q.ScopeKind != "card" {
 		q.ScopeKind = "node"
 	}
+	// An unanswered row with the same objective, scope, kind, and text is the
+	// stored decision. Reuse it and retry delivery instead of inserting another.
+	if existing, ok, err := s.storedDecision(ctx, q); err != nil {
+		return model.Question{}, err
+	} else if ok {
+		if err := s.deliverQuestion(ctx, &existing); err != nil {
+			return existing, err
+		}
+		return existing, nil
+	}
 	if err := s.store.CreateQuestion(ctx, &q); err != nil {
 		return model.Question{}, err
 	}
-	if s.deliver == nil {
-		return q, nil
+	if err := s.deliverQuestion(ctx, &q); err != nil {
+		return q, err
 	}
-	origin := ""
-	if q.Objective != "" {
-		if obj, err := s.store.GetObjective(ctx, q.Objective); err == nil {
-			origin = obj.Origin
+	return q, nil
+}
+
+func (s *svc) storedDecision(ctx context.Context, q model.Question) (model.Question, bool, error) {
+	all, err := s.store.ListQuestions(ctx, q.Objective)
+	if err != nil {
+		return model.Question{}, false, err
+	}
+	text := strings.TrimSpace(q.Text)
+	for _, item := range all {
+		if item.Objective != q.Objective || item.Scope != q.Scope || item.ScopeKind != q.ScopeKind || item.Kind != q.Kind {
+			continue
 		}
+		if strings.TrimSpace(item.Answer) != "" || strings.TrimSpace(item.Text) != text {
+			continue
+		}
+		return item, true, nil
+	}
+	return model.Question{}, false, nil
+}
+
+func (s *svc) deliverQuestion(ctx context.Context, q *model.Question) error {
+	if s.deliver == nil || q == nil || len(q.Deliveries) > 0 {
+		return nil
+	}
+	origin, err := s.questionOrigin(ctx, *q)
+	if err != nil {
+		return err
 	}
 	if err := s.deliver.Deliver(ctx, notify.Message{
 		QuestionID: q.ID,
@@ -66,9 +101,44 @@ func (s *svc) Create(ctx context.Context, q model.Question) (model.Question, err
 		Origin:     origin,
 		Text:       q.Text,
 	}); err != nil {
-		return q, err
+		return err
 	}
-	return q, nil
+	q.Deliveries = append(q.Deliveries, model.Delivery{
+		At:          time.Now().UTC(),
+		Adapter:     "notify",
+		Destination: origin,
+	})
+	return s.store.UpdateQuestion(ctx, q)
+}
+
+// questionOrigin uses the card's stored origin event for a card-scoped question.
+// A card with no origin, and every node-scoped question, keep the objective origin.
+func (s *svc) questionOrigin(ctx context.Context, q model.Question) (string, error) {
+	origin := ""
+	if q.Objective != "" {
+		if obj, err := s.store.GetObjective(ctx, q.Objective); err == nil {
+			origin = obj.Origin
+		}
+	}
+	if q.ScopeKind != "card" || strings.TrimSpace(q.Scope) == "" {
+		return origin, nil
+	}
+	evs, err := s.store.ListEvents(ctx, "card:"+q.Scope)
+	if err != nil {
+		return "", err
+	}
+	for _, ev := range evs {
+		if ev.Type != "origin" {
+			continue
+		}
+		var body struct {
+			Origin string `json:"origin"`
+		}
+		if json.Unmarshal(ev.Data, &body) == nil && strings.TrimSpace(body.Origin) != "" {
+			origin = body.Origin
+		}
+	}
+	return origin, nil
 }
 
 func (s *svc) Answer(ctx context.Context, id, option string) (model.Question, error) {

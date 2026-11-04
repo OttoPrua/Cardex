@@ -242,18 +242,107 @@ func parseChildLines(body string) []childSpec {
 	return out
 }
 
-func parseFreezable(body string) bool {
-	s := strings.TrimSpace(body)
-	if s == "" {
-		return false
+type freezeVerdict int
+
+const (
+	freezeNo freezeVerdict = iota
+	freezeYes
+	freezeUnclear
+)
+
+// judgeResultFreeze reads a clear freeze proposal from ## 可冻结 or from a
+// freeze statement under ## 结论. A dedicated section that is neither yes nor
+// no, and a conclusion that mentions 冻结 without saying which, is unclear.
+func judgeResultFreeze(result string) freezeVerdict {
+	if body, ok := headingBody(result, "可冻结"); ok {
+		return classifyFreeze(body, true)
 	}
-	first := strings.ToLower(strings.Fields(s)[0])
-	switch first {
+	if body, ok := headingBody(result, "结论"); ok {
+		return classifyFreeze(body, false)
+	}
+	return freezeNo
+}
+
+func headingBody(md, name string) (string, bool) {
+	found := false
+	var buf strings.Builder
+	for _, line := range strings.Split(md, "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "##") && !strings.HasPrefix(trim, "###") {
+			if found {
+				break
+			}
+			h := strings.TrimSpace(strings.TrimLeft(trim, "#"))
+			if h == name {
+				found = true
+			}
+			continue
+		}
+		if found {
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return buf.String(), true
+}
+
+func classifyFreeze(body string, dedicated bool) freezeVerdict {
+	compact := compactFreeze(body)
+	// Longer negatives first: 不可以冻结 contains both 不可冻结 and 可以冻结.
+	stripped := compact
+	hadNeg := false
+	for _, n := range []string{"不可以冻结", "不可冻结", "不能冻结", "不予冻结", "不建议冻结", "暂不冻结"} {
+		if strings.Contains(stripped, n) {
+			hadNeg = true
+			stripped = strings.ReplaceAll(stripped, n, "")
+		}
+	}
+	pos := strings.Contains(stripped, "可以冻结") || strings.Contains(stripped, "可冻结")
+	if pos && hadNeg {
+		return freezeUnclear
+	}
+	if pos {
+		return freezeYes
+	}
+	if hadNeg {
+		return freezeNo
+	}
+	if !dedicated {
+		if strings.Contains(compact, "冻结") {
+			return freezeUnclear
+		}
+		return freezeNo
+	}
+	switch freezeFirst(body) {
 	case "是", "yes", "true", "可冻结", "提议", "同意", "1":
-		return true
+		return freezeYes
+	case "否", "不", "no", "false", "拒绝", "0":
+		return freezeNo
 	default:
-		return false
+		return freezeUnclear
 	}
+}
+
+func compactFreeze(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\n', '\t', '\r', '，', '。', ',', '.', '！', '!', '？', '?', '、', '：', ':', '；', ';', '"', '\'':
+			return -1
+		default:
+			return r
+		}
+	}, strings.ToLower(s))
+}
+
+func freezeFirst(s string) string {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return ""
+	}
+	return strings.Trim(strings.ToLower(fields[0]), "，。,.!！?？、：:；;\"'")
 }
 
 func parseFactSection(body string) map[string]factBlock {

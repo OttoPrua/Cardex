@@ -10,7 +10,7 @@
 
 ## 接口请求
 
-design.go recoverUnparsed（1362）直接 finishNormalizedSource，不经 absorbNormalize，plan/replan 清单仍不吸收。sched advance（loop.go:221）仍跳过非 auto。route.Request 仍无 Exclude。api.go 统一入口归 R3-C-F1。
+design.go recoverUnparsed（1362）直接 finishNormalizedSource，不经 absorbNormalize，plan/replan 清单仍不吸收。sched advance（loop.go:221）仍跳过非 auto。route.Request 仍无 Exclude。api.go 统一入口归 R3-C-F1。TestSignalGuard 源码扫描只在 v2-R4-D 的 internal/host/signal_guard_test.go（4f03196），不在本写域，本分支未合入。
 
 ## 已知问题
 
@@ -24,7 +24,8 @@ design.go recoverUnparsed（1362）直接 finishNormalizedSource，不经 absorb
 整理为 violation 时作废尝试并派问题 → internal/loop/dev_apply.go:93 → TestFollowupNormalizeViolation
 投递失败后按 notice_due 再投，已成功的不再投 → internal/loop/dev_apply.go:580 → TestFollowupRedeliver
 新标 merged 追加带时间的 merge_success → internal/merge/queue.go:162 → TestMergeSuccessRecordedOnce
-同节点任一已合并卡没有自己的 merge_success 时，不用另一张卡的旧事件认定长时间未合并，不暂停 ready 卡、不挂 no merge within stall window；每张都有时间用最晚的，从未合并用第一次尝试，单张已合并无事件保持未知 → internal/loop/dev_apply.go:1435, internal/loop/breaker.go:411 → TestFollowupStallAnchor
+同节点任一已合并卡没有自己的 merge_success 时，不用另一张卡的旧事件认定长时间未合并，不暂停 ready 卡、不挂 no merge within stall window；每张都有时间用最晚的，从未合并用第一次尝试，单张已合并无事件保持未知 → internal/loop/dev_apply.go:1432, internal/loop/breaker.go:411 → TestFollowupStallAnchor
+不存在未知合并时间时，节点时钟取该节点全部卡自己的 merge_success 中最晚的，不因卡当前是 ready、running、paused 或 canceled 丢掉较新记录；熔断与暂停共用这一时钟 → internal/loop/dev_apply.go:1436, internal/loop/dev_apply.go:1077, internal/loop/breaker.go:426 → TestFollowupStallAnchor
 显式路由不过滤红线，只检查健康状态 → docs/v2/lane-notes/R3-B.md:16 → TestFollowupFailedRoutePins
 单张卡自动换渠道不清除目标 Channel 和 Model；抑制只作用本卡本次请求，同目标另一张卡仍选该显式渠道和模型 → internal/loop/dev_apply.go:348, internal/loop/dev_route.go:86 → TestFollowupFailedRoutePins
 换渠道之后写上的渠道或模型保留 → internal/loop/dev_route.go:82 → TestFollowupFailedRoutePins

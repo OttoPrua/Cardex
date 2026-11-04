@@ -569,6 +569,55 @@ func TestFollowupStallAnchor(t *testing.T) {
 			}
 		})
 	}
+
+	// A stays merged at seven hours. B's own merge_success is one hour ago.
+	// retry, resume, and revive all store ready; pause and cancel store their
+	// own statuses; running is B back in progress. The newer event is the clock.
+	statuses := []struct {
+		name   string
+		status model.CardStatus
+	}{
+		{name: "ready after retry", status: model.CardReady},
+		{name: "ready as written by resume and revive", status: model.CardReady},
+		{name: "paused", status: model.CardPaused},
+		{name: "canceled", status: model.CardCanceled},
+		{name: "running", status: model.CardRunning},
+	}
+	for _, tc := range statuses {
+		t.Run(tc.name, func(t *testing.T) {
+			f, ch := breakerWorld(t)
+			f.writeConfig(`{"loop":{"breaker_spend_tokens":10}}`)
+			a := f.card(model.Card{ID: "a", Kind: model.KindSpike, Tier: model.TierT2, Channel: ch.ID, Status: model.CardMerged})
+			f.backdate(f.attempt(a, 0, model.OutcomePassed, ch.ID, ""), now.Add(-8*time.Hour), 11)
+			b := f.card(model.Card{ID: "b", Kind: model.KindSpike, Tier: model.TierT2, Channel: ch.ID, Status: tc.status})
+			f.backdate(f.attempt(b, 0, model.OutcomePassed, ch.ID, ""), now.Add(-2*time.Hour), 1)
+			c := f.card(model.Card{ID: "c", Kind: model.KindSpike, Tier: model.TierT2, Channel: ch.ID, Status: model.CardReady})
+			for _, ev := range []struct {
+				id string
+				at time.Time
+			}{
+				{a.ID, now.Add(-7 * time.Hour)},
+				{b.ID, now.Add(-time.Hour)},
+			} {
+				event := &model.Event{Entity: "card:" + ev.id, Type: "merge_success", TS: ev.at, Data: []byte(`{}`)}
+				if err := f.db.AppendEvent(f.ctx, event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.stepAt(now)
+			for _, question := range questionsKind(f, model.QuestionBreaker) {
+				if strings.Contains(question.Text, "no merge within stall window") {
+					t.Fatalf("stall question %+v", f.questions())
+				}
+			}
+			if got := f.mustCard("b").Status; got != tc.status {
+				t.Fatalf("b status %s", got)
+			}
+			if got := f.mustCard(c.ID).Status; got != model.CardReady {
+				t.Fatalf("c status %s", got)
+			}
+		})
+	}
 }
 
 func TestFollowupFailedRoutePins(t *testing.T) {

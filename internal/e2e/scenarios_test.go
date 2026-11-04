@@ -30,6 +30,7 @@ import (
 	"cardex/internal/question"
 	"cardex/internal/quota"
 	"cardex/internal/route"
+	"cardex/internal/sandbox"
 	"cardex/internal/sched"
 	"cardex/internal/store"
 	"cardex/internal/workspace"
@@ -1841,6 +1842,7 @@ func tierHas(tiers []model.Tier, want model.Tier) bool {
 
 func TestS24(t *testing.T) {
 	// 执行器写 worktree 以外的地方被沙箱拒绝（只在 macOS 上跑）。
+	sandbox.SkipDenialTest(t)
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is macOS only")
 	}

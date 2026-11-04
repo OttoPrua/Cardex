@@ -18,6 +18,7 @@ import (
 	"cardex/internal/host"
 	"cardex/internal/model"
 	"cardex/internal/runner"
+	"cardex/internal/sandbox"
 	"cardex/internal/store"
 	"cardex/internal/workspace"
 )
@@ -167,7 +168,7 @@ func eventType(events []model.Event, kind string) (model.Event, bool) {
 }
 
 func alive(pid int) bool {
-	err := syscall.Kill(pid, 0)
+	err := host.SignalProcess(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
@@ -426,7 +427,7 @@ func TestReconcileLiveAndDead(t *testing.T) {
 	}
 	deadPID := 0
 	for pid := 1_000_000; pid < 1_000_400; pid++ {
-		if syscall.Kill(pid, 0) == syscall.ESRCH {
+		if host.SignalProcess(pid, 0) == syscall.ESRCH {
 			deadPID = pid
 			break
 		}
@@ -541,6 +542,7 @@ func TestRunStripsLeftoverEngineEnv(t *testing.T) {
 }
 
 func TestRunDeniesAttemptDirWrite(t *testing.T) {
+	sandbox.SkipDenialTest(t)
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is macOS only")
 	}

@@ -46,7 +46,6 @@ func TestSignalGuard(t *testing.T) {
 	needles := []string{
 		"syscall" + ".Kill(",
 		"unix" + ".Kill(",
-		".Signal" + "(",
 		".Process" + ".Kill(",
 	}
 	var hits int
@@ -77,12 +76,9 @@ func TestSignalGuard(t *testing.T) {
 			return err
 		}
 		for i, line := range strings.Split(string(body), "\n") {
-			for _, needle := range needles {
-				if strings.Contains(line, needle) {
-					hits++
-					t.Errorf("offending file:line %s:%d", rel, i+1)
-					break
-				}
+			if lineHitsSignal(line, needles) {
+				hits++
+				t.Errorf("offending file:line %s:%d", rel, i+1)
 			}
 		}
 		return nil
@@ -127,5 +123,36 @@ func moduleRoot(t *testing.T) string {
 			t.Fatal("go.mod not found")
 		}
 		dir = parent
+	}
+}
+
+func lineHitsSignal(line string, needles []string) bool {
+	for _, needle := range needles {
+		if strings.Contains(line, needle) {
+			return true
+		}
+	}
+	return signalCallHasArgs(line)
+}
+
+// signalCallHasArgs reports a Signal call whose parentheses contain an argument.
+// A parameterless WaitStatus call such as ws.Signal() is not a hit. There is no allowlist.
+func signalCallHasArgs(line string) bool {
+	mark := ".Signal" + "("
+	rest := line
+	for {
+		idx := strings.Index(rest, mark)
+		if idx < 0 {
+			return false
+		}
+		rest = rest[idx+len(mark):]
+		end := strings.Index(rest, ")")
+		if end < 0 {
+			return true
+		}
+		if strings.TrimSpace(rest[:end]) != "" {
+			return true
+		}
+		rest = rest[end+1:]
 	}
 }

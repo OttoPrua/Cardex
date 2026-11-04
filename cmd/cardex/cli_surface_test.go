@@ -13,6 +13,7 @@ import (
 
 	"reflect"
 
+	"cardex/internal/host"
 	"cardex/internal/importer"
 	"cardex/internal/model"
 	"cardex/internal/notify"
@@ -1204,6 +1205,7 @@ func TestServeMainStops(t *testing.T) {
 	home := t.TempDir()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestServeMainStops$")
 	cmd.Env = append(os.Environ(), "CARDEX_SERVE_CHILD=1", "CARDEX_SERVE_HOME="+home)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var buf lockBuf
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
@@ -1213,17 +1215,17 @@ func TestServeMainStops(t *testing.T) {
 	deadline := time.Now().Add(8 * time.Second)
 	for !strings.Contains(buf.String(), "serve listening") {
 		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
+			_ = host.SignalProcess(cmd.Process.Pid, syscall.SIGKILL)
 			t.Fatalf("serve output:\n%s", buf.String())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	if strings.Contains(buf.String(), ":8787") || strings.Contains(buf.String(), ":8788") {
-		_ = cmd.Process.Kill()
+		_ = host.SignalProcess(cmd.Process.Pid, syscall.SIGKILL)
 		t.Fatalf("reserved port\n%s", buf.String())
 	}
-	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		_ = cmd.Process.Kill()
+	if err := host.SignalProcess(cmd.Process.Pid, syscall.SIGTERM); err != nil {
+		_ = host.SignalProcess(cmd.Process.Pid, syscall.SIGKILL)
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
@@ -1234,7 +1236,7 @@ func TestServeMainStops(t *testing.T) {
 			t.Fatalf("serve exit %v\n%s", err, buf.String())
 		}
 	case <-time.After(5 * time.Second):
-		_ = cmd.Process.Kill()
+		_ = host.SignalProcess(cmd.Process.Pid, syscall.SIGKILL)
 		t.Fatal("serve did not stop")
 	}
 }

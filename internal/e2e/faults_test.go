@@ -41,6 +41,12 @@ func TestFaults(t *testing.T) {
 
 	h := New(t)
 	t.Setenv("CARDEX_HOME", h.Home)
+	// Disposition reads loop.retry_backoff_seconds from this file. One second
+	// keeps c4 on the same two-wait path inside the 90s window.
+	cfg := []byte("{\"loop\":{\"retry_backoff_seconds\":1}}\n")
+	if err := os.WriteFile(filepath.Join(h.Home, "config.json"), cfg, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	runner := sched.New(h.Home)
 	runner.Script = func(card model.Card) ([]byte, bool) {
 		if card.Kind == model.KindReview {
@@ -103,6 +109,9 @@ func TestFaults(t *testing.T) {
 	for _, card := range batch {
 		switch card.class {
 		case "transport":
+			if card.id != "c4" {
+				t.Fatalf("seed %d transport card is %s", faultSeed, card.id)
+			}
 			assertTransport(t, h, card.id, phrases)
 		case "truncated":
 			assertTruncated(t, h, card.id)
@@ -226,6 +235,51 @@ func assertTransport(t *testing.T, h *Harness, id string, phrases []string) {
 	}
 	if !containsAll(seen, phrases) {
 		t.Fatalf("transport phrases %v, saw %v\n%s", phrases, seen, diag(h))
+	}
+	assertTransportBackoff(t, h, id, attempts)
+}
+
+// assertTransportBackoff checks the two production retry_backoff waits and
+// that the third attempt did not start before the second wait's deadline.
+func assertTransportBackoff(t *testing.T, h *Harness, id string, attempts []model.Attempt) {
+	t.Helper()
+	events, err := h.DB.ListEvents(context.Background(), "card:"+id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type wait struct {
+		until time.Time
+	}
+	var waits []wait
+	for _, event := range events {
+		if event.Type != "retry_backoff" {
+			continue
+		}
+		var data struct {
+			Until string `json:"until"`
+		}
+		if err := json.Unmarshal(event.Data, &data); err != nil {
+			t.Fatalf("backoff record %s: %v", event.ID, err)
+		}
+		until, err := time.Parse(time.RFC3339Nano, data.Until)
+		if err != nil {
+			t.Fatalf("backoff until %q: %v", data.Until, err)
+		}
+		if !until.After(event.TS) {
+			t.Fatalf("backoff record %s until %s is not a wait after %s", event.ID, until.Format(time.RFC3339Nano), event.TS.Format(time.RFC3339Nano))
+		}
+		waits = append(waits, wait{until: until})
+	}
+	if len(waits) != 2 {
+		t.Fatalf("transport backoff waits %d, want 2\n%s", len(waits), diag(h))
+	}
+	sort.Slice(waits, func(i, j int) bool { return waits[i].until.Before(waits[j].until) })
+	third := attempts[2]
+	if third.Index != 2 {
+		t.Fatalf("third transport attempt index %d", third.Index)
+	}
+	if third.StartedAt.Before(waits[1].until) {
+		t.Fatalf("third attempt started %s before second backoff deadline %s", third.StartedAt.Format(time.RFC3339Nano), waits[1].until.Format(time.RFC3339Nano))
 	}
 }
 
@@ -418,6 +472,14 @@ func assertFaultIdempotent(t *testing.T, h *Harness, before, after faultSnap, in
 	for id, status := range after.cards {
 		kind := after.kinds[id]
 		qs := questionsFor(t, h, id)
+		// Scheduler enqueues sch-ranking- beside the batch. Production does not
+		// count that card as unfinished, and it stays ready when web is absent.
+		if kind == model.KindRanking && strings.HasPrefix(id, "sch-ranking-") && status == model.CardReady {
+			if before.cards[id] != model.CardReady || strings.Join(before.byCard[id], ",") != strings.Join(after.byCard[id], ",") {
+				t.Fatalf("ranking card %s changed during extra ticks: before %s %v after %s %v", id, before.cards[id], before.byCard[id], status, after.byCard[id])
+			}
+			continue
+		}
 		if fuzzy[status] {
 			t.Fatalf("card %s %s still %s after reread\n%s", id, kind, status, diag(h))
 		}

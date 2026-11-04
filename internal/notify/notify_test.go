@@ -1408,6 +1408,7 @@ func TestReminderLedgerFormatFaultStillDelivers(t *testing.T) {
 		{name: "blank", body: " \n\t", want: "empty"},
 		{name: "truncated-json", body: "{", want: "unexpected end of JSON input"},
 		{name: "invalid-json", body: "not-json", want: "invalid character"},
+		{name: "not-valid-json", body: "{not valid JSON", want: "invalid character"},
 		{name: "top-level-array", body: "[]", want: "cannot unmarshal array"},
 		{name: "top-level-string", body: `"x"`, want: "cannot unmarshal string"},
 		{name: "top-level-number", body: "1", want: "cannot unmarshal number"},

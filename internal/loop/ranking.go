@@ -411,7 +411,7 @@ func FollowRanking(ctx context.Context, db *store.Store) error {
 	if db == nil {
 		return errNilStore
 	}
-	home := currentRankingHome()
+	home := rankingDir(ctx)
 	questions, err := db.ListQuestions(ctx, "")
 	if err != nil {
 		return err
@@ -553,7 +553,13 @@ func AbsorbRanking(ctx context.Context, d Deps, card model.Card, text string) er
 	return d.absorbRanking(ctx, card, text)
 }
 
-func currentRankingHome() string {
+// rankingDir is the home Dispose was given, then CARDEX_HOME.
+func rankingDir(ctx context.Context) string {
+	if ctx != nil {
+		if home, ok := ctx.Value(disposeHomeKey).(string); ok && strings.TrimSpace(home) != "" {
+			return strings.TrimSpace(home)
+		}
+	}
 	return strings.TrimSpace(os.Getenv("CARDEX_HOME"))
 }
 
@@ -561,20 +567,20 @@ func (d Deps) absorbRanking(ctx context.Context, card model.Card, text string) e
 	if d.Store == nil {
 		return errNilStore
 	}
-	questions, err := d.Store.ListQuestions(ctx, card.Objective)
-	if err != nil {
-		return err
-	}
-	for _, q := range questions {
-		if q.Scope == card.ID && strings.Contains(q.Text, rankingMark) {
-			return d.finishRanking(ctx, card.ID, model.CardDone, "")
-		}
-	}
 	parsed := parseProposal(text)
+	home := rankingDir(ctx)
 	var prop positioning.Proposal
 	var current []model.Positioning
 	if len(parsed.entries) > 0 {
-		home := currentRankingHome()
+		// Another card's proposal is not a duplicate. Skip only when this card
+		// already has the question and a finished status for these entries.
+		handled, err := d.rankingAlreadyHandled(ctx, home, card, parsed.entries)
+		if err != nil {
+			return err
+		}
+		if handled {
+			return nil
+		}
 		table, err := positioning.Open(home)
 		if err != nil {
 			return err
@@ -608,6 +614,79 @@ func (d Deps) absorbRanking(ctx context.Context, card model.Card, text string) e
 		reason = "待复核"
 	}
 	return d.finishRanking(ctx, card.ID, status, reason)
+}
+
+func (d Deps) rankingAlreadyHandled(ctx context.Context, home string, card model.Card, entries []model.Positioning) (bool, error) {
+	if d.Store == nil || card.ID == "" || len(entries) == 0 {
+		return false, nil
+	}
+	fresh, err := d.Store.GetCard(ctx, card.ID)
+	if err != nil {
+		return false, err
+	}
+	questions, err := d.Store.ListQuestions(ctx, fresh.Objective)
+	if err != nil {
+		return false, err
+	}
+	want := proposalEntriesKey(entries)
+	matched := false
+	for _, q := range questions {
+		if q.Scope != fresh.ID {
+			continue
+		}
+		id := proposalID(q.Text)
+		if id == "" || strings.TrimSpace(home) == "" {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(home, "positioning", "proposals", id+".json"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return false, err
+		}
+		var saved struct {
+			Entries []model.Positioning `json:"entries"`
+		}
+		if err := json.Unmarshal(body, &saved); err != nil {
+			continue
+		}
+		if proposalEntriesKey(saved.Entries) == want {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false, nil
+	}
+	if fresh.Status != model.CardDone && fresh.Status != model.CardNeedsInput {
+		if err := d.finishRanking(ctx, fresh.ID, model.CardDone, ""); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func proposalEntriesKey(entries []model.Positioning) string {
+	type row struct {
+		Model        string       `json:"model"`
+		Family       string       `json:"family"`
+		Tiers        []model.Tier `json:"tiers"`
+		Capabilities []string     `json:"capabilities"`
+		Preference   int          `json:"preference"`
+	}
+	rows := make([]row, len(entries))
+	for i, entry := range entries {
+		rows[i] = row{
+			Model: entry.Model, Family: entry.Family, Tiers: entry.Tiers,
+			Capabilities: entry.Capabilities, Preference: entry.Preference,
+		}
+	}
+	raw, err := json.Marshal(rows)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 func (d Deps) finishRanking(ctx context.Context, cardID string, status model.CardStatus, reason string) error {

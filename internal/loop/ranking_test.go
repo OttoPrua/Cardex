@@ -910,6 +910,140 @@ func TestRankingOpenDoesNotMaintain(t *testing.T) {
 	t.Log("opening the database did not enqueue, absorb, or approve")
 }
 
+func TestRankingDedup(t *testing.T) {
+	text := `{"entries":[{"model":"new-model","family":"newfam","tiers":["T2"],"capabilities":["web"],"preference":1,"理由":"榜单"}]}`
+	rows := []struct {
+		name   string
+		status string
+		cardID string
+		oldQ   bool
+	}{
+		{name: "later week", cardID: "week-2"},
+		{name: "another card", cardID: "other-card"},
+		{name: "approved", status: "approved", cardID: "week-2"},
+		{name: "rejected", status: "rejected", cardID: "week-2"},
+		{name: "older question", cardID: "week-2", oldQ: true},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			home, db := rankingHome(t)
+			seedRanking(t, db, "old-model")
+			ctx := context.Background()
+			setRankingStatus(t, db, "rank", model.CardRunning)
+			absorbHarvest(t, db, "rank", "a-rank", text)
+			old, err := db.GetCard(ctx, "rank")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if old.Status == model.CardRunning || old.Status == model.CardWaiting {
+				t.Fatalf("old card %s", old.Status)
+			}
+			if row.status != "" {
+				saved := mustProposals(t)
+				if len(saved) != 1 {
+					t.Fatalf("proposals %d", len(saved))
+				}
+				saved[0].Status = row.status
+				body, err := json.Marshal(saved[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(home, "positioning", "proposals", saved[0].ID+".json")
+				if err := os.WriteFile(path, body, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			next := &model.Card{
+				ID: row.cardID, Objective: "obj", Kind: model.KindRanking, Tier: model.TierT2,
+				Title: row.name, Status: model.CardRunning, Requires: []string{"web"},
+			}
+			if err := db.CreateCard(ctx, next); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.CreateAttempt(ctx, &model.Attempt{ID: "a-current", Card: next.ID}); err != nil {
+				t.Fatal(err)
+			}
+			if row.oldQ {
+				if err := db.CreateQuestion(ctx, &model.Question{
+					ID: "q-old", Objective: "obj", Scope: next.ID, ScopeKind: "card",
+					Kind: model.QuestionCustom, Text: "定位提案\n已有定位问题\n", Options: []string{rankingApprove},
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeP := proposalCount(t)
+			beforeQ := len(mustQuestions(t, db))
+			absorbHarvest(t, db, next.ID, "a-current", text)
+			got, err := db.GetCard(ctx, next.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status == model.CardRunning || got.Status == model.CardWaiting {
+				t.Fatalf("current card %s", got.Status)
+			}
+			if got.Status != model.CardDone && got.Status != model.CardNeedsInput {
+				t.Fatalf("current card not finished %s", got.Status)
+			}
+			if proposalCount(t) != beforeP+1 {
+				t.Fatalf("proposals %d before %d", proposalCount(t), beforeP)
+			}
+			var scoped int
+			for _, q := range mustQuestions(t, db) {
+				if q.Scope == next.ID && strings.Contains(q.Text, "new-model") {
+					scoped++
+				}
+			}
+			if scoped != 1 {
+				t.Fatalf("current questions %d of %+v", scoped, mustQuestions(t, db))
+			}
+			if len(mustQuestions(t, db)) < beforeQ+1 {
+				t.Fatalf("questions %d before %d", len(mustQuestions(t, db)), beforeQ)
+			}
+			absorbHarvest(t, db, next.ID, "a-current", text)
+			if proposalCount(t) != beforeP+1 || len(mustQuestions(t, db)) != beforeQ+1 {
+				t.Fatalf("second absorb proposals %d questions %d", proposalCount(t), len(mustQuestions(t, db)))
+			}
+			again, err := db.GetCard(ctx, next.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if again.Status == model.CardRunning {
+				t.Fatal("second absorb left the card running")
+			}
+		})
+	}
+}
+
+func setRankingStatus(t *testing.T, db *store.Store, id string, status model.CardStatus) {
+	t.Helper()
+	card, err := db.GetCard(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	card.Status = status
+	if err := db.UpdateCard(context.Background(), &card); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func absorbHarvest(t *testing.T, db *store.Store, cardID, attemptID, text string) {
+	t.Helper()
+	card, err := db.GetCard(context.Background(), cardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = AbsorbHarvestedRanking(context.Background(), Deps{Store: db}, card, RankingHarvest{
+		AttemptID:  attemptID,
+		Outcome:    model.OutcomePassed,
+		ErrorClass: model.ErrorPassed,
+		Acceptance: "ok",
+		ResultText: text,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func absorbRankingText(t *testing.T, db *store.Store, text string) {
 	t.Helper()
 	card, err := db.GetCard(context.Background(), "rank")

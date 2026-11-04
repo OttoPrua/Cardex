@@ -217,7 +217,14 @@ func assertDesignFailure(t *testing.T, kind model.CardKind, accept bool, class m
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cards) != 1 {
+	var kept []model.Card
+	for _, card := range cards {
+		if card.Kind == model.KindRanking && strings.HasPrefix(card.ID, "sch-ranking-") {
+			continue
+		}
+		kept = append(kept, card)
+	}
+	if len(kept) != 1 {
 		t.Fatalf("extra cards %+v", cards)
 	}
 }

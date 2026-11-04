@@ -562,6 +562,10 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 		Repo:       repo,
 		Revision:   attempt.BaseCommit,
 	}
+	if facts := promptFacts(ctx, db, card); len(facts) > 0 {
+		in.Facts = facts
+		in.Card.Body = stripFactSummary(in.Card.Body)
+	}
 	if card.Kind == model.KindRanking {
 		material, err := loop.RankingMaterial(r.Home)
 		if err != nil {
@@ -576,6 +580,7 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 	if strings.TrimSpace(text) == "" {
 		text = strings.TrimSpace(card.Title + "\n" + card.Body)
 	}
+	text = stripEmptyFacts(text)
 	promptPath := filepath.Join(dir, "prompt.txt")
 	if err := os.WriteFile(promptPath, []byte(text), 0o644); err != nil {
 		return err
@@ -595,6 +600,74 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 		}
 	}
 	return nil
+}
+
+// promptFacts is this node's open questions for a design, plan, or replan card.
+// Other kinds do not take a fact summary. A missing node leaves the card body as the summary.
+func promptFacts(ctx context.Context, db *store.Store, card model.Card) []model.OpenQuestion {
+	switch card.Kind {
+	case model.KindDesign, model.KindPlan, model.KindReplan:
+	default:
+		return nil
+	}
+	id := strings.TrimSpace(card.Node)
+	if id == "" || db == nil {
+		return nil
+	}
+	node, err := db.GetNode(ctx, id)
+	if err != nil || len(node.OpenQuestions) == 0 {
+		return nil
+	}
+	return append([]model.OpenQuestion(nil), node.OpenQuestions...)
+}
+
+// stripFactSummary removes the card body's fact summary so the prompt does not
+// repeat it once the node's open questions are rendered as the facts section.
+func stripFactSummary(body string) string {
+	return stripMarkdownSection(body, "## 事实摘要")
+}
+
+func stripMarkdownSection(body, heading string) string {
+	lines := strings.Split(body, "\n")
+	var out []string
+	skipping := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == heading || strings.HasPrefix(trimmed, heading+" ") {
+			skipping = true
+			continue
+		}
+		if skipping && strings.HasPrefix(trimmed, "## ") {
+			skipping = false
+		}
+		if skipping {
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n")
+}
+
+// stripEmptyFacts drops a facts section that Build left empty. Design, plan,
+// and replan keep a card-body summary when the node has no separate facts.
+func stripEmptyFacts(text string) string {
+	const start = "<!-- cardex-facts -->\n"
+	const end = "<!-- /cardex-facts -->\n"
+	for {
+		i := strings.Index(text, start)
+		if i < 0 {
+			return text
+		}
+		rest := text[i+len(start):]
+		j := strings.Index(rest, end)
+		if j < 0 {
+			return text
+		}
+		if strings.TrimSpace(rest[:j]) != "" {
+			return text
+		}
+		text = text[:i] + rest[j+len(end):]
+	}
 }
 
 func (r *Runner) startAttempt(ctx context.Context, db *store.Store, attempt *model.Attempt) error {
@@ -724,67 +797,22 @@ func readyNeeds(cards []model.Card, channelID string) bool {
 	return false
 }
 
+// windowFills is §7.5. One confirmable estimate has to meet every condition
+// together: a configured token or request limit, remaining ratio above the
+// redline plus the fill margin, and a reset inside the fill horizon.
+// An uncapped window is unknown. A stored Remaining is not that ratio, and
+// a near reset cannot borrow another window's ratio.
 func windowFills(ch model.Channel, est quota.Estimate, now time.Time) bool {
 	if est.Blocked && !est.Reset.IsZero() && now.Before(est.Reset) {
 		return false
 	}
-	// A stored remaining ratio is fill margin without a token or request cap.
-	// Routing still reports that window as unknown. A window with neither a
-	// cap nor a remaining ratio stays unknown and is not margin.
-	margin := ch.Redline + fillMargin
-	if _, ok := fillRatio(ch, est, margin); !ok {
+	if est.Unknown || (est.LimitTokens <= 0 && est.LimitRequests <= 0) {
 		return false
 	}
-	if ledgerRatioConfirmed(est) && resetSoon(est.Reset, now) {
-		return true
-	}
-	for _, w := range ch.QuotaWindows {
-		if !resetSoon(w.ResetAt, now) {
-			continue
-		}
-		if w.LimitTokens > 0 || w.LimitRequests > 0 || storedRemainingAbove(w, margin) {
-			return true
-		}
-	}
-	return false
-}
-
-// fillRatio is the remaining ratio §7.5 compares with redline plus the fill margin.
-// A capped ledger estimate supplies it, and the tightest stored remaining ratio
-// supplies it when no window has a cap. Confidence is not a separate cutoff.
-func fillRatio(ch model.Channel, est quota.Estimate, margin float64) (float64, bool) {
-	if est.LimitTokens > 0 || est.LimitRequests > 0 {
-		if est.Unknown || est.Ratio <= margin {
-			return 0, false
-		}
-		return est.Ratio, true
-	}
-	found := false
-	best := 0.0
-	for _, w := range ch.QuotaWindows {
-		if w.LimitTokens > 0 || w.LimitRequests > 0 || w.Remaining <= 0 {
-			continue
-		}
-		if !found || w.Remaining < best {
-			best = w.Remaining
-			found = true
-		}
-	}
-	if !found || best <= margin {
-		return 0, false
-	}
-	return best, true
-}
-
-func ledgerRatioConfirmed(est quota.Estimate) bool {
-	return !est.Unknown && (est.LimitTokens > 0 || est.LimitRequests > 0)
-}
-
-func storedRemainingAbove(w model.QuotaWindow, margin float64) bool {
-	if w.LimitTokens > 0 || w.LimitRequests > 0 {
+	if est.Ratio <= ch.Redline+fillMargin {
 		return false
 	}
-	return w.Remaining > margin
+	return resetSoon(est.Reset, now)
 }
 
 func resetSoon(reset, now time.Time) bool {

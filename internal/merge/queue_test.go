@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -643,18 +642,7 @@ func TestQueueSameTargetAcceptanceIntervalsDoNotOverlap(t *testing.T) {
 	ctx := context.Background()
 	db, repo := openFixture(t)
 	mark := filepath.Join(t.TempDir(), "marks")
-	py := filepath.Join(t.TempDir(), "mark.py")
-	body := "import time\np = " + strconv.Quote(mark) + "\n" +
-		"def line(kind):\n" +
-		"    with open(p, 'a') as f:\n" +
-		"        f.write('%s %.6f\\n' % (kind, time.time()))\n" +
-		"line('start')\n" +
-		"time.sleep(0.5)\n" +
-		"line('end')\n"
-	if err := os.WriteFile(py, []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	proj := seedProject(t, db, repo, "ps", "python3 "+py)
+	proj := seedProject(t, db, repo, "ps", writeCmd(t, mark, "A"))
 	obj := seedObjective(t, db, repo, proj, "os", "integ")
 	c1 := commitCard(t, db, repo, obj, "integ", "c1", "a.txt", "one\n")
 	c2 := commitCard(t, db, repo, obj, "integ", "c2", "b.txt", "two\n")
@@ -694,28 +682,29 @@ func TestQueueSameTargetAcceptanceIntervalsDoNotOverlap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var starts, ends []float64
-	for _, line := range strings.Split(string(raw), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
-			continue
-		}
-		value, err := strconv.ParseFloat(fields[1], 64)
-		if err != nil {
-			t.Fatal(err)
-		}
-		switch fields[0] {
-		case "start":
-			starts = append(starts, value)
-		case "end":
-			ends = append(ends, value)
+	open := false
+	closed := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		switch line {
+		case "A-start":
+			if open {
+				t.Fatalf("acceptance intervals overlap %q", raw)
+			}
+			open = true
+		case "A-end":
+			if !open {
+				t.Fatalf("acceptance end without start %q", raw)
+			}
+			open = false
+			closed++
+		default:
+			if line != "" {
+				t.Fatalf("mark %q in %q", line, raw)
+			}
 		}
 	}
-	if len(starts) != 2 || len(ends) != 2 {
-		t.Fatalf("marks %q", raw)
-	}
-	if starts[1] < ends[0] {
-		t.Fatalf("acceptance intervals overlap %q", raw)
+	if open || closed != 2 {
+		t.Fatalf("acceptance intervals %d open %v %q", closed, open, raw)
 	}
 	for _, id := range []string{c1.ID, c2.ID} {
 		got, err := db.GetCard(ctx, id)

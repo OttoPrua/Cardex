@@ -1129,7 +1129,6 @@ func TestQuotaEstimateDrivesDispatchAndFill(t *testing.T) {
 				Name: "5h", ResetRule: "rolling", ResetAt: soon, Remaining: 0.9,
 			}},
 			dispatch: true,
-			fill:     true,
 			check: func(est quota.Estimate) error {
 				if !est.Unknown || est.LimitTokens != 0 || est.LimitRequests != 0 {
 					return fmt.Errorf("estimate %+v", est)
@@ -1285,8 +1284,12 @@ func TestBacklogFillStoredRatioWithoutCap(t *testing.T) {
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	soon := now.Add(30 * time.Minute)
 	far := now.Add(5 * time.Hour)
-	s19 := model.QuotaWindow{
+	uncapped := model.QuotaWindow{
 		Name: "5h", ResetRule: "rolling", ResetAt: soon, Remaining: 0.9, Confidence: 1,
+	}
+	capped := model.QuotaWindow{
+		Name: "5h", ResetRule: "rolling", ResetAt: soon,
+		LimitTokens: 100, UsedTokens: 10, Remaining: 0.9, Confidence: 1,
 	}
 	cases := []struct {
 		name     string
@@ -1297,8 +1300,7 @@ func TestBacklogFillStoredRatioWithoutCap(t *testing.T) {
 		again    bool
 	}{
 		{
-			name: "stored ratio near reset without cap", windows: []model.QuotaWindow{s19},
-			want: 1, again: true,
+			name: "stored ratio near reset without cap", windows: []model.QuotaWindow{uncapped},
 		},
 		{
 			name: "neither cap nor remaining ratio",
@@ -1307,19 +1309,22 @@ func TestBacklogFillStoredRatioWithoutCap(t *testing.T) {
 			}},
 		},
 		{
-			name: "stored ratio not above redline plus margin",
+			name: "capped ratio not above redline plus margin",
 			windows: []model.QuotaWindow{{
-				Name: "5h", ResetRule: "rolling", ResetAt: soon, Remaining: 0.2, Confidence: 1,
+				Name: "5h", ResetRule: "rolling", ResetAt: soon,
+				LimitTokens: 100, UsedTokens: 80, Remaining: 0.2, Confidence: 1,
+			}},
+			redline: 0.2,
+		},
+		{
+			name: "capped reset outside horizon",
+			windows: []model.QuotaWindow{{
+				Name: "5h", ResetRule: "rolling", ResetAt: far,
+				LimitTokens: 100, UsedTokens: 10, Remaining: 0.9, Confidence: 1,
 			}},
 		},
 		{
-			name: "reset outside horizon",
-			windows: []model.QuotaWindow{{
-				Name: "5h", ResetRule: "rolling", ResetAt: far, Remaining: 0.9, Confidence: 1,
-			}},
-		},
-		{
-			name: "ready card needs channel", windows: []model.QuotaWindow{s19}, readyDev: true,
+			name: "ready card needs channel", windows: []model.QuotaWindow{capped}, readyDev: true,
 		},
 		{
 			name: "uncapped near reset beside capped far window",
@@ -1327,6 +1332,9 @@ func TestBacklogFillStoredRatioWithoutCap(t *testing.T) {
 				{Name: "daily", ResetRule: "rolling", ResetAt: far, LimitTokens: 100, UsedTokens: 10, Remaining: 0.9, Confidence: 1},
 				{Name: "5h", ResetRule: "rolling", ResetAt: soon, Remaining: 0.9, Confidence: 1},
 			},
+		},
+		{
+			name: "capped near reset above margin", windows: []model.QuotaWindow{capped},
 			want: 1, again: true,
 		},
 	}
@@ -1876,6 +1884,141 @@ func TestQuotaHitBlockFollowsResetNotOrder(t *testing.T) {
 						t.Fatal(err)
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestSnapshotOverlapIsNotOmission(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	soon := now.Add(30 * time.Minute)
+	cases := []struct {
+		name      string
+		windows   []model.QuotaWindow
+		confident bool
+		used      int64
+	}{
+		{
+			name: "5h and daily 50 covered by one event",
+			windows: []model.QuotaWindow{
+				{Name: "5h", ResetRule: "rolling", ResetAt: soon, LimitTokens: 100, UsedTokens: 50},
+				{Name: "daily", ResetRule: "rolling", ResetAt: soon, LimitTokens: 100, UsedTokens: 50},
+			},
+			confident: true,
+			used:      50,
+		},
+		{
+			name: "5h used more than daily can absorb",
+			windows: []model.QuotaWindow{
+				{Name: "5h", ResetRule: "rolling", ResetAt: soon, LimitTokens: 100, UsedTokens: 80},
+				{Name: "daily", ResetRule: "rolling", ResetAt: soon, LimitTokens: 100, UsedTokens: 50},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, mode := range []string{"dispatch", "fill"} {
+				t.Run(mode, func(t *testing.T) {
+					est, saw, started := runQuotaMode(t, now, tc.windows, 0.2, nil, mode)
+					if !saw {
+						t.Fatalf("route did not see the quota estimate %+v started %v", est, started)
+					}
+					if tc.confident {
+						if est.Unknown || est.Confidence != 1 || est.UsedTokens != tc.used || est.LimitTokens != 100 {
+							t.Fatalf("estimate %+v", est)
+						}
+						return
+					}
+					if est.Confidence >= 1 {
+						t.Fatalf("unplaceable snapshot stayed confident %+v", est)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestSchedulerPromptFacts(t *testing.T) {
+	question := model.OpenQuestion{
+		ID: "Q1", Text: "事实正文不重复", Type: model.OQFact, Status: model.OQAnswered,
+		Answer: "没有上限", Evidence: "internal/sched/loop.go", Confidence: "高",
+	}
+	summary := "## 事实摘要\n事实正文不重复\n"
+	cases := []struct {
+		name      string
+		kind      model.CardKind
+		summary   bool
+		questions []model.OpenQuestion
+		facts     bool
+	}{
+		{name: "design summary only", kind: model.KindDesign, summary: true},
+		{name: "plan summary only", kind: model.KindPlan, summary: true},
+		{name: "replan summary only", kind: model.KindReplan, summary: true},
+		{name: "design node facts", kind: model.KindDesign, summary: true, questions: []model.OpenQuestion{question}, facts: true},
+		{name: "plan node facts", kind: model.KindPlan, questions: []model.OpenQuestion{question}, facts: true},
+		{name: "replan node facts", kind: model.KindReplan, summary: true, questions: []model.OpenQuestion{question}, facts: true},
+		{name: "dev ignores facts", kind: model.KindDev, summary: true, questions: []model.OpenQuestion{question}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			home, db, repo := newHome(t)
+			_, obj := seedRepo(t, db, repo, "true")
+			seedRoutes(t, db)
+			node := model.DesignNode{
+				ID: "n-facts", Objective: obj, Layer: model.LayerModule, Status: model.NodeDrafting,
+				OpenQuestions: tc.questions,
+			}
+			if err := db.CreateNode(ctx, &node); err != nil {
+				t.Fatal(err)
+			}
+			body := "实现这张卡\n"
+			if tc.summary {
+				body += summary
+			}
+			card := model.Card{
+				ID: "c", Objective: obj, Node: node.ID, Kind: tc.kind, Title: tc.name,
+				Tier: model.TierT3, Status: model.CardReady, Body: body,
+			}
+			if err := db.CreateCard(ctx, &card); err != nil {
+				t.Fatal(err)
+			}
+			r := New(home)
+			r.Launch = func(context.Context, string, string) (int, error) { return 97, nil }
+			if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			text := attemptPrompt(t, home, db, "c")
+			stored, err := db.GetCard(ctx, "c")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.summary && !strings.Contains(stored.Body, "## 事实摘要") {
+				t.Fatal("stored card lost its fact summary")
+			}
+			empty := strings.Contains(text, "<!-- cardex-facts -->") &&
+				!strings.Contains(text, "问题编号：")
+			if empty {
+				t.Fatalf("empty facts section\n%s", text)
+			}
+			if !tc.facts && strings.Contains(text, "<!-- cardex-facts -->") {
+				t.Fatalf("facts section\n%s", text)
+			}
+			if tc.facts {
+				if !strings.Contains(text, "<!-- cardex-facts -->") || !strings.Contains(text, "问题：事实正文不重复") {
+					t.Fatalf("missing node facts\n%s", text)
+				}
+				if strings.Contains(text, "## 事实摘要") {
+					t.Fatalf("fact summary duplicated\n%s", text)
+				}
+				if strings.Count(text, "事实正文不重复") != 1 {
+					t.Fatalf("fact text count\n%s", text)
+				}
+			}
+			if tc.summary && !tc.facts {
+				if !strings.Contains(text, "## 事实摘要") || strings.Count(text, "事实正文不重复") != 1 {
+					t.Fatalf("card summary missing\n%s", text)
+				}
 			}
 		})
 	}

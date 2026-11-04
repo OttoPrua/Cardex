@@ -16,14 +16,14 @@ Attempt 没有撞线重置时间。调度只采用与 reset 关联的 RFC3339，
 
 ## 已知问题
 rebase 和 repair 若没有 fake 脚本或 scripts/<id>.json，宿主仍会启动，但工作区可能没有解冲突或修好测试，合并会再次失败。
-internal/e2e 的 scenarioDispose 仍按全文第一个 pass/rework 单词处置，并用固定 pass 脚本。S02、S03、S04、S05、S19、S20 依赖它。S19 的无上限窗口不再满足填充，夹具请求见 R3-C-F1.md。
+internal/e2e 的 scenarioDispose 仍按全文第一个 pass/rework 单词处置，并用固定 pass 脚本。S02、S03、S04、S05、S19、S20 依赖它。S19 夹具仍是无上限窗口，填充不会启动，端到端缺口仍开着。本次 `go test ./...` 的 TestS19 在 20s 超时，back 仍为 ready。夹具请求见 R3-C-F1.md。
 quota.Ledger 只配置 5h/daily/weekly/monthly。其他窗口名即使写了上限也不会进入估算。
 Ledger.Record 不能指定窗口。快照按各窗口的时间范围入账；较长窗口的已用量若小于嵌在里面的较短窗口，就无法精确表示。调度把无法落点的用量标成不确定。
 
 ## 修复记录
 收割成功后才消费，New 安装 loop.Dispose → internal/sched/loop.go:67 → TestProductionHarvestLeavesDispositionPending
-无上限窗口不是确认余量 → internal/sched/loop.go:683 → TestQuotaEstimateDrivesDispatchAndFill
+无上限窗口不是确认余量 → internal/sched/loop.go:805 → TestQuotaEstimateDrivesDispatchAndFill
 派发只豁免关联边并拒绝停机状态 → internal/sched/loop.go:932 → TestDispatchChecksAssociationEdgeAndStopState
 工作区已建但 attempt 未落库时续接 → internal/sched/loop.go:426 → TestWorkspaceExistsBeforeAttemptResumes
 修复链中断后仍能补完 → internal/merge/queue.go:73 → TestInterruptedRepairChainStillCloses
-窗口快照保留各自用量 → internal/sched/quota_seed.go:37 → TestWindowSnapshotKeepsItsOwnUsage
+窗口快照保留各自用量 → internal/sched/quota_seed.go:38 → TestWindowSnapshotKeepsItsOwnUsage

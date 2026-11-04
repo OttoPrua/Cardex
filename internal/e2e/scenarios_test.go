@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -29,14 +30,253 @@ import (
 	"cardex/internal/question"
 	"cardex/internal/quota"
 	"cardex/internal/route"
+	"cardex/internal/sandbox"
 	"cardex/internal/sched"
 	"cardex/internal/store"
 	"cardex/internal/workspace"
 )
 
 func TestS01(t *testing.T) {
-	// 单卡闭环，经过复核和合并。
-	t.Skip("R4-D")
+	// 单卡闭环：空等级在第一次派发前分级，路由使用分级结果，再收割、异族复核、合并。
+	t.Run("empty", func(t *testing.T) {
+		h, calls := s01Harness(t, "", func(context.Context, string, string) (string, error) {
+			return "TIER: T1\nREASON: small change\n", nil
+		})
+		obj := "obj"
+		transitions := watchCardStatus(t, h, "c1")
+		mustTick(t, h, func() bool {
+			attempts := attemptsOf(t, h, "c1")
+			return len(attempts) > 0 && attempts[0].Route.Channel != "" && attempts[0].Route.Model != ""
+		}, 20*time.Second)
+		dev := cardOf(t, h, "c1")
+		if dev.Tier != model.TierT1 || dev.Tier == model.TierNone {
+			t.Fatalf("stored tier %q, want classified T1", dev.Tier)
+		}
+		attempt := attemptsOf(t, h, "c1")[0]
+		if len(attempt.RouteReason.Candidates) == 0 {
+			t.Fatal("route reason has no candidate")
+		}
+		for _, cand := range attempt.RouteReason.Candidates {
+			if cand.Tier != model.TierT1 {
+				t.Fatalf("candidate tier %q, want T1 in %+v", cand.Tier, attempt.RouteReason.Candidates)
+			}
+		}
+		if *calls != 1 {
+			t.Fatalf("Call count %d, want 1", *calls)
+		}
+
+		mustTick(t, h, func() bool {
+			return cardOf(t, h, "c1").Status == model.CardMerged
+		}, 45*time.Second)
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			seenMerged := false
+			for _, status := range transitions.snapshot() {
+				if status == model.CardMerged {
+					seenMerged = true
+				}
+			}
+			if seenMerged || time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(time.Millisecond)
+		}
+		close(transitions.stop)
+		transitions.wg.Wait()
+
+		devAttempt := attemptsOf(t, h, "c1")[0]
+		if devAttempt.Outcome != model.OutcomePassed {
+			t.Fatalf("harvest outcome %q\n%s", devAttempt.Outcome, diag(h))
+		}
+		dev = cardOf(t, h, "c1")
+		if dev.AuthorFamily == "" {
+			t.Fatalf("author family empty\n%s", diag(h))
+		}
+		devCh, err := h.DB.GetChannel(context.Background(), devAttempt.Route.Channel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if devCh.Family != dev.AuthorFamily {
+			t.Fatalf("author family %q, dispatch channel family %q", dev.AuthorFamily, devCh.Family)
+		}
+		var review model.Card
+		for _, item := range cardsOf(t, h, obj) {
+			if item.Kind == model.KindReview {
+				review = item
+				break
+			}
+		}
+		if review.ID == "" || review.Status != model.CardDone {
+			t.Fatalf("review %+v\n%s", review, diag(h))
+		}
+		revAttempts := attemptsOf(t, h, review.ID)
+		if len(revAttempts) == 0 || revAttempts[0].Route.Channel == "" {
+			t.Fatalf("review was not dispatched\n%s", diag(h))
+		}
+		revCh, err := h.DB.GetChannel(context.Background(), revAttempts[0].Route.Channel)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if revCh.Family == "" || revCh.Family == dev.AuthorFamily {
+			t.Fatalf("review family %q, author family %q", revCh.Family, dev.AuthorFamily)
+		}
+
+		seen := transitions.snapshot()
+		queuedAt, mergedAt := -1, -1
+		for i, status := range seen {
+			if status == model.CardMergeQueued && queuedAt < 0 {
+				queuedAt = i
+			}
+			if status == model.CardMerged && mergedAt < 0 {
+				mergedAt = i
+			}
+		}
+		if queuedAt < 0 || mergedAt < 0 || queuedAt >= mergedAt {
+			t.Fatalf("merge_queued must be observed before merged, saw %v", seen)
+		}
+	})
+	t.Run("preset", func(t *testing.T) {
+		h, calls := s01Harness(t, model.TierT3, func(context.Context, string, string) (string, error) {
+			return "TIER: T1\nREASON: should not run\n", nil
+		})
+		mustTick(t, h, func() bool {
+			attempts := attemptsOf(t, h, "c1")
+			return len(attempts) > 0 && attempts[0].Route.Channel != ""
+		}, 20*time.Second)
+		if *calls != 0 {
+			t.Fatalf("Call count %d, want 0", *calls)
+		}
+		got := cardOf(t, h, "c1")
+		if got.Tier != model.TierT3 {
+			t.Fatalf("stored tier %q, want preset T3", got.Tier)
+		}
+		attempt := attemptsOf(t, h, "c1")[0]
+		for _, cand := range attempt.RouteReason.Candidates {
+			if cand.Tier != model.TierT3 {
+				t.Fatalf("candidate tier %q, want T3", cand.Tier)
+			}
+		}
+	})
+	t.Run("call-failure", func(t *testing.T) {
+		h, calls := s01Harness(t, "", func(context.Context, string, string) (string, error) {
+			return "", context.DeadlineExceeded
+		})
+		mustTick(t, h, func() bool {
+			attempts := attemptsOf(t, h, "c1")
+			return len(attempts) > 0 && attempts[0].Route.Channel != ""
+		}, 20*time.Second)
+		if *calls != 1 {
+			t.Fatalf("Call count %d, want 1", *calls)
+		}
+		want := model.DefaultTier(model.KindDev)
+		got := cardOf(t, h, "c1")
+		if got.Tier != want || got.Tier == model.TierNone {
+			t.Fatalf("stored tier %q, want kind default %q", got.Tier, want)
+		}
+		attempt := attemptsOf(t, h, "c1")[0]
+		if len(attempt.RouteReason.Candidates) == 0 {
+			t.Fatal("route reason has no candidate")
+		}
+		for _, cand := range attempt.RouteReason.Candidates {
+			if cand.Tier != want {
+				t.Fatalf("candidate tier %q, want %q", cand.Tier, want)
+			}
+		}
+	})
+}
+
+func s01Harness(t *testing.T, tier model.Tier, call func(context.Context, string, string) (string, error)) (*Harness, *int) {
+	t.Helper()
+	h := New(t)
+	t.Setenv("CARDEX_HOME", h.Home)
+	calls := 0
+	runner := sched.New(h.Home)
+	runner.Classify = func(ctx context.Context, channelID, prompt string) (string, error) {
+		calls++
+		if channelID != "classifier" || prompt == "" {
+			t.Errorf("classify call %s %q", channelID, prompt)
+		}
+		return call(ctx, channelID, prompt)
+	}
+	runner.Script = func(card model.Card) ([]byte, bool) {
+		if card.Kind == model.KindReview {
+			return []byte(scenarioReviewScript), true
+		}
+		return nil, false
+	}
+	h.Sched = runner
+	stopLater(t, h)
+	_, obj := bindProject(t, h, "true")
+	installRoutes(t, h)
+	installClassifier(t, h)
+	card := model.Card{
+		ID: "c1", Objective: obj, Kind: model.KindDev, Title: "one", Tier: tier,
+		Status: model.CardReady, Acceptance: []string{"true"},
+		Claims: []model.Claim{{Path: "answer.go", Symbol: "Answer"}},
+		Body: fakeScript("", nil, []map[string]string{{
+			"path": "answer.go", "name": "Answer", "body": "\treturn 7",
+		}}),
+	}
+	if err := h.DB.CreateCard(context.Background(), &card); err != nil {
+		t.Fatal(err)
+	}
+	if got := cardOf(t, h, "c1").Tier; got != tier {
+		t.Fatalf("tier %q filled before the schedule path", got)
+	}
+	return h, &calls
+}
+
+func installClassifier(t *testing.T, h *Harness) {
+	t.Helper()
+	ch := model.Channel{
+		ID: "classifier", Runner: model.RunnerFake, Family: "classifier",
+		Health: model.HealthOK, Concurrency: 1,
+	}
+	if err := h.DB.CreateChannel(context.Background(), &ch); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// statusWatch records card statuses as another store connection sees them during ticks.
+type statusWatch struct {
+	mu   sync.Mutex
+	seen []model.CardStatus
+	stop chan struct{}
+	wg   sync.WaitGroup
+}
+
+func (w *statusWatch) snapshot() []model.CardStatus {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]model.CardStatus, len(w.seen))
+	copy(out, w.seen)
+	return out
+}
+
+func watchCardStatus(t *testing.T, h *Harness, id string) *statusWatch {
+	t.Helper()
+	w := &statusWatch{stop: make(chan struct{})}
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		var last model.CardStatus
+		for {
+			select {
+			case <-w.stop:
+				return
+			default:
+			}
+			got, err := h.DB.GetCard(context.Background(), id)
+			if err == nil && got.Status != last {
+				w.mu.Lock()
+				w.seen = append(w.seen, got.Status)
+				last = got.Status
+				w.mu.Unlock()
+			}
+			time.Sleep(100 * time.Microsecond)
+		}
+	}()
+	return w
 }
 
 func TestS02(t *testing.T) {
@@ -1280,15 +1520,6 @@ func useDefaultRunner(t *testing.T, h *Harness) {
 	h.Sched = r
 }
 
-func questionsOf(t *testing.T, h *Harness, obj string) []model.Question {
-	t.Helper()
-	questions, err := h.DB.ListQuestions(context.Background(), obj)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return questions
-}
-
 func setObjectiveAuto(t *testing.T, h *Harness, id string) {
 	t.Helper()
 	obj, err := h.DB.GetObjective(context.Background(), id)
@@ -1446,6 +1677,7 @@ func tierHas(tiers []model.Tier, want model.Tier) bool {
 
 func TestS24(t *testing.T) {
 	// 执行器写 worktree 以外的地方被沙箱拒绝（只在 macOS 上跑）。
+	sandbox.SkipDenialTest(t)
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is macOS only")
 	}
@@ -2032,33 +2264,138 @@ func gitOut(t *testing.T, repo string, args ...string) string {
 }
 
 func processAlive(pid int) bool {
-	if pid <= 0 {
+	if pid <= 1 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
+	err := host.SignalProcess(pid, 0)
 	return err == nil || err == syscall.EPERM
+}
+
+type e2eStart struct {
+	home string
+	id   string
+	pid  int
+}
+
+var (
+	e2eMu      sync.Mutex
+	e2eStarted = map[string]e2eStart{}
+)
+
+func rememberE2E(item e2eStart) {
+	if item.pid <= 1 || item.id == "" {
+		return
+	}
+	e2eMu.Lock()
+	e2eStarted[item.id] = item
+	e2eMu.Unlock()
+}
+
+func takeE2E(id string) (e2eStart, bool) {
+	e2eMu.Lock()
+	item, ok := e2eStarted[id]
+	e2eMu.Unlock()
+	return item, ok && item.pid > 1
+}
+
+func forgetE2E(id string) {
+	e2eMu.Lock()
+	delete(e2eStarted, id)
+	e2eMu.Unlock()
+}
+
+func executorPGID(home, id string) int {
+	b, err := os.ReadFile(filepath.Join(home, "attempts", id, "executor.pgid"))
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || n <= 1 {
+		return 0
+	}
+	return n
+}
+
+func signalE2E(item e2eStart) {
+	if _, ok := takeE2E(item.id); !ok || item.pid <= 1 {
+		return
+	}
+	if pgid := executorPGID(item.home, item.id); pgid > 1 {
+		_ = host.SignalGroup(pgid, syscall.SIGKILL)
+	}
+	_ = host.SignalGroup(item.pid, syscall.SIGKILL)
+	_ = host.SignalProcess(item.pid, syscall.SIGKILL)
+	forgetE2E(item.id)
 }
 
 func stopLater(t *testing.T, h *Harness) {
 	t.Helper()
+	r, ok := h.Sched.(*sched.Runner)
+	if !ok || r == nil {
+		return
+	}
+	inner := r.Launch
+	r.Launch = func(ctx context.Context, home, id string) (int, error) {
+		var pid int
+		var err error
+		if inner != nil {
+			pid, err = inner(ctx, home, id)
+		} else {
+			pid, err = startE2EHost(home, id)
+		}
+		if err == nil && pid > 1 {
+			rememberE2E(e2eStart{home: home, id: id, pid: pid})
+		}
+		return pid, err
+	}
 	t.Cleanup(func() { stopAttempts(h) })
 }
 
-func stopAttempts(h *Harness) {
-	attempts, err := h.DB.ListAttempts(context.Background(), "")
+// startE2EHost starts the test binary as the attempt host and returns its pid.
+// The scheduler's production start stays unexported. This helper records nothing;
+// stopLater records only a pid this call started and that is greater than 1.
+func startE2EHost(home, attemptID string) (int, error) {
+	exe, err := os.Executable()
 	if err != nil {
-		return
+		return 0, err
 	}
-	for _, attempt := range attempts {
-		if b, err := os.ReadFile(filepath.Join(h.Home, "attempts", attempt.ID, "executor.pgid")); err == nil {
-			if pgid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pgid > 0 {
-				_ = syscall.Kill(-pgid, syscall.SIGKILL)
-			}
-		}
-		if attempt.PID > 0 {
-			_ = syscall.Kill(-attempt.PID, syscall.SIGKILL)
-			_ = syscall.Kill(attempt.PID, syscall.SIGKILL)
-		}
+	cmd := exec.Command(exe, "host", attemptID)
+	cmd.Env = append(os.Environ(),
+		"CARDEX_HOME="+home,
+		"CARDEX_SCHED_HOST=1",
+		"CARDEX_SCHED_ATTEMPT="+attemptID,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	dir := filepath.Join(home, "attempts", attemptID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return 0, err
+	}
+	logf, err := os.OpenFile(filepath.Join(dir, "launcher.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	cmd.Stdout = logf
+	cmd.Stderr = logf
+	if err := cmd.Start(); err != nil {
+		logf.Close()
+		return 0, err
+	}
+	go func() {
+		_ = cmd.Wait()
+		_ = logf.Close()
+	}()
+	return cmd.Process.Pid, nil
+}
+
+func stopAttempts(h *Harness) {
+	e2eMu.Lock()
+	items := make([]e2eStart, 0, len(e2eStarted))
+	for _, item := range e2eStarted {
+		items = append(items, item)
+	}
+	e2eMu.Unlock()
+	for _, item := range items {
+		signalE2E(item)
 	}
 }
 

@@ -57,6 +57,7 @@ func TestSkipRecordsOneEvent(t *testing.T) {
 }
 
 func TestWrapDeniesOutsideWrite(t *testing.T) {
+	sandbox.SkipDenialTest(t)
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is macOS-only")
 	}
@@ -105,6 +106,7 @@ func TestWrapDeniesOutsideWrite(t *testing.T) {
 }
 
 func TestWrapAllowsLocalNetwork(t *testing.T) {
+	sandbox.SkipDenialTest(t)
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is macOS-only")
 	}

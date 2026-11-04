@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"cardex/internal/claims"
+	"cardex/internal/classify"
 	"cardex/internal/harvest"
 	"cardex/internal/host"
 	"cardex/internal/loop"
@@ -64,6 +65,9 @@ type Runner struct {
 	Dispose func(ctx context.Context, card *model.Card, res harvest.Result) error
 	// rankAnswer runs after Questions stores an answer. New approves 批准.
 	rankAnswer func(ctx context.Context, db *store.Store, q model.Question) error
+	// Classify is the §7.4 single call. New leaves it nil.
+	// A nil call persists the kind default; v2 has no one-shot executor.
+	Classify classify.Call
 }
 
 // New returns the production runner for home with loop.Dispose installed.
@@ -428,18 +432,23 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err != nil {
 		return "", err
 	}
-	rt, reason, err := chooseRoute(ctx, route.Request{
-		Card:         card,
-		Objective:    obj,
-		AuthorFamily: card.AuthorFamily,
-		Channels:     channels,
-		Positioning:  pos,
-		InUse:        inUse,
-		Quota:        quotas,
-		Now:          r.now(),
-	})
+	card, classified, err := r.classifyBeforeRoute(ctx, db, card)
 	if err != nil {
 		return "", err
+	}
+	// dispatch and fill ignore ErrNoCandidate and ErrPinnedUnavailable.
+	// A stored channel that is missing, not ok, or blocked until a future reset
+	// is released on this request only. The objective row is not written.
+	rt, reason, rel, settled, err := r.chooseLaunchRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
+	if err != nil {
+		return "", err
+	}
+	if settled {
+		return "", nil
+	}
+	if rel.released {
+		card.Channel = rt.Channel
+		card.Model = rt.Model
 	}
 	attemptID, err := newID("a")
 	if err != nil {
@@ -499,6 +508,11 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	card.WaitReason = ""
 	if err := db.UpdateCard(ctx, &card); err != nil {
 		return "", err
+	}
+	if rel.released {
+		if err := appendPinRelease(ctx, db, r.now(), card.ID, rel, rt); err != nil {
+			return "", err
+		}
 	}
 	if inUse != nil && rt.Channel != "" {
 		inUse[rt.Channel]++

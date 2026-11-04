@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"cardex/internal/claims"
+	"cardex/internal/host"
 	"cardex/internal/model"
 )
 
@@ -138,7 +139,7 @@ func runAcceptance(ctx context.Context, dir string, commands []string) (acceptSt
 			if cmd.Process == nil {
 				return nil
 			}
-			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			return host.SignalGroup(cmd.Process.Pid, syscall.SIGKILL)
 		}
 		out, err := cmd.CombinedOutput()
 		all.Write(out)

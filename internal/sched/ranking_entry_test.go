@@ -215,6 +215,59 @@ func TestRankingApproveHook(t *testing.T) {
 	}
 }
 
+// TestNewKeepsRankingHookAndNilClassify builds the runner with New.
+// A stored 批准 runs the hook New installed. Any other answer does not,
+// even when a 批准 is already stored and FollowRanking would publish it.
+func TestNewKeepsRankingHookAndNilClassify(t *testing.T) {
+	rows := []struct {
+		name    string
+		answer  string
+		approve bool
+	}{
+		{name: "批准", answer: "批准", approve: true},
+		{name: "other answer", answer: "驳回", approve: false},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			ctx := context.Background()
+			home, db, q, _ := seedRankingApproval(t)
+			if !row.approve {
+				stored, err := question.New(db, nil).Answer(ctx, q.ID, "批准")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if stored.Answer != "批准" || positioningHas(t, db, "approved-model") {
+					t.Fatalf("unhooked store answer %q approved %v", stored.Answer, positioningHas(t, db, "approved-model"))
+				}
+				q = model.Question{
+					Objective: stored.Objective, Scope: "side", ScopeKind: "card", Kind: model.QuestionCustom,
+					Text: "unrelated", Options: []string{row.answer},
+				}
+				if err := db.CreateQuestion(ctx, &q); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r := New(home)
+			if r.Classify != nil {
+				t.Fatal("New set Classify")
+			}
+			if r.Dispose == nil {
+				t.Fatal("New left Dispose nil")
+			}
+			got, err := r.Questions(db).Answer(ctx, q.ID, row.answer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Answer != row.answer {
+				t.Fatalf("stored answer %q", got.Answer)
+			}
+			if positioningHas(t, db, "approved-model") != row.approve {
+				t.Fatalf("answer %q ran follow hook=%v", row.answer, !row.approve)
+			}
+		})
+	}
+}
+
 func positioningHas(t *testing.T, db *store.Store, modelName string) bool {
 	t.Helper()
 	rows, err := db.ListPositioning(context.Background())

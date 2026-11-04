@@ -471,7 +471,18 @@ func TestFillReusesAutomaticChecks(t *testing.T) {
 				if err := db.CreateCard(ctx, &holder); err != nil {
 					t.Fatal(err)
 				}
-				live := model.Attempt{ID: "a-hold", Card: "hold", PID: 1, Route: model.Route{Channel: "ch", Model: "model-a"}, StartedAt: now}
+				held := exec.Command("sleep", "60")
+				held.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+				if err := held.Start(); err != nil {
+					t.Fatal(err)
+				}
+				heldPID := held.Process.Pid
+				t.Cleanup(func() {
+					_ = host.SignalGroup(heldPID, syscall.SIGKILL)
+					_ = host.SignalProcess(heldPID, syscall.SIGKILL)
+					_ = held.Wait()
+				})
+				live := model.Attempt{ID: "a-hold", Card: "hold", PID: heldPID, Route: model.Route{Channel: "ch", Model: "model-a"}, StartedAt: now}
 				if err := db.CreateAttempt(ctx, &live); err != nil {
 					t.Fatal(err)
 				}
@@ -1382,7 +1393,7 @@ func TestBacklogFillStoredRatioWithoutCap(t *testing.T) {
 			if got.Status != model.CardRunning || attempts[0].Route.Channel != ch.ID || !host.LiveHost(attempts[0]) {
 				t.Fatalf("backlog %+v attempts %+v", got, attempts)
 			}
-			if err := syscall.Kill(attempts[0].PID, 0); err != nil && !errors.Is(err, syscall.EPERM) {
+			if err := host.SignalProcess(attempts[0].PID, 0); err != nil && !errors.Is(err, syscall.EPERM) {
 				t.Fatalf("attempt host not alive: %v", err)
 			}
 			if !tc.again {
@@ -1405,8 +1416,8 @@ func holdLaunch(t *testing.T) func(context.Context, string, string) (int, error)
 	var pids []int
 	t.Cleanup(func() {
 		for _, pid := range pids {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			_ = host.SignalGroup(pid, syscall.SIGKILL)
+			_ = host.SignalProcess(pid, syscall.SIGKILL)
 		}
 	})
 	return func(context.Context, string, string) (int, error) {

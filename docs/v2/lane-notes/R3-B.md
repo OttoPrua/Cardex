@@ -5,7 +5,7 @@
 
 `dev`、`skeleton`、`repair`、`rebase`、`backlog` 的 `passed` 派一张复核卡，作者 family 交给现有 `route.Select` 排除。设计、研究、原型卡的 `passed` 不派复核。`tests_failed` 沿卡分支返工，计数再增加就会超过上限（默认 2，可配置）时改为派问题。`no_output` 按 `route.Select` 换一个渠道，第二次派问题。`result_unparsable` 派整理卡；整理仍失败则原卡进入 `needs_input`。`quota_hit` 调用 `quota.Ledger.ObserveLimit`，写入 `quota_block`，并从卡分支换渠道续做。`auth_failed` 把渠道健康标成 `auth_failed`，用 file 适配器按 origin 投递一条通知，再换渠道。`transport` 和 `timeout` 在同一渠道最多重试 2 次，然后换渠道。`refusal` 与 `permission_denied` 派问题，后者的正文包含被拒绝的操作。`budget_limited` 只在还没续做过、且硬预算未设或仍有余量时续做一次，再次出现就派问题。`violation` 作废该次尝试、留下分支并派问题。
 
-plan、review、normalize、replan 的 `passed` 在同一次调用里吸收。卡清单按宽松 JSON 解析：缺字段用默认值，无效依赖记 `invalid_dep`，依赖成环只断开一条边并在节点上挂开放问题，节点范围外的卡变成设计问题。复核 pass 把原卡推进到 `merge_queued`，rework 把意见写入 `ReworkNote`。整理成功把提取结果写回原卡的结果文件和正文，不自动派复核。
+plan、review、normalize、replan 的 `passed` 在同一次调用里吸收。卡清单按宽松 JSON 解析：缺字段用默认值，无效依赖记 `invalid_dep`，每个剩余的环各断开一条边并在节点上挂开放问题，节点范围外的卡变成设计问题；目标节点不存在时改挂当前节点，正文仍写出原节点。复核 pass 把原卡推进到 `merge_queued`，rework 把意见写入 `ReworkNote`。开发卡整理成功仍把提取结果写回结果文件和正文。manual 的 design、plan、replan 整理成功后吸收对应产出并收尾。
 
 只有 `mode=auto` 会在同一次拆卡全部终态、节点重开或熔断之后派一张 replan；未结束的 replan，或这次重开/熔断已经被记下，就不再派，新的触发才再派。吸收 replan 只增删改本节点上尚未开始的卡。新清单卡使用新的 id，同一清单里的依赖改写成该 id。熔断暂停该节点里还没终态的卡，不暂停 `running` 和 replan，并派一个 breaker 问题，file 适配器的目的地是 origin。软预算到 80% 记一条提醒；硬预算暂停目标并派问题。预算未设的卡按 kind 填默认值，research 是 design 的四分之一，`$CARDEX_HOME/config.json` 可以替换这些默认值。三个完成条件同时成立才进入 `done_candidate` 并派 done 问题。批准后只在本地把集成分支合进项目主分支，不 push。
 
@@ -13,7 +13,7 @@ plan、review、normalize、replan 的 `passed` 在同一次调用里吸收。�
 设计期、`DesignStep`、研究卡事实流和冻结是 R3-A。合并队列、派发、`sched.Loop`、宿主启动和声明冲突等待是 R3-C。prompt 模板和真正的 notify 包是 R3-D。S09 与 S15 使用 loop 内的 file 通知，不调用 `notify.Stub` 或 `question.Stub`。没有改 `internal/model`，也没有做骨架卡门禁、认证失败后的渠道恢复、backlog、看板、成绩单、真实 CLI、`~/.cardex` 或 push。
 
 ## 接口请求
-R3-C 调用 `loop.DevStep(ctx, objectiveID)`，进程需已设置 `CARDEX_HOME`。通知用 `loop.WithNotifier` 注入；未注入时写到 `$CARDEX_HOME/notifications`。配额封锁用 `loop.RestoreQuota` 重放。自动换渠道把选出的 channel 写进卡，model 只记在 `auto_route`。`route.Select` 仍把非空 Channel 当成显式 pin 并跳过红线和健康检查。派发读回这张卡后若再次选择，用与 `routeRequestFrom(..., deciding=false)` 相同的请求：最近一条 `auto_route.exclude` 从候选里去掉；卡 channel 等于该条 `auto_route.channel` 时清掉，它不是显式 pin；卡 `pin` 或目标 channel 只要被该卡任何一条 `auto_route.exclude` 点过就不再放回，更早因失败换掉的 pin 也继续抑制，没失败的 pin 仍放回。`route.Request` 仍没有 Exclude 字段，不改 `internal/route` 或 `internal/model`。
+R3-C 调用 `loop.DevStep(ctx, objectiveID)`，进程需已设置 `CARDEX_HOME`。通知用 `loop.WithNotifier` 注入；未注入时写到 `$CARDEX_HOME/notifications`。配额封锁用 `loop.RestoreQuota` 重放。自动换渠道把选出的 channel 写进卡，model 只记在 `auto_route`。`route.Select` 仍把非空 Channel 当成显式 pin，不过滤红线，只检查健康状态。派发读回这张卡后若再次选择，用与 `routeRequestFrom(..., deciding=false)` 相同的请求：最近一条 `auto_route.exclude` 从候选里去掉；卡 channel 等于该条 `auto_route.channel` 时清掉，它不是显式 pin；卡 `pin` 或目标 channel 只要被该卡任何一条 `auto_route.exclude` 点过就不再放回，更早因失败换掉的 pin 也继续抑制，没失败的 pin 仍放回。`route.Request` 仍没有 Exclude 字段，不改 `internal/route` 或 `internal/model`。
 
 定位表为空时，本 lane 只在当次请求里用各渠道自己的 tier 和模型造候选，不写入定位表，也不把卡的 tier 盖到每个模型上。
 

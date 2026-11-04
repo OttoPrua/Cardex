@@ -72,11 +72,78 @@ func WithNotifier(ctx context.Context, n Notifier) context.Context {
 	return context.WithValue(ctx, notifierKey{}, n)
 }
 
-func notifierFrom(ctx context.Context, home string) Notifier {
-	if n, ok := ctx.Value(notifierKey{}).(Notifier); ok && n != nil {
-		return n
+type clockKey struct{}
+
+// WithClock fixes DevStep's clock. Dispose keeps the wall clock.
+func WithClock(ctx context.Context, now time.Time) context.Context {
+	return context.WithValue(ctx, clockKey{}, now.UTC())
+}
+
+func clockFrom(ctx context.Context) time.Time {
+	if now, ok := ctx.Value(clockKey{}).(time.Time); ok && !now.IsZero() {
+		return now.UTC()
 	}
-	return FileNotifier{Dir: filepath.Join(home, "notifications")}
+	return time.Now().UTC()
+}
+
+func notifierFrom(ctx context.Context, home string) Notifier {
+	var inner Notifier
+	if n, ok := ctx.Value(notifierKey{}).(Notifier); ok && n != nil {
+		inner = n
+	} else {
+		inner = FileNotifier{Dir: filepath.Join(home, "notifications")}
+	}
+	return ackNotifier{inner: inner, home: home}
+}
+
+// ackNotifier records a successful delivery so a later DevStep does not send it again.
+// The mark uses its own connection because Dispose delivers after its transaction
+// and that file is outside this lane.
+type ackNotifier struct {
+	inner Notifier
+	home  string
+}
+
+func (a ackNotifier) Deliver(ctx context.Context, n Notice) error {
+	if err := a.inner.Deliver(ctx, n); err != nil {
+		return err
+	}
+	if !redeliverableKind(n.Kind) || n.QuestionID == "" || a.home == "" {
+		return nil
+	}
+	db, err := store.Open(filepath.Join(a.home, "cardex.db"))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return markNoticeDelivered(ctx, db, n)
+}
+
+func markNoticeDelivered(ctx context.Context, db *store.Store, n Notice) error {
+	events, err := db.ListEvents(ctx, "notice:"+n.QuestionID)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if event.Type == "notice_delivered" {
+			return nil
+		}
+	}
+	raw, err := json.Marshal(map[string]string{"kind": n.Kind})
+	if err != nil {
+		return err
+	}
+	event := model.Event{Entity: "notice:" + n.QuestionID, Type: "notice_delivered", Data: raw}
+	return db.AppendEvent(ctx, &event)
+}
+
+func redeliverableKind(kind string) bool {
+	switch kind {
+	case "auth_failed", "budget_reminder", string(model.QuestionBreaker), string(model.QuestionBudget), string(model.QuestionDone):
+		return true
+	default:
+		return false
+	}
 }
 
 // RestoreQuota replays quota_block events into ledger through quota.ObserveLimit.
@@ -127,7 +194,7 @@ func devStep(ctx context.Context, objectiveID string) error {
 	if err != nil {
 		return err
 	}
-	st := &step{ctx: ctx, db: db, home: home, cfg: cfg, snap: s, now: time.Now().UTC()}
+	st := &step{ctx: ctx, db: db, home: home, cfg: cfg, snap: s, now: clockFrom(ctx)}
 	var notices []Notice
 	err = db.WithTx(ctx, func(ctx context.Context) error {
 		st.ctx = ctx
@@ -135,6 +202,9 @@ func devStep(ctx context.Context, objectiveID string) error {
 			return err
 		}
 		if err := st.fillCardBudgets(); err != nil {
+			return err
+		}
+		if err := st.releaseBackoff(); err != nil {
 			return err
 		}
 		if err := st.disposeAll(); err != nil {
@@ -147,6 +217,9 @@ func devStep(ctx context.Context, objectiveID string) error {
 			return err
 		}
 		if err := st.complete(); err != nil {
+			return err
+		}
+		if err := st.queueRedelivery(); err != nil {
 			return err
 		}
 		notices = append(notices, st.notices...)
@@ -175,14 +248,15 @@ type step struct {
 }
 
 type snap struct {
-	obj       model.Objective
-	project   model.Project
-	nodes     []model.DesignNode
-	cards     []model.Card
-	attempts  map[string][]model.Attempt
-	questions []model.Question
-	channels  []model.Channel
-	events    []model.Event
+	obj         model.Objective
+	project     model.Project
+	nodes       []model.DesignNode
+	cards       []model.Card
+	attempts    map[string][]model.Attempt
+	questions   []model.Question
+	channels    []model.Channel
+	events      []model.Event
+	positioning []model.Positioning
 }
 
 func loadSnap(ctx context.Context, db *store.Store, objectiveID string) (*snap, error) {
@@ -218,6 +292,10 @@ func loadSnap(ctx context.Context, db *store.Store, objectiveID string) (*snap, 
 		return nil, err
 	}
 	s.channels, err = db.ListChannels(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.positioning, err = db.ListPositioning(ctx)
 	if err != nil {
 		return nil, err
 	}

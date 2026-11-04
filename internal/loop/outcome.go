@@ -232,8 +232,8 @@ type rawCard struct {
 
 // ParseCardList loosely reads the JSON card list in a result file.
 // known is the set of card ids that already exist and may be named as deps.
-// A cycle loses exactly one edge. Cards whose node is set and different from
-// scope stay out of Cards as work and become a design question on that node.
+// Each remaining cycle loses one edge. Cards whose node is set and different
+// from scope stay out of Cards as work and become a design question on that node.
 func ParseCardList(raw, scope string, known map[string]bool) CardList {
 	body, found := sectionBody(raw, "新卡")
 	if !found {
@@ -328,12 +328,30 @@ func normalizeList(raws []rawCard, scope string, known map[string]bool) CardList
 	for k := range deps {
 		sort.Strings(deps[k])
 	}
-	if from, to, ok := breakOne(ids, deps); ok {
+	broken := map[[2]string]bool{}
+	for {
+		from, to, ok := breakOne(ids, deps)
+		if !ok {
+			break
+		}
+		edge := [2]string{from, to}
+		if broken[edge] {
+			break
+		}
+		broken[edge] = true
+		nextDeps := make([]string, 0, len(deps[from]))
+		for _, dep := range deps[from] {
+			if dep == to {
+				continue
+			}
+			nextDeps = append(nextDeps, dep)
+		}
+		deps[from] = nextDeps
 		for i := range drafts {
 			if drafts[i].Key != from {
 				continue
 			}
-			next := drafts[i].Deps[:0]
+			next := make([]string, 0, len(drafts[i].Deps))
 			for _, dep := range drafts[i].Deps {
 				if dep == to {
 					continue
@@ -342,7 +360,7 @@ func normalizeList(raws []rawCard, scope string, known map[string]bool) CardList
 			}
 			drafts[i].Deps = next
 		}
-		out.Broken = [][2]string{{from, to}}
+		out.Broken = append(out.Broken, edge)
 		out.Questions = append(out.Questions, ListQuestion{
 			Node: scope,
 			Text: "依赖成环，已断开 " + from + " -> " + to,

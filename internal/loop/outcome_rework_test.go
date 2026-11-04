@@ -215,7 +215,7 @@ func TestAutomaticReassignmentUsesRoute(t *testing.T) {
 				return
 			}
 			if tc.want == a.ID {
-				if got.Status != model.CardReady || got.Channel != a.ID || latestAuto(f, "c").ok {
+				if got.Status != model.CardWaiting || !strings.HasPrefix(got.WaitReason, "backoff:") || got.Channel != a.ID || latestAuto(f, "c").ok {
 					t.Fatalf("stayed %+v route %+v", got, latestAuto(f, "c"))
 				}
 				f.step()

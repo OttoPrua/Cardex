@@ -363,11 +363,7 @@ func loadCard(ctx context.Context, db *store.Store, id string) (*cardView, error
 		}
 		evs := make([]eventView, 0, len(events))
 		for _, e := range events {
-			data := e.Data
-			if len(data) == 0 {
-				data = json.RawMessage(`{}`)
-			}
-			evs = append(evs, eventView{Type: e.Type, Data: data})
+			evs = append(evs, eventView{Type: e.Type, Data: eventData(e.Data)})
 		}
 		view.Attempts = append(view.Attempts, attemptView{
 			ID:           a.ID,
@@ -473,34 +469,114 @@ func filterHistory(items []historyItem, query, status string) []historyItem {
 	return out
 }
 
+// nestNodes builds the display forest for one objective. Each node's parent
+// string stays as stored. A cycle, including a self-parent, is shown by
+// omitting one back-edge so every stored node appears once and child lists
+// stay acyclic. A node whose parent is missing from this objective stays a
+// display root, as does a node with an empty parent.
 func nestNodes(flat []nodeView) []nodeView {
-	ids := map[string]bool{}
+	order := make([]string, 0, len(flat))
+	byID := make(map[string]nodeView, len(flat))
 	for _, n := range flat {
-		ids[n.ID] = true
-	}
-	grouped := map[string][]nodeView{}
-	roots := make([]nodeView, 0, len(flat))
-	for _, n := range flat {
-		if n.Parent != "" && ids[n.Parent] && n.Parent != n.ID {
-			grouped[n.Parent] = append(grouped[n.Parent], n)
+		if _, ok := byID[n.ID]; ok {
 			continue
 		}
-		roots = append(roots, n)
+		byID[n.ID] = n
+		order = append(order, n.ID)
 	}
-	var attach func(nodeView) nodeView
-	attach = func(n nodeView) nodeView {
-		kids := grouped[n.ID]
+	childrenOf := make(map[string][]string, len(order))
+	for _, id := range order {
+		n := byID[id]
+		if n.Parent == "" || n.Parent == n.ID {
+			continue
+		}
+		if _, ok := byID[n.Parent]; !ok {
+			continue
+		}
+		childrenOf[n.Parent] = append(childrenOf[n.Parent], id)
+	}
+
+	visited := make(map[string]bool, len(order))
+	inStack := make(map[string]bool, len(order))
+	drop := make(map[string]map[string]bool)
+	var walk func(string)
+	walk = func(id string) {
+		if visited[id] {
+			return
+		}
+		visited[id] = true
+		inStack[id] = true
+		for _, child := range childrenOf[id] {
+			if inStack[child] {
+				if drop[id] == nil {
+					drop[id] = map[string]bool{}
+				}
+				drop[id][child] = true
+				continue
+			}
+			walk(child)
+		}
+		inStack[id] = false
+	}
+	for _, id := range order {
+		n := byID[id]
+		if n.Parent == "" || n.Parent == id || byID[n.Parent].ID == "" {
+			walk(id)
+		}
+	}
+	for _, id := range order {
+		if !visited[id] {
+			walk(id)
+		}
+	}
+
+	var build func(string) nodeView
+	build = func(id string) nodeView {
+		n := byID[id]
+		kids := childrenOf[id]
 		n.Children = make([]nodeView, 0, len(kids))
-		for _, k := range kids {
-			n.Children = append(n.Children, attach(k))
+		for _, child := range kids {
+			if drop[id][child] {
+				continue
+			}
+			n.Children = append(n.Children, build(child))
 		}
 		return n
 	}
-	out := make([]nodeView, 0, len(roots))
-	for _, r := range roots {
-		out = append(out, attach(r))
+	isChild := make(map[string]bool, len(order))
+	for parent, kids := range childrenOf {
+		for _, child := range kids {
+			if drop[parent][child] {
+				continue
+			}
+			isChild[child] = true
+		}
+	}
+	out := make([]nodeView, 0, len(order))
+	for _, id := range order {
+		if isChild[id] {
+			continue
+		}
+		out = append(out, build(id))
 	}
 	return out
+}
+
+// eventData prepares one stored attempt-event payload for a JSON response.
+// Valid JSON is left unchanged. Empty data becomes {}. Any other text is
+// encoded as a JSON string so one bad event does not fail the card.
+func eventData(data json.RawMessage) json.RawMessage {
+	if len(data) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	if json.Valid(data) {
+		return data
+	}
+	encoded, err := json.Marshal(string(data))
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return encoded
 }
 
 func windowRemaining(w model.QuotaWindow) *float64 {

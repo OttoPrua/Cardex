@@ -12,8 +12,8 @@ S01 在 launchCard 第一次派发前对空 tier 调用 classify.Classify，把�
 | S23 | 未改。状态以 R4-C-F1 为准。集成前若只走辅助函数，不是 R4-D 缺陷 |
 | 故障五类 | TestFaults 通过，断言未放宽 |
 
-B2 仍成立：后续设计或计划卡的 ## 事实摘要 含所答问题 id、答案和证据，Q0 为 fact 时含 Q0；只查标题不算。
-B3 仍成立：种子 20261102 一批注入 transport、截断流、quota、auth、以及 host kill 后 serve 重启；终态后继续调度，用卡行和事件证明不重复合并。
+B2 仍成立（R4-D.rework-1.md）：后续设计或计划卡的 ## 事实摘要 含所答问题 id、答案和证据，Q0 为 fact 时含 Q0；只查标题不算。
+B3 仍成立（R4-D.rework-1.md）：种子 20261102 一批注入 transport、截断流、quota、auth、以及 host kill 后 serve 重启；终态后继续调度，用卡行和事件证明不重复合并。
 
 ## 没做什么，以及原因
 

@@ -8,7 +8,7 @@ sched.New 安装 loop.Dispose。deliver 只在该调用返回 nil 后写入 atte
 未改 cmd、internal/e2e、internal/quota、internal/claims、internal/model、goals、design。sched 不含 pass/rework 或 §5 判定。设计类失败和带清单的通过 plan/replan 用既有 dev 处置，其余设计类通过用 absorbAttempt。同目标串行沿用 queue.go 的目标锁，未改合并队列。
 
 ## 接口请求
-S19 夹具仍无上限：`internal/e2e/scenarios_test.go:971` 的 RemainingWindow 只有 Ratio 0.9、Reset 为现在加 30 分钟、Confidence 1。`internal/e2e/harness.go:110` 存成没有 LimitTokens 的 5h 窗口。填充不把无上限正剩余当确认余量，端到端缺口仍开着。本次 `go test ./...` 的 TestS19 在 20s 超时，back 仍为 ready。请给该窗口上限和实际用量，例如 5h LimitTokens=100、UsedTokens=10，ResetAt 仍在 30 分钟内。RemainingWindow 或 harness 要记下 LimitTokens 与 UsedTokens。置信度为 1 的无上限 Remaining 不能再当成可填充。host 子命令、prompt.Build、notify.Stub、model.Budget 时长、Attempt 重置时间、runServe 改接 sched.Serve 仍见 R3-C.md。
+S19 在 UpdateChannel 前给 5h 窗口写了 LimitTokens=100、UsedTokens=10，ResetAt 仍在 30 分钟内（scenarios_test.go 的 TestS19）。RegisterFakeChannel 仍不记录上限。置信度为 1 的无上限 Remaining 不能再当成可填充。本次 `go test ./...` 的 TestS19 通过。host 子命令、prompt.Build、notify.Stub、model.Budget 时长、Attempt 重置时间、runServe 改接 sched.Serve 仍见 R3-C.md。
 
 ## 已知问题
 e2e 的 scenarioDispose 仍按全文第一个 pass/rework 处置。rebase 与 repair 缺少脚本时宿主仍会启动。

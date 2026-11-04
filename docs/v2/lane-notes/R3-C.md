@@ -16,7 +16,7 @@ Attempt 没有撞线重置时间。调度只采用与 reset 关联的 RFC3339，
 
 ## 已知问题
 rebase 和 repair 若没有 fake 脚本或 scripts/<id>.json，宿主仍会启动，但工作区可能没有解冲突或修好测试，合并会再次失败。
-internal/e2e 的 scenarioDispose 仍按全文第一个 pass/rework 单词处置，并用固定 pass 脚本。S02、S03、S04、S05、S19、S20 依赖它。S19 夹具仍是无上限窗口，填充不会启动，端到端缺口仍开着。本次 `go test ./...` 的 TestS19 在 20s 超时，back 仍为 ready。夹具请求见 R3-C-F1.md。
+internal/e2e 的 scenarioDispose 仍按全文第一个 pass/rework 单词处置，并用固定 pass 脚本。S02、S03、S04、S05、S19、S20 依赖它。S19 的 5h 窗口在保存前写了 LimitTokens=100、UsedTokens=10，ResetAt 仍在 30 分钟内。本次 `go test ./...` 的 TestS19 通过。无上限窗口仍然不是填充余量。
 quota.Ledger 只配置 5h/daily/weekly/monthly。其他窗口名即使写了上限也不会进入估算。
 Ledger.Record 不能指定窗口。快照按各窗口的时间范围入账；较长窗口的已用量若小于嵌在里面的较短窗口，就无法精确表示。调度把无法落点的用量标成不确定。
 

@@ -7,10 +7,10 @@ design、plan、replan 的 prompt：节点没有单独事实时保留卡正文�
 同目标验收串行测试改用 queue_test.go 里已有的 shell 标记，不再调用 python3。区间仍不重叠，两张卡都会合并。
 
 ## 没做什么，以及原因
-未改 internal/prompt、internal/loop、internal/e2e、internal/quota、internal/model、internal/notify、cmd/cardex、design.md、goals.md。未改未知额度派发、排序或宿主信号。未新增硬门禁。S19 夹具不在本写域。
+未改 internal/prompt、internal/loop、internal/quota、internal/model、internal/notify、cmd/cardex、design.md、goals.md。未改 windowFills，无上限窗口仍不填充。未改未知额度派发、排序或宿主信号。未新增硬门禁。S19 在 UpdateChannel 前写上 LimitTokens=100、UsedTokens=10，ResetAt 仍在 30 分钟内。
 
 ## 接口请求
-请 e2e 写域给 S19 的假渠道补 token 上限和用量，例如 5h LimitTokens=100、UsedTokens=10，ResetAt 仍在 30 分钟内。无上限的正 Remaining 不能再当成可填充。夹具未改，这条端到端缺口仍开着。本次 `go test ./...` 的 TestS19 在 20s 超时，back 仍为 ready。host 子命令、prompt.Build、notify.Stub、model.Budget 时长、Attempt 重置时间、runServe 改接 sched.Serve 仍见 R3-C.md。
+S19 假渠道已有 token 上限和用量：5h LimitTokens=100、UsedTokens=10，ResetAt 仍在 30 分钟内。无上限的正 Remaining 仍不能当成可填充。本次 `go test ./...` 的 TestS19 通过。host 子命令、prompt.Build、notify.Stub、model.Budget 时长、Attempt 重置时间、runServe 改接 sched.Serve 仍见 R3-C.md。
 
 ## 已知问题
 Ledger.Record 不能指定窗口。较短窗口已用量大于较长窗口能吸收的部分仍无法落点，调度把这部分标成不确定。

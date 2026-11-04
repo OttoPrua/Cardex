@@ -2506,7 +2506,7 @@ func stopLater(t *testing.T, h *Harness) {
 		if inner != nil {
 			pid, err = inner(ctx, home, id)
 		} else {
-			pid, err = sched.LaunchHost(home, id)
+			pid, err = startE2EHost(home, id)
 		}
 		if err == nil && pid > 1 {
 			rememberE2E(e2eStart{home: home, id: id, pid: pid})
@@ -2514,6 +2514,42 @@ func stopLater(t *testing.T, h *Harness) {
 		return pid, err
 	}
 	t.Cleanup(func() { stopAttempts(h) })
+}
+
+// startE2EHost starts the test binary as the attempt host and returns its pid.
+// The scheduler's production start stays unexported. This helper records nothing;
+// stopLater records only a pid this call started and that is greater than 1.
+func startE2EHost(home, attemptID string) (int, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return 0, err
+	}
+	cmd := exec.Command(exe, "host", attemptID)
+	cmd.Env = append(os.Environ(),
+		"CARDEX_HOME="+home,
+		"CARDEX_SCHED_HOST=1",
+		"CARDEX_SCHED_ATTEMPT="+attemptID,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	dir := filepath.Join(home, "attempts", attemptID)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return 0, err
+	}
+	logf, err := os.OpenFile(filepath.Join(dir, "launcher.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return 0, err
+	}
+	cmd.Stdout = logf
+	cmd.Stderr = logf
+	if err := cmd.Start(); err != nil {
+		logf.Close()
+		return 0, err
+	}
+	go func() {
+		_ = cmd.Wait()
+		_ = logf.Close()
+	}()
+	return cmd.Process.Pid, nil
 }
 
 func stopAttempts(h *Harness) {

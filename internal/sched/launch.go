@@ -77,11 +77,6 @@ func launchDetached(home, attemptID string) (int, error) {
 	return cmd.Process.Pid, nil
 }
 
-// LaunchHost is the production host start used when Runner.Launch is nil.
-func LaunchHost(home, attemptID string) (int, error) {
-	return launchDetached(home, attemptID)
-}
-
 func waitPID(ctx context.Context, dbAttempt func() (int, bool)) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {

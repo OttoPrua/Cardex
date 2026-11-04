@@ -20,16 +20,16 @@ The objective stores origin on the objective, and `objective show` prints it. Th
 
 ## View status
 
-`objective list` and `objective show` for the objective. `card list` and `card show` for cards. `question list` and `question show` for open questions. `node list` and `node show` for design nodes. `channel list` and `channel show` for channels. `route explain <card>` prints the route already stored on that card. `doctor` reports channel, window, and positioning problems.
+`objective list` and `objective show` for the objective. `card list` and `card show` for cards. `question list` and `question show` for questions. `question list` includes questions that already have an answer. `node list` and `node show` for design nodes. `channel list` and `channel show` for channels. `route explain <card>` prints the route already stored on that card. `doctor` reports channel, window, and positioning problems.
 
 ## Answering a question
 
-Answering a question uses `question answer <id> <option>`. Read the stored options with `question show` first. The option must already be on that question; an empty answer is refused. Submit only an option that was already chosen.
+Answering a question uses `question answer <id> <option>`. Read the stored text, options, and answer with `cardex --json question show <id>` first. Plain `question show` prints the id and the answer and does not include the options. The option must already be on that question; an empty answer is refused.
 
 ## Approving a positioning proposal
 
-Approving a positioning proposal uses `positioning approve <id>` after `positioning proposals` and `positioning show`. Approve only a proposal that was already chosen; it becomes the current table. `positioning reject <id>` returns an error and leaves the current table unchanged.
+Approving a positioning proposal uses `positioning approve <id>` after `positioning proposals` and `positioning show`. An approved proposal becomes the current table. `positioning reject <id>` returns an error and leaves the current table unchanged.
 
 ## Handing a decision to Otto
 
-Handing a decision to Otto is required for a direction freeze, a budget exhaustion, a breaker, and an objective-done question, and for any positioning change this session was not told to apply. This session runs `question answer` or `positioning approve` only after that choice already exists. Do not pick the option in this session.
+Handing a decision to Otto is required for a direction freeze, a budget exhaustion, a breaker, and an objective-done question. Do not pick those options in this session.

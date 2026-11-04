@@ -31,16 +31,16 @@ type pinRelease struct {
 // or marked needs_input with one question when no candidate remains.
 func (r *Runner) chooseLaunchRoute(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas, classified model.Tier) (model.Route, model.RouteReason, pinRelease, bool, error) {
 	probe, probeObj := card, obj
+	routed := channels
 	var rel pinRelease
 	if card.Kind != model.KindBacklog {
 		var err error
-		probe, probeObj, rel, err = releaseUnusablePin(ctx, r.now(), card, obj, channels, quotas)
+		probe, probeObj, routed, rel, err = releaseUnusablePin(ctx, r.now(), card, obj, channels, quotas)
 		if err != nil {
 			return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
 		}
 	}
-	req := launchRequest(probe, probeObj, channels, pos, inUse, quotas, classified, r.now())
-	rt, reason, err := chooseRoute(ctx, req)
+	rt, reason, err := chooseRoute(ctx, launchRequest(probe, probeObj, routed, pos, inUse, quotas, classified, r.now()))
 	if err == nil {
 		return rt, reason, rel, false, nil
 	}
@@ -49,13 +49,22 @@ func (r *Runner) chooseLaunchRoute(ctx context.Context, db *store.Store, card mo
 		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
 	}
 	if probe.Channel != "" || probe.Model != "" || probeObj.Channel != "" || probeObj.Model != "" {
-		if !rel.released {
-			rel = pinnedRefusal(probe, probeObj, channels)
+		keep, filtered, keepErr := usableModelCarriers(ctx, r.now(), probe, probeObj, channels, quotas)
+		if keepErr != nil {
+			return model.Route{}, model.RouteReason{}, pinRelease{}, false, keepErr
 		}
-		probe.Channel, probe.Model = "", ""
-		probeObj.Channel, probeObj.Model = "", ""
+		next := channels
+		if keep {
+			next = filtered
+		} else {
+			if !rel.released {
+				rel = pinnedRefusal(probe, probeObj, channels)
+			}
+			probe.Channel, probe.Model = "", ""
+			probeObj.Channel, probeObj.Model = "", ""
+		}
 		var err2 error
-		rt, reason, err2 = chooseRoute(ctx, launchRequest(probe, probeObj, channels, pos, inUse, quotas, classified, r.now()))
+		rt, reason, err2 = chooseRoute(ctx, launchRequest(probe, probeObj, next, pos, inUse, quotas, classified, r.now()))
 		if err2 == nil {
 			return rt, reason, rel, false, nil
 		}
@@ -87,55 +96,118 @@ func launchRequest(card model.Card, obj model.Objective, channels []model.Channe
 // A healthy channel that is not blocked until a future reset stays pinned.
 // Remaining quota at or below the red line does not release the pin.
 // The returned card and objective are copies; the stored objective is not updated.
-func releaseUnusablePin(ctx context.Context, now time.Time, card model.Card, obj model.Objective, channels []model.Channel, quotas route.Quotas) (model.Card, model.Objective, pinRelease, error) {
+// releaseUnusablePin drops an explicit channel or model route would keep launching.
+// A pin is unusable only when its channel is missing, health is not ok, or the
+// channel is blocked until a known reset. Remaining quota at or below the red
+// line does not release it. An unusable effective pin clears both the card and
+// target copies so automatic selection cannot inherit the other one. A model pin
+// with a healthy unblocked carrier stays, and only the unusable carriers are
+// removed from the returned channel list. The stored objective is not updated.
+func releaseUnusablePin(ctx context.Context, now time.Time, card model.Card, obj model.Objective, channels []model.Channel, quotas route.Quotas) (model.Card, model.Objective, []model.Channel, pinRelease, error) {
 	var rel pinRelease
 	if card.Channel != "" {
 		bad, reason, err := channelUnusable(ctx, card.Channel, channels, quotas, now)
 		if err != nil {
-			return card, obj, pinRelease{}, err
+			return card, obj, nil, pinRelease{}, err
 		}
-		if bad {
-			rel = pinRelease{released: true, reason: reason, channel: card.Channel, model: card.Model}
-			card.Channel = ""
-			card.Model = ""
+		if !bad {
+			return card, obj, channels, rel, nil
 		}
-	} else if card.Model != "" {
-		bad, reason, err := modelPinUnusable(ctx, card.Model, channels, quotas, now)
+		rel = pinRelease{released: true, reason: reason, channel: card.Channel, model: card.Model}
+		card.Channel, card.Model = "", ""
+		obj.Channel, obj.Model = "", ""
+		return card, obj, channels, rel, nil
+	}
+	if card.Model != "" {
+		return releaseModelPin(ctx, now, card, obj, channels, quotas, card.Model)
+	}
+	if obj.Channel != "" {
+		bad, reason, err := channelUnusable(ctx, obj.Channel, channels, quotas, now)
 		if err != nil {
-			return card, obj, pinRelease{}, err
+			return card, obj, nil, pinRelease{}, err
 		}
-		if bad {
-			rel = pinRelease{released: true, reason: reason, model: card.Model}
-			card.Model = ""
+		if !bad {
+			return card, obj, channels, rel, nil
 		}
+		rel = pinRelease{released: true, reason: reason, channel: obj.Channel, model: obj.Model}
+		card.Channel, card.Model = "", ""
+		obj.Channel, obj.Model = "", ""
+		return card, obj, channels, rel, nil
 	}
-	if card.Channel == "" && card.Model == "" {
-		if obj.Channel != "" {
-			bad, reason, err := channelUnusable(ctx, obj.Channel, channels, quotas, now)
+	if obj.Model != "" {
+		return releaseModelPin(ctx, now, card, obj, channels, quotas, obj.Model)
+	}
+	return card, obj, channels, rel, nil
+}
+
+func releaseModelPin(ctx context.Context, now time.Time, card model.Card, obj model.Objective, channels []model.Channel, quotas route.Quotas, name string) (model.Card, model.Objective, []model.Channel, pinRelease, error) {
+	bad, reason, err := modelPinUnusable(ctx, name, channels, quotas, now)
+	if err != nil {
+		return card, obj, nil, pinRelease{}, err
+	}
+	if !bad {
+		filtered, err := withoutUnusableModelCarriers(ctx, name, channels, quotas, now)
+		if err != nil {
+			return card, obj, nil, pinRelease{}, err
+		}
+		return card, obj, filtered, pinRelease{}, nil
+	}
+	rel := pinRelease{released: true, reason: reason, model: name}
+	if card.Model == "" {
+		rel.channel = obj.Channel
+		rel.model = obj.Model
+	}
+	card.Channel, card.Model = "", ""
+	obj.Channel, obj.Model = "", ""
+	return card, obj, channels, rel, nil
+}
+
+// withoutUnusableModelCarriers removes carriers the model pin must not launch.
+// Channels that do not offer the model stay, so a later automatic selection can
+// still see them when the pin itself is released by another path.
+func withoutUnusableModelCarriers(ctx context.Context, name string, channels []model.Channel, quotas route.Quotas, now time.Time) ([]model.Channel, error) {
+	kept := make([]model.Channel, 0, len(channels))
+	for i := range channels {
+		ch := channels[i]
+		if channelOffers(ch, name) {
+			bad, _, err := channelUnusable(ctx, ch.ID, channels, quotas, now)
 			if err != nil {
-				return card, obj, pinRelease{}, err
+				return nil, err
 			}
 			if bad {
-				if !rel.released {
-					rel = pinRelease{released: true, reason: reason, channel: obj.Channel, model: obj.Model}
-				}
-				obj.Channel = ""
-				obj.Model = ""
-			}
-		} else if obj.Model != "" {
-			bad, reason, err := modelPinUnusable(ctx, obj.Model, channels, quotas, now)
-			if err != nil {
-				return card, obj, pinRelease{}, err
-			}
-			if bad {
-				if !rel.released {
-					rel = pinRelease{released: true, reason: reason, model: obj.Model}
-				}
-				obj.Model = ""
+				continue
 			}
 		}
+		kept = append(kept, ch)
 	}
-	return card, obj, rel, nil
+	return kept, nil
+}
+
+// usableModelCarriers is the second release site. A model pin that still has a
+// healthy unblocked carrier is kept, and the unusable carriers are omitted.
+// A channel pin, or a model whose carriers are all unusable, is not kept.
+func usableModelCarriers(ctx context.Context, now time.Time, card model.Card, obj model.Objective, channels []model.Channel, quotas route.Quotas) (bool, []model.Channel, error) {
+	name := ""
+	if card.Channel == "" && card.Model != "" {
+		name = card.Model
+	} else if card.Channel == "" && card.Model == "" && obj.Channel == "" && obj.Model != "" {
+		name = obj.Model
+	}
+	if name == "" {
+		return false, channels, nil
+	}
+	bad, _, err := modelPinUnusable(ctx, name, channels, quotas, now)
+	if err != nil {
+		return false, nil, err
+	}
+	if bad {
+		return false, channels, nil
+	}
+	filtered, err := withoutUnusableModelCarriers(ctx, name, channels, quotas, now)
+	if err != nil {
+		return false, nil, err
+	}
+	return true, filtered, nil
 }
 
 func channelUnusable(ctx context.Context, id string, channels []model.Channel, quotas route.Quotas, now time.Time) (bool, string, error) {
@@ -165,14 +237,15 @@ func channelUnusable(ctx context.Context, id string, channels []model.Channel, q
 	return false, "", nil
 }
 
-// modelPinUnusable reports whether Select's first healthy channel for the model
-// is missing, not ok, or blocked until a reset. A later healthy channel does not
-// keep the pin, because Select would still launch the blocked one.
+// modelPinUnusable reports that every carrier of the model is missing, not ok,
+// or blocked until a known reset. One healthy unblocked carrier keeps the pin.
+// Remaining quota at or below the red line does not make a carrier unusable.
 func modelPinUnusable(ctx context.Context, name string, channels []model.Channel, quotas route.Quotas, now time.Time) (bool, string, error) {
 	if name == "" {
 		return false, "", nil
 	}
 	saw := false
+	blocked := false
 	for i := range channels {
 		ch := channels[i]
 		if !channelOffers(ch, name) {
@@ -182,19 +255,23 @@ func modelPinUnusable(ctx context.Context, name string, channels []model.Channel
 		if ch.Health != model.HealthOK {
 			continue
 		}
-		blocked, err := quotaBlocked(ctx, quotas, ch.ID, now)
+		held, err := quotaBlocked(ctx, quotas, ch.ID, now)
 		if err != nil {
 			return false, "", err
 		}
-		if blocked {
-			return true, route.ReasonBlocked, nil
+		if held {
+			blocked = true
+			continue
 		}
 		return false, "", nil
 	}
-	if saw {
-		return true, route.ReasonHealth, nil
+	if !saw {
+		return true, pinReasonMissing, nil
 	}
-	return true, pinReasonMissing, nil
+	if blocked {
+		return true, route.ReasonBlocked, nil
+	}
+	return true, route.ReasonHealth, nil
 }
 
 func channelOffers(ch model.Channel, name string) bool {

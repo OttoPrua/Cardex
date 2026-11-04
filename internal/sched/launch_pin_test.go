@@ -37,6 +37,8 @@ func TestLaunchUnusableChannel(t *testing.T) {
 		cardChannel  string
 		cardModel    string
 		objChannel   string
+		objModel     string
+		wantModel    string
 		specs        []pinChannel
 		block        string
 		blockOnCard  bool
@@ -110,6 +112,40 @@ func TestLaunchUnusableChannel(t *testing.T) {
 			cardChannel: "gone", wantQuestion: true, reason: "missing",
 		},
 		{
+			name: "missing card pin does not inherit a below-red-line objective channel",
+			specs: []pinChannel{
+				{id: "chb", modelName: "model-b", pref: 0, redline: 0.5, remain: 0.1, hasRemain: true},
+				{id: "chc", modelName: "model-c", pref: 1, remain: 0.9, hasRemain: true},
+			},
+			cardChannel: "cha", objChannel: "chb", wantChannel: "chc", wantModel: "model-c",
+			released: true, reason: "missing", pinChannel: "cha",
+		},
+		{
+			name: "missing card pin and no candidate above the red line asks once",
+			specs: []pinChannel{
+				{id: "chb", modelName: "model-b", pref: 0, redline: 0.5, remain: 0.1, hasRemain: true},
+			},
+			cardChannel: "cha", objChannel: "chb", wantQuestion: true, reason: "missing",
+		},
+		{
+			name: "blocked carrier does not drop a model another carrier can run",
+			specs: []pinChannel{
+				{id: "cha", modelName: "model-m", pref: 1},
+				{id: "chb", modelName: "model-m", pref: 5},
+				{id: "chc", modelName: "model-n", pref: 0},
+			},
+			cardModel: "model-m", block: "cha", wantChannel: "chb", wantModel: "model-m",
+		},
+		{
+			name: "blocked carrier does not drop an objective model another carrier can run",
+			specs: []pinChannel{
+				{id: "cha", modelName: "model-m", pref: 1},
+				{id: "chb", modelName: "model-m", pref: 5},
+				{id: "chc", modelName: "model-n", pref: 0},
+			},
+			objModel: "model-m", block: "cha", wantChannel: "chb", wantModel: "model-m",
+		},
+		{
 			name: "below red line pin stays on that channel",
 			specs: []pinChannel{
 				{id: "cha", modelName: "model-a", pref: 9, redline: 0.5, remain: 0.1, hasRemain: true},
@@ -160,12 +196,13 @@ func TestLaunchUnusableChannel(t *testing.T) {
 			for _, spec := range tc.specs {
 				addPinChannel(t, db, spec)
 			}
-			if tc.objChannel != "" {
+			if tc.objChannel != "" || tc.objModel != "" {
 				got, err := db.GetObjective(ctx, obj)
 				if err != nil {
 					t.Fatal(err)
 				}
 				got.Channel = tc.objChannel
+				got.Model = tc.objModel
 				if err := db.UpdateObjective(ctx, &got); err != nil {
 					t.Fatal(err)
 				}
@@ -226,7 +263,7 @@ func TestLaunchUnusableChannel(t *testing.T) {
 				if len(after) != len(before) {
 					t.Fatalf("backlog attempts %d, want %d", len(after), len(before))
 				}
-				assertObjectiveUntouched(t, ctx, db, obj, tc.objChannel)
+				assertObjectiveUntouched(t, ctx, db, obj, tc.objChannel, tc.objModel)
 				assertNoQuestion(t, ctx, db, obj, cardID)
 				assertNoPinEvent(t, ctx, db, cardID)
 				t.Logf("backlog left on today's path; objective Channel and Model unchanged")
@@ -276,7 +313,7 @@ func TestLaunchUnusableChannel(t *testing.T) {
 				if len(after) != len(before) {
 					t.Fatalf("second launch attempts %d, want %d", len(after), len(before))
 				}
-				assertObjectiveUntouched(t, ctx, db, obj, tc.objChannel)
+				assertObjectiveUntouched(t, ctx, db, obj, tc.objChannel, tc.objModel)
 				assertNoPinEvent(t, ctx, db, cardID)
 				t.Logf("%s exactly one question reason %s; no new attempt; status %s not failed; objective Channel and Model unchanged", pinLogKind(tc.name), tc.reason, again.Status)
 				return
@@ -292,6 +329,9 @@ func TestLaunchUnusableChannel(t *testing.T) {
 			if opened.Route.Channel != tc.wantChannel {
 				t.Fatalf("channel %s, want %s", opened.Route.Channel, tc.wantChannel)
 			}
+			if tc.wantModel != "" && opened.Route.Model != tc.wantModel {
+				t.Fatalf("model %s, want %s", opened.Route.Model, tc.wantModel)
+			}
 			got, err := db.GetCard(ctx, cardID)
 			if err != nil {
 				t.Fatal(err)
@@ -302,7 +342,7 @@ func TestLaunchUnusableChannel(t *testing.T) {
 			if got.Status == model.CardFailed {
 				t.Fatalf("status %s", got.Status)
 			}
-			assertObjectiveUntouched(t, ctx, db, obj, tc.objChannel)
+			assertObjectiveUntouched(t, ctx, db, obj, tc.objChannel, tc.objModel)
 			if tc.released {
 				if got.Channel != tc.wantChannel || got.Model != opened.Route.Model || got.Model == "" {
 					t.Fatalf("writeback channel %s model %s route %+v", got.Channel, got.Model, opened.Route)
@@ -457,14 +497,14 @@ func assertNoQuestion(t *testing.T, ctx context.Context, db *store.Store, obj, c
 	}
 }
 
-func assertObjectiveUntouched(t *testing.T, ctx context.Context, db *store.Store, obj, channel string) {
+func assertObjectiveUntouched(t *testing.T, ctx context.Context, db *store.Store, obj, channel, modelName string) {
 	t.Helper()
 	got, err := db.GetObjective(ctx, obj)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Channel != channel || got.Model != "" {
-		t.Fatalf("objective channel %q model %q", got.Channel, got.Model)
+	if got.Channel != channel || got.Model != modelName {
+		t.Fatalf("objective channel %q model %q, want %q %q", got.Channel, got.Model, channel, modelName)
 	}
 }
 

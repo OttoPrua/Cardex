@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -19,7 +20,10 @@ import (
 const faultSeed int64 = 20261102
 
 // TestFaults injects every fault class into one seeded multi-card batch.
-// After each card is terminal, further ticks must leave stored status and events unchanged.
+// Merge acceptance is counted from the command the fixture installs and the
+// real merge path runs. Harvest runs of that command are a separate count.
+// After the first successful merge the count is one, and later ticks do not
+// increase it even when status and event ids stay the same.
 func TestFaults(t *testing.T) {
 	rng := rand.New(rand.NewSource(faultSeed))
 	classes := []string{"transport", "truncated", "quota", "auth", "serve-restart"}
@@ -48,6 +52,7 @@ func TestFaults(t *testing.T) {
 	stopLater(t, h)
 	_, obj := bindProject(t, h, "true")
 	installFaultChannels(t, h)
+	installFaultAccept(t, h)
 
 	type item struct {
 		id, class, channel string
@@ -60,7 +65,7 @@ func TestFaults(t *testing.T) {
 		body := faultBody(class, phrases, "batch-"+id+".go")
 		card := model.Card{
 			ID: id, Objective: obj, Kind: model.KindDev, Title: class, Tier: model.TierT2,
-			Status: model.CardReady, Channel: channel, Acceptance: []string{"true"},
+			Status: model.CardReady, Channel: channel, Acceptance: []string{faultAcceptCommand(h, id)},
 			Claims: []model.Claim{{Path: "batch-" + id + ".go"}},
 			Body:   body,
 		}
@@ -112,6 +117,8 @@ func TestFaults(t *testing.T) {
 	assertServeRestart(t, h, serveID)
 
 	before := faultRead(t, h)
+	beforeMerge, beforeHarvest := faultAcceptCounts(t, h)
+	assertMergeCountedOnce(t, before, beforeMerge, beforeHarvest)
 	const extra = 3
 	t.Logf("extra ticks after terminal n=%d", extra)
 	for i := 0; i < extra; i++ {
@@ -126,9 +133,11 @@ func TestFaults(t *testing.T) {
 		}
 	}
 	after := faultRead(t, h)
+	afterMerge, _ := faultAcceptCounts(t, h)
 	t.Logf("reread card status %s", after.statusText())
 	t.Logf("reread events %d", len(after.events))
-	assertFaultIdempotent(t, h, before, after, injected)
+	t.Logf("merge acceptance before %v after %v", beforeMerge, afterMerge)
+	assertFaultIdempotent(t, h, before, after, injected, beforeMerge, afterMerge)
 }
 
 func faultBody(class string, phrases []string, path string) string {
@@ -323,6 +332,7 @@ func assertServeRestart(t *testing.T, h *Harness, id string) {
 
 type faultSnap struct {
 	cards  map[string]model.CardStatus
+	kinds  map[string]model.CardKind
 	events []model.Event
 	byCard map[string][]string
 }
@@ -366,11 +376,13 @@ func faultRead(t *testing.T, h *Harness) faultSnap {
 	}
 	snap := faultSnap{
 		cards:  map[string]model.CardStatus{},
+		kinds:  map[string]model.CardKind{},
 		events: events,
 		byCard: map[string][]string{},
 	}
 	for _, card := range cards {
 		snap.cards[card.ID] = card.Status
+		snap.kinds[card.ID] = card.Kind
 	}
 	for _, event := range events {
 		cardID := ""
@@ -395,27 +407,36 @@ func faultRead(t *testing.T, h *Harness) faultSnap {
 	return snap
 }
 
-func assertFaultIdempotent(t *testing.T, h *Harness, before, after faultSnap, injected []string) {
+func assertFaultIdempotent(t *testing.T, h *Harness, before, after faultSnap, injected []string, beforeMerge, afterMerge map[string]int) {
 	t.Helper()
 	fuzzy := map[model.CardStatus]bool{
 		model.CardReady: true, model.CardRunning: true, model.CardHarvesting: true,
 		model.CardReviewing: true, model.CardMergeQueued: true,
 	}
 	merged := 0
+	nonCodeDone := 0
 	for id, status := range after.cards {
+		kind := after.kinds[id]
+		qs := questionsFor(t, h, id)
 		if fuzzy[status] {
-			t.Fatalf("card %s still %s after reread\n%s", id, status, diag(h))
+			t.Fatalf("card %s %s still %s after reread\n%s", id, kind, status, diag(h))
 		}
-		if status == model.CardNeedsInput {
-			qs := questionsFor(t, h, id)
-			if len(qs) != 1 {
-				t.Fatalf("needs_input card %s has %d questions\n%s", id, len(qs), diag(h))
-			}
+		if status == model.CardNeedsInput && len(qs) != 1 {
+			t.Fatalf("needs_input card %s has %d questions\n%s", id, len(qs), diag(h))
+		}
+		if !faultSettled(status, kind, len(qs)) {
+			t.Fatalf("card %s %s ended %s with %d questions\n%s", id, kind, status, len(qs), diag(h))
+		}
+		if status == model.CardDone && faultNonCode(kind) {
+			nonCodeDone++
 		}
 		if status != model.CardMerged {
 			continue
 		}
 		merged++
+		if beforeMerge[id] != 1 || afterMerge[id] != 1 {
+			t.Fatalf("card %s merge acceptance before %d after %d, want 1; events before %v after %v", id, beforeMerge[id], afterMerge[id], before.byCard[id], after.byCard[id])
+		}
 		events := after.byCard[id]
 		if len(events) == 0 {
 			t.Fatalf("merged card %s has an empty event counter; that is not proof", id)
@@ -430,9 +451,15 @@ func assertFaultIdempotent(t *testing.T, h *Harness, before, after faultSnap, in
 	if merged == 0 {
 		t.Fatal("no merged card in the reread; empty merge counter is not proof")
 	}
+	if nonCodeDone == 0 {
+		t.Fatal("no non-code card ended done")
+	}
 	for _, id := range injected {
 		status := after.cards[id]
 		if status == model.CardMerged {
+			if afterMerge[id] != 1 {
+				t.Fatalf("card %s merge acceptance %d, want 1", id, afterMerge[id])
+			}
 			continue
 		}
 		qs := questionsFor(t, h, id)
@@ -440,6 +467,109 @@ func assertFaultIdempotent(t *testing.T, h *Harness, before, after faultSnap, in
 			t.Fatalf("card %s %s has %d questions, want exactly one\n%s", id, status, len(qs), diag(h))
 		}
 	}
+}
+
+func assertMergeCountedOnce(t *testing.T, snap faultSnap, merge, harvest map[string]int) {
+	t.Helper()
+	for id, status := range snap.cards {
+		if status != model.CardMerged {
+			continue
+		}
+		if merge[id] != 1 {
+			t.Fatalf("card %s merge acceptance %d, want 1; harvest %d is not the merge count", id, merge[id], harvest[id])
+		}
+		if harvest[id] < 1 {
+			t.Fatalf("card %s has no harvest acceptance run to separate from merge", id)
+		}
+	}
+}
+
+func faultSettled(status model.CardStatus, kind model.CardKind, questions int) bool {
+	switch status {
+	case model.CardMerged:
+		return true
+	case model.CardDone:
+		return faultNonCode(kind)
+	case model.CardNeedsInput:
+		return questions == 1
+	case model.CardWaiting, model.CardPaused, model.CardFailed:
+		return questions > 0
+	default:
+		return questions > 0
+	}
+}
+
+func faultNonCode(kind model.CardKind) bool {
+	switch kind {
+	case model.KindDesign, model.KindResearch, model.KindPlan, model.KindReview,
+		model.KindReplan, model.KindNormalize, model.KindRanking:
+		return true
+	default:
+		return false
+	}
+}
+
+func installFaultAccept(t *testing.T, h *Harness) {
+	t.Helper()
+	script := `#!/bin/sh
+d=$(pwd)
+k=harvest
+case "$d" in
+  *cardex-merge-*) k=merge ;;
+esac
+printf '%s %s\n' "$k" "$1" >> "$FAULT_ACCEPT_LOG"
+`
+	if err := os.WriteFile(faultAcceptScript(h), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func faultAcceptScript(h *Harness) string {
+	return filepath.Join(h.Home, "fault-accept.sh")
+}
+
+func faultAcceptLog(h *Harness) string {
+	return filepath.Join(h.Home, "fault-accept.log")
+}
+
+func faultAcceptCommand(h *Harness, cardID string) string {
+	return fmt.Sprintf("FAULT_ACCEPT_LOG=%s sh %s %s", faultShQuote(faultAcceptLog(h)), faultShQuote(faultAcceptScript(h)), faultShQuote(cardID))
+}
+
+func faultShQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func faultAcceptCounts(t *testing.T, h *Harness) (merge, harvest map[string]int) {
+	t.Helper()
+	merge = map[string]int{}
+	harvest = map[string]int{}
+	b, err := os.ReadFile(faultAcceptLog(h))
+	if os.IsNotExist(err) {
+		return merge, harvest
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.TrimSpace(string(b))
+	if text == "" {
+		return merge, harvest
+	}
+	for _, line := range strings.Split(text, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 {
+			t.Fatalf("accept log %q", line)
+		}
+		switch fields[0] {
+		case "merge":
+			merge[fields[1]]++
+		case "harvest":
+			harvest[fields[1]]++
+		default:
+			t.Fatalf("accept log kind %q", fields[0])
+		}
+	}
+	return merge, harvest
 }
 
 func faultScript(attempts map[string]any) string {

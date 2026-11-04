@@ -3181,6 +3181,7 @@ func ensureReviewAfterTaskWithEvidence(root string, cfg *Config, t *Task, priorE
 	if err := pinPlannedReviewIdentity(cfg, t, rv, stage); err != nil {
 		return nil, err
 	}
+	trimLocalReviewMirrorRules(root, rv)
 	if err := saveAuthorizedTask(root, rv); err != nil {
 		return nil, fmt.Errorf("persist planned review task: %w", err)
 	}
@@ -3244,6 +3245,7 @@ func ensureLegacyReviewAfterTask(root string, cfg *Config, t *Task, lg *os.File)
 		rv.Model = t.Model
 	}
 	pinGrokOpusAdversarialReview(cfg, t, rv)
+	trimLocalReviewMirrorRules(root, rv)
 	if err := saveAuthorizedTask(root, rv); err != nil {
 		return nil, fmt.Errorf("persist review task: %w", err)
 	}
@@ -3255,6 +3257,33 @@ func ensureLegacyReviewAfterTask(root string, cfg *Config, t *Task, lg *os.File)
 	})
 	logBlock(lg, "REVIEW", "已入队审核任务: "+rv.ID)
 	return rv, nil
+}
+
+// Legacy type defaults can include mirror-verification helpers. The review
+// template skips that gate for local original workspaces, so newly generated
+// reviews there need neither helper grant. Keep every other rule unchanged:
+// unsupported custom rules must still fail closed at the runner boundary.
+func trimLocalReviewMirrorRules(root string, review *Task) {
+	if review.RemoteHost != "" || review.Dir == "" {
+		return
+	}
+	if info, err := os.Stat(review.Dir); err != nil || !info.IsDir() {
+		return
+	}
+	for _, marker := range []string{".claudego-fingerprint", ".claudego-scripts"} {
+		if _, err := os.Lstat(filepath.Join(review.Dir, marker)); !os.IsNotExist(err) {
+			return // Includes partial mirrors, dangling links and inspection errors.
+		}
+	}
+	absolute := "Bash(bash " + filepath.Join(root, "verify-mirror-fingerprint.sh") + ":*)"
+	const homeRelative = "Bash(bash ~/.cardex/verify-mirror-fingerprint.sh:*)"
+	kept := make([]string, 0, len(review.AllowedTools))
+	for _, rule := range review.AllowedTools {
+		if rule != absolute && rule != homeRelative {
+			kept = append(kept, rule)
+		}
+	}
+	review.AllowedTools = kept
 }
 
 func appendCompletedReview(t *Task, stage string) error {

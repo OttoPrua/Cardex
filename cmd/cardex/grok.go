@@ -1674,7 +1674,7 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 	res := &claudeResult{Type: "result", ObservationComplete: true, GrokDiagnostics: d}
 	var text bytes.Buffer
 	sawEnd := false
-	tools := map[string]bool{} // IDs remain parser-local; true means closed.
+	tools := map[string]string{} // IDs remain parser-local; empty means open, otherwise terminal status.
 	offset := 0
 	sourceAt := func(offset int) string {
 		if stdoutBytes < 0 {
@@ -1847,9 +1847,9 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			} else {
 				switch *ev.Status {
 				case "pending", "in_progress":
-					tools[ev.ToolCallID] = false
+					tools[ev.ToolCallID] = ""
 				case "completed", "failed":
-					tools[ev.ToolCallID] = true
+					tools[ev.ToolCallID] = *ev.Status
 				default:
 					res.ObservationComplete = false
 					closure = "tool_status"
@@ -1874,14 +1874,17 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			res.ToolEvents++
 			closure := ""
 			closed, exists := tools[ev.ToolCallID]
-			if !exists || closed {
+			// Grok's streaming terminal can report completion before the tool
+			// layer sends its content-bearing completion. Accept the same terminal
+			// status again, but never reopen a call or change its terminal outcome.
+			if !exists || (closed != "" && (ev.Status == nil || *ev.Status != closed)) {
 				res.ObservationComplete = false
 				closure = "tool_identity"
 			} else if ev.Status != nil {
 				switch *ev.Status {
 				case "pending", "in_progress":
 				case "completed", "failed":
-					tools[ev.ToolCallID] = true
+					tools[ev.ToolCallID] = *ev.Status
 				default:
 					res.ObservationComplete = false
 					closure = "tool_status"
@@ -1957,7 +1960,7 @@ func parseGrokBuildJSONLChannels(raw string, stdoutBytes int) *claudeResult {
 			res.FinalReason = grokBuildDiagnosticStopReason(fields["stopReason"])
 			unclosed := false
 			for _, closed := range tools {
-				if !closed {
+				if closed == "" {
 					res.ObservationComplete = false
 					unclosed = true
 				}

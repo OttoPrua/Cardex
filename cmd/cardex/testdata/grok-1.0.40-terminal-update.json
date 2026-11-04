@@ -1,0 +1,32 @@
+{
+  "sessionUpdate": "tool_call_update",
+  "toolCallId": "call-terminal",
+  "status": "completed",
+  "content": [
+    {
+      "type": "content",
+      "content": {
+        "type": "text",
+        "text": "ok\n"
+      }
+    }
+  ],
+  "rawOutput": {
+    "type": "Bash",
+    "output": [
+      111,
+      107,
+      10
+    ],
+    "output_for_prompt": "ok\n",
+    "exit_code": 0,
+    "command": "printf 'ok\\n'",
+    "truncated": false,
+    "signal": null,
+    "timed_out": false,
+    "description": "fixture command",
+    "current_dir": "/workspace",
+    "output_file": "/tmp/fixture.log",
+    "total_bytes": 3
+  }
+}

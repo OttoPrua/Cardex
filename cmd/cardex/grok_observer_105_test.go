@@ -1165,7 +1165,7 @@ func TestGrokToolUpdateNullableOutputIndependentOfStatus(t *testing.T) {
 			"duplicate-end":  stream + "\n" + grok105PublicEnd + "\n" + grok105PublicEnd,
 			"post-end-tool":  stream + "\n" + grok105PublicEnd + "\n" + update(status, `null`, "public-call"),
 			"unknown-id":     call + "\n" + update(status, `null`, "unknown-call") + "\n" + grok105PublicEnd,
-			"closed-id":      stream + "\n" + update(status, `null`, "public-call") + "\n" + grok105PublicEnd,
+			"reopened-id":    stream + "\n" + update(`"in_progress"`, `null`, "public-call") + "\n" + grok105PublicEnd,
 			"unknown-status": call + "\n" + update(`"unknown"`, `null`, "public-call") + "\n" + grok105PublicEnd,
 			"still-open":     call + "\n" + update(`"in_progress"`, `null`, "public-call") + "\n" + grok105PublicEnd,
 			"unknown-event":  stream + "\n" + `{"type":"new_unknown"}` + "\n" + grok105PublicEnd,

@@ -1,0 +1,7 @@
+if status, ok := state.Sys().(syscall.WaitStatus); ok {
+	signal := 0
+	if status.Signaled() {
+		signal = int(status.Signal())
+	}
+	d.Signal = &signal
+}

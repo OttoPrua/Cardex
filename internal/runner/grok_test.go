@@ -127,6 +127,7 @@ func TestGrokBuildSnapshot(t *testing.T) {
 func TestGrokGoalBuildAndNeedsPTY(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("GROK_HOME", "")
 	g := runner.Grok{GoalMode: true, Prompt: "finish the card\n"}
 	if !g.NeedsPTY() {
 		t.Fatal("goal grok NeedsPTY")
@@ -169,6 +170,7 @@ func TestGrokGoalBuildAndNeedsPTY(t *testing.T) {
 func TestGrokWritablePathsAbsent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("GROK_HOME", "")
 	got := (runner.Grok{}).WritablePaths()
 	want := filepath.Join(home, ".grok")
 	if !slices.Equal(got, []string{want}) {
@@ -578,34 +580,20 @@ func TestPromptFileBody(t *testing.T) {
 
 func TestGrokQuotaAndCrashChannels(t *testing.T) {
 	const headless = `{"type":"error","message":"HTTP 429: usage limit reached"}`
-	v1 := "/Volumes/Storage/Development/Cardex/repo/cmd/cardex"
-	grokTest, err := os.ReadFile(filepath.Join(v1, "grok_test.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(grokTest), headless) {
+	if !strings.Contains(string(readFixture(t, "v1_grok_test_excerpt.txt")), headless) {
 		t.Fatal("v1 grok_test.go fakeGrokBuild quota line missing")
 	}
-	goalSrc, err := os.ReadFile(filepath.Join(v1, "workflow_goal.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(goalSrc), "func observeNativeGrokGoal") {
+	if !strings.Contains(string(readFixture(t, "v1_workflow_goal_excerpt.txt")), "func observeNativeGrokGoal") {
 		t.Fatal("v1 goal observer missing")
 	}
-	failSrc, err := os.ReadFile(filepath.Join(v1, "failure_class_test.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(failSrc), `"signal: killed"`) {
+	if !strings.Contains(string(readFixture(t, "v1_failure_class_excerpt.txt")), `"signal: killed"`) {
 		t.Fatal("v1 classifier crash string missing")
 	}
-	procSrc, err := os.ReadFile(filepath.Join(v1, "grok.go"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(procSrc), "status.Signaled()") {
+	if !strings.Contains(string(readFixture(t, "v1_grok_process_excerpt.txt")), "status.Signaled()") {
 		t.Fatal("v1 WaitStatus signal fact missing")
+	}
+	if !strings.Contains(string(readFixture(t, "v1_sample_provenance.txt")), "cmd/cardex/grok_test.go") {
+		t.Fatal("sample provenance missing")
 	}
 
 	t.Run("b2_unproven_quota_line", func(t *testing.T) {

@@ -1,0 +1,9 @@
+func observeNativeGrokGoal(grokHome, cwd, sessionID, expectedGoalID string) (nativeGoalObservation, error) {
+	var out nativeGoalObservation
+	if grokHome == "" || sessionID == "" {
+		out.Missing = true
+		return out, fmt.Errorf("missing grok home or session")
+	}
+	dir := grokGoalSessionDir(grokHome, cwd, sessionID)
+	statePath := filepath.Join(dir, "goal", "state.json")
+	updatesPath := filepath.Join(dir, "updates.jsonl")

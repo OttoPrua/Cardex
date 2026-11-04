@@ -37,4 +37,4 @@ v1 卡的 `goal` 为对象时按状态落位，不再整卡 unparsed。两次 dr
 
 ## 已知问题
 
-演练窗口里 v1 自己的 tick 改写了 `~/.cardex`（events、manager-wake、`.lock`），起止清点的文件数、总字节和最新 mtime 不一致。本 lane 没有写这个目录。workflow 的 owner_choice、writing、locally_integrated 仍是 unparsed。
+Goal 要求两次清点完全一致，此项放弃：v1 自己的 tick 改写了 `~/.cardex`（events、manager-wake、`.lock`），起止清点的文件数、总字节和最新 mtime 不一致。本 lane 没有停该进程，也没有回写这个目录。workflow 的 owner_choice、writing、locally_integrated 仍是 unparsed。

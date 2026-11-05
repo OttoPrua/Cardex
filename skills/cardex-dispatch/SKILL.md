@@ -32,4 +32,4 @@ Approving a positioning proposal uses `positioning approve <id>` after `position
 
 ## Handing a decision to Otto
 
-Handing a decision to Otto is required for a direction freeze, a budget exhaustion, a breaker, and an objective-done question. Do not pick those options in this session.
+Handing a decision to Otto is required for a direction freeze, a safe-mode module freeze, a reopen of an already frozen node, a budget exhaustion, a breaker, and an objective-done question. Do not pick those options in this session. A fast-mode module freeze and a detail-layer freeze stay automatic.

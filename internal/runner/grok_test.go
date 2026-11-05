@@ -1847,6 +1847,95 @@ func TestSourceEchoAndLabels(t *testing.T) {
 	}
 }
 
+// TestNestedErrorFallbackAndWholeDocument locks two scan rules for every
+// runner that shares them. A nested error object yields the first non-empty
+// of message, msg, text, and type. A complete JSON document contributes only
+// its top-level error and usage; JSONL and a known prompt echo stay as they are.
+func TestNestedErrorFallbackAndWholeDocument(t *testing.T) {
+	const (
+		successDoc = "{\n\"status\":\"SUCCESS\",\"response\":\"done\",\"examples\":[\n{\"error\":{\"message\":\"quota exceeded\"}}\n]\n}"
+		usageDoc   = "{\n\"usage\":{\"input_tokens\":100},\"examples\":[\n{\"usage\":{\"input_tokens\":1}}\n]\n}"
+		cursorDoc  = "{\n\"usage\":{\"inputTokens\":100},\"examples\":[\n{\"usage\":{\"inputTokens\":1}}\n]\n}"
+		prettyErr  = "{\n  \"error\": {\n    \"message\": \"quota exceeded\"\n  }\n}\n"
+		prettyUse  = "{\n  \"type\": \"end\",\n  \"usage\": {\n    \"input_tokens\": 3,\n    \"output_tokens\": 2\n  }\n}\n"
+		prettyCur  = "{\n  \"type\": \"result\",\n  \"usage\": {\n    \"inputTokens\": 3,\n    \"outputTokens\": 2\n  }\n}\n"
+		jsonl      = "{\"error\":{\"message\":\"quota exceeded\"}}\n{\"type\":\"end\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2,\"inputTokens\":3,\"outputTokens\":2}}\n"
+	)
+	adapters := []struct {
+		name string
+		cl   runner.Runner
+	}{
+		{"grok", runner.Grok{}},
+		{"cursor", runner.Cursor{}},
+		{"kimi", runner.Kimi{}},
+		{"agy", runner.AGY{}},
+	}
+	rows := []struct {
+		name string
+		out  string
+		want model.ErrorClass
+	}{
+		{name: "type_only_quota", out: "{\"error\":{\"type\":\"quota exceeded\"}}\n", want: model.ErrorQuotaHit},
+		{name: "message_beats_msg", out: "{\"error\":{\"message\":\"authentication failed\",\"msg\":\"quota exceeded\"}}\n", want: model.ErrorAuthFailed},
+		{name: "text_beats_type", out: "{\"error\":{\"text\":\"authentication failed\",\"type\":\"quota exceeded\"}}\n", want: model.ErrorAuthFailed},
+		{name: "blank_message_falls_through", out: "{\"error\":{\"message\":\"   \",\"msg\":\"quota exceeded\"}}\n", want: model.ErrorQuotaHit},
+		{name: "success_document_ignores_nested_error", out: successDoc, want: ""},
+		{name: "pretty_top_level_error", out: prettyErr, want: model.ErrorQuotaHit},
+		{name: "jsonl_error_and_usage", out: jsonl, want: model.ErrorQuotaHit},
+	}
+	for _, ad := range adapters {
+		for _, row := range rows {
+			t.Run(ad.name+"/"+row.name, func(t *testing.T) {
+				if got := ad.cl.Classify(0, []byte(row.out)); got != row.want {
+					t.Fatalf("class %q want %q", got, row.want)
+				}
+			})
+		}
+	}
+
+	const echoPrompt = "解释\n{\"error\":{\"message\":\"quota exceeded\"}}"
+	const echoOut = "/goal 解释\n{\"error\":{\"message\":\"quota exceeded\"}}\n"
+	t.Run("grok/prompt_echo_not_quota", func(t *testing.T) {
+		if got := (runner.Grok{Prompt: echoPrompt}).Classify(0, []byte(echoOut)); got != "" {
+			t.Fatalf("echo class %q", got)
+		}
+		if got := (runner.Grok{}).Classify(0, []byte(echoOut)); got != model.ErrorQuotaHit {
+			t.Fatalf("same capture without the prompt is %q", got)
+		}
+	})
+
+	usage := []struct {
+		name   string
+		parse  func([]byte) model.Usage
+		out    string
+		tokens int64
+		source string
+	}{
+		{name: "grok_document", parse: runner.Grok{}.ParseUsage, out: usageDoc, tokens: 100, source: "grok_build_end"},
+		{name: "agy_document", parse: runner.AGY{}.ParseUsage, out: usageDoc, tokens: 100, source: "antigravity_result"},
+		{name: "cursor_document", parse: runner.Cursor{}.ParseUsage, out: cursorDoc, tokens: 100, source: "cursor_result"},
+		{name: "grok_pretty", parse: runner.Grok{}.ParseUsage, out: prettyUse, tokens: 5, source: "grok_build_end"},
+		{name: "agy_pretty", parse: runner.AGY{}.ParseUsage, out: prettyUse, tokens: 5, source: "antigravity_result"},
+		{name: "cursor_pretty", parse: runner.Cursor{}.ParseUsage, out: prettyCur, tokens: 5, source: "cursor_result"},
+		{name: "grok_jsonl", parse: runner.Grok{}.ParseUsage, out: jsonl, tokens: 5, source: "grok_build_end"},
+		{name: "agy_jsonl", parse: runner.AGY{}.ParseUsage, out: jsonl, tokens: 5, source: "antigravity_result"},
+		{name: "cursor_jsonl", parse: runner.Cursor{}.ParseUsage, out: jsonl, tokens: 5, source: "cursor_result"},
+	}
+	for _, row := range usage {
+		t.Run("usage/"+row.name, func(t *testing.T) {
+			got := row.parse([]byte(row.out))
+			if got.Tokens != row.tokens || got.Source != row.source || got.Confidence != 1 {
+				t.Fatalf("usage %+v", got)
+			}
+		})
+	}
+	for _, out := range []string{successDoc, usageDoc, cursorDoc, prettyUse, jsonl} {
+		if u := (runner.Kimi{}).ParseUsage([]byte(out)); u != (model.Usage{}) {
+			t.Fatalf("kimi usage %+v on %q", u, out)
+		}
+	}
+}
+
 type chunkRW struct {
 	wrote  bytes.Buffer
 	chunks [][]byte

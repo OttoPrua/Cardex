@@ -398,14 +398,18 @@ func classifyScanned(output []byte, prompt string, quota *regexp.Regexp, before 
 // included. A complete JSON error record outside that span is still scanned.
 // Assistant JSON and an unfinished record are not error facts. The caller
 // passes the whole capture, so the last line is at EOF even without a newline.
-// A nested error object's message, msg, and text are read. Other nested
-// fields are not. One complete multi-line JSON document is the same record
-// as its JSONL line.
+// A nested error object contributes the first non-empty of message, msg,
+// text, and type. One complete JSON document contributes only its top-level
+// error fields, so a nested object on its own line is not a JSONL record.
+// Anything else stays JSONL, and a known prompt echo is not a fact.
 func errorScan(output []byte, prompt string) string {
 	return scanOutput(output, prompt)
 }
 
 func scanOutput(output []byte, prompt string) string {
+	if completeJSONObject(output) {
+		return strings.Join(documentErrorFields(output, prompt), "\n")
+	}
 	var parts []string
 	walkNonEchoLines(output, prompt, func(line string) {
 		if heldJSONRecord(line) {
@@ -420,8 +424,18 @@ func scanOutput(output []byte, prompt string) string {
 			parts = append(parts, line)
 		}
 	})
-	parts = append(parts, documentErrorFields(output, prompt)...)
 	return strings.Join(parts, "\n")
+}
+
+// completeJSONObject is one JSON object, including a pretty-printed one.
+// Nested values inside it are not separate records.
+func completeJSONObject(output []byte) bool {
+	trim := bytes.TrimSpace(output)
+	if len(trim) == 0 || trim[0] != '{' || !bytes.Contains(trim, []byte("\n")) || !json.Valid(trim) {
+		return false
+	}
+	var obj map[string]any
+	return json.Unmarshal(trim, &obj) == nil && len(obj) > 0
 }
 
 // documentErrorFields reads one complete multi-line JSON document. A single
@@ -819,8 +833,9 @@ func errorFields(obj map[string]any) []string {
 	return parts
 }
 
-// errorValueText is a string error or the message, msg, or text inside an
-// error object. v1 antigravityErrorText reads those nested fields.
+// errorValueText is a string error, or the first non-empty of message, msg,
+// text, and type inside an error object. Later siblings are not appended.
+// v1 antigravityErrorText uses that same fallback.
 func errorValueText(v any) []string {
 	if s, ok := stringValue(v); ok && strings.TrimSpace(s) != "" {
 		return []string{strings.TrimSpace(s)}
@@ -829,13 +844,12 @@ func errorValueText(v any) []string {
 	if !ok {
 		return nil
 	}
-	var parts []string
-	for _, key := range []string{"message", "msg", "text"} {
+	for _, key := range []string{"message", "msg", "text", "type"} {
 		if s, ok := stringValue(nested[key]); ok && strings.TrimSpace(s) != "" {
-			parts = append(parts, strings.TrimSpace(s))
+			return []string{strings.TrimSpace(s)}
 		}
 	}
-	return parts
+	return nil
 }
 
 func errorObject(obj map[string]any) bool {
@@ -1336,6 +1350,14 @@ func parseUsageAliases(output []byte, source string, aliases map[string]string) 
 }
 
 func findUsage(output []byte, aliases map[string]string) (raw map[string]json.RawMessage, tokens int64, ok bool) {
+	// A complete document exposes only its top-level usage. A nested object
+	// on its own line must not replace that count. JSONL is everything else.
+	if completeJSONObject(output) {
+		if n, parsed := usageTokens(string(bytes.TrimSpace(output)), aliases); parsed {
+			return nil, n, true
+		}
+		return nil, 0, false
+	}
 	sc := bufio.NewScanner(bytes.NewReader(output))
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
@@ -1347,8 +1369,6 @@ func findUsage(output []byte, aliases map[string]string) (raw map[string]json.Ra
 	if ok {
 		return raw, tokens, ok
 	}
-	// One complete multi-line document carries the same usage object as the
-	// equivalent JSONL line. JSONL already returned above.
 	if n, parsed := usageTokens(string(bytes.TrimSpace(output)), aliases); parsed {
 		return nil, n, true
 	}

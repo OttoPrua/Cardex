@@ -149,7 +149,7 @@ func (st *step) apply(card model.Card, attempt model.Attempt) error {
 		if !ok {
 			return fmt.Errorf("auth_failed channel %s missing", attempt.Route.Channel)
 		}
-		if err := st.markAuth(ch, attempt.ErrorExcerpt); err != nil {
+		if err := st.markAuth(ch, attempt.ErrorExcerpt, attempt.ID); err != nil {
 			return err
 		}
 		if err := st.reschedule(card, attempt, dec); err != nil {
@@ -248,15 +248,18 @@ func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 }
 
 // reviewFamily is the positioning family of the attempt's model.
-// The channel family is used only when that model has no positioning row.
-// An empty family on an existing row is not replaced by the channel.
+// An empty family on that row falls back to the successful channel, as does a model with no row.
 func (st *step) reviewFamily(attempt model.Attempt) string {
 	name := strings.TrimSpace(attempt.Route.Model)
 	if name != "" {
 		for _, row := range st.snap.positioning {
-			if row.Model == name {
-				return strings.TrimSpace(row.Family)
+			if row.Model != name {
+				continue
 			}
+			if family := strings.TrimSpace(row.Family); family != "" {
+				return family
+			}
+			break
 		}
 	}
 	if ch, ok := st.snap.channel(attempt.Route.Channel); ok {
@@ -504,7 +507,7 @@ func resetTime(excerpt string, ch model.Channel, now time.Time) time.Time {
 	return now.UTC().Add(time.Hour)
 }
 
-func (st *step) markAuth(ch model.Channel, excerpt string) error {
+func (st *step) markAuth(ch model.Channel, excerpt, attemptID string) error {
 	ch.Health = model.HealthAuthFailed
 	if excerpt != "" {
 		ch.LastError = excerpt
@@ -517,7 +520,7 @@ func (st *step) markAuth(ch model.Channel, excerpt string) error {
 	if excerpt != "" {
 		text += ": " + excerpt
 	}
-	if err := st.notice("auth-"+ch.ID, "auth_failed", text); err != nil {
+	if err := st.noticeEpisode("auth-"+ch.ID, "auth_failed", text, attemptID); err != nil {
 		return err
 	}
 	return st.event("channel:"+ch.ID, "notify", map[string]string{
@@ -559,36 +562,36 @@ func (st *step) openQuestion(kind model.QuestionKind, scope, scopeKind, text str
 	return nil
 }
 
-// queueRedelivery sends notices whose delivery never succeeded.
+// queueRedelivery sends notices whose delivery never succeeded for this fault.
 // A notice already queued in this step is not added again.
+// A successful delivery of an earlier fault does not retire a later one.
 func (st *step) queueRedelivery() error {
 	type dueNotice struct {
 		kind      string
 		text      string
 		origin    string
 		objective string
+		episode   string
 	}
 	due := map[string]dueNotice{}
-	delivered := map[string]bool{}
 	for _, event := range st.snap.events {
-		if !strings.HasPrefix(event.Entity, "notice:") {
+		if event.Type != "notice_due" || !strings.HasPrefix(event.Entity, "notice:") {
 			continue
 		}
 		id := strings.TrimPrefix(event.Entity, "notice:")
-		switch event.Type {
-		case "notice_delivered":
-			delivered[id] = true
-		case "notice_due":
-			var data struct {
-				Kind      string `json:"kind"`
-				Text      string `json:"text"`
-				Origin    string `json:"origin"`
-				Objective string `json:"objective"`
-			}
-			if json.Unmarshal(event.Data, &data) != nil || !redeliverableKind(data.Kind) {
-				continue
-			}
-			due[id] = dueNotice{kind: data.Kind, text: data.Text, origin: data.Origin, objective: data.Objective}
+		var data struct {
+			Kind      string `json:"kind"`
+			Text      string `json:"text"`
+			Origin    string `json:"origin"`
+			Objective string `json:"objective"`
+			Episode   string `json:"episode"`
+		}
+		if json.Unmarshal(event.Data, &data) != nil || !redeliverableKind(data.Kind) {
+			continue
+		}
+		due[id] = dueNotice{
+			kind: data.Kind, text: data.Text, origin: data.Origin,
+			objective: data.Objective, episode: data.Episode,
 		}
 	}
 	queued := map[string]bool{}
@@ -596,12 +599,8 @@ func (st *step) queueRedelivery() error {
 		queued[n.QuestionID] = true
 	}
 	for id, item := range due {
-		if id == "" || delivered[id] || queued[id] {
+		if id == "" || queued[id] || st.snap.episodeDelivered(id, item.episode) {
 			continue
-		}
-		origin := item.origin
-		if origin == "" {
-			origin = st.snap.obj.Origin
 		}
 		objective := item.objective
 		if objective == "" {
@@ -609,32 +608,110 @@ func (st *step) queueRedelivery() error {
 		}
 		st.notices = append(st.notices, Notice{
 			QuestionID: id,
-			Origin:     origin,
+			Origin:     st.noticeOrigin(item.origin, objective),
 			Text:       item.text,
 			Kind:       item.kind,
 			Objective:  objective,
+			Episode:    item.episode,
 		})
 	}
 	return nil
 }
 
 func (st *step) notice(id, kind, text string) error {
+	return st.noticeEpisode(id, kind, text, "")
+}
+
+// noticeEpisode records one fault. The same episode is not queued twice.
+// A later episode reuses id and is still delivered after an earlier success.
+func (st *step) noticeEpisode(id, kind, text, episode string) error {
+	episode = strings.TrimSpace(episode)
+	if id != "" {
+		for _, n := range st.notices {
+			if n.QuestionID == id && n.Episode == episode {
+				return nil
+			}
+		}
+		if redeliverableKind(kind) && st.snap.episodeDelivered(id, episode) {
+			return nil
+		}
+	}
+	rawOrigin := st.snap.obj.Origin
 	st.notices = append(st.notices, Notice{
 		QuestionID: id,
-		Origin:     st.snap.obj.Origin,
+		Origin:     st.noticeOrigin(rawOrigin, st.snap.obj.ID),
 		Text:       text,
 		Kind:       kind,
 		Objective:  st.snap.obj.ID,
+		Episode:    episode,
 	})
-	if !redeliverableKind(kind) || id == "" || st.snap.hasEvent("notice:"+id, "notice_due") {
+	if !redeliverableKind(kind) || id == "" {
+		return nil
+	}
+	if current, ok := st.snap.dueEpisode(id); ok && current == episode {
 		return nil
 	}
 	return st.event("notice:"+id, "notice_due", map[string]string{
 		"kind":      kind,
 		"text":      text,
-		"origin":    st.snap.obj.Origin,
+		"origin":    rawOrigin,
 		"objective": st.snap.obj.ID,
+		"episode":   episode,
 	})
+}
+
+// noticeOrigin fills an empty stored origin from the notice's own objective.
+// That objective's origin wins. notify.fallback is used only when it has none.
+func (st *step) noticeOrigin(stored, objectiveID string) string {
+	if strings.TrimSpace(stored) != "" {
+		return stored
+	}
+	id := strings.TrimSpace(objectiveID)
+	if id == "" {
+		id = st.snap.obj.ID
+	}
+	origin := ""
+	if id == st.snap.obj.ID {
+		origin = st.snap.obj.Origin
+	} else if obj, err := st.db.GetObjective(st.ctx, id); err == nil {
+		origin = obj.Origin
+	}
+	if strings.TrimSpace(origin) == "" {
+		return st.cfg.NotifyFallback
+	}
+	return origin
+}
+
+func eventEpisode(event model.Event) string {
+	var data struct {
+		Episode string `json:"episode"`
+	}
+	if json.Unmarshal(event.Data, &data) != nil {
+		return ""
+	}
+	return data.Episode
+}
+
+func (s *snap) episodeDelivered(id, episode string) bool {
+	for _, event := range s.events {
+		if event.Entity == "notice:"+id && event.Type == "notice_delivered" && eventEpisode(event) == episode {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *snap) dueEpisode(id string) (string, bool) {
+	found := false
+	episode := ""
+	for _, event := range s.events {
+		if event.Entity != "notice:"+id || event.Type != "notice_due" {
+			continue
+		}
+		episode = eventEpisode(event)
+		found = true
+	}
+	return episode, found
 }
 
 func (st *step) absorb(card model.Card, attempt model.Attempt) error {
@@ -655,8 +732,19 @@ func (st *step) absorb(card model.Card, attempt model.Attempt) error {
 // absorbListed applies a plan or replan card list when the result has one,
 // then absorbs design sections. A bad list leaves the card needing input and
 // does not mark it done. Design prose without a list only absorbs design output.
+// An unclear freeze on this card's own result dispatches one normalize card.
 func (st *step) absorbListed(card model.Card, attempt model.Attempt, apply func(model.Card, model.Attempt) error) error {
 	text := readResult(attempt)
+	if attempt.Card == card.ID && judgeResultFreeze(text) == freezeUnclear {
+		d := Deps{Store: st.db, WS: workspace.Git{}, Notify: notify.Stub{}}
+		if _, err := d.recoverUnparsed(st.ctx, st.snap.obj, card); err != nil {
+			return err
+		}
+		if cards, err := st.db.ListCards(st.ctx, st.snap.obj.ID); err == nil {
+			st.snap.cards = cards
+		}
+		return nil
+	}
 	_, hasList := sectionBody(text, "新卡")
 	list := ParseCardList(text, card.Node, nil)
 	prose := strings.Contains(text, "##") && !hasList && list.Bad
@@ -825,7 +913,7 @@ func (st *step) absorbNormalize(card model.Card, attempt model.Attempt) error {
 	if !ok {
 		return fmt.Errorf("normalize %s missing card %s", card.ID, card.Deps[0])
 	}
-	if st.snap.obj.Mode == model.ModeManual && designOriginal(parent.Kind) {
+	if designOriginal(parent.Kind) {
 		return st.absorbNormalizedOriginal(card, parent, attempt)
 	}
 	text := readResult(attempt)
@@ -858,37 +946,14 @@ func designOriginal(kind model.CardKind) bool {
 	return kind == model.KindDesign || kind == model.KindPlan || kind == model.KindReplan
 }
 
-// absorbNormalizedOriginal applies a successful normalize onto a manual
-// design, plan, or replan card and finishes that card. A dev original keeps
-// the text backfill instead.
+// absorbNormalizedOriginal applies a successful normalize onto a design,
+// plan, or replan card through the design absorber and finishes that card.
+// A dev original keeps the text backfill instead.
 func (st *step) absorbNormalizedOriginal(norm model.Card, parent model.Card, attempt model.Attempt) error {
 	text := readResult(attempt)
-	switch parent.Kind {
-	case model.KindDesign:
-		d := Deps{Store: st.db, WS: workspace.Git{}, Notify: notify.Stub{}}
-		if err := d.finishNormalizedSource(st.ctx, st.snap.obj, parent, text); err != nil {
-			return err
-		}
-	case model.KindPlan:
-		if err := st.absorbPlan(parent, attempt); err != nil {
-			return err
-		}
-		if current, ok := st.snap.card(parent.ID); ok && current.Status == model.CardNeedsInput {
-			break
-		}
-		if err := st.finishDesignFamily(parent, attempt); err != nil {
-			return err
-		}
-	case model.KindReplan:
-		if err := st.absorbReplan(parent, attempt); err != nil {
-			return err
-		}
-		if current, ok := st.snap.card(parent.ID); ok && current.Status == model.CardNeedsInput {
-			break
-		}
-		if err := st.finishDesignFamily(parent, attempt); err != nil {
-			return err
-		}
+	d := Deps{Store: st.db, WS: workspace.Git{}, Notify: notify.Stub{}}
+	if err := d.finishNormalizedSource(st.ctx, st.snap.obj, parent, text); err != nil {
+		return err
 	}
 	if fresh, err := st.db.GetCard(st.ctx, parent.ID); err == nil {
 		st.snap.putCard(fresh)

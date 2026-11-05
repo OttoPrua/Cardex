@@ -30,6 +30,7 @@ type Config struct {
 	BreakerStall       time.Duration
 	BreakerSpend       int64
 	Budgets            map[model.CardKind]model.Budget
+	NotifyFallback     string
 	Warnings           []string
 }
 
@@ -102,6 +103,7 @@ func LoadConfig(home string) Config {
 			cfg.Warnings = append(cfg.Warnings, "unknown config key "+key)
 		}
 	}
+	applyNotify(&cfg, top)
 	raw, ok := top["loop"]
 	if !ok {
 		return cfg
@@ -185,9 +187,36 @@ func LoadConfig(home string) Config {
 	return cfg
 }
 
+func applyNotify(cfg *Config, top map[string]json.RawMessage) {
+	raw, ok := top["notify"]
+	if !ok {
+		return
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &body); err != nil {
+		cfg.Warnings = append(cfg.Warnings, "notify config unparsable")
+		return
+	}
+	for key := range body {
+		if key != "fallback" {
+			cfg.Warnings = append(cfg.Warnings, "unknown notify key "+key)
+		}
+	}
+	fb, ok := body["fallback"]
+	if !ok {
+		return
+	}
+	var dest string
+	if err := json.Unmarshal(fb, &dest); err != nil {
+		cfg.Warnings = append(cfg.Warnings, "notify.fallback unparsable")
+		return
+	}
+	cfg.NotifyFallback = strings.TrimSpace(dest)
+}
+
 func knownTop(key string) bool {
 	switch key {
-	case "loop", "positioning", "engines", "unknown_quota", "host":
+	case "loop", "positioning", "engines", "unknown_quota", "host", "notify":
 		return true
 	default:
 		return false

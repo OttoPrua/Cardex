@@ -103,6 +103,13 @@ func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, obj
 			omit = ""
 		}
 	}
+	// A model written after the switch keeps every channel that can serve it,
+	// including one this card's earlier failure removed.
+	if !deciding && omit != "" {
+		if name := laterPinnedModel(probe, obj, auto); name != "" && channelsOffer(channels, omit, name) {
+			omit = ""
+		}
+	}
 	return route.Request{
 		Card:         probe,
 		Objective:    obj,
@@ -164,6 +171,8 @@ type autoChoice struct {
 	channel          string
 	pin              string
 	exclude          string
+	modelPin         string
+	hasModelPin      bool
 	objectiveChannel string
 	hasObjChannel    bool
 	objectiveModel   string
@@ -180,6 +189,7 @@ func latestAutoChoice(events []model.Event, cardID string) autoChoice {
 			Channel          string  `json:"channel"`
 			Pin              string  `json:"pin"`
 			Exclude          string  `json:"exclude"`
+			ModelPin         *string `json:"model_pin"`
 			ObjectiveChannel *string `json:"objective_channel"`
 			ObjectiveModel   *string `json:"objective_model"`
 		}
@@ -187,6 +197,10 @@ func latestAutoChoice(events []model.Event, cardID string) autoChoice {
 			continue
 		}
 		last = autoChoice{channel: data.Channel, pin: data.Pin, exclude: data.Exclude}
+		if data.ModelPin != nil {
+			last.modelPin = *data.ModelPin
+			last.hasModelPin = true
+		}
 		if data.ObjectiveChannel != nil {
 			last.objectiveChannel = *data.ObjectiveChannel
 			last.hasObjChannel = true
@@ -197,6 +211,46 @@ func latestAutoChoice(events []model.Event, cardID string) autoChoice {
 		}
 	}
 	return last
+}
+
+// laterPinnedModel is a Model assignment written after the latest automatic
+// switch. The model recorded on that switch is the earlier pin, not a new one.
+// A card model is the one route.Select will use, so an unchanged card model
+// does not fall through to the objective.
+func laterPinnedModel(card model.Card, obj model.Objective, auto autoChoice) string {
+	if auto.channel == "" {
+		return ""
+	}
+	if strings.TrimSpace(card.Model) != "" {
+		if auto.hasModelPin && strings.TrimSpace(card.Model) != auto.modelPin {
+			return strings.TrimSpace(card.Model)
+		}
+		return ""
+	}
+	if auto.hasObjModel {
+		if m := strings.TrimSpace(obj.Model); m != "" && m != auto.objectiveModel {
+			return m
+		}
+	}
+	return ""
+}
+
+func channelsOffer(channels []model.Channel, id, modelName string) bool {
+	modelName = strings.TrimSpace(modelName)
+	if modelName == "" {
+		return false
+	}
+	for _, ch := range channels {
+		if ch.ID != id {
+			continue
+		}
+		for _, name := range ch.Models {
+			if name == modelName || surfaceModel(name) == modelName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // autoExcluded is every channel an automatic switch on this card already

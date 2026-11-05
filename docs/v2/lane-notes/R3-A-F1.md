@@ -21,3 +21,4 @@ N9 整理成功后 design、plan、replan 吸收设计产出，plan 与 replan �
 B1 当前否定压过后文「可以冻结」；裸「否」不整理；没有确定是或否的条件句走一张整理卡且不落地提议 → `internal/loop/design_parse.go:292` `design.go:219` `design.go:1289` `design.go:1831` → `TestFreezeCurrentSense`
 B2 投递返回后重读问题行，合并投递记录并保留已保存答复，新建和复用都走这条 → `internal/question/service.go:58` `service.go:66` `service.go:113` → `TestAnswerDuringDeliveryIsKept`
 B3 整理吸收的 plan 写入与普通拆卡相同的 plan_split（源 plan、节点、实际创建的卡 ID）；重复吸收不重复建卡；replan 不写 → `internal/loop/design.go:1357` `design.go:1406` `design.go:1486` → `TestNormalizePlanSplitRecordsBatch`
+B1 肯定首词不替代冻结语义；条件和不确定先于「是」；「是，如果接口确认通过才可以冻结；目前尚未确认。」走整理且不记提议；「同意，采用方案 A。」不记提议也不整理 → `internal/loop/design_parse.go:294` `design_parse.go:301` `design.go:219` `design.go:1289` `design.go:1831` → `TestFreezeCurrentSense`

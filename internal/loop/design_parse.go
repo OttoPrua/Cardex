@@ -252,7 +252,9 @@ const (
 
 // judgeResultFreeze reads the current freeze conclusion from ## 可冻结 or from
 // a freeze statement under ## 结论. A current negative wins over a later
-// 可以冻结 fragment. A conditional that is not a current yes or no is unclear.
+// 可以冻结 fragment. An unmet condition or an uncertain conclusion is not a
+// current yes, even when the first word is affirmative. An ordinary ## 结论
+// with no freeze wording is not a proposal.
 func judgeResultFreeze(result string) freezeVerdict {
 	if body, ok := headingBody(result, "可冻结"); ok {
 		return classifyFreeze(body, true)
@@ -295,11 +297,15 @@ func classifyFreeze(body string, dedicated bool) freezeVerdict {
 	if currentNegative(token, compact) {
 		return freezeNo
 	}
-	if currentAffirmative(token, compact) {
-		return freezeYes
+	// Conditions and uncertainty are decided before any affirmative leading word.
+	if unsettledFreeze(compact) {
+		if dedicated || strings.Contains(compact, "冻结") {
+			return freezeUnclear
+		}
+		return freezeNo
 	}
-	if conditionalFreeze(compact) {
-		return freezeUnclear
+	if freezeAffirmed(token, compact, dedicated) {
+		return freezeYes
 	}
 	if !dedicated {
 		if strings.Contains(compact, "冻结") {
@@ -331,15 +337,34 @@ func currentNegative(token, compact string) bool {
 	return negAt < posAt && negAt+negLen <= len(compact)
 }
 
-func currentAffirmative(token, compact string) bool {
+// unsettledFreeze is an unmet condition or an uncertain freeze conclusion.
+func unsettledFreeze(compact string) bool {
+	return conditionalFreeze(compact) || uncertainFreeze(compact)
+}
+
+func uncertainFreeze(compact string) bool {
+	for _, mark := range []string{"尚未确认", "尚未确定", "还不确定", "不确定"} {
+		if strings.Contains(compact, mark) {
+			return true
+		}
+	}
+	return false
+}
+
+// freezeAffirmed is a determined current yes. ## 可冻结 asks that question, so
+// a bare affirmative answers it. ## 结论 counts only an explicit freeze phrase.
+func freezeAffirmed(token, compact string, dedicated bool) bool {
+	if indexPositiveOutsideNegation(compact) >= 0 {
+		return true
+	}
+	if !dedicated {
+		return false
+	}
 	switch token {
 	case "是", "yes", "true", "同意", "1", "提议", "可冻结", "可以冻结":
 		return true
 	}
-	if conditionalFreeze(compact) {
-		return false
-	}
-	return indexPositiveOutsideNegation(compact) >= 0
+	return false
 }
 
 func conditionalFreeze(compact string) bool {

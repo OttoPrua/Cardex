@@ -309,6 +309,8 @@ func TestFreezeCurrentSense(t *testing.T) {
 		{name: "negative-later-fragment", text: "## 可冻结\n否，需等接口确认后才可以冻结\n", sense: senseNo},
 		{name: "bare-no", text: "## 可冻结\n否\n", sense: senseNo},
 		{name: "conditional", text: "## 开放问题\n- 不该写入\n## 可冻结\n等接口确认后才可以冻结\n", sense: senseUnclear},
+		{name: "leading-yes-unmet", text: "## 可冻结\n是，如果接口确认通过才可以冻结；目前尚未确认。\n", sense: senseUnclear},
+		{name: "ordinary-agree", text: "## 结论\n同意，采用方案 A。\n", sense: senseNo},
 		{name: "section-yes", text: "## 可冻结\n是\n", sense: senseYes},
 		{name: "keyi", text: "## 可冻结\n可以冻结\n", sense: senseYes},
 		{name: "shi-comma", text: "## 可冻结\n是，可以冻结\n", sense: senseYes},

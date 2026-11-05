@@ -250,12 +250,8 @@ const (
 	freezeUnclear
 )
 
-// judgeResultFreeze reads the current freeze conclusion from ## 可冻结 or from
-// a freeze statement under ## 结论. A current negative wins over a later
-// 可以冻结 fragment. An unmet condition, an uncertain conclusion, or any other
-// remainder that is not itself a determined current yes is not a current yes,
-// even when the first word is affirmative. An ordinary ## 结论 with no freeze
-// wording is not a proposal.
+// judgeResultFreeze reads ## 可冻结 or ## 结论. Both sections use the same
+// short-answer rule. Wording outside those two sections is not a proposal.
 func judgeResultFreeze(result string) freezeVerdict {
 	if body, ok := headingBody(result, "可冻结"); ok {
 		return classifyFreeze(body, true)
@@ -292,29 +288,80 @@ func headingBody(md, name string) (string, bool) {
 	return buf.String(), true
 }
 
+// classifyFreeze returns freezeYes only for a short answer. Negation stays no.
+// Any other ## 可冻结 body, and any other body that names 冻结, is unclear.
 func classifyFreeze(body string, dedicated bool) freezeVerdict {
 	compact := compactFreeze(body)
-	token := leadingToken(body)
-	if currentNegative(token, compact) {
+	if currentNegative(leadingToken(body), compact) {
 		return freezeNo
 	}
-	// Conditions and uncertainty are decided before any affirmative leading word.
-	if unsettledFreeze(compact) {
-		if dedicated || strings.Contains(compact, "冻结") {
-			return freezeUnclear
-		}
-		return freezeNo
-	}
-	if freezeAffirmed(token, compact, dedicated) {
+	if shortFreezeAnswer(body) {
 		return freezeYes
 	}
-	if !dedicated {
-		if strings.Contains(compact, "冻结") {
-			return freezeUnclear
-		}
-		return freezeNo
+	if dedicated || strings.Contains(compact, "冻结") {
+		return freezeUnclear
 	}
-	return freezeUnclear
+	return freezeNo
+}
+
+// shortFreezeAnswer is the whole section after leading and trailing whitespace,
+// one leading list marker, and trailing punctuation are removed. A second line
+// is not an answer. A whitelist word plus nothing but 可以冻结 is also an answer.
+func shortFreezeAnswer(body string) bool {
+	s := strings.TrimSpace(body)
+	s = stripOneFreezeMarker(s)
+	s = strings.TrimSpace(s)
+	s = strings.TrimRightFunc(s, freezeTrailingPunct)
+	s = strings.TrimSpace(s)
+	if s == "" || strings.ContainsAny(s, "\r\n") {
+		return false
+	}
+	folded := strings.ToLower(s)
+	if freezeYesWord(folded) {
+		return true
+	}
+	for _, word := range freezeYesWords {
+		if !strings.HasPrefix(folded, word) {
+			continue
+		}
+		if compactFreeze(folded[len(word):]) == "可以冻结" {
+			return true
+		}
+	}
+	return false
+}
+
+var freezeYesWords = []string{"可以冻结", "可冻结", "同意", "提议", "true", "yes", "是", "1"}
+
+func freezeYesWord(folded string) bool {
+	for _, word := range freezeYesWords {
+		if folded == word {
+			return true
+		}
+	}
+	return false
+}
+
+func stripOneFreezeMarker(s string) string {
+	switch {
+	case strings.HasPrefix(s, "1."):
+		return s[2:]
+	case strings.HasPrefix(s, "1、"):
+		return strings.TrimPrefix(s, "1、")
+	case strings.HasPrefix(s, "-"), strings.HasPrefix(s, "*"), strings.HasPrefix(s, "+"):
+		return s[1:]
+	default:
+		return s
+	}
+}
+
+func freezeTrailingPunct(r rune) bool {
+	switch r {
+	case '，', '。', ',', '.', '！', '!', '？', '?', '、', '：', ':', '；', ';', '"', '\'', '“', '”', '‘', '’':
+		return true
+	default:
+		return false
+	}
 }
 
 // currentNegative is a determined no. A leading 否 or 不 stays no when a later
@@ -338,74 +385,6 @@ func currentNegative(token, compact string) bool {
 	return negAt < posAt && negAt+negLen <= len(compact)
 }
 
-// unsettledFreeze is an unmet condition or an uncertain freeze conclusion.
-func unsettledFreeze(compact string) bool {
-	return conditionalFreeze(compact) || uncertainFreeze(compact)
-}
-
-func uncertainFreeze(compact string) bool {
-	for _, mark := range []string{"尚未确认", "尚未确定", "还不确定", "不确定"} {
-		if strings.Contains(compact, mark) {
-			return true
-		}
-	}
-	return false
-}
-
-// freezeAffirmed is a determined current yes. ## 可冻结 accepts a complete
-// standalone affirmative. A remainder after that word is yes only when the
-// remainder is exactly the explicit freeze phrase. Any other remainder is not
-// a current yes, even when it misses the condition and uncertainty lists.
-// ## 结论 still counts an explicit freeze phrase that does not open with one
-// of those short answers.
-func freezeAffirmed(token, compact string, dedicated bool) bool {
-	if rest, opened := affirmativeRemainder(token, compact); opened {
-		if rest == "" {
-			if explicitFreezePhrase(token) {
-				return true
-			}
-			return dedicated
-		}
-		return explicitFreezePhrase(rest)
-	}
-	return indexPositiveOutsideNegation(compact) >= 0
-}
-
-func affirmativeRemainder(token, compact string) (string, bool) {
-	if token == "" || !strings.HasPrefix(compact, token) {
-		return "", false
-	}
-	switch token {
-	case "是", "yes", "true", "同意", "1", "提议", "可冻结", "可以冻结":
-		return compact[len(token):], true
-	}
-	return "", false
-}
-
-func explicitFreezePhrase(compact string) bool {
-	return compact == "可以冻结" || compact == "可冻结"
-}
-
-func conditionalFreeze(compact string) bool {
-	if strings.Contains(compact, "是否") {
-		return true
-	}
-	for _, gate := range []string{
-		"才可以冻结", "才可冻结",
-		"后可以冻结", "后可冻结",
-		"就可以冻结", "就可冻结",
-		"才能冻结",
-	} {
-		if strings.Contains(compact, gate) {
-			return true
-		}
-	}
-	if strings.Contains(compact, "如果") || strings.Contains(compact, "若") || strings.Contains(compact, "要是") {
-		return strings.Contains(compact, "冻结")
-	}
-	return false
-}
-
 func findNegation(compact string) (int, int) {
 	bestAt, bestLen := -1, 0
 	for _, phrase := range negationPhrases {
@@ -420,6 +399,8 @@ func findNegation(compact string) (int, int) {
 	return bestAt, bestLen
 }
 
+// indexPositiveOutsideNegation only orders a negation ahead of a later fragment.
+// It is not a freeze yes: classifyFreeze never affirms from this scan.
 func indexPositiveOutsideNegation(compact string) int {
 	best := -1
 	for _, phrase := range []string{"可以冻结", "可冻结"} {

@@ -169,7 +169,7 @@ func TestPrefacesRender(t *testing.T) {
 		"骨架卡", "尚不存在的接口", "让这些开发卡依赖它",
 	}
 	checks := map[model.CardKind][]string{
-		model.KindDesign:    append([]string{"## 结论", "## 开放问题", "## 设计问题"}, shared...),
+		model.KindDesign:    append([]string{"## 结论", "## 开放问题", "## 设计问题", "## 可冻结"}, shared...),
 		model.KindPlan:      append(append([]string{"## 结论", "## 开放问题", "## 新卡"}, shared...), planExtra...),
 		model.KindReplan:    append(append([]string{"## 结论", "## 开放问题", "## 新卡"}, shared...), []string{"context.md", "同步维护", "不要只调整卡清单"}...),
 		model.KindResearch:  {"## 事实", "### Q<id>", "只回答卡里列出的问题", "不下设计结论", "不改代码", "结论", "证据", "文件:行号", "命令及输出片段", "URL", "把握", "高", "中", "低", "未能核实", "不确定时写明，不要猜"},
@@ -179,7 +179,7 @@ func TestPrefacesRender(t *testing.T) {
 		model.KindDev:       {"## 结论", "实现"},
 		model.KindRepair:    {"## 结论", "修测试变红"},
 		model.KindRebase:    {"## 结论", "合并冲突"},
-		model.KindNormalize: {"## 结论", "提取结构"},
+		model.KindNormalize: {"## 结论", "提取结构", "## 可冻结"},
 		model.KindBacklog:   {"## backlog", "低风险积压"},
 	}
 	ctx := context.Background()

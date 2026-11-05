@@ -1,7 +1,7 @@
 # R2-D-F1-F1-F1-F1
 
 ## 做了什么
-写域内没有定位 tier 的硬拒绝。批准把 `t2`、` T3 ` 收成 T2/T3。未知 token 不使批准失败，提案标待复核，已发布表不收录该 token。route、quota、classify 不因这类定位 tier 返回错误。
+批准把 `t2`、` T3 ` 收成 T2/T3。未知 token 不使批准失败，提案标待复核，已发布表不收录该 token。
 
 ## 没做什么，以及原因
 未改 internal/store（含 CreatePositioning、UpdatePositioning、preparePositioning）、internal/model、go.mod、goals.md、design.md。store 对不规范 tier 仍返回错误，留给集成者。未改路由、额度、分类、派发、调度，未改卡或渠道的 tier 检查。

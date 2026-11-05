@@ -917,12 +917,17 @@ func TestRankingDedup(t *testing.T) {
 		status string
 		cardID string
 		oldQ   bool
+		retry  bool
+		match  bool
 	}{
 		{name: "later week", cardID: "week-2"},
 		{name: "another card", cardID: "other-card"},
 		{name: "approved", status: "approved", cardID: "week-2"},
 		{name: "rejected", status: "rejected", cardID: "week-2"},
 		{name: "older question", cardID: "week-2", oldQ: true},
+		{name: "same card retry", status: "approved", cardID: "rank", retry: true},
+		{name: "same card rejected", status: "rejected", cardID: "rank", retry: true},
+		{name: "same card still current", status: "approved", cardID: "rank", retry: true, match: true},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -953,28 +958,53 @@ func TestRankingDedup(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			next := &model.Card{
-				ID: row.cardID, Objective: "obj", Kind: model.KindRanking, Tier: model.TierT2,
-				Title: row.name, Status: model.CardRunning, Requires: []string{"web"},
-			}
-			if err := db.CreateCard(ctx, next); err != nil {
-				t.Fatal(err)
-			}
-			if err := db.CreateAttempt(ctx, &model.Attempt{ID: "a-current", Card: next.ID}); err != nil {
-				t.Fatal(err)
-			}
-			if row.oldQ {
-				if err := db.CreateQuestion(ctx, &model.Question{
-					ID: "q-old", Objective: "obj", Scope: next.ID, ScopeKind: "card",
-					Kind: model.QuestionCustom, Text: "定位提案\n已有定位问题\n", Options: []string{rankingApprove},
-				}); err != nil {
+			targetID := row.cardID
+			attemptID := "a-current"
+			if row.retry {
+				if row.match {
+					alignRankingLive(t, db)
+				} else {
+					moveRankingLive(t, db)
+				}
+				setRankingStatus(t, db, "rank", model.CardRunning)
+				if err := db.CreateAttempt(ctx, &model.Attempt{ID: "a-retry", Card: "rank"}); err != nil {
 					t.Fatal(err)
+				}
+				targetID = "rank"
+				attemptID = "a-retry"
+			} else {
+				next := &model.Card{
+					ID: row.cardID, Objective: "obj", Kind: model.KindRanking, Tier: model.TierT2,
+					Title: row.name, Status: model.CardRunning, Requires: []string{"web"},
+				}
+				if err := db.CreateCard(ctx, next); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.CreateAttempt(ctx, &model.Attempt{ID: "a-current", Card: next.ID}); err != nil {
+					t.Fatal(err)
+				}
+				if row.oldQ {
+					if err := db.CreateQuestion(ctx, &model.Question{
+						ID: "q-old", Objective: "obj", Scope: next.ID, ScopeKind: "card",
+						Kind: model.QuestionCustom, Text: "定位提案\n已有定位问题\n", Options: []string{rankingApprove},
+					}); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			beforeP := proposalCount(t)
-			beforeQ := len(mustQuestions(t, db))
-			absorbHarvest(t, db, next.ID, "a-current", text)
-			got, err := db.GetCard(ctx, next.ID)
+			beforeQs := mustQuestions(t, db)
+			beforeQ := len(beforeQs)
+			beforeQIDs := map[string]bool{}
+			for _, q := range beforeQs {
+				beforeQIDs[q.ID] = true
+			}
+			beforePIDs := map[string]bool{}
+			for _, saved := range mustProposals(t) {
+				beforePIDs[saved.ID] = true
+			}
+			absorbHarvest(t, db, targetID, attemptID, text)
+			got, err := db.GetCard(ctx, targetID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -984,26 +1014,62 @@ func TestRankingDedup(t *testing.T) {
 			if got.Status != model.CardDone && got.Status != model.CardNeedsInput {
 				t.Fatalf("current card not finished %s", got.Status)
 			}
-			if proposalCount(t) != beforeP+1 {
+			delta := 1
+			if row.match {
+				delta = 0
+			}
+			if proposalCount(t) != beforeP+delta {
 				t.Fatalf("proposals %d before %d", proposalCount(t), beforeP)
+			}
+			if row.retry && !row.match {
+				var created []savedProposal
+				for _, saved := range mustProposals(t) {
+					if !beforePIDs[saved.ID] {
+						created = append(created, saved)
+					}
+				}
+				if len(created) != 1 || created[0].Status != "proposed" {
+					t.Fatalf("new proposal %+v", created)
+				}
+				var added []model.Question
+				for _, q := range mustQuestions(t, db) {
+					if !beforeQIDs[q.ID] {
+						added = append(added, q)
+					}
+				}
+				offers := false
+				if len(added) == 1 {
+					for _, opt := range added[0].Options {
+						if opt == rankingApprove {
+							offers = true
+						}
+					}
+				}
+				if len(added) != 1 || added[0].Scope != "rank" || added[0].Answer != "" || !offers {
+					t.Fatalf("new question %+v", added)
+				}
+			}
+			wantScoped := 1
+			if row.retry && !row.match {
+				wantScoped = 2
 			}
 			var scoped int
 			for _, q := range mustQuestions(t, db) {
-				if q.Scope == next.ID && strings.Contains(q.Text, "new-model") {
+				if q.Scope == targetID && strings.Contains(q.Text, "new-model") {
 					scoped++
 				}
 			}
-			if scoped != 1 {
+			if scoped != wantScoped {
 				t.Fatalf("current questions %d of %+v", scoped, mustQuestions(t, db))
 			}
-			if len(mustQuestions(t, db)) < beforeQ+1 {
+			if len(mustQuestions(t, db)) != beforeQ+delta {
 				t.Fatalf("questions %d before %d", len(mustQuestions(t, db)), beforeQ)
 			}
-			absorbHarvest(t, db, next.ID, "a-current", text)
-			if proposalCount(t) != beforeP+1 || len(mustQuestions(t, db)) != beforeQ+1 {
+			absorbHarvest(t, db, targetID, attemptID, text)
+			if proposalCount(t) != beforeP+delta || len(mustQuestions(t, db)) != beforeQ+delta {
 				t.Fatalf("second absorb proposals %d questions %d", proposalCount(t), len(mustQuestions(t, db)))
 			}
-			again, err := db.GetCard(ctx, next.ID)
+			again, err := db.GetCard(ctx, targetID)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1011,6 +1077,38 @@ func TestRankingDedup(t *testing.T) {
 				t.Fatal("second absorb left the card running")
 			}
 		})
+	}
+}
+
+func alignRankingLive(t *testing.T, db *store.Store) {
+	t.Helper()
+	current, err := db.GetPositioning(context.Background(), "pos-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Model = "new-model"
+	current.Family = "newfam"
+	current.Tiers = []model.Tier{model.TierT2}
+	current.Capabilities = []string{"web"}
+	current.Preference = 1
+	if err := db.UpdatePositioning(context.Background(), &current); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func moveRankingLive(t *testing.T, db *store.Store) {
+	t.Helper()
+	current, err := db.GetPositioning(context.Background(), "pos-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.Model = "moved-model"
+	current.Family = "movedfam"
+	if err := db.UpdatePositioning(context.Background(), &current); err != nil {
+		t.Fatal(err)
+	}
+	if models := positioningModels(t, db); len(models) != 1 || models[0] != "moved-model" {
+		t.Fatalf("live positioning %v", models)
 	}
 }
 

@@ -572,8 +572,8 @@ func (d Deps) absorbRanking(ctx context.Context, card model.Card, text string) e
 	var prop positioning.Proposal
 	var current []model.Positioning
 	if len(parsed.entries) > 0 {
-		// Another card's proposal is not a duplicate. Skip only when this card
-		// already has the question and a finished status for these entries.
+		// Another card's proposal is not a duplicate. A same-card match is skipped
+		// only while a proposal is still open, or a terminal one still matches live positioning.
 		handled, err := d.rankingAlreadyHandled(ctx, home, card, parsed.entries)
 		if err != nil {
 			return err
@@ -629,7 +629,8 @@ func (d Deps) rankingAlreadyHandled(ctx context.Context, home string, card model
 		return false, err
 	}
 	want := proposalEntriesKey(entries)
-	matched := false
+	openMatch := false
+	terminalMatch := false
 	for _, q := range questions {
 		if q.Scope != fresh.ID {
 			continue
@@ -647,16 +648,30 @@ func (d Deps) rankingAlreadyHandled(ctx context.Context, home string, card model
 		}
 		var saved struct {
 			Entries []model.Positioning `json:"entries"`
+			Status  string              `json:"status"`
 		}
 		if err := json.Unmarshal(body, &saved); err != nil {
 			continue
 		}
-		if proposalEntriesKey(saved.Entries) == want {
-			matched = true
-			break
+		if proposalEntriesKey(saved.Entries) != want {
+			continue
 		}
+		if rankingProposalTerminal(saved.Status) {
+			terminalMatch = true
+			continue
+		}
+		openMatch = true
+		break
 	}
-	if !matched {
+	handled := openMatch
+	if !handled && terminalMatch {
+		same, err := rankingLiveMatches(ctx, home, want)
+		if err != nil {
+			return false, err
+		}
+		handled = same
+	}
+	if !handled {
 		return false, nil
 	}
 	if fresh.Status != model.CardDone && fresh.Status != model.CardNeedsInput {
@@ -665,6 +680,24 @@ func (d Deps) rankingAlreadyHandled(ctx context.Context, home string, card model
 		}
 	}
 	return true, nil
+}
+
+func rankingProposalTerminal(status string) bool {
+	return status == "approved" || status == "rejected"
+}
+
+// rankingLiveMatches reports whether the published positioning table still has these entries.
+func rankingLiveMatches(ctx context.Context, home, want string) (bool, error) {
+	table, err := positioning.Open(home)
+	if err != nil {
+		return false, err
+	}
+	defer table.Close()
+	current, err := table.Current(ctx)
+	if err != nil {
+		return false, err
+	}
+	return proposalEntriesKey(current) == want, nil
 }
 
 func proposalEntriesKey(entries []model.Positioning) string {

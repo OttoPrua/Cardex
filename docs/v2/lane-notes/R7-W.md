@@ -5,7 +5,7 @@ sched.New 的默认 Engine 调用 loop.New(db, workspace.Git, 投递器).Step，
 runner.Lookup 补上 grok、cursor、kimi、agy。requires 含 goal_mode 时，host 在 Build 前设置 Grok 的 GoalMode、Prompt、SessionDir，Wait 之后调用 ConsumeGrokProcessExit。
 未注入 Notify 时走 notify.New(notify.CommandExec)。Fallback 取目标 origin 与卡 origin 事件的差异，SubscriptionID 取渠道 SourceGroup。失败写 delivery_error，下一拍重试。
 runServe 调用 sched.Serve。cardex host 与 CARDEX_SCHED_HOST 子进程都用 workspace.Git。schedule run 把模板 requires 抄到卡上。
-空 tier 走 productionClassify：已注册执行器上 host.Run 一次，30s 超时仍由 classify.Classify 包住。失败写一条 classify_error 并保留种类默认 tier。已有 tier 不调用。
+空 tier 走 productionClassify：已注册执行器上 host.Run 一次，30s 超时仍由 classify.Classify 包住。尝试目录写上和 dispatch 相同的 hard-duration，host 才会启动。失败写一条 classify_error 并保留种类默认 tier。已有 tier 不调用。
 
 ## 没做什么，以及原因
 没改 DesignStep。internal/loop/design.go 和 TestDesignStepNeedsStoreAndDevStaysOpen 不在写域，该测试要求它返回 ErrNotImplemented。

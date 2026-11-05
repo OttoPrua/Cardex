@@ -136,6 +136,53 @@ func TestClassifyUnparseableUsesHost(t *testing.T) {
 	}
 }
 
+func TestClassifyHostTierFromScript(t *testing.T) {
+	ctx := context.Background()
+	home, db, repo := newHome(t)
+	_, objID := seedRepo(t, db, repo, "true")
+	ch := model.Channel{
+		ID: "classifier", Runner: model.RunnerFake, Family: "classifier",
+		Health: model.HealthDegraded, Concurrency: 1,
+	}
+	if err := db.CreateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	script := []byte(`{"attempts":{"0":{"output":"TIER: T1\nREASON: small change\n","exit_code":0}}}`)
+	if err := os.MkdirAll(filepath.Join(home, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "scripts", "cls-c.json"), script, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	card := model.Card{
+		ID: "c", Objective: objID, Kind: model.KindDev, Title: "c",
+		Status: model.CardReady, Body: "needs a tier",
+	}
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(home).Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := mustCard(t, db, "c")
+	if got.Tier != model.TierT1 {
+		t.Fatalf("tier %s", got.Tier)
+	}
+	if n := classifyErrors(t, db, "c"); n != 0 {
+		t.Fatalf("classify_error events %d", n)
+	}
+	attempts, err := db.ListAttempts(ctx, "cls-c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 {
+		t.Fatalf("classify attempts %+v", attempts)
+	}
+	if !eventsOf(t, db, attempts[0].ID, "host_start") {
+		t.Fatal("classifier host did not start")
+	}
+}
+
 func classifyErrors(t *testing.T, db interface {
 	ListEvents(context.Context, string) ([]model.Event, error)
 }, cardID string) int {

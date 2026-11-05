@@ -84,6 +84,17 @@ func (r *Runner) classifyAttempt(ctx context.Context, db *store.Store, cardID st
 	if err := os.WriteFile(promptPath, []byte(prompt), 0o644); err != nil {
 		return "", err
 	}
+	// dispatch writes this same file. Without it host.Run returns before the executor starts.
+	if err := os.WriteFile(filepath.Join(dir, "hard-duration"), []byte(hardDur), 0o644); err != nil {
+		return "", err
+	}
+	// The classifier attempt is a side card. Its script is scripts/cls-<id>.json,
+	// the same lookup dispatch uses, so the work card's script is left alone.
+	if script := r.scriptFor(model.Card{ID: sideID}); len(script) > 0 {
+		if err := os.WriteFile(filepath.Join(dir, "script.json"), script, 0o644); err != nil {
+			return "", err
+		}
+	}
 	wt := filepath.Join(dir, "wt")
 	if err := os.MkdirAll(wt, 0o755); err != nil {
 		return "", err

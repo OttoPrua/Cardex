@@ -3,6 +3,7 @@ package notify
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,13 @@ import (
 	"strings"
 	"time"
 )
+
+// reminderReadError is an I/O failure reading an existing ledger.
+// A missing file is an empty book. A format fault is not this error.
+type reminderReadError struct{ err error }
+
+func (e *reminderReadError) Error() string { return e.err.Error() }
+func (e *reminderReadError) Unwrap() error { return e.err }
 
 // reminderFile is the per-home bookkeeping a new process reloads.
 type reminderFile struct {
@@ -45,7 +53,14 @@ func saveReminder(home, id string, st deliveryState) error {
 	if strings.TrimSpace(home) == "" {
 		return nil
 	}
-	all, _ := readReminders(home)
+	all, err := readReminders(home)
+	// A failed read is not an empty book. Leave the existing file in place.
+	if err != nil {
+		var readErr *reminderReadError
+		if errors.As(err, &readErr) {
+			return err
+		}
+	}
 	if all.Questions == nil {
 		all.Questions = map[string]reminderRecord{}
 	}
@@ -54,15 +69,17 @@ func saveReminder(home, id string, st deliveryState) error {
 }
 
 // readReminders loads the ledger. A missing file is an empty book.
-// A format fault returns the records that still parsed, plus a diagnostic.
-// Callers deliver anyway and merge new records onto the ones that parsed.
+// An I/O error reading an existing file is not an empty book: callers must
+// not replace that file. A format fault returns the records that still
+// parsed, plus a diagnostic. Callers deliver anyway and merge new records
+// onto the ones that parsed.
 func readReminders(home string) (reminderFile, error) {
 	raw, err := os.ReadFile(reminderPath(home))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return reminderFile{}, nil
 		}
-		return reminderFile{}, fmt.Errorf("notify: reminders.json: %w", err)
+		return reminderFile{}, &reminderReadError{err: fmt.Errorf("notify: reminders.json: %w", err)}
 	}
 	return decodeReminders(raw)
 }

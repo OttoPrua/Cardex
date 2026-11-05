@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -1401,6 +1402,7 @@ func TestReminderLedgerFormatFaultStillDelivers(t *testing.T) {
 		missing    bool
 		sibling    bool
 		unreadable bool
+		prior      string // already recorded; a read failure must keep its backoff
 		want       string
 	}{
 		{name: "missing", missing: true},
@@ -1433,6 +1435,7 @@ func TestReminderLedgerFormatFaultStillDelivers(t *testing.T) {
 		{name: "record string", bad: `"nope"`, sibling: true, want: "q-bad"},
 		{name: "record array", bad: `[1]`, sibling: true, want: "q-bad"},
 		{name: "unreadable", body: `{"questions":{}}`, unreadable: true, want: "permission denied"},
+		{name: "unreadable-keeps-prior", prior: "q-old", unreadable: true, want: "permission denied"},
 	}
 	origWrite := inboxWrite
 	t.Cleanup(func() { inboxWrite = origWrite })
@@ -1455,12 +1458,18 @@ func TestReminderLedgerFormatFaultStillDelivers(t *testing.T) {
 			}
 			clock := cur
 			now := func() time.Time { return clock }
+			var path string
+			var original []byte
 			if !tc.missing {
 				body := []byte(tc.body)
 				if tc.bad != "" {
 					body = ledgerWithSibling(t, good, tc.bad)
 				}
-				path := reminderPath(home)
+				if tc.prior != "" {
+					body = ledgerWithQuestion(t, tc.prior, good)
+				}
+				original = append([]byte(nil), body...)
+				path = reminderPath(home)
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 					t.Fatal(err)
 				}
@@ -1472,6 +1481,17 @@ func TestReminderLedgerFormatFaultStillDelivers(t *testing.T) {
 						t.Fatal(err)
 					}
 					t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+					probe, probeErr := os.CreateTemp(filepath.Dir(path), ".parent-writable-*")
+					if probeErr != nil {
+						t.Fatalf("parent not writable: %v", probeErr)
+					}
+					_ = probe.Close()
+					if err := os.Remove(probe.Name()); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := os.ReadFile(path); err == nil {
+						t.Fatal("mode 000 still readable; row does not prove a read failure")
+					}
 				}
 			}
 			keepText := "keep " + tc.name
@@ -1517,6 +1537,39 @@ func TestReminderLedgerFormatFaultStillDelivers(t *testing.T) {
 			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("diagnostic %v, want %q", err, tc.want)
 			}
+			if tc.unreadable {
+				info, statErr := os.Stat(path)
+				if statErr != nil {
+					t.Fatal(statErr)
+				}
+				if info.Mode().Perm() != 0 {
+					t.Fatalf("ledger mode = %o, want 000", info.Mode().Perm())
+				}
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				got, readErr := os.ReadFile(path)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if !bytes.Equal(got, original) {
+					t.Fatalf("unreadable ledger was replaced:\n got %s\nwant %s", got, original)
+				}
+				if tc.prior != "" {
+					held := len(trace)
+					againErr := deliverLedgerQuestion(New(exec, now), home, tc.prior, "again "+tc.prior)
+					if againErr != nil {
+						t.Fatalf("prior question after restore: %v", againErr)
+					}
+					if len(trace) != held {
+						t.Fatalf("recorded question resent before gap: %v", trace[held:])
+					}
+					if _, statErr := os.Stat(inboxPath(home, tc.prior)); !os.IsNotExist(statErr) {
+						t.Fatalf("prior inbox %v", statErr)
+					}
+				}
+				return
+			}
 			held := len(trace)
 			if againErr := deliverLedgerQuestion(New(exec, now), home, "q-new", newText); len(trace) != held {
 				t.Fatalf("new question was not recorded: %v err %v", trace[held:], againErr)
@@ -1552,12 +1605,22 @@ func deliverLedgerQuestion(svc *Service, home, id, text string) error {
 
 func ledgerWithSibling(t *testing.T, good []byte, bad string) []byte {
 	t.Helper()
-	doc := struct {
-		Questions map[string]json.RawMessage `json:"questions"`
-	}{Questions: map[string]json.RawMessage{
+	return ledgerQuestions(t, map[string]json.RawMessage{
 		"q-keep": good,
 		"q-bad":  json.RawMessage(bad),
-	}}
+	})
+}
+
+func ledgerWithQuestion(t *testing.T, id string, rec []byte) []byte {
+	t.Helper()
+	return ledgerQuestions(t, map[string]json.RawMessage{id: rec})
+}
+
+func ledgerQuestions(t *testing.T, questions map[string]json.RawMessage) []byte {
+	t.Helper()
+	doc := struct {
+		Questions map[string]json.RawMessage `json:"questions"`
+	}{Questions: questions}
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatal(err)

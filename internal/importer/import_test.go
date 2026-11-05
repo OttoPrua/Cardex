@@ -549,6 +549,7 @@ func TestImportContinuableBodyKeepsStepBoundaries(t *testing.T) {
 		stepLine  string
 		completed []string
 		remaining []string
+		review    bool
 	}
 	rows := []row{
 		{name: "queued-ab", rel: "tasks/queued-ab.json", status: "queued", prompts: []string{"A\nB", "C"}, step: 1, deps: []string{"keep"}, stepLine: "step: 1", completed: []string{"A\nB"}, remaining: []string{"C"}},
@@ -560,7 +561,11 @@ func TestImportContinuableBodyKeepsStepBoundaries(t *testing.T) {
 		{name: "step0", rel: "tasks/step0.json", status: "queued", prompts: []string{"ONLY"}, stepLine: "step: 0", remaining: []string{"ONLY"}},
 		{name: "workflow", rel: "workflows/flow.json", status: "running", prompts: []string{"A\nB", "C"}, step: 1, stepLine: "step: 1", completed: []string{"A\nB"}, remaining: []string{"C"}},
 		{name: "later", rel: "tasks/later.json", status: "queued", prompts: []string{"A", "B", "C\nD"}, step: 1, stepLine: "step: 1", completed: []string{"A"}, remaining: []string{"B", "C\nD"}},
-		{name: "past", rel: "tasks/past.json", status: "held", prompts: []string{"A\nB", "C"}, step: 4, stepLine: "step: 4", completed: []string{"A\nB", "C"}},
+		{name: "past", rel: "tasks/past.json", status: "held", prompts: []string{"A\nB", "C"}, step: 4, stepLine: "step: 4", remaining: []string{"A\nB", "C"}, review: true},
+		{name: "past-queued", rel: "tasks/past-queued.json", status: "queued", prompts: []string{"A", "B\nC"}, step: 3, stepLine: "step: 3", remaining: []string{"A", "B\nC"}, review: true},
+		{name: "past-running", rel: "tasks/past-running.json", status: "running", prompts: []string{"A\nB", "C"}, step: 9, stepLine: "step: 9", remaining: []string{"A\nB", "C"}, review: true},
+		{name: "past-workflow", rel: "workflows/past.json", status: "running", prompts: []string{"A", "B"}, step: 5, stepLine: "step: 5", remaining: []string{"A", "B"}, review: true},
+		{name: "exact", rel: "tasks/exact.json", status: "queued", prompts: []string{"A", "B"}, step: 2, stepLine: "step: 2", completed: []string{"A", "B"}},
 		{name: "negative", rel: "tasks/negative.json", status: "running", prompts: []string{"A", "B\nC"}, step: -1, stepLine: "step: -1", remaining: []string{"A", "B\nC"}},
 		{name: "negative-queued", rel: "tasks/negative-queued.json", status: "queued", prompts: []string{"A\nB", "C"}, step: -2, stepLine: "step: -2", remaining: []string{"A\nB", "C"}},
 		{name: "negative-held", rel: "tasks/negative-held.json", status: "held", prompts: []string{"A", "B\nC"}, step: -3, stepLine: "step: -3", remaining: []string{"A", "B\nC"}},
@@ -599,6 +604,25 @@ func TestImportContinuableBodyKeepsStepBoundaries(t *testing.T) {
 		line, completed, remaining := parseContinuableBody(t, card.Body)
 		if line != row.stepLine {
 			t.Fatalf("%s first line %q", row.name, line)
+		}
+		marked := strings.HasPrefix(card.Body, row.stepLine+"\n待复核\n")
+		if marked != row.review {
+			t.Fatalf("%s review %v body %q", row.name, marked, card.Body)
+		}
+		if row.review {
+			switch row.status {
+			case "queued", "running":
+				if card.Status != model.CardReady {
+					t.Fatalf("%s status %s", row.name, card.Status)
+				}
+			case "held":
+				if card.Status != model.CardPaused {
+					t.Fatalf("%s status %s", row.name, card.Status)
+				}
+			}
+			if len(completed) != 0 {
+				t.Fatalf("%s marked complete %q", row.name, completed)
+			}
 		}
 		if !sameStrings(completed, row.completed) || !sameStrings(remaining, row.remaining) {
 			t.Fatalf("%s completed %q remaining %q", row.name, completed, remaining)
@@ -650,7 +674,11 @@ func TestImportContinuableBodyKeepsStepBoundaries(t *testing.T) {
 func splitContinuableSections(t *testing.T, body string) (history, pending string) {
 	t.Helper()
 	_, rest, ok := strings.Cut(body, "\n")
-	if !ok || !strings.HasPrefix(rest, "## 已完成\n") {
+	if !ok {
+		t.Fatalf("completed section %q", body)
+	}
+	rest = skipUnknownProgress(rest)
+	if !strings.HasPrefix(rest, "## 已完成\n") {
 		t.Fatalf("completed section %q", body)
 	}
 	rest = strings.TrimPrefix(rest, "## 已完成\n")
@@ -667,6 +695,7 @@ func parseContinuableBody(t *testing.T, body string) (string, []string, []string
 	if !ok || !strings.HasPrefix(line, "step: ") {
 		t.Fatalf("step line %q", body)
 	}
+	rest = skipUnknownProgress(rest)
 	const doneLabel = "## 已完成\n"
 	const pendLabel = "## 待执行\n"
 	if !strings.HasPrefix(rest, doneLabel) {
@@ -719,6 +748,14 @@ func takeContinuableStep(t *testing.T, rest string) (string, string) {
 		rest = rest[1:]
 	}
 	return payload, rest
+}
+
+func skipUnknownProgress(rest string) string {
+	const mark = "待复核\n"
+	if strings.HasPrefix(rest, mark) {
+		return rest[len(mark):]
+	}
+	return rest
 }
 
 func sameStrings(got, want []string) bool {
@@ -819,6 +856,121 @@ func TestImportDistinctStableIDs(t *testing.T) {
 		if again[rel].ID != bySource[rel].ID || again[rel].Objective != bySource[rel].Objective {
 			t.Fatalf("%s id %s/%s objective %s/%s", rel, again[rel].ID, bySource[rel].ID, again[rel].Objective, bySource[rel].Objective)
 		}
+	}
+	if after := snapshotTree(t, v1); after != before {
+		t.Fatal("import changed v1 bytes")
+	}
+}
+
+func TestImportGeneratedIDsStayDistinct(t *testing.T) {
+	const preservedHash = "a-b-2e7336dc8eba87ef472df568c35482abf2575dc3e5eac0c5c62b8ffaeac2c934"
+	type projectRow struct {
+		rel, id, key string
+	}
+	projects := []projectRow{
+		{rel: "tasks/dot.json", id: "dot", key: "a.b"},
+		{rel: "tasks/hash.json", id: "hash", key: preservedHash},
+	}
+	generated := sanitize("a.b")
+	if generated != "a.b" && generated != preservedHash {
+		projects = append(projects, projectRow{rel: "tasks/gen.json", id: "gen", key: generated})
+	}
+	noIDRel := "tasks/noid.json"
+	explicitRel := "tasks/explicit.json"
+	explicitToken := sanitize(noIDRel)
+
+	v1 := t.TempDir()
+	writeV1(t, v1, "tasks/q1.json", map[string]any{
+		"id": "q1", "title": "Explicit ferry", "status": "queued", "project": "lumen",
+	})
+	for _, row := range projects {
+		writeV1(t, v1, row.rel, map[string]any{
+			"id": row.id, "title": row.key, "status": "queued", "project": row.key,
+		})
+	}
+	writeV1(t, v1, noIDRel, map[string]any{
+		"title": "No id card", "status": "done", "project": "lumen",
+	})
+	writeV1(t, v1, explicitRel, map[string]any{
+		"id": explicitToken, "title": "Explicit token", "status": "done", "project": "lumen",
+	})
+	before := snapshotTree(t, v1)
+	v2 := t.TempDir()
+	ctx := context.Background()
+	if _, err := Import(ctx, v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, v2)
+	bySource := map[string]model.Card{}
+	for _, card := range cardsOf(t, db) {
+		bySource[card.Legacy.SourcePath] = card
+	}
+	wantCards := 3 + len(projects)
+	if len(bySource) != wantCards {
+		t.Fatalf("cards %d want %d %#v", len(bySource), wantCards, bySource)
+	}
+	queued := bySource["tasks/q1.json"]
+	if queued.ID != "v1-q1" {
+		t.Fatalf("explicit id %s", queued.ID)
+	}
+	objectives := map[string]string{}
+	projectIDs := map[string]string{}
+	for _, row := range projects {
+		card, ok := bySource[row.rel]
+		if !ok {
+			t.Fatalf("missing %s", row.rel)
+		}
+		if card.ID != "v1-"+row.id {
+			t.Fatalf("%s id %s", row.key, card.ID)
+		}
+		obj, err := db.GetObjective(ctx, card.Objective)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if prev, ok := objectives[card.Objective]; ok {
+			t.Fatalf("objective %s shared by %s and %s", card.Objective, prev, row.key)
+		}
+		objectives[card.Objective] = row.key
+		if _, err := db.GetProject(ctx, obj.Project); err != nil {
+			t.Fatal(err)
+		}
+		if prev, ok := projectIDs[obj.Project]; ok {
+			t.Fatalf("project %s shared by %s and %s", obj.Project, prev, row.key)
+		}
+		projectIDs[obj.Project] = row.key
+	}
+	if len(objectives) != len(projects) || len(projectIDs) != len(projects) {
+		t.Fatalf("objectives %d projects %d", len(objectives), len(projectIDs))
+	}
+	noID := bySource[noIDRel]
+	explicit := bySource[explicitRel]
+	if noID.Title != "No id card" || explicit.Title != "Explicit token" {
+		t.Fatalf("dropped title %q %q", noID.Title, explicit.Title)
+	}
+	if noID.ID == "" || noID.ID == explicit.ID || explicit.ID != "v1-"+explicitToken || noID.ID == "v1-"+explicitToken {
+		t.Fatalf("noid %s explicit %s token %s", noID.ID, explicit.ID, explicitToken)
+	}
+	cardsBefore := cardsOf(t, db)
+	objsBefore := objectivesOf(t, db)
+	projsBefore, err := db.ListProjects(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Import(ctx, v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	if again := cardsOf(t, db); len(again) != len(cardsBefore) {
+		t.Fatalf("second import cards %d want %d", len(again), len(cardsBefore))
+	}
+	if again := objectivesOf(t, db); len(again) != len(objsBefore) {
+		t.Fatalf("second import objectives %d want %d", len(again), len(objsBefore))
+	}
+	againProjects, err := db.ListProjects(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(againProjects) != len(projsBefore) {
+		t.Fatalf("second import projects %d want %d", len(againProjects), len(projsBefore))
 	}
 	if after := snapshotTree(t, v1); after != before {
 		t.Fatal("import changed v1 bytes")

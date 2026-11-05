@@ -89,9 +89,12 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	id := fs.String("id", "", "objective id")
 	mode := fs.String("mode", "", "auto or manual")
 	freeze := fs.String("freeze-mode", "", "safe or fast")
-	soft := fs.Int64("soft-tokens", 0, "soft token budget")
-	hard := fs.Int64("hard-tokens", 0, "hard token budget")
-	priority := fs.Int("priority", 0, "priority")
+	soft := &softNumber{name: "soft-tokens", kind: numberInt64}
+	hard := &softNumber{name: "hard-tokens", kind: numberInt64}
+	priority := &softNumber{name: "priority", kind: numberInt}
+	fs.Var(soft, "soft-tokens", "soft token budget")
+	fs.Var(hard, "hard-tokens", "hard token budget")
+	fs.Var(priority, "priority", "priority")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -130,15 +133,18 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 			o.FreezeMode = val
 		}
 	}
-	if flagSeen(fs, "soft-tokens") {
-		o.Budget.SoftTokens = *soft
+	if soft.ok {
+		o.Budget.SoftTokens = soft.i64
 	}
-	if flagSeen(fs, "hard-tokens") {
-		o.Budget.HardTokens = *hard
+	notes = append(notes, soft.bad...)
+	if hard.ok {
+		o.Budget.HardTokens = hard.i64
 	}
-	if flagSeen(fs, "priority") {
-		o.Priority = *priority
+	notes = append(notes, hard.bad...)
+	if priority.ok {
+		o.Priority = priority.n
 	}
+	notes = append(notes, priority.bad...)
 	if err := db.UpdateObjective(context.Background(), &o); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

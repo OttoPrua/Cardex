@@ -529,8 +529,10 @@ func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	fs := newFlagSet("channel set", "set redline, quota windows, or concurrency on a channel", "--json", stdout, stderr)
 	id := fs.String("id", "", "channel id")
 	runner := fs.String("runner", "", "runner name")
-	redline := fs.Float64("redline", 0, "redline from 0 to 1 inclusive")
-	concurrency := fs.Int("concurrency", 0, "concurrency limit")
+	redline := &softNumber{name: "redline", kind: numberFloat}
+	concurrency := &softNumber{name: "concurrency", kind: numberInt}
+	fs.Var(redline, "redline", "redline from 0 to 1 inclusive")
+	fs.Var(concurrency, "concurrency", "concurrency limit")
 	health := fs.String("health", "", "ok, auth_failed, or degraded")
 	var windows, models stringsFlag
 	fs.Var(&windows, "window", "name:rule or name:rule:token-limit")
@@ -575,12 +577,14 @@ func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 			notes = append(notes, "runner "+*runner)
 		}
 	}
-	if flagSeen(fs, "redline") {
-		ch.Redline = *redline
+	if redline.ok {
+		ch.Redline = redline.f64
 	}
-	if flagSeen(fs, "concurrency") {
-		ch.Concurrency = *concurrency
+	notes = append(notes, redline.bad...)
+	if concurrency.ok {
+		ch.Concurrency = concurrency.n
 	}
+	notes = append(notes, concurrency.bad...)
 	if flagSeen(fs, "health") {
 		val := model.Health(strings.TrimSpace(*health))
 		if val.Valid() {

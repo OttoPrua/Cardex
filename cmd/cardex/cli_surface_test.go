@@ -1432,17 +1432,143 @@ func TestSoftBusinessValues(t *testing.T) {
 			t.Fatalf("exit %d", code)
 		}
 	})
-	t.Run("bad flag syntax still exits 2", func(t *testing.T) {
+	t.Run("unknown flag still exits 2", func(t *testing.T) {
 		home := setup(t)
-		code, _, _ := callCLI(t, []string{"--home", home, "objective", "set", "--id", "o1", "--priority", "nope"})
+		code, _, _ := callCLI(t, []string{"--home", home, "objective", "set", "--id", "o1", "--nope", "1"})
 		if code != 2 {
 			t.Fatalf("exit %d", code)
 		}
 		obj := objectiveOf(t, home)
-		if obj.Priority != 1 {
-			t.Fatalf("priority %d", obj.Priority)
+		if obj.Priority != 1 || obj.Mode != model.ModeManual {
+			t.Fatalf("mode %s priority %d", obj.Mode, obj.Priority)
 		}
 	})
+	showObjective := func(t *testing.T, home, id string) model.Objective {
+		t.Helper()
+		code, out, errb := callCLI(t, []string{"--home", home, "--json", "objective", "show", id})
+		if code != 0 {
+			t.Fatalf("show %d %s", code, errb)
+		}
+		var obj model.Objective
+		if err := json.Unmarshal([]byte(out), &obj); err != nil {
+			t.Fatal(err)
+		}
+		return obj
+	}
+	cases := []struct {
+		name  string
+		prep  [][]string
+		args  []string
+		note  string
+		check func(t *testing.T, home string)
+	}{
+		{
+			name: "objective set priority keeps mode",
+			args: []string{"objective", "set", "--id", "o1", "--mode", "auto", "--priority", "nope"},
+			note: "needs correction: priority nope",
+			check: func(t *testing.T, home string) {
+				obj := objectiveOf(t, home)
+				if obj.Mode != model.ModeAuto || obj.Priority != 1 || obj.FreezeMode != model.FreezeSafe {
+					t.Fatalf("mode %s freeze %s priority %d", obj.Mode, obj.FreezeMode, obj.Priority)
+				}
+			},
+		},
+		{
+			name: "channel set concurrency keeps redline",
+			args: []string{"channel", "set", "--id", "ch1", "--redline", "0.5", "--concurrency", "nope"},
+			note: "needs correction: concurrency nope",
+			check: func(t *testing.T, home string) {
+				ch := channelOf(t, home, "ch1")
+				if ch.Redline != 0.5 || ch.Concurrency != 1 || ch.Runner != model.RunnerGrok {
+					t.Fatalf("%+v", ch)
+				}
+			},
+		},
+		{
+			name: "objective add priority keeps the other fields",
+			args: []string{"objective", "add", "--id", "o2", "--project", "p1", "--title", "Ferry", "--mode", "manual", "--soft-tokens", "8", "--priority", "nope"},
+			note: "needs correction: priority nope",
+			check: func(t *testing.T, home string) {
+				obj := showObjective(t, home, "o2")
+				if obj.Title != "Ferry" || obj.Mode != model.ModeManual || obj.Priority != 0 || obj.Budget.SoftTokens != 8 || obj.Budget.HardTokens != 0 || obj.Project != "p1" {
+					t.Fatalf("%+v", obj)
+				}
+			},
+		},
+		{
+			name: "objective set soft-tokens keeps the stored budget",
+			prep: [][]string{{"objective", "set", "--id", "o1", "--soft-tokens", "11", "--hard-tokens", "22"}},
+			args: []string{"objective", "set", "--id", "o1", "--soft-tokens", "nope", "--priority", "5"},
+			note: "needs correction: soft-tokens nope",
+			check: func(t *testing.T, home string) {
+				obj := objectiveOf(t, home)
+				if obj.Budget.SoftTokens != 11 || obj.Budget.HardTokens != 22 || obj.Priority != 5 {
+					t.Fatalf("%+v", obj.Budget)
+				}
+			},
+		},
+		{
+			name: "objective set hard-tokens keeps the stored budget",
+			prep: [][]string{{"objective", "set", "--id", "o1", "--soft-tokens", "11", "--hard-tokens", "22"}},
+			args: []string{"objective", "set", "--id", "o1", "--hard-tokens", "nope"},
+			note: "needs correction: hard-tokens nope",
+			check: func(t *testing.T, home string) {
+				obj := objectiveOf(t, home)
+				if obj.Budget.HardTokens != 22 || obj.Budget.SoftTokens != 11 || obj.Priority != 1 {
+					t.Fatalf("soft %d hard %d priority %d", obj.Budget.SoftTokens, obj.Budget.HardTokens, obj.Priority)
+				}
+			},
+		},
+		{
+			name: "objective add soft-tokens keeps the default",
+			args: []string{"objective", "add", "--id", "o3", "--project", "p1", "--title", "Mast", "--priority", "2", "--soft-tokens", "nope"},
+			note: "needs correction: soft-tokens nope",
+			check: func(t *testing.T, home string) {
+				obj := showObjective(t, home, "o3")
+				if obj.Budget.SoftTokens != 0 || obj.Priority != 2 || obj.Title != "Mast" {
+					t.Fatalf("%+v", obj)
+				}
+			},
+		},
+		{
+			name: "objective add hard-tokens keeps the default",
+			args: []string{"objective", "add", "--id", "o4", "--project", "p1", "--title", "Hull", "--mode", "manual", "--soft-tokens", "4", "--hard-tokens", "nope"},
+			note: "needs correction: hard-tokens nope",
+			check: func(t *testing.T, home string) {
+				obj := showObjective(t, home, "o4")
+				if obj.Budget.HardTokens != 0 || obj.Budget.SoftTokens != 4 || obj.Mode != model.ModeManual || obj.Title != "Hull" || obj.Priority != 0 {
+					t.Fatalf("%+v", obj)
+				}
+			},
+		},
+		{
+			name: "channel set redline keeps concurrency",
+			args: []string{"channel", "set", "--id", "ch1", "--redline", "nope", "--concurrency", "3"},
+			note: "needs correction: redline nope",
+			check: func(t *testing.T, home string) {
+				ch := channelOf(t, home, "ch1")
+				if ch.Redline != 0.25 || ch.Concurrency != 3 || ch.Runner != model.RunnerGrok {
+					t.Fatalf("%+v", ch)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := setup(t)
+			for _, prep := range tc.prep {
+				mustHome(t, home, prep...)
+			}
+			code, out, errb := callCLI(t, append([]string{"--home", home}, tc.args...))
+			if code != 0 {
+				t.Fatalf("exit %d\n%s\n%s", code, out, errb)
+			}
+			if !strings.Contains(out+errb, tc.note) {
+				t.Fatalf("report\n%s\n%s", out, errb)
+			}
+			tc.check(t, home)
+		})
+	}
 }
 
 func TestDoctorExecutorNames(t *testing.T) {

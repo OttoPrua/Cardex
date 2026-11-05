@@ -2,7 +2,6 @@ package importer
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"strconv"
@@ -173,27 +172,31 @@ func continuableStatus(status string) bool {
 
 // continuableBody keeps every v1 prompt and the recorded step on the card.
 // Card has no step column, so the step is the first line and stays the raw
-// value, including a negative one. A negative step is read as 0: nothing is
-// completed and every prompt stays pending. A missing step arrives as 0.
-// An in-range step leaves earlier prompts completed and the prompt at that
-// index, internal newlines included, plus later prompts pending. A step past
-// the last prompt leaves every prompt completed. Each prompt keeps its
-// length-prefixed boundary.
+// value, including a negative one or a step past the last prompt. A negative
+// step is read as 0: nothing is completed and every prompt stays pending.
+// A missing step arrives as 0. An in-range step leaves earlier prompts
+// completed and the prompt at that index, internal newlines included, plus
+// later prompts pending. A step past the last prompt is unknown progress:
+// the body is marked 待复核, nothing is completed, and every prompt stays
+// pending. Each prompt keeps its length-prefixed boundary.
 func continuableBody(prompts []string, step int) string {
 	effective := step
+	unknown := false
 	if effective < 0 {
+		effective = 0
+	} else if effective > len(prompts) {
+		unknown = true
 		effective = 0
 	}
 	var b strings.Builder
 	b.WriteString("step: ")
 	b.WriteString(strconv.Itoa(step))
 	b.WriteByte('\n')
-	b.WriteString("## 已完成\n")
-	history := len(prompts)
-	if effective <= len(prompts) {
-		history = effective
+	if unknown {
+		b.WriteString("待复核\n")
 	}
-	writePromptSteps(&b, prompts, 0, history)
+	b.WriteString("## 已完成\n")
+	writePromptSteps(&b, prompts, 0, effective)
 	b.WriteString("## 待执行\n")
 	if effective < len(prompts) {
 		writePromptSteps(&b, prompts, effective, len(prompts))
@@ -272,11 +275,14 @@ func firstText(values ...string) string {
 	return ""
 }
 
+// cardID preserves an explicit id under v1-. A file with no id is named from
+// its path under v1g-. That prefix cannot equal v1- plus any explicit id, so
+// a generated token is not dropped when it matches another record's id.
 func cardID(rel, id string) string {
 	if t := strings.TrimSpace(id); t != "" {
 		return "v1-" + t
 	}
-	return "v1-" + sanitize(rel)
+	return "v1g-" + sanitize(rel)
 }
 
 func objectiveID(project string) string {
@@ -287,25 +293,38 @@ func projectID(project string) string {
 	return "v1proj-" + sanitize(project)
 }
 
-// sanitize keeps a safe token unchanged. Any other raw value gets a digest of
-// the original so distinct inputs that would otherwise fold together stay distinct.
+// sanitize keeps a safe token that is not itself a generated encoding.
+// Every other value becomes g plus the hex of the original. That encoding
+// is not a preserved token, so a generated id cannot equal a raw one.
 func sanitize(s string) string {
-	var b strings.Builder
+	if isPreservedToken(s) {
+		return s
+	}
+	return "g" + hex.EncodeToString([]byte(s))
+}
+
+func isPreservedToken(s string) bool {
+	if s == "" || isGeneratedToken(s) {
+		return false
+	}
 	for _, r := range s {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
-			b.WriteRune(r)
 		default:
-			b.WriteByte('-')
+			return false
 		}
 	}
-	out := strings.Trim(b.String(), "-")
-	if out == s && out != "" {
-		return out
+	return true
+}
+
+func isGeneratedToken(s string) bool {
+	if len(s) == 0 || s[0] != 'g' {
+		return false
 	}
-	if out == "" {
-		out = "x"
+	rest := s[1:]
+	if len(rest)%2 != 0 {
+		return false
 	}
-	sum := sha256.Sum256([]byte(s))
-	return out + "-" + hex.EncodeToString(sum[:])
+	_, err := hex.DecodeString(rest)
+	return err == nil
 }

@@ -165,9 +165,12 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	var acceptance, checks stringsFlag
 	fs.Var(&acceptance, "acceptance", "acceptance command")
 	fs.Var(&checks, "check", "acceptance checklist item")
-	soft := fs.Int64("soft-tokens", 0, "soft token budget")
-	hard := fs.Int64("hard-tokens", 0, "hard token budget")
-	priority := fs.Int("priority", 0, "priority")
+	soft := &softNumber{name: "soft-tokens", kind: numberInt64}
+	hard := &softNumber{name: "hard-tokens", kind: numberInt64}
+	priority := &softNumber{name: "priority", kind: numberInt}
+	fs.Var(soft, "soft-tokens", "soft token budget")
+	fs.Var(hard, "hard-tokens", "hard token budget")
+	fs.Var(priority, "priority", "priority")
 	mode := fs.String("mode", string(model.ModeAuto), "auto or manual")
 	freeze := fs.String("freeze-mode", string(model.FreezeSafe), "safe or fast")
 	originFlag := fs.String("origin", "", "origin session kind:id; a present flag wins over CARDEX_ORIGIN")
@@ -208,11 +211,27 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		reasons = append(reasons, "unrecognized status "+*status)
 		statusVal = model.ObjectivePaused
 	}
+	softTokens := int64(0)
+	if soft.ok {
+		softTokens = soft.i64
+	}
+	hardTokens := int64(0)
+	if hard.ok {
+		hardTokens = hard.i64
+	}
+	priorityVal := 0
+	if priority.ok {
+		priorityVal = priority.n
+	}
+	var numNotes []string
+	numNotes = append(numNotes, soft.bad...)
+	numNotes = append(numNotes, hard.bad...)
+	numNotes = append(numNotes, priority.bad...)
 	o := model.Objective{
 		ID: *id, Project: *project, Title: titleVal,
 		Acceptance: model.Acceptance{Commands: acceptance, Checklist: checks},
-		Budget:     model.Budget{SoftTokens: *soft, HardTokens: *hard},
-		Priority:   *priority, Mode: modeVal, FreezeMode: freezeVal,
+		Budget:     model.Budget{SoftTokens: softTokens, HardTokens: hardTokens},
+		Priority:   priorityVal, Mode: modeVal, FreezeMode: freezeVal,
 		Origin: origin, Status: statusVal, IntegrationBranch: *branch,
 		Channel: *channel, Model: *modelName,
 	}
@@ -260,7 +279,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	if o.Origin != "" {
 		line += "\t" + o.Origin
 	}
-	return emit(stdout, asJSON, o, line)
+	return finishSoft(stdout, stderr, asJSON, numNotes, o, line)
 }
 
 func objectiveList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {

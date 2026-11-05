@@ -19,11 +19,15 @@ func preparePositioning(p *model.Positioning) error {
 	if p.Tiers == nil {
 		p.Tiers = []model.Tier{}
 	}
+	kept := make([]model.Tier, 0, len(p.Tiers))
 	for _, tier := range p.Tiers {
-		if !tier.Valid() || tier == "" {
-			return invalid("tier", tier)
+		canon, ok := model.CanonicalTier(tier)
+		if !ok {
+			continue
 		}
+		kept = append(kept, canon)
 	}
+	p.Tiers = kept
 	p.Capabilities = normStrings(p.Capabilities)
 	return nil
 }

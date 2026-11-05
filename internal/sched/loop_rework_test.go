@@ -1939,25 +1939,30 @@ func TestSnapshotOverlapIsNotOmission(t *testing.T) {
 }
 
 func TestSchedulerPromptFacts(t *testing.T) {
-	question := model.OpenQuestion{
-		ID: "Q1", Text: "事实正文不重复", Type: model.OQFact, Status: model.OQAnswered,
-		Answer: "没有上限", Evidence: "internal/sched/loop.go", Confidence: "高",
+	const (
+		q0Text    = "方向节点Q0盘点不在本节点问题里"
+		childText = "子节点问题已经写在摘要里"
+	)
+	summary := "## 事实摘要\n" + q0Text + "\n" + childText + "\n"
+	childQ := model.OpenQuestion{
+		ID: "Q1", Text: childText, Type: model.OQFact, Status: model.OQOpen,
 	}
-	summary := "## 事实摘要\n事实正文不重复\n"
+	decision := model.OpenQuestion{
+		ID: "D1", Text: "子节点只剩决策问题", Type: model.OQDecision, Status: model.OQOpen,
+	}
 	cases := []struct {
 		name      string
 		kind      model.CardKind
-		summary   bool
 		questions []model.OpenQuestion
-		facts     bool
 	}{
-		{name: "design summary only", kind: model.KindDesign, summary: true},
-		{name: "plan summary only", kind: model.KindPlan, summary: true},
-		{name: "replan summary only", kind: model.KindReplan, summary: true},
-		{name: "design node facts", kind: model.KindDesign, summary: true, questions: []model.OpenQuestion{question}, facts: true},
-		{name: "plan node facts", kind: model.KindPlan, questions: []model.OpenQuestion{question}, facts: true},
-		{name: "replan node facts", kind: model.KindReplan, summary: true, questions: []model.OpenQuestion{question}, facts: true},
-		{name: "dev ignores facts", kind: model.KindDev, summary: true, questions: []model.OpenQuestion{question}},
+		{name: "design root Q0 and child question", kind: model.KindDesign, questions: []model.OpenQuestion{childQ}},
+		{name: "plan root Q0 and child question", kind: model.KindPlan, questions: []model.OpenQuestion{childQ}},
+		{name: "replan root Q0 and child question", kind: model.KindReplan, questions: []model.OpenQuestion{childQ}},
+		{name: "decision-only child keeps Q0", kind: model.KindDesign, questions: []model.OpenQuestion{decision}},
+		{name: "design summary only", kind: model.KindDesign},
+		{name: "plan summary only", kind: model.KindPlan},
+		{name: "replan summary only", kind: model.KindReplan},
+		{name: "dev ignores node questions", kind: model.KindDev, questions: []model.OpenQuestion{childQ}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1972,10 +1977,7 @@ func TestSchedulerPromptFacts(t *testing.T) {
 			if err := db.CreateNode(ctx, &node); err != nil {
 				t.Fatal(err)
 			}
-			body := "实现这张卡\n"
-			if tc.summary {
-				body += summary
-			}
+			body := "实现这张卡\n" + summary
 			card := model.Card{
 				ID: "c", Objective: obj, Node: node.ID, Kind: tc.kind, Title: tc.name,
 				Tier: model.TierT3, Status: model.CardReady, Body: body,
@@ -1993,33 +1995,45 @@ func TestSchedulerPromptFacts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.summary && !strings.Contains(stored.Body, "## 事实摘要") {
-				t.Fatal("stored card lost its fact summary")
+			if stored.Body != body {
+				t.Fatalf("stored card body rewritten\n%s", stored.Body)
 			}
-			empty := strings.Contains(text, "<!-- cardex-facts -->") &&
-				!strings.Contains(text, "问题编号：")
-			if empty {
+			gotNode, err := db.GetNode(ctx, node.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(gotNode.OpenQuestions) != len(tc.questions) {
+				t.Fatalf("stored questions %+v", gotNode.OpenQuestions)
+			}
+			for i, q := range gotNode.OpenQuestions {
+				if q.Text != tc.questions[i].Text || q.Type != tc.questions[i].Type {
+					t.Fatalf("stored question %+v", q)
+				}
+				if q.Text == q0Text || q.ID == "Q0" {
+					t.Fatalf("Q0 is this node's question %+v", q)
+				}
+			}
+			if strings.Count(text, q0Text) != 1 || strings.Count(text, childText) != 1 || !strings.Contains(text, "## 事实摘要") {
+				t.Fatalf("fact summary\n%s", text)
+			}
+			if emptyFactsSection(text) || strings.Contains(text, "<!-- cardex-facts -->") {
 				t.Fatalf("empty facts section\n%s", text)
-			}
-			if !tc.facts && strings.Contains(text, "<!-- cardex-facts -->") {
-				t.Fatalf("facts section\n%s", text)
-			}
-			if tc.facts {
-				if !strings.Contains(text, "<!-- cardex-facts -->") || !strings.Contains(text, "问题：事实正文不重复") {
-					t.Fatalf("missing node facts\n%s", text)
-				}
-				if strings.Contains(text, "## 事实摘要") {
-					t.Fatalf("fact summary duplicated\n%s", text)
-				}
-				if strings.Count(text, "事实正文不重复") != 1 {
-					t.Fatalf("fact text count\n%s", text)
-				}
-			}
-			if tc.summary && !tc.facts {
-				if !strings.Contains(text, "## 事实摘要") || strings.Count(text, "事实正文不重复") != 1 {
-					t.Fatalf("card summary missing\n%s", text)
-				}
 			}
 		})
 	}
+}
+
+func emptyFactsSection(text string) bool {
+	const start = "<!-- cardex-facts -->"
+	const end = "<!-- /cardex-facts -->"
+	i := strings.Index(text, start)
+	if i < 0 {
+		return false
+	}
+	rest := text[i+len(start):]
+	j := strings.Index(rest, end)
+	if j < 0 {
+		return false
+	}
+	return strings.TrimSpace(rest[:j]) == ""
 }

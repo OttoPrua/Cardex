@@ -555,16 +555,14 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	// Keep the card body's ## 事实摘要, including a direction-node Q0 that is
+	// not this node's question. Open questions do not replace that summary.
 	in := prompt.Input{
 		Card:       card,
 		Objective:  obj,
 		ReworkNote: card.ReworkNote,
 		Repo:       repo,
 		Revision:   attempt.BaseCommit,
-	}
-	if facts := promptFacts(ctx, db, card); len(facts) > 0 {
-		in.Facts = facts
-		in.Card.Body = stripFactSummary(in.Card.Body)
 	}
 	if card.Kind == model.KindRanking {
 		material, err := loop.RankingMaterial(r.Home)
@@ -602,54 +600,8 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 	return nil
 }
 
-// promptFacts is this node's open questions for a design, plan, or replan card.
-// Other kinds do not take a fact summary. A missing node leaves the card body as the summary.
-func promptFacts(ctx context.Context, db *store.Store, card model.Card) []model.OpenQuestion {
-	switch card.Kind {
-	case model.KindDesign, model.KindPlan, model.KindReplan:
-	default:
-		return nil
-	}
-	id := strings.TrimSpace(card.Node)
-	if id == "" || db == nil {
-		return nil
-	}
-	node, err := db.GetNode(ctx, id)
-	if err != nil || len(node.OpenQuestions) == 0 {
-		return nil
-	}
-	return append([]model.OpenQuestion(nil), node.OpenQuestions...)
-}
-
-// stripFactSummary removes the card body's fact summary so the prompt does not
-// repeat it once the node's open questions are rendered as the facts section.
-func stripFactSummary(body string) string {
-	return stripMarkdownSection(body, "## 事实摘要")
-}
-
-func stripMarkdownSection(body, heading string) string {
-	lines := strings.Split(body, "\n")
-	var out []string
-	skipping := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == heading || strings.HasPrefix(trimmed, heading+" ") {
-			skipping = true
-			continue
-		}
-		if skipping && strings.HasPrefix(trimmed, "## ") {
-			skipping = false
-		}
-		if skipping {
-			continue
-		}
-		out = append(out, line)
-	}
-	return strings.Join(out, "\n")
-}
-
-// stripEmptyFacts drops a facts section that Build left empty. Design, plan,
-// and replan keep a card-body summary when the node has no separate facts.
+// stripEmptyFacts drops a facts section that Build left empty.
+// Design, plan, and replan keep the card body's ## 事实摘要.
 func stripEmptyFacts(text string) string {
 	const start = "<!-- cardex-facts -->\n"
 	const end = "<!-- /cardex-facts -->\n"

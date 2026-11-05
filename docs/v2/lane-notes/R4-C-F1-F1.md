@@ -14,4 +14,4 @@ N2：没有 node 的开发复核 `pass` 在 `internal/loop/dev_apply.go:783` 的
 
 ## 修复记录
 同卡新尝试不能只凭历史相同条目认定已处理；旧提案已终结且当前定位不同则另建提案和问题 → internal/loop/ranking.go:659 internal/loop/ranking.go:667 → TestRankingDedup
-生产认可的复核通过应产生成绩单通过事件；写域内没有可改的位置 → 无 → 见接口请求
+生产认可的复核通过应产生成绩单通过事件；写域内没有改 absorbReview 与 absorbDevReview → internal/loop/dev_apply.go:783 internal/loop/design.go:284 → 见接口请求

@@ -38,3 +38,20 @@ v1 卡的 `goal` 为对象时按状态落位，不再整卡 unparsed。两次 dr
 ## 已知问题
 
 演练窗口里 v1 自己的 tick 改写了 `~/.cardex`（events、manager-wake、`.lock`），起止清点的文件数、总字节和最新 mtime 不一致。本 lane 没有写这个目录。workflow 的 owner_choice、writing、locally_integrated 仍是 unparsed。
+
+## 这次观察
+
+证据在 `/Volumes/Storage/Development/Cardex/cache/cardex-v2-import-rehearsal/evidence/`。源目录调用只有 `internal/importer/import.go:26` Stat、`:133` ReadDir、`:158` ReadFile、`:226` ReadFile、`:345` Stat。`:338` 的 Stat 是 v2 home。生产代码没有源写入。先前 `/var/folders/.../grok-goal-97e62b3682ae/implementer/` 里的报告、curl 状态码和 go test 输出都还在，已复制到 `evidence/prior-rehearsal/`（38 个文件，无缺失）。该目录里的 `cardex` 二进制和 `serve.pid` 不是报告、curl 或测试输出，未复制。
+
+只读清点后，对 `~/.cardex` 做了一次 `--dry-run` 和一次导入，v2 home 是 `observe-r5b-rework`。两份清点是 `inventory-before.txt`、`inventory-after.txt`，差异是 `inventory-diff.txt`。`inventory-class.txt` 为 A，差异 0 条，没有 `cardex.db`，没有 `v2/`。dry-run 与导入的 v1 计数相同：canceled 654、done 2580、failed 19、held 470、running 2、unparsed 75。tasks+archive 为 3725，比 3643 多 82。75 份 workflow 不在 3643 里：owner_choice 57、writing 11、locally_integrated 7，即这 75 条 unparsed。导入写入新 home 的 3800 张卡，等于 3725+75。
+
+相对 facts-quota-routing 的 done 2532、canceled 654、held 437、failed 19、running 1：done +48、held +33、running +1，canceled 与 failed 为 0，48+33+1=82。created_at≥2026-10-31 的新卡 75，都在 tasks：done 46、held 27、running 2，frozen 23。2026-10-30 当天 11 张：held 9、done 2，frozen 10，快照钟点未知。2026-10-30 之前 3639 张：done 2532、canceled 654、failed 19 持平，held 434（少 3），running 0（少 1），合计少 4。10-30 与更早合计 3650，比 3643 多 7：done +2、held +6、running -1。7+75=82。
+
+frozen_route 139，比 110 多 29。10-30 之前 106（少 4），当天 10，10-31 及以后 23。10-30 与更早合计 116（多 6），6+23=29。archive 的 6 张 frozen 都在 10-30 之前。452=tasks held 437+tasks failed 15。现在 tasks held 470、failed 15，合计 485，多 33。failed 15 都在 10-30 之前。held 的 33=旧卡少 3、当天 9、10-31 及以后 27。archive failed 仍是 4，所以 failed 合计仍是 19。
+
+## 修复记录
+
+导入只读源，源上只有 Stat、ReadDir、ReadFile → `internal/importer/import.go:26` Stat、`:133` ReadDir、`:158` ReadFile、`:226` ReadFile、`:345` Stat，无源写入可删 → `TestImportReadOnlySource`
+差异只能落在 v1 的 control/、events/、tasks/、logs/、usage.json、retro_counter.json、.lock，且不能是 cardex.db 或 v2/ → 未改代码；`evidence/inventory-class.txt` 结果 A，差异 0 → `TestImportReadOnlySource`
+已完成的幂等、20 张抽查、8791 和 go test 不重做，临时目录里的报告要留下 → `evidence/prior-rehearsal/` 38 个文件，无缺失 → 不新跑
+与 3643、110、452 的差额按 v1 运行期间的新增和状态变化逐项给数字 → 本节「这次观察」；计数见 `evidence/dry-run.txt`、`evidence/import.txt`、`evidence/gap-scan.txt` → 不新跑

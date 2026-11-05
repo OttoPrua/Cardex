@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1137,6 +1138,93 @@ func writeRaw(t *testing.T, root, rel string, body []byte) {
 	}
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestImportReadOnlySource runs both import-legacy modes against a synthetic
+// source whose write bits are cleared. Import is the entry cmd/cardex calls.
+func TestImportReadOnlySource(t *testing.T) {
+	const (
+		hex32 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	cases := []struct {
+		name   string
+		dryRun bool
+	}{
+		{name: "dry-run", dryRun: true},
+		{name: "import", dryRun: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v1 := t.TempDir()
+			writeV1(t, v1, "tasks/queued.json", map[string]any{
+				"id": "ro-queued", "title": "Queue the ferry", "status": "queued", "project": "lumen",
+			})
+			writeV1(t, v1, "tasks/held.json", map[string]any{
+				"id": "ro-held", "title": "Hold the lamp", "status": "held", "project": "lumen",
+				"hold_reason": "waiting",
+			})
+			writeV1(t, v1, "archive/done.json", map[string]any{
+				"id": "ro-done", "title": "Done chart", "status": "done", "project": "lumen",
+			})
+			writeV1(t, v1, "workflows/live.json", map[string]any{
+				"id": "ro-live", "title": "Workflow live", "status": "running", "project": "lumen",
+			})
+			receipt := []byte(`{"role":"design","read_only":true,"status":"completed","runner":"grok","actual_runner":"grok","identity":"fixture-identity","session_id":"fixture-session","result_path":"/tmp/fixture-result","digest":"` + hex32 + `","input_identity":"fixture-input"}`)
+			writeRaw(t, v1, "workflows/ok.design-receipt.json", receipt)
+			writeRaw(t, v1, "tasks/readme.txt", []byte("not a record"))
+			before := snapshotTree(t, v1)
+			if out, err := exec.Command("chmod", "-R", "a-w", v1).CombinedOutput(); err != nil {
+				t.Fatalf("chmod -R a-w: %v %s", err, out)
+			}
+			restored := false
+			restore := func() {
+				if restored {
+					return
+				}
+				restored = true
+				if out, err := exec.Command("chmod", "-R", "u+w", v1).CombinedOutput(); err != nil {
+					t.Errorf("restore source mode: %v %s", err, out)
+				}
+			}
+			defer restore()
+
+			v2 := ""
+			if !tc.dryRun {
+				v2 = t.TempDir()
+			}
+			report, err := Import(context.Background(), v2, v1, tc.dryRun)
+			if err != nil {
+				t.Fatalf("Import dry=%v: %v", tc.dryRun, err)
+			}
+			if report.DryRun != tc.dryRun {
+				t.Fatalf("DryRun %v", report.DryRun)
+			}
+			if report.Counts["v1:queued"] != 1 || report.Counts["v1:held"] != 1 || report.Counts["v1:done"] != 1 || report.Counts["v1:running"] != 1 {
+				t.Fatalf("counts %#v", report.Counts)
+			}
+			if len(report.Unparsed) != 0 {
+				t.Fatalf("unparsed %q", report.Unparsed)
+			}
+			if after := snapshotTree(t, v1); after != before {
+				t.Fatal("source tree changed")
+			}
+			if tc.dryRun {
+				restore()
+				return
+			}
+			db := openDB(t, v2)
+			found := false
+			for _, card := range cardsOf(t, db) {
+				if card.ID == "v1-ro-queued" && card.Legacy.SourcePath == "tasks/queued.json" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("import did not write the queued card into the v2 home")
+			}
+			restore()
+		})
 	}
 }
 

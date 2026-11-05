@@ -62,6 +62,22 @@ func run(ctx context.Context, home, attemptID string) error {
 	if attempt.Worktree == "" {
 		return errors.New("host: attempt has no worktree")
 	}
+	var goalMode bool
+	var goalRunner runner.Grok
+	if grok, isGrok := r.(runner.Grok); isGrok && requiresGoal(card) {
+		grok.GoalMode = true
+		if attempt.PromptPath != "" {
+			body, err := os.ReadFile(attempt.PromptPath)
+			if err != nil {
+				return fmt.Errorf("host: goal prompt: %w", err)
+			}
+			grok.Prompt = string(body)
+		}
+		grok.SessionDir = filepath.Join(home, "attempts", attempt.ID, "grok-session")
+		r = grok
+		goalMode = true
+		goalRunner = grok
+	}
 
 	cfg := loadConfig(home)
 	spec := runner.LaunchSpec{
@@ -279,6 +295,9 @@ func run(ctx context.Context, home, attemptID string) error {
 			_ = logRead.Close()
 		}
 	}
+	if goalMode {
+		driveErr = noteGrokExit(ctx, db, attempt.ID, goalRunner, waitErr, driveErr)
+	}
 	timedOut := fired != nil && fired.Load()
 	if driveErr != nil && timedOut && (errors.Is(driveErr, context.Canceled) || errors.Is(driveErr, io.ErrClosedPipe) || errors.Is(driveErr, os.ErrClosed)) {
 		driveErr = nil
@@ -484,6 +503,41 @@ func trimExcerpt(s string) string {
 		return s[:400]
 	}
 	return s
+}
+
+func requiresGoal(card model.Card) bool {
+	for _, item := range card.Requires {
+		if item == "goal_mode" {
+			return true
+		}
+	}
+	return false
+}
+
+// noteGrokExit records the WaitStatus fact and calls ConsumeGrokProcessExit.
+// A crash replaces driveErr. A PTY line is not this fact.
+func noteGrokExit(ctx context.Context, db *store.Store, attemptID string, g runner.Grok, waitErr, driveErr error) error {
+	exit := runner.GrokProcessExit{}
+	var ee *exec.ExitError
+	if errors.As(waitErr, &ee) {
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			exit.Signaled = true
+			exit.Signal = int(ws.Signal())
+		}
+	}
+	crash, crashed := runner.ConsumeGrokProcessExit(exit)
+	appendEvent(ctx, db, attemptID, "grok_process_exit", map[string]any{
+		"signaled":    exit.Signaled,
+		"signal":      exit.Signal,
+		"crash":       crashed,
+		"goal_mode":   g.GoalMode,
+		"prompt":      g.Prompt,
+		"session_dir": g.SessionDir,
+	})
+	if crashed {
+		return crash
+	}
+	return driveErr
 }
 
 func exitCode(err error) int {

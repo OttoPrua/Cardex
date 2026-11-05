@@ -1661,8 +1661,8 @@ func TestProductionHarvestLeavesDispositionPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(cli), "loop := sched.New(home)") {
-		t.Fatal("runServe does not tick sched.New")
+	if !strings.Contains(string(cli), "sched.Serve(") {
+		t.Fatal("runServe does not call sched.Serve")
 	}
 	serveSrc, err := os.ReadFile("serve.go")
 	if err != nil {
@@ -1677,7 +1677,7 @@ func TestProductionHarvestLeavesDispositionPending(t *testing.T) {
 	if New(t.TempDir()).Dispose == nil {
 		t.Fatal("production runner left Dispose nil")
 	}
-	t.Log("cmd constructs the runner with loop := sched.New(home) and does not assign Dispose")
+	t.Log("cmd calls sched.Serve and does not assign Dispose")
 	t.Log("Serve constructs the runner with runner := New(home) and does not assign Dispose")
 }
 

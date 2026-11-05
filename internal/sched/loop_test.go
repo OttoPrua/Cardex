@@ -495,22 +495,43 @@ func TestTickAutoCallsRealEngine(t *testing.T) {
 	if err := db.CreateProject(ctx, &proj); err != nil || db.CreateObjective(ctx, &obj) != nil {
 		t.Fatal(err)
 	}
-	var designs, devs int
-	prevD, prevV := designStep, devStep
-	t.Cleanup(func() { designStep, devStep = prevD, prevV })
-	designStep = func(context.Context, string) error { designs++; return nil }
-	devStep = func(context.Context, string) error { devs++; return nil }
 	manual := obj
 	manual.ID = "manual"
 	manual.Mode = model.ModeManual
 	if err := db.CreateObjective(ctx, &manual); err != nil {
 		t.Fatal(err)
 	}
-	if err := New(home).Tick(ctx); err != nil {
+	decoy := t.TempDir()
+	t.Setenv("CARDEX_HOME", decoy)
+	runner := New(home)
+	if runner.Engine == nil {
+		t.Fatal("New left Engine nil")
+	}
+	if err := runner.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if designs != 1 || devs != 1 {
-		t.Fatalf("design %d dev %d", designs, devs)
+	if os.Getenv("CARDEX_HOME") != decoy {
+		t.Fatalf("CARDEX_HOME leaked: %s", os.Getenv("CARDEX_HOME"))
+	}
+	cards, err := db.ListCards(ctx, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, card := range cards {
+		if card.Kind == model.KindResearch && strings.Contains(card.Title, "盘点") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("auto tick did not run design, cards %+v", cards)
+	}
+	manualCards, err := db.ListCards(ctx, "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manualCards) != 0 {
+		t.Fatalf("manual objective entered design: %+v", manualCards)
 	}
 }
 

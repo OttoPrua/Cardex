@@ -11,6 +11,18 @@ import (
 	"cardex/internal/runner"
 )
 
+func TestLookupAllRunners(t *testing.T) {
+	for _, name := range model.AllRunners() {
+		got, ok := runner.Lookup(string(name))
+		if !ok {
+			t.Fatalf("missing %s", name)
+		}
+		if got.Name() != string(name) {
+			t.Fatalf("name %q want %s", got.Name(), name)
+		}
+	}
+}
+
 func TestRegistryAndCapabilities(t *testing.T) {
 	for _, name := range []string{"fake", "claude", "codex", "opencode"} {
 		got, ok := runner.Lookup(name)

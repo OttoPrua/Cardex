@@ -18,6 +18,7 @@ import (
 	"cardex/internal/question"
 	"cardex/internal/scorecard"
 	"cardex/internal/store"
+	"cardex/internal/workspace"
 )
 
 const nodeGroupUsage = `node — read and change design nodes
@@ -932,6 +933,7 @@ type cardTemplate struct {
 	Body       string   `json:"body"`
 	Tier       string   `json:"tier"`
 	Acceptance []string `json:"acceptance"`
+	Requires   []string `json:"requires"`
 }
 
 func loadSchedules(home string) ([]scheduleEntry, string, error) {
@@ -1055,6 +1057,7 @@ func enqueueTemplate(ctx context.Context, db *store.Store, entry scheduleEntry) 
 	card := model.Card{
 		ID: id, Objective: objID, Kind: kind, Title: title, Body: tmpl.Body,
 		Tier: tier, Status: model.CardReady, Acceptance: tmpl.Acceptance,
+		Requires: append([]string(nil), tmpl.Requires...),
 	}
 	if err := db.CreateCard(ctx, &card); err != nil {
 		return model.Card{}, err
@@ -1093,7 +1096,7 @@ func cmdHost(home string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	if err := host.Run(context.Background(), dir, fs.Arg(0)); err != nil {
+	if err := host.Run(host.WithWorkspace(context.Background(), workspace.Git{}), dir, fs.Arg(0)); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}

@@ -13,6 +13,14 @@ func Lookup(name string) (Runner, bool) {
 		return Codex{}, true
 	case model.RunnerOpenCode:
 		return OpenCode{}, true
+	case model.RunnerGrok:
+		return Grok{}, true
+	case model.RunnerCursor:
+		return Cursor{}, true
+	case model.RunnerKimi:
+		return Kimi{}, true
+	case model.RunnerAGY:
+		return AGY{}, true
 	default:
 		return nil, false
 	}

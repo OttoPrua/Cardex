@@ -73,7 +73,7 @@ func run(ctx context.Context, home, attemptID string) error {
 			}
 			grok.Prompt = string(body)
 		}
-		grok.SessionDir = filepath.Join(home, "attempts", attempt.ID, "grok-session")
+		grok.SessionDir = runner.GrokGoalSessionDir(attempt.Worktree, attempt.ID)
 		r = grok
 		goalMode = true
 		goalRunner = grok
@@ -86,6 +86,9 @@ func run(ctx context.Context, home, attemptID string) error {
 		WorkDir:      attempt.Worktree,
 		PromptPath:   attempt.PromptPath,
 		Model:        attempt.Route.Model,
+	}
+	if goalMode {
+		spec.SessionID = attempt.ID
 	}
 	scriptPath := filepath.Join(home, "attempts", attempt.ID, "script.json")
 	if st, err := os.Stat(scriptPath); err == nil && !st.IsDir() {
@@ -202,10 +205,11 @@ func run(ctx context.Context, home, attemptID string) error {
 	})
 
 	var (
-		waitErr  error
-		driveErr error
-		pid      int
-		fired    interface{ Load() bool }
+		waitErr    error
+		driveErr   error
+		pid        int
+		goalStatus string
+		fired      interface{ Load() bool }
 	)
 	if needPTY {
 		session, err := pty.Start(wrapped)
@@ -261,6 +265,18 @@ func run(ctx context.Context, home, attemptID string) error {
 		}{pr, session.Master})
 		// Drive has returned. Unblock the capture writer and keep draining.
 		closeRead()
+		if goalMode && (driveErr == nil || errors.Is(driveErr, runner.ErrGrokBudgetLimited)) {
+			if driveErr == nil {
+				goalStatus = "complete"
+			} else {
+				goalStatus = "budget_limited"
+			}
+			if pid > 1 {
+				if err := SignalGroup(pid, syscall.SIGTERM); err == nil && stop != nil {
+					stop()
+				}
+			}
+		}
 		waitErr = session.Cmd.Wait()
 		waitCopy(copied, stop, killed, pid)
 		_ = session.Master.Close()
@@ -297,6 +313,9 @@ func run(ctx context.Context, home, attemptID string) error {
 	}
 	if goalMode {
 		driveErr = noteGrokExit(ctx, db, attempt.ID, goalRunner, waitErr, driveErr)
+		if errors.Is(driveErr, runner.ErrGrokCrash) {
+			goalStatus = ""
+		}
 	}
 	timedOut := fired != nil && fired.Load()
 	if driveErr != nil && timedOut && (errors.Is(driveErr, context.Canceled) || errors.Is(driveErr, io.ErrClosedPipe) || errors.Is(driveErr, os.ErrClosed)) {
@@ -304,10 +323,10 @@ func run(ctx context.Context, home, attemptID string) error {
 	}
 	output := capture.Bytes()
 	if err := capture.Close(); err != nil {
-		_ = finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, err, driveErr, timedOut)
+		_ = finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, err, driveErr, timedOut, goalStatus)
 		return err
 	}
-	return finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, nil, driveErr, timedOut)
+	return finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, nil, driveErr, timedOut, goalStatus)
 }
 
 func commandFor(argv, extra []string) (*exec.Cmd, error) {
@@ -408,7 +427,7 @@ func handoffReview(ctx context.Context, db *store.Store, attempt *model.Attempt,
 	return nil
 }
 
-func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card model.Card, output []byte, code int, r runner.Runner, prior, driveErr error, timedOut bool) error {
+func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card model.Card, output []byte, code int, r runner.Runner, prior, driveErr error, timedOut bool, goalStatus string) error {
 	commitCtx, commitCancel := persistContext(ctx)
 	defer commitCancel()
 	attempt.Exit = &code
@@ -446,6 +465,16 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 	if attempt.ErrorExcerpt == "" && prior != nil {
 		attempt.ErrorExcerpt = trimExcerpt(prior.Error())
 	}
+	switch goalStatus {
+	case "budget_limited":
+		timedOut = false
+		attempt.ErrorClass = model.ErrorBudgetLimited
+	case "complete":
+		timedOut = false
+		if attempt.ErrorClass == model.ErrorTimeout {
+			attempt.ErrorClass = ""
+		}
+	}
 	// Commit keeps this bound. Write-back below opens another one: a child of
 	// an expired commit context is already expired, so the result would be lost.
 	head, commitErr := workspaceFrom(commitCtx).Commit(commitCtx, attempt.Worktree, "cardex "+card.ID+" "+attempt.ID)
@@ -466,6 +495,9 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 	}
 	if timedOut {
 		finishEvent["stop"] = "hard_limit_timeout"
+	}
+	if goalStatus != "" {
+		finishEvent["goal_status"] = goalStatus
 	}
 	if driveErr != nil && !errors.Is(driveErr, context.Canceled) {
 		finishEvent["drive_error"] = driveErr.Error()

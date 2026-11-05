@@ -202,6 +202,7 @@ func classifyErrors(t *testing.T, db interface {
 
 func TestDeliveryFailureRetries(t *testing.T) {
 	ctx := context.Background()
+	t.Setenv("GROK_HOME", t.TempDir())
 	home, db, repo := newHome(t)
 	_, objID := seedRepo(t, db, repo, "true")
 	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte("{\"schedules\":[]}\n"), 0o644); err != nil {
@@ -257,8 +258,6 @@ func TestDeliveryFailureRetries(t *testing.T) {
 	if err := r.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// Hermes still reports a missing ack, so the retry may record another
-	// delivery_error. The inbox file is the retry itself.
 	inbox := filepath.Join(home, "inbox")
 	entries, err := os.ReadDir(inbox)
 	if err != nil || len(entries) == 0 {
@@ -272,10 +271,13 @@ func TestDeliveryFailureRetries(t *testing.T) {
 	if !strings.Contains(text, "q1") || !strings.Contains(text, "file:box") {
 		t.Fatalf("inbox %s", text)
 	}
-	hermesRoot := filepath.Join(home, "control", "manager-wake", "hermes-inbox", "sub1")
+	if strings.Contains(text, "sub1") {
+		t.Fatalf("inbox took the channel account %s", text)
+	}
+	hermesRoot := filepath.Join(home, "control", "manager-wake", "hermes-inbox")
 	foundSub := false
 	_ = filepath.Walk(hermesRoot, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info == nil || info.IsDir() || !strings.HasSuffix(path, ".json") || strings.HasSuffix(path, ".ack.json") {
+		if err != nil || info == nil || info.IsDir() {
 			return nil
 		}
 		b, readErr := os.ReadFile(path)
@@ -284,8 +286,8 @@ func TestDeliveryFailureRetries(t *testing.T) {
 		}
 		return nil
 	})
-	if !foundSub {
-		t.Fatal("fallback hermes file missing subscription id")
+	if foundSub {
+		t.Fatal("channel source group was written as a hermes subscription")
 	}
 }
 

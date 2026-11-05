@@ -160,6 +160,15 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 		if attempt.EndedAt.IsZero() && attempt.Exit == nil {
 			continue
 		}
+		if strings.HasPrefix(attempt.Card, "cls-") {
+			if attempt.Outcome == "" {
+				attempt.Outcome = model.OutcomeNoOutput
+				pctx, cancel := classifyPersistContext(ctx)
+				_ = db.UpdateAttempt(pctx, &attempt)
+				cancel()
+			}
+			continue
+		}
 		card, err := db.GetCard(ctx, attempt.Card)
 		if err != nil {
 			return err
@@ -1009,26 +1018,21 @@ func (r *Runner) notify(ctx context.Context, db *store.Store) error {
 	if err != nil {
 		return err
 	}
-	objs, err := db.ListObjectives(ctx, "")
-	if err != nil {
-		return err
-	}
-	originOf := map[string]string{}
-	for _, obj := range objs {
-		originOf[obj.ID] = obj.Origin
-	}
 	for i := range questions {
 		q := questions[i]
 		if q.Answer != "" {
 			continue
 		}
-		msg := r.deliveryMessage(ctx, db, q, originOf[q.Objective])
-		var err error
+		msg, err := r.deliveryMessage(ctx, db, q)
+		if err != nil {
+			return err
+		}
 		if r.Notify != nil {
 			err = r.Notify(ctx, msg)
 		} else {
 			r.ensureMail()
 			err = r.mail.Deliver(ctx, msg)
+			err = r.handoffDelivery(ctx, db, msg, err)
 		}
 		if err != nil {
 			if errors.Is(err, notify.ErrNotImplemented) {

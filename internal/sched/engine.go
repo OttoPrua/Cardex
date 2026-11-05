@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"cardex/internal/harvest"
+	"cardex/internal/host"
 	"cardex/internal/loop"
 	"cardex/internal/model"
 	"cardex/internal/notify"
@@ -18,9 +19,10 @@ import (
 )
 
 // productionEngine is sched.New's design phase. It calls loop.New(...).Step
-// and then DevStep against r.Home. A design-phase error is stored and the
-// open design attempt is handed to the installed §5 disposition. The error
-// itself is not returned, so serve keeps ticking.
+// and then DevStep against r.Home. A design-phase error is stored and retried
+// next tick. §5 runs only for the design-family attempt that error names when
+// that attempt already has a real exit. The error itself is not returned, so
+// serve keeps ticking.
 func (r *Runner) productionEngine(ctx context.Context, objectiveID string) error {
 	return withCardexHome(r.Home, func() error {
 		db, err := store.Open(filepath.Join(r.Home, "cardex.db"))
@@ -45,7 +47,7 @@ func (r *Runner) designDeliverer() notify.Deliverer {
 	if r == nil || r.mail == nil {
 		r.ensureMail()
 	}
-	return homeDeliverer{home: r.Home, inner: r.mail}
+	return homeDeliverer{runner: r, home: r.Home, inner: r.mail}
 }
 
 func (r *Runner) ensureMail() {
@@ -56,18 +58,45 @@ func (r *Runner) ensureMail() {
 }
 
 type homeDeliverer struct {
-	home  string
-	inner notify.Deliverer
+	runner *Runner
+	home   string
+	inner  notify.Deliverer
 }
 
 func (h homeDeliverer) Deliver(ctx context.Context, msg notify.Message) error {
-	if strings.TrimSpace(msg.Home) == "" {
+	db, err := h.openDB()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if h.runner != nil {
+		if err := h.runner.fillDelivery(ctx, db, &msg); err != nil {
+			return err
+		}
+	} else if strings.TrimSpace(msg.Home) == "" {
 		msg.Home = h.home
 	}
+	var deliverErr error
 	if h.inner == nil {
-		return notify.Stub{}.Deliver(ctx, msg)
+		deliverErr = notify.Stub{}.Deliver(ctx, msg)
+	} else {
+		deliverErr = h.inner.Deliver(ctx, msg)
 	}
-	return h.inner.Deliver(ctx, msg)
+	if h.runner == nil {
+		return deliverErr
+	}
+	return h.runner.handoffDelivery(ctx, db, msg, deliverErr)
+}
+
+func (h homeDeliverer) openDB() (*store.Store, error) {
+	home := h.home
+	if h.runner != nil && strings.TrimSpace(h.runner.Home) != "" {
+		home = h.runner.Home
+	}
+	if strings.TrimSpace(home) == "" {
+		return nil, errors.New("sched: delivery home is empty")
+	}
+	return store.Open(filepath.Join(home, "cardex.db"))
 }
 
 func (r *Runner) noteDesignFailure(ctx context.Context, db *store.Store, objectiveID string, cause error) error {
@@ -97,44 +126,83 @@ func (r *Runner) noteDesignFailure(ctx context.Context, db *store.Store, objecti
 	}); err != nil {
 		return err
 	}
-	return r.disposeOpenDesign(ctx, db, objectiveID)
+	return r.disposeOpenDesign(ctx, db, objectiveID, cause)
 }
 
-// disposeOpenDesign harvests a design-family attempt that this tick's harvest
-// skipped (no exit yet) and passes that result to the installed disposition.
-// An attempt that does not exist yet is left for the lane note.
-func (r *Runner) disposeOpenDesign(ctx context.Context, db *store.Store, objectiveID string) error {
+// disposeOpenDesign runs the existing §5 path only for the single design-family
+// attempt this error names that already exited. A still-running attempt (no
+// exit) stays running, and an exit code is never invented. Zero or several
+// matches record the error and leave the attempts for the next tick.
+func (r *Runner) disposeOpenDesign(ctx context.Context, db *store.Store, objectiveID string, cause error) error {
+	if cause == nil {
+		return nil
+	}
 	attempts, err := db.ListAttempts(ctx, "")
 	if err != nil {
 		return err
 	}
+	msg := cause.Error()
+	var hit *model.Attempt
+	var hitCard model.Card
 	for i := range attempts {
 		attempt := attempts[i]
-		if attempt.Outcome != "" || !attempt.EndedAt.IsZero() || attempt.Exit != nil {
+		if attempt.Exit == nil || attempt.Outcome != "" || host.LiveHost(attempt) {
 			continue
 		}
-		if strings.TrimSpace(attempt.Worktree) == "" {
+		if strings.TrimSpace(attempt.Worktree) == "" || !namesAttempt(msg, attempt.ID) {
 			continue
 		}
 		card, err := db.GetCard(ctx, attempt.Card)
 		if err != nil || card.Objective != objectiveID || !designFamilyKind(card.Kind) {
 			continue
 		}
-		exitCode := 1
-		res, err := harvest.Harvest(ctx, harvest.Input{
-			Attempt: attempt,
-			Card:    card,
-			Exit:    exitCode,
-			Repo:    attempt.Worktree,
-		})
-		if err != nil {
-			return err
+		if hit != nil {
+			return nil
 		}
-		if err := r.deliver(ctx, db, &card, &attempt, res); err != nil {
-			return err
-		}
+		cp := attempt
+		hit = &cp
+		hitCard = card
 	}
-	return nil
+	if hit == nil {
+		return nil
+	}
+	res, err := harvest.Harvest(ctx, harvest.Input{
+		Attempt:    *hit,
+		Card:       hitCard,
+		Exit:       *hit.Exit,
+		ErrorClass: hit.ErrorClass,
+		Repo:       hit.Worktree,
+	})
+	if err != nil {
+		return err
+	}
+	return r.deliver(ctx, db, &hitCard, hit, res)
+}
+
+// namesAttempt reports whether msg contains id as its own token. A longer id
+// that merely starts with id does not count.
+func namesAttempt(msg, id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" || msg == "" {
+		return false
+	}
+	for from := 0; from < len(msg); {
+		i := strings.Index(msg[from:], id)
+		if i < 0 {
+			return false
+		}
+		i += from
+		end := i + len(id)
+		if (i == 0 || !attemptIDChar(msg[i-1])) && (end == len(msg) || !attemptIDChar(msg[end])) {
+			return true
+		}
+		from = i + 1
+	}
+	return false
+}
+
+func attemptIDChar(b byte) bool {
+	return b == '-' || b == '_' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
 func designFamilyKind(kind model.CardKind) bool {

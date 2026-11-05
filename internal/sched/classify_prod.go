@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"cardex/internal/host"
 	"cardex/internal/model"
@@ -45,12 +46,14 @@ func (r *Runner) productionClassify(ctx context.Context, channelID, prompt strin
 		return "", err
 	}
 	out, callErr := r.classifyAttempt(ctx, db, cardID, ch, prompt)
+	noteCtx, noteCancel := classifyPersistContext(ctx)
+	defer noteCancel()
 	if callErr != nil {
-		_ = r.noteClassify(ctx, db, cardID, callErr.Error())
-		return out, callErr
+		_ = r.noteClassify(noteCtx, db, cardID, callErr.Error())
+		return "", callErr
 	}
 	if !classifyOutputOK(out) {
-		if err := r.noteClassify(ctx, db, cardID, "unparseable classifier output"); err != nil {
+		if err := r.noteClassify(noteCtx, db, cardID, "unparseable classifier output"); err != nil {
 			return out, err
 		}
 	}
@@ -115,11 +118,154 @@ func (r *Runner) classifyAttempt(ctx context.Context, db *store.Store, cardID st
 	// The caller's context carries classify.Classify's 30s timeout.
 	runErr := host.Run(ctx, r.Home, attemptID)
 	out, _ := os.ReadFile(filepath.Join(dir, "output.log"))
-	if got, err := db.GetAttempt(ctx, attemptID); err == nil && got.Outcome == "" {
+	answer := classifyAnswer(string(ch.Runner), string(out))
+	pctx, pcancel := classifyPersistContext(ctx)
+	defer pcancel()
+	got, gotErr := db.GetAttempt(pctx, attemptID)
+	if gotErr == nil && got.Outcome == "" {
 		got.Outcome = model.OutcomeNoOutput
-		_ = db.UpdateAttempt(ctx, &got)
+		_ = db.UpdateAttempt(pctx, &got)
 	}
-	return string(out), runErr
+	if reason := classifyRejected(runErr, got, gotErr); reason != "" {
+		return "", fmt.Errorf("%s", reason)
+	}
+	return answer, nil
+}
+
+// classifyPersistContext outlives the 30s classify call context the way host
+// persistContext outlives the run context. Cleanup and the error event use it.
+func classifyPersistContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+}
+
+func classifyRejected(runErr error, got model.Attempt, gotErr error) string {
+	if runErr != nil {
+		return runErr.Error()
+	}
+	if gotErr != nil {
+		return gotErr.Error()
+	}
+	if got.Exit != nil && *got.Exit != 0 {
+		return fmt.Sprintf("classifier exit %d", *got.Exit)
+	}
+	if got.ErrorClass != "" && got.ErrorClass != model.ErrorPassed {
+		return string(got.ErrorClass)
+	}
+	return ""
+}
+
+// classifyAnswer is the executor's final answer. The tier parser only sees
+// line-start TIER and REASON, so structured logs are reduced to that text.
+func classifyAnswer(runnerName, raw string) string {
+	switch model.RunnerName(runnerName) {
+	case model.RunnerClaude:
+		if text, ok := claudeAnswer(raw); ok {
+			return text
+		}
+	case model.RunnerCodex:
+		if text, ok := codexAnswer(raw); ok {
+			return text
+		}
+	case model.RunnerGrok:
+		if text, ok := grokAnswer(raw); ok {
+			return text
+		}
+	}
+	return raw
+}
+
+func claudeAnswer(raw string) (string, bool) {
+	var parts []string
+	found := false
+	for _, msg := range jsonObjects(raw) {
+		var ev struct {
+			Type   string `json:"type"`
+			Result string `json:"result"`
+		}
+		if json.Unmarshal(msg, &ev) != nil || ev.Type != "result" {
+			continue
+		}
+		found = true
+		parts = append(parts, ev.Result)
+	}
+	if !found {
+		return "", false
+	}
+	return strings.Join(parts, "\n"), true
+}
+
+func codexAnswer(raw string) (string, bool) {
+	var parts []string
+	found := false
+	for _, msg := range jsonObjects(raw) {
+		var ev struct {
+			Type string `json:"type"`
+			Item struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"item"`
+		}
+		if json.Unmarshal(msg, &ev) != nil || ev.Type != "item.completed" {
+			continue
+		}
+		found = true
+		if ev.Item.Type == "agent_message" {
+			parts = append(parts, ev.Item.Text)
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return strings.Join(parts, "\n"), true
+}
+
+func grokAnswer(raw string) (string, bool) {
+	var parts []string
+	found := false
+	for _, msg := range jsonObjects(raw) {
+		var ev struct {
+			Type string `json:"type"`
+			Data string `json:"data"`
+		}
+		if json.Unmarshal(msg, &ev) != nil {
+			continue
+		}
+		switch ev.Type {
+		case "text":
+			found = true
+			parts = append(parts, ev.Data)
+		case "thought", "reasoning", "plan":
+			found = true
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return strings.Join(parts, "\n"), true
+}
+
+func jsonObjects(raw string) []json.RawMessage {
+	var out []json.RawMessage
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '{' {
+			continue
+		}
+		dec := json.NewDecoder(strings.NewReader(raw[i:]))
+		var msg json.RawMessage
+		if err := dec.Decode(&msg); err != nil {
+			continue
+		}
+		out = append(out, msg)
+		next := i + int(dec.InputOffset())
+		if next <= i {
+			continue
+		}
+		i = next - 1
+	}
+	return out
 }
 
 func (r *Runner) noteClassify(ctx context.Context, db *store.Store, cardID, reason string) error {

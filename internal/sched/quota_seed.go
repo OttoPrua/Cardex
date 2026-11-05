@@ -14,8 +14,9 @@ import (
 // Snapshot records are ordinary ledger events, and an event is counted by every
 // open window that covers its time. A positive used count is placed inside its
 // own window and outside every other window that must not absorb it, including
-// a zero-used window and a window whose reset has already passed. A charge that
-// cannot be placed that way is omitted instead of stamped at now.
+// a zero-used window and a window whose reset has already passed. Usage one
+// event places in every nested window that covers that time is not omission.
+// Omission is only the used count a window still cannot place.
 
 type snapSpan struct {
 	start  time.Time
@@ -55,21 +56,17 @@ func recordSnapshot(ctx context.Context, led *quota.Ledger, ch model.Channel, no
 		}
 		spans = append(spans, snapSpan{start: start, end: end, used: used})
 	}
-	var wanted int64
-	for _, sp := range spans {
-		wanted += sp.used
-	}
-	var placed int64
 	for _, ev := range attributeSnapshots(spans, now) {
-		placed += ev.tokens
 		usage := model.Usage{Tokens: ev.tokens, Source: "snapshot", Confidence: 1}
 		if err := led.Record(ctx, ch.ID, usage, ev.at, ev.at); err != nil {
 			return 0, err
 		}
 	}
-	omitted := wanted - placed
-	if omitted < 0 {
-		omitted = 0
+	var omitted int64
+	for _, sp := range spans {
+		if sp.remain > 0 {
+			omitted += sp.remain
+		}
 	}
 	return omitted, nil
 }

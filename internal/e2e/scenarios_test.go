@@ -977,6 +977,9 @@ func TestS19(t *testing.T) {
 	ch.Concurrency = 2
 	ch.Redline = 0
 	ch.Models = []string{"model-a"}
+	// RegisterFakeChannel 不写 token 上限。填充只接受可确认窗口，保存前补上上限和用量。
+	ch.QuotaWindows[0].LimitTokens = 100
+	ch.QuotaWindows[0].UsedTokens = 10
 	if err := h.DB.UpdateChannel(ctx, &ch); err != nil {
 		t.Fatal(err)
 	}

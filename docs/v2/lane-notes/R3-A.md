@@ -24,21 +24,12 @@
 设计期创建的 direction、module、detail 写入 `<design_dir>/<objective>/<node>.md` → `internal/loop/design.go:334` `design.go:662` `design.go:1051` → `TestCreatedNodesHaveDocPath`
 safe/detail 复核卡绑定当前待冻结设计并携带 AuthorFamily，只有这张复核通过才冻结 → `internal/loop/design.go:270` `design.go:530` `design.go:1018` → `TestReviewTracksCurrentDesign`
 可注入依赖的设计期入口是 `loop.New(...).Step`，空依赖 `DesignStep` 交给集成者 → `internal/loop/design.go:28` `design.go:36` → `TestDesignStepNeedsStoreAndDevStaysOpen`
-B1 收割原文在清理前按本次尝试吸收，盘点不必先变成终态就能进入 direction；通过且可用的 design、plan、replan 吸收后变为 done，研究结束后的下一张设计卡和可冻结的 replan 才能继续 → `internal/loop/design.go:1082` `design.go:1126` `design.go:1199` `research.go:197` → `TestAbsorbDisposedHarvest` `TestAbsorbDisposedUnblocksNext`
+B1 收割按本次尝试吸收并在研究结束后继续；冻结节点的研究收尾后才建一张事实摘要拆卡，后继 plan 已存在时不再派第二张 → `internal/loop/design.go` `research.go` → `TestAbsorbDisposedHarvest` `TestAbsorbDisposedUnblocksNext` `TestFrozenResearchSuccessorPlan` `TestHistoricalResearchDoesNotDispatchAnotherPlan`
 B6 safe/detail 复核卡 Deps[0] 指向当前设计卡，AuthorFamily 取该设计，非本版本通过不冻结 → `internal/loop/design.go:534` → `TestReviewTracksCurrentDesign`
-B7 撤回 api.go，DesignStep 与 DevStep 保持 ErrNotImplemented，设计期走 New 的 Step → `internal/loop/api.go:24` `design.go:32` → `TestDesignStepNeedsStoreAndDevStaysOpen`
-B8 只读被处置的尝试；缺失或不完整的设计改为整理或 needs_input；失败、取消、violation 不记冻结通过 → `internal/loop/research.go:218` `design.go:1139` `design.go:1152` `design.go:273` `design_parse.go:526` → `TestAbsorbBindsDisposedAttempt`
-B1 冻结节点的研究全部结束且每个终态尝试已处理或跳过后才建一张带事实摘要的拆卡，作废的最后一次收割也建这张卡且不写入作废结果 → `internal/loop/design.go:54` `design.go:1325` `design.go:1381` `design.go:1409` `design.go:1461` `research.go:130` `research.go:136` `design_parse.go:13` → `TestFrozenResearchSuccessorPlan`
-B8 消费按尝试而不是按卡；transport、失败、取消、violation 不产生成功副作用，后来的 passed 仍生效，同一尝试不重复施加 → `internal/loop/design.go:1231` `design.go:1311` `design_parse.go:527` → `TestAttemptScopedConsumption`
-B9 可解析的 design、plan、replan 不等于已合入；merge_queued 和 merged 保持不变，节点文档或上下文包未合入时不标 done、不派下一张 → `internal/loop/design.go:363` `design.go:1196` `design.go:1524` → `TestParsedOutputWaitsForMerge`
-B10 空或 result_unparsable 的 design、plan、replan 只建一张整理卡；未结束不标 needs_input、不消费，失败后才 needs_input，通过的提取吸收到源卡 → `internal/loop/design.go:1143` `design.go:1342` → `TestNormalizeRecovery`
-B11 mode=manual 时收割和 Step 都不创建设计期节点或 design、plan、replan、research、spike 卡 → `internal/loop/research.go:37` `design.go:286` `design.go:311` `design.go:645` `design.go:696` `design.go:734` `design.go:774` → `TestManualHarvestRefusesDesignPhase`
-B1 已被后继 plan 消费的历史研究不得再派第二张 plan；创建该 plan 时已结束的研究记为已消费，进行中的 plan 也算后继已经存在 → `internal/loop/design.go:366` `design.go:640` `design.go:791` `design.go:1559` `design.go:1612` → `TestHistoricalResearchDoesNotDispatchAnotherPlan`
-B8 两个吸收入口都先看当前尝试，卡级 loop.absorbed 不能封死同卡的后续尝试 → `internal/loop/design.go:99` `design.go:1189` `design.go:1428` → `TestCurrentAttemptNotSealedByCardAbsorb`
-B9 依赖设计文档的后继 plan 只在文档合入之后生成；每条冻结入口都等这次合入，未改文档则立刻派 → `internal/loop/design.go:358` `design.go:643` `design.go:1560` → `TestFreezeWaitsForMergedDesign`
-B10 只收割一次整理卡就把结果写回仍处于 harvesting 的 Deps[0] 源卡；通过施加设计效果，失败、取消或不可用则 needs_input，不重收源尝试、不把源卡预设为终态 → `internal/loop/design.go:1237` `design.go:1443` `design.go:1499` → `TestNormalizeHarvestRestoresSource`
-B12 研究真正终态且没有有效答案时仍记下 unanswered（盘点为 Q0）并不写入作废文本，随后继续推进 → `internal/loop/design.go:1206` `design.go:1438` → `TestTerminalResearchWithoutAnswerContinues`
-B10 整理成功后按普通吸收收尾源卡：无文档改动置 done，merge_queued 与 merged 保持，并消费源尝试且不回读作废原文；失败、取消或不可用则 needs_input 且不写入 → `internal/loop/design.go:1274` `design.go:1280` `design.go:1358` → `TestNormalizeHarvestRestoresSource`
-B13 研究卡未终态的跳过不封存 Q0、不结束 researching、不让已有可冻结生效；真正终态且无有效答案才记 unanswered 且不写作废文本，后来的 passed 覆盖空 Q0 → `internal/loop/design.go:104` `design.go:165` `design.go:761` `design.go:1315` `design.go:1503` `design.go:1512` → `TestResearchRetryWaitsForPassedAnswer` `TestTerminalResearchWithoutAnswerContinues`
-终态 unanswered 回填对一次研究尝试幂等，只处置一次，不得覆盖后续复查的 researching → `internal/loop/design.go:1316` `design.go:1333` `design.go:1527` `design.go:1536` `design_parse.go:13` → `TestTerminalUnansweredBackfillIsOneShot`
-终态 unanswered 回填只针对该研究卡的当前尝试；已被后续尝试取代的历史回调，无论已消费还是迟到未消费，都不得改写当前复查状态。 → `internal/loop/design.go:1244` `design.go:1339` `design.go:1347` `design.go:1535` `design.go:1544` → `TestSupersededAttemptDoesNotRewriteRecheck`
+B7 DesignStep 与 DevStep 保持 ErrNotImplemented，设计期走 New 的 Step → `internal/loop/api.go:24` `design.go:32` → `TestDesignStepNeedsStoreAndDevStaysOpen`
+B8 只读被处置的尝试；缺失结果走整理或 needs_input；消费按尝试，失败类不产生成功副作用，卡级 absorbed 不封死后续尝试 → `internal/loop/design.go` `research.go` `design_parse.go` → `TestAbsorbBindsDisposedAttempt` `TestAttemptScopedConsumption` `TestCurrentAttemptNotSealedByCardAbsorb`
+B9 可解析不等于已合入；merge_queued 与 merged 保持，未合入的设计文档挡住后继 plan → `internal/loop/design.go` → `TestParsedOutputWaitsForMerge` `TestFreezeWaitsForMergedDesign`
+B10 空或 result_unparsable 只建一张整理卡；整理成功写回源卡并按文档改动收尾，失败才 needs_input → `internal/loop/design.go` → `TestNormalizeRecovery` `TestNormalizeHarvestRestoresSource`
+B11 mode=manual 时收割和 Step 都不创建设计期节点或 design、plan、replan、research、spike 卡 → `internal/loop/research.go` `design.go` → `TestManualHarvestRefusesDesignPhase`
+B12 终态研究无有效答案记 unanswered（盘点为 Q0）且不写作废文本 → `internal/loop/design.go` → `TestTerminalResearchWithoutAnswerContinues`
+B13 未终态的跳过不封存；终态 unanswered 对当前尝试只记一次，历史回调不改复查 → `internal/loop/design.go` `design_parse.go` → `TestResearchRetryWaitsForPassedAnswer` `TestTerminalUnansweredBackfillIsOneShot` `TestSupersededAttemptDoesNotRewriteRecheck`

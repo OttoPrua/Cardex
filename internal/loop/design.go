@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -215,7 +216,7 @@ func (d Deps) applyDesign(ctx context.Context, obj model.Objective, card model.C
 			return err
 		}
 	}
-	if parseFreezable(secs["可冻结"]) {
+	if judgeResultFreeze(result) == freezeYes {
 		if err := d.noteFreezable(ctx, node.ID, card.ID, node.Status == model.NodeReopened); err != nil {
 			return err
 		}
@@ -525,9 +526,17 @@ func (d Deps) advanceNode(ctx context.Context, obj model.Objective, nodeID strin
 		}
 		return d.freezeNode(ctx, obj, node)
 	case freezeAsk:
-		q, ok := currentFreeze(questions, node.ID, spentFreeze(notes))
-		if !ok {
-			created, err := d.questions().Create(ctx, model.Question{
+		stored, ok := currentFreeze(questions, node.ID, spentFreeze(notes))
+		var q model.Question
+		var err error
+		switch {
+		case ok && strings.TrimSpace(stored.Answer) == "":
+			// Create reuses this unanswered row and retries a delivery that failed earlier.
+			q, err = d.questions().Create(ctx, stored)
+		case ok:
+			q = stored
+		default:
+			q, err = d.questions().Create(ctx, model.Question{
 				Objective: obj.ID,
 				Scope:     node.ID,
 				ScopeKind: "node",
@@ -535,10 +544,9 @@ func (d Deps) advanceNode(ctx context.Context, obj model.Objective, nodeID strin
 				Text:      "冻结 " + string(node.Layer) + " " + node.ID,
 				Options:   []string{"同意", "拒绝"},
 			})
-			if err != nil {
-				return err
-			}
-			q = created
+		}
+		if err != nil {
+			return err
 		}
 		if blocked || !consented(q) {
 			return nil
@@ -1278,8 +1286,21 @@ func (d Deps) applyNormalize(ctx context.Context, obj model.Objective, card mode
 // source. No recorded design-file change becomes done; merge_queued and merged
 // stay as they are. The source attempt is consumed without reading its result.
 func (d Deps) finishNormalizedSource(ctx context.Context, obj model.Objective, source model.Card, text string) error {
+	if judgeResultFreeze(text) == freezeUnclear {
+		if err := d.markNeedsInput(ctx, source.ID); err != nil {
+			return err
+		}
+		return d.consumeSourceAttempt(ctx, source.ID)
+	}
 	if err := d.applyDesign(ctx, obj, source, text); err != nil {
 		return err
+	}
+	held, err := d.applyCardList(ctx, obj, source, text)
+	if err != nil {
+		return err
+	}
+	if held {
+		return d.consumeSourceAttempt(ctx, source.ID)
 	}
 	if err := d.markPassedDone(ctx, source, model.OutcomePassed); err != nil {
 		return err
@@ -1287,11 +1308,224 @@ func (d Deps) finishNormalizedSource(ctx context.Context, obj model.Objective, s
 	if err := d.markAbsorbed(ctx, source.ID, nil); err != nil {
 		return err
 	}
-	attemptID, err := d.currentAttemptID(ctx, source.ID)
+	return d.consumeSourceAttempt(ctx, source.ID)
+}
+
+func (d Deps) consumeSourceAttempt(ctx context.Context, cardID string) error {
+	attemptID, err := d.currentAttemptID(ctx, cardID)
 	if err != nil {
 		return err
 	}
 	return d.markAttempt(ctx, attemptID)
+}
+
+// applyCardList materializes the plan or replan 新卡 list on the design-phase
+// absorb. Prose with no list is left to applyDesign. A list that cannot be
+// read marks the source needs_input and reports held.
+func (d Deps) applyCardList(ctx context.Context, obj model.Objective, source model.Card, text string) (bool, error) {
+	if source.Kind != model.KindPlan && source.Kind != model.KindReplan {
+		return false, nil
+	}
+	_, hasList := sectionBody(text, "新卡")
+	cards, err := d.Store.ListCards(ctx, obj.ID)
+	if err != nil {
+		return false, err
+	}
+	known := map[string]bool{}
+	for _, c := range cards {
+		known[c.ID] = true
+	}
+	list := ParseCardList(text, source.Node, known)
+	if list.Bad {
+		if !hasList {
+			return false, nil
+		}
+		if err := d.markNeedsInput(ctx, source.ID); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	switch source.Kind {
+	case model.KindPlan:
+		err = d.materializePlan(ctx, obj, source, list)
+	default:
+		err = d.materializeReplan(ctx, obj, source, list, cards)
+	}
+	return false, err
+}
+
+func (d Deps) materializePlan(ctx context.Context, obj model.Objective, source model.Card, list CardList) error {
+	if _, ok, err := d.recordedPlanSplit(ctx, source.ID); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
+	if err := d.hangListQuestions(ctx, source.Node, list.Questions); err != nil {
+		return err
+	}
+	var creates []ListedCard
+	for _, draft := range list.Cards {
+		if draft.Op == "delete" || draft.Outside {
+			continue
+		}
+		creates = append(creates, draft)
+	}
+	ids, err := d.insertListed(ctx, obj, source.Node, creates)
+	if err != nil {
+		return err
+	}
+	return d.notePlanSplit(ctx, source.ID, source.Node, ids)
+}
+
+type planSplitBody struct {
+	Node  string   `json:"node"`
+	Cards []string `json:"cards"`
+}
+
+func (d Deps) recordedPlanSplit(ctx context.Context, planID string) (planSplitBody, bool, error) {
+	if d.Store == nil || strings.TrimSpace(planID) == "" {
+		return planSplitBody{}, false, nil
+	}
+	evs, err := d.Store.ListEvents(ctx, "card:"+planID)
+	if err != nil {
+		return planSplitBody{}, false, err
+	}
+	for _, ev := range evs {
+		if ev.Type != "plan_split" || len(ev.Data) == 0 {
+			continue
+		}
+		var body planSplitBody
+		if json.Unmarshal(ev.Data, &body) != nil {
+			continue
+		}
+		return body, true, nil
+	}
+	return planSplitBody{}, false, nil
+}
+
+func (d Deps) notePlanSplit(ctx context.Context, planID, node string, ids []string) error {
+	if len(ids) == 0 || strings.TrimSpace(planID) == "" {
+		return nil
+	}
+	raw, err := json.Marshal(planSplitBody{Node: node, Cards: ids})
+	if err != nil {
+		return err
+	}
+	return d.noteEvent(ctx, "card:"+planID, "plan_split", raw)
+}
+
+func (d Deps) materializeReplan(ctx context.Context, obj model.Objective, source model.Card, list CardList, cards []model.Card) error {
+	started := map[string]bool{}
+	for _, c := range cards {
+		attempts, err := d.Store.ListAttempts(ctx, c.ID)
+		if err != nil {
+			return err
+		}
+		if len(attempts) > 0 {
+			started[c.ID] = true
+		}
+	}
+	change := PlanReplan(cards, started, source.Node, list)
+	if err := d.hangListQuestions(ctx, source.Node, change.Questions); err != nil {
+		return err
+	}
+	taken := map[string]bool{}
+	for _, c := range cards {
+		taken[c.ID] = true
+	}
+	creates, edits, err := bindCreatedCards(change.Create, change.Edit, taken)
+	if err != nil {
+		return err
+	}
+	if _, err := d.insertBound(ctx, obj, source.Node, creates); err != nil {
+		return err
+	}
+	for _, draft := range edits {
+		current, err := d.Store.GetCard(ctx, draft.Key)
+		if err != nil {
+			return err
+		}
+		current.Kind = draft.Kind
+		current.Title = draft.Title
+		current.Body = draft.Body
+		current.Tier = draft.Tier
+		current.Deps = draft.Deps
+		current.Acceptance = draft.Acceptance
+		current.Claims = draft.Claims
+		if err := d.Store.UpdateCard(ctx, &current); err != nil {
+			return err
+		}
+	}
+	for _, id := range change.Delete {
+		if err := d.Store.DeleteCard(ctx, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d Deps) insertListed(ctx context.Context, obj model.Objective, node string, creates []ListedCard) ([]string, error) {
+	if len(creates) == 0 {
+		return nil, nil
+	}
+	cards, err := d.Store.ListCards(ctx, obj.ID)
+	if err != nil {
+		return nil, err
+	}
+	taken := map[string]bool{}
+	for _, c := range cards {
+		taken[c.ID] = true
+	}
+	bound, _, err := bindCreatedCards(creates, nil, taken)
+	if err != nil {
+		return nil, err
+	}
+	return d.insertBound(ctx, obj, node, bound)
+}
+
+func (d Deps) insertBound(ctx context.Context, obj model.Objective, node string, creates []ListedCard) ([]string, error) {
+	ids := make([]string, 0, len(creates))
+	for _, draft := range creates {
+		if draft.ID == "" {
+			return nil, errors.New("loop: listed card has no id")
+		}
+		card := cardFromDraft(obj.ID, node, draft)
+		if err := d.addCard(ctx, obj, &card); err != nil {
+			return nil, err
+		}
+		if _, err := d.Store.GetCard(ctx, card.ID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, err
+		}
+		ids = append(ids, card.ID)
+	}
+	return ids, nil
+}
+
+func (d Deps) hangListQuestions(ctx context.Context, nodeID string, questions []ListQuestion) error {
+	if strings.TrimSpace(nodeID) == "" || len(questions) == 0 {
+		return nil
+	}
+	node, err := d.Store.GetNode(ctx, nodeID)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for _, q := range questions {
+		text := q.Text
+		if q.Node != "" && q.Node != nodeID && !strings.Contains(text, q.Node) {
+			text += " (" + q.Node + ")"
+		}
+		if _, added := addOpenQuestion(&node, text, model.OQDecision); added {
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return d.Store.UpdateNode(ctx, &node)
 }
 
 // currentAttemptID is the latest attempt id. It does not read the result file.
@@ -1594,7 +1828,7 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 			return err
 		}
 	case model.KindDesign, model.KindPlan, model.KindReplan:
-		if designUnusable(text, outcome) {
+		if designUnusable(text, outcome) || judgeResultFreeze(text) == freezeUnclear {
 			resolved, err := d.recoverUnparsed(ctx, obj, card)
 			if err != nil {
 				return err

@@ -2,6 +2,7 @@ package question
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -117,5 +118,194 @@ func TestCreateKeepsScopeAndKindAndDelivers(t *testing.T) {
 	}
 	if on, err := svc.Blocked(ctx, "card-a"); err != nil || !on {
 		t.Fatalf("other scope cleared %v %v", on, err)
+	}
+}
+
+func TestCreateReusesStoredQuestionAndCardOrigin(t *testing.T) {
+	ctx := t.Context()
+	for _, kind := range []model.QuestionKind{model.QuestionReopen, model.QuestionFreeze} {
+		t.Run(string(kind), func(t *testing.T) {
+			st := openStore(t)
+			obj := &model.Objective{
+				Title: "重试", Mode: model.ModeAuto, FreezeMode: model.FreezeSafe,
+				Status: model.ObjectiveActive, Origin: "codex:goal",
+			}
+			if err := st.CreateObjective(ctx, obj); err != nil {
+				t.Fatal(err)
+			}
+			box := &deliverBox{fail: errors.New("notify down")}
+			svc := New(st, box)
+			q := model.Question{
+				Objective: obj.ID, Scope: "node-1", ScopeKind: "node",
+				Kind: kind, Text: "接口不一致", Options: []string{"同意", "拒绝"},
+			}
+			first, err := svc.Create(ctx, q)
+			if err == nil || first.ID == "" {
+				t.Fatalf("stored %s err %v", first.ID, err)
+			}
+			again, err := svc.Create(ctx, q)
+			if err == nil {
+				t.Fatal("delivery still down")
+			}
+			if again.ID != first.ID {
+				t.Fatalf("second row %s %s", first.ID, again.ID)
+			}
+			rows, err := st.ListQuestions(ctx, obj.ID)
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("rows %+v %v", rows, err)
+			}
+			if len(box.msgs) != 2 || box.msgs[0].QuestionID != first.ID || box.msgs[1].QuestionID != first.ID {
+				t.Fatalf("deliveries %+v", box.msgs)
+			}
+			box.fail = nil
+			got, err := svc.Create(ctx, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ID != first.ID {
+				t.Fatalf("id %s want %s", got.ID, first.ID)
+			}
+			rows, err = st.ListQuestions(ctx, obj.ID)
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("rows after success %+v %v", rows, err)
+			}
+			if len(box.msgs) != 3 || box.msgs[2].Origin != "codex:goal" {
+				t.Fatalf("success delivery %+v", box.msgs)
+			}
+			later, err := svc.Create(ctx, q)
+			if err != nil || later.ID != first.ID {
+				t.Fatalf("later %+v %v", later, err)
+			}
+			rows, err = st.ListQuestions(ctx, obj.ID)
+			if err != nil || len(rows) != 1 || len(box.msgs) != 3 {
+				t.Fatalf("duplicate rows %d msgs %d err %v", len(rows), len(box.msgs), err)
+			}
+			other := q
+			other.Text = "另一处设计问题"
+			second, err := svc.Create(ctx, other)
+			if err != nil || second.ID == first.ID {
+				t.Fatalf("different text %+v %v", second, err)
+			}
+			rows, err = st.ListQuestions(ctx, obj.ID)
+			if err != nil || len(rows) != 2 {
+				t.Fatalf("rows %+v %v", rows, err)
+			}
+		})
+	}
+
+	originCases := []struct {
+		name       string
+		scopeKind  string
+		cardOrigin string
+		want       string
+	}{
+		{name: "card-origin", scopeKind: "card", cardOrigin: "hermes:card", want: "hermes:card"},
+		{name: "card-without-origin", scopeKind: "card", want: "codex:goal"},
+		{name: "node-ignores-card-origin", scopeKind: "node", cardOrigin: "hermes:card", want: "codex:goal"},
+	}
+	for _, tc := range originCases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openStore(t)
+			obj := &model.Objective{
+				Title: "来源", Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+				Status: model.ObjectiveActive, Origin: "codex:goal",
+			}
+			if err := st.CreateObjective(ctx, obj); err != nil {
+				t.Fatal(err)
+			}
+			card := &model.Card{
+				Objective: obj.ID, Kind: model.KindDev, Title: "卡", Body: "任务\n",
+				Tier: model.TierT1, Status: model.CardRunning,
+			}
+			if err := st.CreateCard(ctx, card); err != nil {
+				t.Fatal(err)
+			}
+			if tc.cardOrigin != "" {
+				raw, err := json.Marshal(map[string]string{"origin": tc.cardOrigin})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := st.AppendEvent(ctx, &model.Event{Entity: "card:" + card.ID, Type: "origin", Data: raw}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			box := &deliverBox{}
+			got, err := New(st, box).Create(ctx, model.Question{
+				Objective: obj.ID, Scope: card.ID, ScopeKind: tc.scopeKind,
+				Kind: model.QuestionCustom, Text: "这张卡怎么处理", Options: []string{"是"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(box.msgs) != 1 || box.msgs[0].QuestionID != got.ID || box.msgs[0].Origin != tc.want {
+				t.Fatalf("origin %q deliveries %+v", tc.want, box.msgs)
+			}
+		})
+	}
+}
+
+type answerOnDeliver struct {
+	svc    Service
+	option string
+}
+
+func (a *answerOnDeliver) Deliver(ctx context.Context, msg notify.Message) error {
+	_, err := a.svc.Answer(ctx, msg.QuestionID, a.option)
+	return err
+}
+
+func TestAnswerDuringDeliveryIsKept(t *testing.T) {
+	cases := []struct {
+		name  string
+		reuse bool
+	}{
+		{name: "new", reuse: false},
+		{name: "reused-unanswered", reuse: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openStore(t)
+			ctx := t.Context()
+			obj := &model.Objective{
+				Title: "答复", Mode: model.ModeAuto, FreezeMode: model.FreezeSafe,
+				Status: model.ObjectiveActive, Origin: "codex:goal",
+			}
+			if err := st.CreateObjective(ctx, obj); err != nil {
+				t.Fatal(err)
+			}
+			q := model.Question{
+				Objective: obj.ID, Scope: "node-1", ScopeKind: "node",
+				Kind: model.QuestionFreeze, Text: "可以冻结吗",
+				Options: []string{"同意", "拒绝"},
+			}
+			if tc.reuse {
+				stored, err := New(st, nil).Create(ctx, q)
+				if err != nil || stored.ID == "" || stored.Answer != "" || len(stored.Deliveries) != 0 {
+					t.Fatalf("seed %+v %v", stored, err)
+				}
+			}
+			box := &answerOnDeliver{option: "同意"}
+			svc := New(st, box)
+			box.svc = svc
+			got, err := svc.Create(ctx, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := st.GetQuestion(ctx, got.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Answer != "同意" || len(stored.Deliveries) != 1 {
+				t.Fatalf("stored %+v", stored)
+			}
+			pending, err := svc.Pending(ctx, q.Scope)
+			if err != nil || len(pending) != 0 {
+				t.Fatalf("pending %+v %v", pending, err)
+			}
+			blocked, err := svc.Blocked(ctx, q.Scope)
+			if err != nil || blocked {
+				t.Fatalf("blocked %v %v", blocked, err)
+			}
+		})
 	}
 }

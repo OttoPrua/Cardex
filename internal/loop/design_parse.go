@@ -242,18 +242,248 @@ func parseChildLines(body string) []childSpec {
 	return out
 }
 
-func parseFreezable(body string) bool {
+type freezeVerdict int
+
+const (
+	freezeNo freezeVerdict = iota
+	freezeYes
+	freezeUnclear
+)
+
+// judgeResultFreeze reads ## 可冻结 or ## 结论. Both sections use the same
+// short-answer rule. Wording outside those two sections is not a proposal.
+func judgeResultFreeze(result string) freezeVerdict {
+	if body, ok := headingBody(result, "可冻结"); ok {
+		return classifyFreeze(body, true)
+	}
+	if body, ok := headingBody(result, "结论"); ok {
+		return classifyFreeze(body, false)
+	}
+	return freezeNo
+}
+
+func headingBody(md, name string) (string, bool) {
+	found := false
+	var buf strings.Builder
+	for _, line := range strings.Split(md, "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "##") && !strings.HasPrefix(trim, "###") {
+			if found {
+				break
+			}
+			h := strings.TrimSpace(strings.TrimLeft(trim, "#"))
+			if h == name {
+				found = true
+			}
+			continue
+		}
+		if found {
+			buf.WriteString(line)
+			buf.WriteByte('\n')
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return buf.String(), true
+}
+
+// classifyFreeze returns freezeYes only for a short answer. Negation stays no.
+// Any other ## 可冻结 body, and any other body that names 冻结, is unclear.
+func classifyFreeze(body string, dedicated bool) freezeVerdict {
+	compact := compactFreeze(body)
+	if currentNegative(leadingToken(body), compact) {
+		return freezeNo
+	}
+	if shortFreezeAnswer(body) {
+		return freezeYes
+	}
+	if dedicated || strings.Contains(compact, "冻结") {
+		return freezeUnclear
+	}
+	return freezeNo
+}
+
+// shortFreezeAnswer is the whole section after leading and trailing whitespace,
+// one leading list marker, and trailing punctuation are removed. A second line
+// is not an answer. A whitelist word plus leading separators and then exactly
+// the characters 可以冻结 is also an answer. Separators inside that phrase are not.
+func shortFreezeAnswer(body string) bool {
 	s := strings.TrimSpace(body)
-	if s == "" {
+	s = stripOneFreezeMarker(s)
+	s = strings.TrimSpace(s)
+	s = strings.TrimRightFunc(s, freezeTrailingPunct)
+	s = strings.TrimSpace(s)
+	if s == "" || strings.ContainsAny(s, "\r\n") {
 		return false
 	}
-	first := strings.ToLower(strings.Fields(s)[0])
-	switch first {
-	case "是", "yes", "true", "可冻结", "提议", "同意", "1":
+	folded := strings.ToLower(s)
+	if freezeYesWord(folded) {
+		return true
+	}
+	for _, word := range freezeYesWords {
+		if !strings.HasPrefix(folded, word) {
+			continue
+		}
+		rest := strings.TrimLeftFunc(folded[len(word):], freezeSeparator)
+		if rest == "可以冻结" {
+			return true
+		}
+	}
+	return false
+}
+
+func freezeSeparator(r rune) bool {
+	switch r {
+	case ' ', '\t', '，', '。', ',', '.', '！', '!', '？', '?', '、', '：', ':', '；', ';', '"', '\'', '“', '”', '‘', '’':
 		return true
 	default:
 		return false
 	}
+}
+
+var freezeYesWords = []string{"可以冻结", "可冻结", "同意", "提议", "true", "yes", "是", "1"}
+
+func freezeYesWord(folded string) bool {
+	for _, word := range freezeYesWords {
+		if folded == word {
+			return true
+		}
+	}
+	return false
+}
+
+func stripOneFreezeMarker(s string) string {
+	switch {
+	case strings.HasPrefix(s, "1."):
+		return s[2:]
+	case strings.HasPrefix(s, "1、"):
+		return strings.TrimPrefix(s, "1、")
+	case strings.HasPrefix(s, "-"), strings.HasPrefix(s, "*"), strings.HasPrefix(s, "+"):
+		return s[1:]
+	default:
+		return s
+	}
+}
+
+func freezeTrailingPunct(r rune) bool {
+	switch r {
+	case '，', '。', ',', '.', '！', '!', '？', '?', '、', '：', ':', '；', ';', '"', '\'', '“', '”', '‘', '’':
+		return true
+	default:
+		return false
+	}
+}
+
+// currentNegative is a determined no. A leading 否 or 不 stays no when a later
+// 可以冻结 fragment only names a future condition.
+func currentNegative(token, compact string) bool {
+	switch token {
+	case "否", "不", "no", "false", "拒绝", "0":
+		return true
+	}
+	if strings.HasPrefix(compact, "否") {
+		return true
+	}
+	negAt, negLen := findNegation(compact)
+	if negAt < 0 {
+		return false
+	}
+	posAt := indexPositiveOutsideNegation(compact)
+	if posAt < 0 {
+		return true
+	}
+	return negAt < posAt && negAt+negLen <= len(compact)
+}
+
+func findNegation(compact string) (int, int) {
+	bestAt, bestLen := -1, 0
+	for _, phrase := range negationPhrases {
+		at := strings.Index(compact, phrase)
+		if at < 0 {
+			continue
+		}
+		if bestAt < 0 || at < bestAt || (at == bestAt && len(phrase) > bestLen) {
+			bestAt, bestLen = at, len(phrase)
+		}
+	}
+	return bestAt, bestLen
+}
+
+// indexPositiveOutsideNegation only orders a negation ahead of a later fragment.
+// It is not a freeze yes: classifyFreeze never affirms from this scan.
+func indexPositiveOutsideNegation(compact string) int {
+	best := -1
+	for _, phrase := range []string{"可以冻结", "可冻结"} {
+		from := 0
+		for from < len(compact) {
+			rel := strings.Index(compact[from:], phrase)
+			if rel < 0 {
+				break
+			}
+			at := from + rel
+			if !insideNegation(compact, at) && (best < 0 || at < best) {
+				best = at
+			}
+			from = at + len(phrase)
+		}
+	}
+	return best
+}
+
+func insideNegation(compact string, pos int) bool {
+	for _, phrase := range negationPhrases {
+		from := 0
+		for from < len(compact) {
+			rel := strings.Index(compact[from:], phrase)
+			if rel < 0 {
+				break
+			}
+			at := from + rel
+			if pos >= at && pos < at+len(phrase) {
+				return true
+			}
+			from = at + len(phrase)
+		}
+	}
+	return false
+}
+
+var negationPhrases = []string{"不可以冻结", "不可冻结", "不能冻结", "不予冻结", "不建议冻结", "暂不冻结"}
+
+func leadingToken(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	end := strings.IndexFunc(s, freezeSep)
+	if end < 0 {
+		return strings.ToLower(s)
+	}
+	if end == 0 {
+		return ""
+	}
+	return strings.ToLower(s[:end])
+}
+
+func freezeSep(r rune) bool {
+	switch r {
+	case ' ', '\n', '\t', '\r', '，', '。', ',', '.', '！', '!', '？', '?', '、', '：', ':', '；', ';', '"', '\'', '“', '”', '‘', '’':
+		return true
+	default:
+		return false
+	}
+}
+
+func compactFreeze(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case ' ', '\n', '\t', '\r', '，', '。', ',', '.', '！', '!', '？', '?', '、', '：', ':', '；', ';', '"', '\'':
+			return -1
+		default:
+			return r
+		}
+	}, strings.ToLower(s))
 }
 
 func parseFactSection(body string) map[string]factBlock {

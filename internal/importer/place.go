@@ -18,7 +18,7 @@ const importObjectiveTitle = "v1 导入"
 type v1Record struct {
 	ID          string          `json:"id"`
 	Title       string          `json:"title"`
-	Goal        string          `json:"goal"`
+	Goal        looseString     `json:"goal"`
 	Type        string          `json:"type"`
 	Status      string          `json:"status"`
 	Project     string          `json:"project"`
@@ -34,6 +34,29 @@ type v1Record struct {
 	Prompts     []string        `json:"prompts"`
 	Step        int             `json:"step"`
 	DependsOn   []string        `json:"depends_on"`
+}
+
+// looseString keeps a JSON string. A v1 task goal is often an object
+// (the native-goal binding), which is not a title. Decoding that object
+// as empty leaves the card in place so status still decides the v2 row.
+type looseString string
+
+func (s *looseString) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		*s = ""
+		return nil
+	}
+	if data[0] != '"' {
+		*s = ""
+		return nil
+	}
+	var v string
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*s = looseString(v)
+	return nil
 }
 
 // placement is the v2 row a parsed record becomes. It does not touch the disk.
@@ -222,7 +245,7 @@ func recordTitle(rec *v1Record) string {
 	if s := strings.TrimSpace(rec.Title); s != "" {
 		return s
 	}
-	if s := strings.TrimSpace(rec.Goal); s != "" {
+	if s := strings.TrimSpace(string(rec.Goal)); s != "" {
 		return s
 	}
 	if s := strings.TrimSpace(rec.ID); s != "" {

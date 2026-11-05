@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -158,6 +159,88 @@ func TestImportPlacementDryRunAndIdempotent(t *testing.T) {
 	}
 	if after := snapshotTree(t, v1); after != before {
 		t.Fatal("import changed v1 bytes")
+	}
+}
+
+func TestImportObjectGoalPlacesByStatus(t *testing.T) {
+	v1 := t.TempDir()
+	writeV1(t, v1, "tasks/held-goal.json", map[string]any{
+		"id": "hg", "title": "Held goal card", "status": "held", "project": "harbor",
+		"last_error":  "harvest needs_review: unverified_output",
+		"runner_pref": "codex", "model": "should-not-pin",
+		"goal": map[string]any{
+			"outcome": "land the buoy", "observation": "unknown",
+			"last_native_status": "budget_limited",
+		},
+	})
+	writeV1(t, v1, "tasks/running-goal.json", map[string]any{
+		"id": "rg", "title": "Running goal card", "status": "running", "project": "harbor",
+		"frozen_route": map[string]any{"name": "mixed_daily_development", "legs": []any{map[string]any{"runner": "grok", "model": "grok-test"}}},
+		"goal":         map[string]any{"scope": "object goal is not a title"},
+	})
+	writeV1(t, v1, "archive/done-goal.json", map[string]any{
+		"id": "dg", "title": "Done goal card", "status": "done", "project": "harbor",
+		"goal": map[string]any{"acceptance": "already finished"},
+	})
+	writeV1(t, v1, "workflows/string-goal.json", map[string]any{
+		"id": "sg", "goal": "Keep the string title", "status": "canceled", "module_id": "harbor",
+	})
+
+	v2 := t.TempDir()
+	ctx := context.Background()
+	report, err := Import(ctx, v2, v1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Unparsed) != 0 {
+		t.Fatalf("unparsed %#v", report.Unparsed)
+	}
+	want := map[string]int{"v1:held": 1, "v1:running": 1, "v1:done": 1, "v1:canceled": 1, "v2:paused": 1, "v2:ready": 1, "v2:done": 1, "v2:canceled": 1}
+	for key, n := range want {
+		if report.Counts[key] != n {
+			t.Fatalf("%s = %d, report %#v", key, report.Counts[key], report.Counts)
+		}
+	}
+
+	if _, err := Import(ctx, v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	db := openDB(t, v2)
+	cards := cardsOf(t, db)
+	if len(cards) != 4 {
+		t.Fatalf("cards %d", len(cards))
+	}
+	byID := map[string]model.Card{}
+	for _, c := range cards {
+		byID[c.ID] = c
+		if c.Channel != "" || c.Model != "" {
+			t.Fatalf("%s pinned channel %q model %q", c.ID, c.Channel, c.Model)
+		}
+	}
+	for _, obj := range objectivesOf(t, db) {
+		if obj.Title != importObjectiveTitle || obj.Mode != model.ModeManual {
+			t.Fatalf("objective %+v", obj)
+		}
+	}
+	assertStatus(t, byID["v1-hg"], model.CardPaused, "held", "harvest needs_review: unverified_output")
+	assertStatus(t, byID["v1-rg"], model.CardReady, "running", "")
+	assertStatus(t, byID["v1-dg"], model.CardDone, "done", "")
+	assertStatus(t, byID["v1-sg"], model.CardCanceled, "canceled", "")
+	if byID["v1-hg"].Title != "Held goal card" || byID["v1-sg"].Title != "Keep the string title" {
+		t.Fatalf("titles held %q string-goal %q", byID["v1-hg"].Title, byID["v1-sg"].Title)
+	}
+	if byID["v1-hg"].Legacy.SourcePath != "tasks/held-goal.json" || byID["v1-dg"].Legacy.SourcePath != "archive/done-goal.json" {
+		t.Fatalf("sources %+v %+v", byID["v1-hg"].Legacy, byID["v1-dg"].Legacy)
+	}
+	assertHint(t, db, "v1-hg", false, "codex")
+	assertHint(t, db, "v1-rg", true, "")
+	assertNoHint(t, db, "v1-dg")
+
+	if _, err := Import(ctx, v2, v1, false); err != nil {
+		t.Fatal(err)
+	}
+	if again := cardsOf(t, db); len(again) != len(cards) {
+		t.Fatalf("second import cards %d want %d", len(again), len(cards))
 	}
 }
 
@@ -1055,6 +1138,93 @@ func writeRaw(t *testing.T, root, rel string, body []byte) {
 	}
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestImportReadOnlySource runs both import-legacy modes against a synthetic
+// source whose write bits are cleared. Import is the entry cmd/cardex calls.
+func TestImportReadOnlySource(t *testing.T) {
+	const (
+		hex32 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	cases := []struct {
+		name   string
+		dryRun bool
+	}{
+		{name: "dry-run", dryRun: true},
+		{name: "import", dryRun: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v1 := t.TempDir()
+			writeV1(t, v1, "tasks/queued.json", map[string]any{
+				"id": "ro-queued", "title": "Queue the ferry", "status": "queued", "project": "lumen",
+			})
+			writeV1(t, v1, "tasks/held.json", map[string]any{
+				"id": "ro-held", "title": "Hold the lamp", "status": "held", "project": "lumen",
+				"hold_reason": "waiting",
+			})
+			writeV1(t, v1, "archive/done.json", map[string]any{
+				"id": "ro-done", "title": "Done chart", "status": "done", "project": "lumen",
+			})
+			writeV1(t, v1, "workflows/live.json", map[string]any{
+				"id": "ro-live", "title": "Workflow live", "status": "running", "project": "lumen",
+			})
+			receipt := []byte(`{"role":"design","read_only":true,"status":"completed","runner":"grok","actual_runner":"grok","identity":"fixture-identity","session_id":"fixture-session","result_path":"/tmp/fixture-result","digest":"` + hex32 + `","input_identity":"fixture-input"}`)
+			writeRaw(t, v1, "workflows/ok.design-receipt.json", receipt)
+			writeRaw(t, v1, "tasks/readme.txt", []byte("not a record"))
+			before := snapshotTree(t, v1)
+			if out, err := exec.Command("chmod", "-R", "a-w", v1).CombinedOutput(); err != nil {
+				t.Fatalf("chmod -R a-w: %v %s", err, out)
+			}
+			restored := false
+			restore := func() {
+				if restored {
+					return
+				}
+				restored = true
+				if out, err := exec.Command("chmod", "-R", "u+w", v1).CombinedOutput(); err != nil {
+					t.Errorf("restore source mode: %v %s", err, out)
+				}
+			}
+			defer restore()
+
+			v2 := ""
+			if !tc.dryRun {
+				v2 = t.TempDir()
+			}
+			report, err := Import(context.Background(), v2, v1, tc.dryRun)
+			if err != nil {
+				t.Fatalf("Import dry=%v: %v", tc.dryRun, err)
+			}
+			if report.DryRun != tc.dryRun {
+				t.Fatalf("DryRun %v", report.DryRun)
+			}
+			if report.Counts["v1:queued"] != 1 || report.Counts["v1:held"] != 1 || report.Counts["v1:done"] != 1 || report.Counts["v1:running"] != 1 {
+				t.Fatalf("counts %#v", report.Counts)
+			}
+			if len(report.Unparsed) != 0 {
+				t.Fatalf("unparsed %q", report.Unparsed)
+			}
+			if after := snapshotTree(t, v1); after != before {
+				t.Fatal("source tree changed")
+			}
+			if tc.dryRun {
+				restore()
+				return
+			}
+			db := openDB(t, v2)
+			found := false
+			for _, card := range cardsOf(t, db) {
+				if card.ID == "v1-ro-queued" && card.Legacy.SourcePath == "tasks/queued.json" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("import did not write the queued card into the v2 home")
+			}
+			restore()
+		})
 	}
 }
 

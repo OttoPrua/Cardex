@@ -1,7 +1,7 @@
 # R3-A-F1
 
 ## 做了什么
-未回答的问题按目标、scope、kind、正文复用同一行并重试投递。卡级问题投递到该卡已记录的 origin；没有这条记录，以及节点级问题，仍用目标 origin。`## 可冻结` 和 `## 结论` 用同一条短答案：去掉首尾空白、一个列表标记（`-`、`*`、`+`、`1.`、`1、`）和结尾标点后，整节恰好是 `是`、`yes`、`true`、`同意`、`1`、`提议`、`可冻结`、`可以冻结`，或这些词后面只剩 `可以冻结`（如 `是，可以冻结`），才记可冻结。第二行或其他文字都不是。这两节里含 `冻结`、又不是短答案或否定的文本先派一张整理卡，整理结果仍无法判断则把源卡标为 needs_input。其他小节里的冻结意见不记提议。整理成功后，design、plan、replan 源卡走设计期吸收：开放问题、子节点提议和可冻结提议照设计吸收，plan 与 replan 再落地 `## 新卡`。manual 且仍为 running 的这类源卡可以变成 done。dev 原卡不按设计吸收。
+未回答的问题按目标、scope、kind、正文复用同一行并重试投递。卡级问题投递到该卡已记录的 origin；没有这条记录，以及节点级问题，仍用目标 origin。`## 可冻结` 和 `## 结论` 用同一条短答案：去掉首尾空白、一个列表标记（`-`、`*`、`+`、`1.`、`1、`）和结尾标点后，整节恰好是 `是`、`yes`、`true`、`同意`、`1`、`提议`、`可冻结`、`可以冻结`，或这些词后面只剩前导分隔符和恰好的字符 `可以冻结`（如 `是，可以冻结`、`是 可以冻结`；`是，可，以冻结` 不是），才记可冻结。第二行或其他文字都不是。这两节里含 `冻结`、又不是短答案或否定的文本先派一张整理卡，整理结果仍无法判断则把源卡标为 needs_input。其他小节里的冻结意见不记提议。整理成功后，design、plan、replan 源卡走设计期吸收：开放问题、子节点提议和可冻结提议照设计吸收，plan 与 replan 再落地 `## 新卡`。manual 且仍为 running 的这类源卡可以变成 done。dev 原卡不按设计吸收。
 
 ## 没做什么，以及原因
 未改 `internal/loop/dev_apply.go`、`internal/sched/`、`cmd/cardex/`、`internal/positioning/`，也未把 ranking 吸收放回设计路径。N9：非 manual 的整理成功仍只回写文本，不吸收设计产出，路径在 dev/sched，不在本写域。N6：卡 origin 的通知消费和 `positioning reject` 仍是 unspecified，不在本写域。
@@ -23,4 +23,4 @@ B2 投递返回后重读问题行，合并投递记录并保留已保存答复�
 B3 整理吸收的 plan 写入与普通拆卡相同的 plan_split（源 plan、节点、实际创建的卡 ID）；重复吸收不重复建卡；replan 不写 → `internal/loop/design.go:1357` `design.go:1406` `design.go:1486` → `TestNormalizePlanSplitRecordsBatch`
 B1 肯定首词不替代冻结语义；条件和不确定先于「是」；「是，如果接口确认通过才可以冻结；目前尚未确认。」走整理且不记提议；「同意，采用方案 A。」不记提议也不整理 → `internal/loop/design_parse.go:294` `design_parse.go:301` `design.go:219` `design.go:1289` `design.go:1831` → `TestFreezeCurrentSense`
 B1 肯定首词后的正文若本身不是确定的当前肯定，就不能记为当前可以冻结；「是，但要等接口确认后再冻结。」普通吸收派一张整理卡且不冻结不派 plan，整理结果仍非确定是或否则 needs_input → `internal/loop/design_parse.go:361` `design_parse.go:374` `design.go:219` `design.go:1289` `design.go:1831` → `TestFreezeCurrentSense`
-design、plan、replan 的可冻结只认 `## 可冻结` 或 `## 结论` 的整节短答案；含冻结且非短答案非否定走一张整理卡或 needs_input → `internal/loop/design_parse.go:299` `design.go:219` `design.go:1289` `design.go:1831` `internal/prompt/templates/design.md:11` `normalize.md:5` → `TestFreezeShortAnswer` `TestFreezeFastModuleConditional`
+design、plan、replan 的可冻结只认 `## 可冻结` 或 `## 结论` 的整节短答案；白名单词后只能是前导分隔符加恰好 `可以冻结`，`是，可，以冻结` 与 `是，可 以冻结` 走整理或 needs_input → `internal/loop/design_parse.go:299` `design_parse.go:329` `design.go:219` `design.go:1289` `design.go:1831` `internal/prompt/templates/design.md:11` `normalize.md:5` → `TestFreezeShortAnswer` `TestFreezeFastModuleConditional`

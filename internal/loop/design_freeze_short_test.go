@@ -27,6 +27,9 @@ func TestFreezeShortAnswer(t *testing.T) {
 		{name: "dash-shi", body: "- 是", want: expectYes},
 		{name: "keyi", body: "可以冻结", want: expectYes},
 		{name: "shi-keyi-period", body: "是，可以冻结。", want: expectYes},
+		{name: "shi-keyi", body: "是，可以冻结", want: expectYes},
+		{name: "shi-space-keyi", body: "是 可以冻结", want: expectYes},
+		{name: "yes-comma-keyi", body: "yes，可以冻结", want: expectYes},
 		{name: "yes", body: "yes", want: expectYes},
 		{name: "agree", body: "同意", want: expectYes},
 		{name: "true", body: "true", want: expectYes},
@@ -44,6 +47,8 @@ func TestFreezeShortAnswer(t *testing.T) {
 		{name: "dash-shi-but", body: "- 是，可以冻结，但要等接口确认后再执行。", want: expectUnclear},
 		{name: "suggest", body: "建议可以冻结，但要等接口确认后再执行。", want: expectUnclear},
 		{name: "this-node", body: "本节点可以冻结", want: expectUnclear},
+		{name: "split-comma", body: "是，可，以冻结", want: expectUnclear},
+		{name: "split-space", body: "是，可 以冻结", want: expectUnclear},
 		{name: "two-lines", body: "是\n但要等接口确认后再执行。", want: expectNotYes},
 	}
 	headings := []string{"可冻结", "结论"}

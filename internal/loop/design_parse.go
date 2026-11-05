@@ -306,7 +306,8 @@ func classifyFreeze(body string, dedicated bool) freezeVerdict {
 
 // shortFreezeAnswer is the whole section after leading and trailing whitespace,
 // one leading list marker, and trailing punctuation are removed. A second line
-// is not an answer. A whitelist word plus nothing but 可以冻结 is also an answer.
+// is not an answer. A whitelist word plus leading separators and then exactly
+// the characters 可以冻结 is also an answer. Separators inside that phrase are not.
 func shortFreezeAnswer(body string) bool {
 	s := strings.TrimSpace(body)
 	s = stripOneFreezeMarker(s)
@@ -324,11 +325,21 @@ func shortFreezeAnswer(body string) bool {
 		if !strings.HasPrefix(folded, word) {
 			continue
 		}
-		if compactFreeze(folded[len(word):]) == "可以冻结" {
+		rest := strings.TrimLeftFunc(folded[len(word):], freezeSeparator)
+		if rest == "可以冻结" {
 			return true
 		}
 	}
 	return false
+}
+
+func freezeSeparator(r rune) bool {
+	switch r {
+	case ' ', '\t', '，', '。', ',', '.', '！', '!', '？', '?', '、', '：', ':', '；', ';', '"', '\'', '“', '”', '‘', '’':
+		return true
+	default:
+		return false
+	}
 }
 
 var freezeYesWords = []string{"可以冻结", "可冻结", "同意", "提议", "true", "yes", "是", "1"}

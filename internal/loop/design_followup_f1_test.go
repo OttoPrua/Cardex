@@ -2,7 +2,9 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -290,6 +292,235 @@ func TestNormalizeAbsorbFinishesManualSource(t *testing.T) {
 			t.Fatal("dev original recorded a freeze proposal")
 		}
 	})
+}
+
+func TestFreezeCurrentSense(t *testing.T) {
+	type sense int
+	const (
+		senseNo sense = iota
+		senseUnclear
+		senseYes
+	)
+	texts := []struct {
+		name  string
+		text  string
+		sense sense
+	}{
+		{name: "negative-later-fragment", text: "## 可冻结\n否，需等接口确认后才可以冻结\n", sense: senseNo},
+		{name: "bare-no", text: "## 可冻结\n否\n", sense: senseNo},
+		{name: "conditional", text: "## 开放问题\n- 不该写入\n## 可冻结\n等接口确认后才可以冻结\n", sense: senseUnclear},
+		{name: "section-yes", text: "## 可冻结\n是\n", sense: senseYes},
+		{name: "keyi", text: "## 可冻结\n可以冻结\n", sense: senseYes},
+		{name: "shi-comma", text: "## 可冻结\n是，可以冻结\n", sense: senseYes},
+		{name: "conclusion", text: "## 开放问题\n- 要不要留\n## 结论\n可以冻结\n", sense: senseYes},
+		{name: "conclusion-comma", text: "## 结论\n是，可以冻结\n", sense: senseYes},
+	}
+	entries := []struct {
+		name         string
+		kind         model.CardKind
+		layer        model.Layer
+		viaNormalize bool
+	}{
+		{name: "design", kind: model.KindDesign, layer: model.LayerModule},
+		{name: "detail", kind: model.KindDesign, layer: model.LayerDetail},
+		{name: "plan", kind: model.KindPlan, layer: model.LayerModule},
+		{name: "replan", kind: model.KindReplan, layer: model.LayerModule},
+		{name: "normalize", kind: model.KindDesign, layer: model.LayerModule, viaNormalize: true},
+	}
+	for _, entry := range entries {
+		for _, tc := range texts {
+			t.Run(entry.name+"/"+tc.name, func(t *testing.T) {
+				st := openLoop(t)
+				obj := seedObjective(t, st, "", model.ModeAuto, model.FreezeFast)
+				node := seedNode(t, st, obj.ID, "", entry.layer)
+				source := seedCard(t, st, obj.ID, node.ID, entry.kind, model.CardRunning, "任务\n")
+				target := source
+				seededNorm := 0
+				if entry.viaNormalize {
+					target = seedNormalize(t, st, obj.ID, node.ID, source.ID)
+					seededNorm = 1
+				}
+				absorbText(t, st, target.ID, 0, model.OutcomePassed, tc.text)
+				if tc.sense != senseYes {
+					if err := loopStep(t, depsOf(st), obj.ID); err != nil {
+						t.Fatal(err)
+					}
+				}
+				gotNode := nodeOf(t, st, node.ID)
+				freezes := eventCount(t, st, "node:"+node.ID, evFreezable)
+				norms := len(normalizeCards(t, st, obj.ID, source.ID))
+				plans := countKind(t, st, obj.ID, node.ID, model.KindPlan)
+				wantPlans := 0
+				if entry.kind == model.KindPlan {
+					wantPlans = 1
+				}
+				switch tc.sense {
+				case senseYes:
+					if freezes != 1 {
+						t.Fatalf("freezable events %d", freezes)
+					}
+					if norms != seededNorm {
+						t.Fatalf("normalize cards %d", norms)
+					}
+					if strings.Contains(tc.text, "要不要留") && !questionText(gotNode, "要不要留") {
+						t.Fatal("open question dropped")
+					}
+				case senseNo:
+					if freezes != 0 || gotNode.Status == model.NodeFrozen || plans != wantPlans || norms != seededNorm {
+						t.Fatalf("freezes %d status %s plans %d norms %d", freezes, gotNode.Status, plans, norms)
+					}
+				default:
+					if freezes != 0 || gotNode.Status == model.NodeFrozen || plans != wantPlans || norms != 1 {
+						t.Fatalf("freezes %d status %s plans %d norms %d", freezes, gotNode.Status, plans, norms)
+					}
+					if questionText(gotNode, "不该写入") {
+						t.Fatal("conditional proposal was applied")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestNormalizePlanSplitRecordsBatch(t *testing.T) {
+	const listed = "## 新卡\n[{\"key\":\"impl\",\"kind\":\"dev\",\"title\":\"实现接口\"},{\"key\":\"cover\",\"kind\":\"dev\",\"title\":\"补测试\"},{\"key\":\"else\",\"kind\":\"dev\",\"title\":\"别的节点\",\"node\":\"n-other\"}]\n## 可冻结\n是\n"
+
+	t.Run("plan", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("CARDEX_HOME", home)
+		st, err := store.Open(filepath.Join(home, "cardex.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = st.Close() })
+		obj := seedObjective(t, st, "", model.ModeAuto, model.FreezeSafe)
+		node := seedNode(t, st, obj.ID, "", model.LayerModule)
+		plan := seedCard(t, st, obj.ID, node.ID, model.KindPlan, model.CardRunning, "任务\n")
+		norm := seedNormalize(t, st, obj.ID, node.ID, plan.ID)
+		attempt := plantAttempt(t, st, norm.ID, 0, model.OutcomePassed, listed)
+		if err := AbsorbDisposed(t.Context(), depsOf(st), attempt.ID, model.OutcomePassed, listed); err != nil {
+			t.Fatal(err)
+		}
+		created := cardsKindOn(t, st, obj.ID, node.ID, model.KindDev)
+		body, ok := planSplitOf(t, st, plan.ID)
+		if !ok || body.Node != node.ID || !sameIDs(body.Cards, cardIDs(created)) || len(created) != 2 {
+			t.Fatalf("split %+v created %+v", body, created)
+		}
+		before := len(cardsOf(t, st, obj.ID))
+		if err := AbsorbDisposed(t.Context(), depsOf(st), attempt.ID, model.OutcomePassed, listed); err != nil {
+			t.Fatal(err)
+		}
+		if len(cardsOf(t, st, obj.ID)) != before || len(cardsKindOn(t, st, obj.ID, node.ID, model.KindDev)) != len(created) {
+			t.Fatal("second absorb created cards")
+		}
+		for _, card := range created {
+			if err := setCardStatus(t, st, card.ID, model.CardDone); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := DevStep(t.Context(), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		replans := cardsKindOn(t, st, obj.ID, node.ID, model.KindReplan)
+		if len(replans) != 1 || !hasDepID(replans[0], plan.ID) {
+			t.Fatalf("replan %+v", replans)
+		}
+		if err := DevStep(t.Context(), obj.ID); err != nil {
+			t.Fatal(err)
+		}
+		if again := cardsKindOn(t, st, obj.ID, node.ID, model.KindReplan); len(again) != 1 {
+			t.Fatalf("second step replans %+v", again)
+		}
+	})
+
+	t.Run("replan-unrecorded", func(t *testing.T) {
+		st := openLoop(t)
+		obj := seedObjective(t, st, "", model.ModeAuto, model.FreezeSafe)
+		node := seedNode(t, st, obj.ID, "", model.LayerModule)
+		replan := seedCard(t, st, obj.ID, node.ID, model.KindReplan, model.CardRunning, "任务\n")
+		norm := seedNormalize(t, st, obj.ID, node.ID, replan.ID)
+		attempt := plantAttempt(t, st, norm.ID, 0, model.OutcomePassed, listed)
+		if err := AbsorbDisposed(t.Context(), depsOf(st), attempt.ID, model.OutcomePassed, listed); err != nil {
+			t.Fatal(err)
+		}
+		created := cardsKindOn(t, st, obj.ID, node.ID, model.KindDev)
+		if len(created) != 2 {
+			t.Fatalf("created %+v", created)
+		}
+		if _, ok := planSplitOf(t, st, replan.ID); ok || eventCount(t, st, "", "plan_split") != 0 {
+			t.Fatal("replan absorb recorded a plan split")
+		}
+		before := len(cardsOf(t, st, obj.ID))
+		if err := AbsorbDisposed(t.Context(), depsOf(st), attempt.ID, model.OutcomePassed, listed); err != nil {
+			t.Fatal(err)
+		}
+		if len(cardsOf(t, st, obj.ID)) != before {
+			t.Fatal("second absorb created cards")
+		}
+	})
+}
+
+func planSplitOf(t *testing.T, st *store.Store, planID string) (planSplitBody, bool) {
+	t.Helper()
+	evs, err := st.ListEvents(t.Context(), "card:"+planID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range evs {
+		if ev.Type != "plan_split" {
+			continue
+		}
+		var body planSplitBody
+		if err := json.Unmarshal(ev.Data, &body); err != nil {
+			t.Fatal(err)
+		}
+		return body, true
+	}
+	return planSplitBody{}, false
+}
+
+func cardsKindOn(t *testing.T, st *store.Store, objective, node string, kind model.CardKind) []model.Card {
+	t.Helper()
+	var out []model.Card
+	for _, card := range cardsOf(t, st, objective) {
+		if card.Node == node && card.Kind == kind {
+			out = append(out, card)
+		}
+	}
+	return out
+}
+
+func cardIDs(cards []model.Card) []string {
+	ids := make([]string, 0, len(cards))
+	for _, card := range cards {
+		ids = append(ids, card.ID)
+	}
+	return ids
+}
+
+func sameIDs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[string]int{}
+	for _, id := range a {
+		if id == "" {
+			return false
+		}
+		seen[id]++
+	}
+	for _, id := range b {
+		seen[id]--
+		if seen[id] < 0 {
+			return false
+		}
+	}
+	for _, n := range seen {
+		if n != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func seedNormalize(t *testing.T, st *store.Store, objective, node, sourceID string) model.Card {

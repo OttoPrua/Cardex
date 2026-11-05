@@ -103,12 +103,25 @@ func (s *svc) deliverQuestion(ctx context.Context, q *model.Question) error {
 	}); err != nil {
 		return err
 	}
-	q.Deliveries = append(q.Deliveries, model.Delivery{
+	// Deliver can store an answer before it returns. Re-read inside the store
+	// transaction and merge the delivery onto that row so the answer stays.
+	delivery := model.Delivery{
 		At:          time.Now().UTC(),
 		Adapter:     "notify",
 		Destination: origin,
+	}
+	return s.store.WithTx(ctx, func(ctx context.Context) error {
+		current, err := s.store.GetQuestion(ctx, q.ID)
+		if err != nil {
+			return err
+		}
+		current.Deliveries = append(current.Deliveries, delivery)
+		if err := s.store.UpdateQuestion(ctx, &current); err != nil {
+			return err
+		}
+		*q = current
+		return nil
 	})
-	return s.store.UpdateQuestion(ctx, q)
 }
 
 // questionOrigin uses the card's stored origin event for a card-scoped question.

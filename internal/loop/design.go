@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -1354,6 +1355,11 @@ func (d Deps) applyCardList(ctx context.Context, obj model.Objective, source mod
 }
 
 func (d Deps) materializePlan(ctx context.Context, obj model.Objective, source model.Card, list CardList) error {
+	if _, ok, err := d.recordedPlanSplit(ctx, source.ID); err != nil {
+		return err
+	} else if ok {
+		return nil
+	}
 	if err := d.hangListQuestions(ctx, source.Node, list.Questions); err != nil {
 		return err
 	}
@@ -1364,7 +1370,48 @@ func (d Deps) materializePlan(ctx context.Context, obj model.Objective, source m
 		}
 		creates = append(creates, draft)
 	}
-	return d.insertListed(ctx, obj, source.Node, creates)
+	ids, err := d.insertListed(ctx, obj, source.Node, creates)
+	if err != nil {
+		return err
+	}
+	return d.notePlanSplit(ctx, source.ID, source.Node, ids)
+}
+
+type planSplitBody struct {
+	Node  string   `json:"node"`
+	Cards []string `json:"cards"`
+}
+
+func (d Deps) recordedPlanSplit(ctx context.Context, planID string) (planSplitBody, bool, error) {
+	if d.Store == nil || strings.TrimSpace(planID) == "" {
+		return planSplitBody{}, false, nil
+	}
+	evs, err := d.Store.ListEvents(ctx, "card:"+planID)
+	if err != nil {
+		return planSplitBody{}, false, err
+	}
+	for _, ev := range evs {
+		if ev.Type != "plan_split" || len(ev.Data) == 0 {
+			continue
+		}
+		var body planSplitBody
+		if json.Unmarshal(ev.Data, &body) != nil {
+			continue
+		}
+		return body, true, nil
+	}
+	return planSplitBody{}, false, nil
+}
+
+func (d Deps) notePlanSplit(ctx context.Context, planID, node string, ids []string) error {
+	if len(ids) == 0 || strings.TrimSpace(planID) == "" {
+		return nil
+	}
+	raw, err := json.Marshal(planSplitBody{Node: node, Cards: ids})
+	if err != nil {
+		return err
+	}
+	return d.noteEvent(ctx, "card:"+planID, "plan_split", raw)
 }
 
 func (d Deps) materializeReplan(ctx context.Context, obj model.Objective, source model.Card, list CardList, cards []model.Card) error {
@@ -1390,7 +1437,7 @@ func (d Deps) materializeReplan(ctx context.Context, obj model.Objective, source
 	if err != nil {
 		return err
 	}
-	if err := d.insertBound(ctx, obj, source.Node, creates); err != nil {
+	if _, err := d.insertBound(ctx, obj, source.Node, creates); err != nil {
 		return err
 	}
 	for _, draft := range edits {
@@ -1417,13 +1464,13 @@ func (d Deps) materializeReplan(ctx context.Context, obj model.Objective, source
 	return nil
 }
 
-func (d Deps) insertListed(ctx context.Context, obj model.Objective, node string, creates []ListedCard) error {
+func (d Deps) insertListed(ctx context.Context, obj model.Objective, node string, creates []ListedCard) ([]string, error) {
 	if len(creates) == 0 {
-		return nil
+		return nil, nil
 	}
 	cards, err := d.Store.ListCards(ctx, obj.ID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	taken := map[string]bool{}
 	for _, c := range cards {
@@ -1431,22 +1478,30 @@ func (d Deps) insertListed(ctx context.Context, obj model.Objective, node string
 	}
 	bound, _, err := bindCreatedCards(creates, nil, taken)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	return d.insertBound(ctx, obj, node, bound)
 }
 
-func (d Deps) insertBound(ctx context.Context, obj model.Objective, node string, creates []ListedCard) error {
+func (d Deps) insertBound(ctx context.Context, obj model.Objective, node string, creates []ListedCard) ([]string, error) {
+	ids := make([]string, 0, len(creates))
 	for _, draft := range creates {
 		if draft.ID == "" {
-			return errors.New("loop: listed card has no id")
+			return nil, errors.New("loop: listed card has no id")
 		}
 		card := cardFromDraft(obj.ID, node, draft)
 		if err := d.addCard(ctx, obj, &card); err != nil {
-			return err
+			return nil, err
 		}
+		if _, err := d.Store.GetCard(ctx, card.ID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return nil, err
+		}
+		ids = append(ids, card.ID)
 	}
-	return nil
+	return ids, nil
 }
 
 func (d Deps) hangListQuestions(ctx context.Context, nodeID string, questions []ListQuestion) error {

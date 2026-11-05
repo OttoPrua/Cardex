@@ -243,3 +243,69 @@ func TestCreateReusesStoredQuestionAndCardOrigin(t *testing.T) {
 		})
 	}
 }
+
+type answerOnDeliver struct {
+	svc    Service
+	option string
+}
+
+func (a *answerOnDeliver) Deliver(ctx context.Context, msg notify.Message) error {
+	_, err := a.svc.Answer(ctx, msg.QuestionID, a.option)
+	return err
+}
+
+func TestAnswerDuringDeliveryIsKept(t *testing.T) {
+	cases := []struct {
+		name  string
+		reuse bool
+	}{
+		{name: "new", reuse: false},
+		{name: "reused-unanswered", reuse: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := openStore(t)
+			ctx := t.Context()
+			obj := &model.Objective{
+				Title: "答复", Mode: model.ModeAuto, FreezeMode: model.FreezeSafe,
+				Status: model.ObjectiveActive, Origin: "codex:goal",
+			}
+			if err := st.CreateObjective(ctx, obj); err != nil {
+				t.Fatal(err)
+			}
+			q := model.Question{
+				Objective: obj.ID, Scope: "node-1", ScopeKind: "node",
+				Kind: model.QuestionFreeze, Text: "可以冻结吗",
+				Options: []string{"同意", "拒绝"},
+			}
+			if tc.reuse {
+				stored, err := New(st, nil).Create(ctx, q)
+				if err != nil || stored.ID == "" || stored.Answer != "" || len(stored.Deliveries) != 0 {
+					t.Fatalf("seed %+v %v", stored, err)
+				}
+			}
+			box := &answerOnDeliver{option: "同意"}
+			svc := New(st, box)
+			box.svc = svc
+			got, err := svc.Create(ctx, q)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := st.GetQuestion(ctx, got.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Answer != "同意" || len(stored.Deliveries) != 1 {
+				t.Fatalf("stored %+v", stored)
+			}
+			pending, err := svc.Pending(ctx, q.Scope)
+			if err != nil || len(pending) != 0 {
+				t.Fatalf("pending %+v %v", pending, err)
+			}
+			blocked, err := svc.Blocked(ctx, q.Scope)
+			if err != nil || blocked {
+				t.Fatalf("blocked %v %v", blocked, err)
+			}
+		})
+	}
+}

@@ -1,9 +1,12 @@
 package notify
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -31,24 +34,18 @@ func loadReminder(home, id string) (deliveryState, bool, error) {
 		return deliveryState{}, false, nil
 	}
 	all, err := readReminders(home)
-	if err != nil {
-		return deliveryState{}, false, err
-	}
 	rec, ok := all.Questions[id]
 	if !ok {
-		return deliveryState{}, false, nil
+		return deliveryState{}, false, err
 	}
-	return stateFromRecord(rec), true, nil
+	return stateFromRecord(rec), true, err
 }
 
 func saveReminder(home, id string, st deliveryState) error {
 	if strings.TrimSpace(home) == "" {
 		return nil
 	}
-	all, err := readReminders(home)
-	if err != nil {
-		return err
-	}
+	all, _ := readReminders(home)
 	if all.Questions == nil {
 		all.Questions = map[string]reminderRecord{}
 	}
@@ -56,19 +53,58 @@ func saveReminder(home, id string, st deliveryState) error {
 	return writeReminders(home, all)
 }
 
+// readReminders loads the ledger. A missing file is an empty book.
+// A format fault returns the records that still parsed, plus a diagnostic.
+// Callers deliver anyway and merge new records onto the ones that parsed.
 func readReminders(home string) (reminderFile, error) {
 	raw, err := os.ReadFile(reminderPath(home))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return reminderFile{}, nil
 		}
-		return reminderFile{}, err
+		return reminderFile{}, fmt.Errorf("notify: reminders.json: %w", err)
 	}
-	var all reminderFile
-	if err := json.Unmarshal(raw, &all); err != nil {
-		return reminderFile{}, err
+	return decodeReminders(raw)
+}
+
+func decodeReminders(raw []byte) (reminderFile, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return reminderFile{}, fmt.Errorf("notify: reminders.json is empty")
 	}
-	return all, nil
+	var doc struct {
+		Questions json.RawMessage `json:"questions"`
+	}
+	if err := json.Unmarshal(trimmed, &doc); err != nil {
+		return reminderFile{}, fmt.Errorf("notify: reminders.json: %w", err)
+	}
+	qs := bytes.TrimSpace(doc.Questions)
+	if len(qs) == 0 || bytes.Equal(qs, []byte("null")) {
+		return reminderFile{}, nil
+	}
+	var rawQuestions map[string]json.RawMessage
+	if err := json.Unmarshal(qs, &rawQuestions); err != nil {
+		return reminderFile{}, fmt.Errorf("notify: reminders.json questions: %w", err)
+	}
+	all := reminderFile{Questions: make(map[string]reminderRecord, len(rawQuestions))}
+	ids := make([]string, 0, len(rawQuestions))
+	for id := range rawQuestions {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var bad []string
+	for _, id := range ids {
+		var rec reminderRecord
+		if err := json.Unmarshal(rawQuestions[id], &rec); err != nil {
+			bad = append(bad, fmt.Sprintf("%s: %v", id, err))
+			continue
+		}
+		all.Questions[id] = rec
+	}
+	if len(bad) == 0 {
+		return all, nil
+	}
+	return all, fmt.Errorf("notify: reminders.json: %s", strings.Join(bad, "; "))
 }
 
 func writeReminders(home string, all reminderFile) error {

@@ -92,13 +92,10 @@ const (
 )
 
 // deliveryIdentity is the receiver token for one question id.
-// An id that already meets the receiver rules is kept. Stripping or
-// truncation keeps a stable digest of the original so different ids
-// cannot collapse into one token.
+// Every id is mixed with a stable digest of that exact raw id.
+// A receiver-legal id is not returned unchanged, so it cannot share
+// a token, wake, ack path, or inbox name with a different raw id.
 func deliveryIdentity(id string) string {
-	if deliveryIDOK(id) {
-		return id
-	}
 	suffix := "-" + questionDigest(id)
 	prefix := compactPrefix(id, deliveryIDMax-len(suffix))
 	token := prefix + suffix

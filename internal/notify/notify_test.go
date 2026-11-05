@@ -78,7 +78,7 @@ func TestDeliverOrderInboxWhenOriginFails(t *testing.T) {
 	if !reflect.DeepEqual(calls[1], wantLark) {
 		t.Fatalf("lark argv %#v", calls[1])
 	}
-	inbox := filepath.Join(home, "inbox", "q-order.txt")
+	inbox := inboxPath(home, "q-order")
 	raw, err := os.ReadFile(inbox)
 	if err != nil {
 		t.Fatal(err)
@@ -377,7 +377,7 @@ func TestHermesReceiverAckInAttempt(t *testing.T) {
 	if ack.Schema != hermesAckSchemaV1 || ack.InboundDigest != inbound.InboundDigest || !reflect.DeepEqual(ack.WakeEventIDs, wakes) {
 		t.Fatalf("ack %+v", ack)
 	}
-	inboxRaw, err := os.ReadFile(filepath.Join(home, "inbox", "q-hermes.txt"))
+	inboxRaw, err := os.ReadFile(inboxPath(home, "q-hermes"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -766,7 +766,7 @@ func TestFileAdapterWritesInbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(filepath.Join(home, "inbox", "q-file.txt"))
+	raw, err := os.ReadFile(inboxPath(home, "q-file"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -924,38 +924,75 @@ func TestReminderStateSurvivesNewDeliverer(t *testing.T) {
 
 func TestQuestionIdentityStaysDistinct(t *testing.T) {
 	longPrefix := strings.Repeat("a", 80)
-	pairs := [][2]string{
-		{"q/a", "qa"},
-		{longPrefix + "xxx", longPrefix + "yyy"},
-		{"q/a", "q_a"},
-		{"dir/item", "item"},
-		{"a..b", "a.b"},
-		{"!!!", "@@@"},
+	cases := []struct {
+		name  string
+		left  string
+		right string
+		reuse bool
+	}{
+		{name: "literal-encoded-pair", left: "q/a", right: "qa-42941269d5381f8c"},
+		{name: "produced-token-reused", left: "q/a", reuse: true},
+		{name: "slash-strip", left: "q/a", right: "qa"},
+		{name: "truncation", left: longPrefix + "xxx", right: longPrefix + "yyy"},
+		{name: "slash-vs-underscore", left: "q/a", right: "q_a"},
+		{name: "dir-vs-base", left: "dir/item", right: "item"},
+		{name: "dotdot", left: "a..b", right: "a.b"},
+		{name: "symbols", left: "!!!", right: "@@@"},
 	}
-	for _, pair := range pairs {
-		t.Run(pair[0]+" vs "+pair[1], func(t *testing.T) {
-			left := deliverQuestionIdentity(t, pair[0])
-			right := deliverQuestionIdentity(t, pair[1])
-			again := deliverQuestionIdentity(t, pair[0])
-			if left != again {
-				t.Fatalf("unstable %q %+v %+v", pair[0], left, again)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			left := deliverQuestionIdentity(t, home, tc.left)
+			rightID := tc.right
+			if tc.reuse {
+				rightID = left.task
+				if rightID == tc.left {
+					t.Fatalf("token %q passed the raw id through", rightID)
+				}
 			}
-			if left.task == right.task || left.wake == right.wake || left.inbox == right.inbox {
+			right := deliverQuestionIdentity(t, home, rightID)
+			again := deliverQuestionIdentity(t, t.TempDir(), tc.left)
+			if left.task != again.task || left.wake != again.wake || left.inbox != again.inbox {
+				t.Fatalf("unstable %q %+v %+v", tc.left, left, again)
+			}
+			if left.task == right.task || left.wake == right.wake || left.ack == right.ack || left.inbox == right.inbox {
 				t.Fatalf("collision %+v %+v", left, right)
 			}
-			checkQuestionIdentity(t, pair[0], left)
-			checkQuestionIdentity(t, pair[1], right)
+			if left.wake != left.task+":1" || right.wake != right.task+":1" {
+				t.Fatalf("first wake %+v %+v", left, right)
+			}
+			checkQuestionIdentity(t, tc.left, left)
+			checkQuestionIdentity(t, rightID, right)
+			if inboxStemForQuestion(t, home, tc.left) != left.inbox || inboxStemForQuestion(t, home, rightID) != right.inbox {
+				t.Fatal("one delivery overwrote the other inbox body")
+			}
+			if _, err := os.Stat(hermesInboundPath(home, questionIdentitySub, left.wake)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(hermesInboundPath(home, questionIdentitySub, right.wake)); err != nil {
+				t.Fatal(err)
+			}
+			if !hermesAckCovers(home, questionIdentitySub, left.wake, left.digest) || !hermesAckCovers(home, questionIdentitySub, right.wake, right.digest) {
+				t.Fatal("both wakes should have been acked")
+			}
+			if err := os.Remove(right.ack); err != nil {
+				t.Fatal(err)
+			}
+			if !hermesAckCovers(home, questionIdentitySub, left.wake, left.digest) || hermesAckCovers(home, questionIdentitySub, right.wake, right.digest) {
+				t.Fatal("ack of one wake covered the other")
+			}
 		})
 	}
 }
 
+const questionIdentitySub = "mgr-r3d"
+
 type questionIdentity struct {
-	task, wake, inbox string
+	task, wake, ack, inbox, digest string
 }
 
-func deliverQuestionIdentity(t *testing.T, id string) questionIdentity {
+func deliverQuestionIdentity(t *testing.T, home, id string) questionIdentity {
 	t.Helper()
-	home := t.TempDir()
 	cur := time.Date(2026, 11, 1, 11, 0, 0, 0, time.UTC)
 	svc := New(func(context.Context, []string) error { return nil }, func() time.Time { return cur })
 	svc.receiveHermes = func(home, subscriptionID string) error {
@@ -967,31 +1004,61 @@ func deliverQuestionIdentity(t *testing.T, id string) questionIdentity {
 		Origin:         "hermes:profile/session",
 		Text:           "body",
 		Home:           home,
-		SubscriptionID: "mgr-r3d",
+		SubscriptionID: questionIdentitySub,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	_, raw := readOnlyInbound(t, hermesInboxDir(home, "mgr-r3d"))
+	inbox := inboxStemForQuestion(t, home, id)
+	wake := inbox + ":1"
+	raw, err := os.ReadFile(hermesInboundPath(home, questionIdentitySub, wake))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var inbound hermesInboundFile
 	if err := json.Unmarshal(raw, &inbound); err != nil {
 		t.Fatal(err)
 	}
 	_, _, rows := mustParseCompact(t, inbound.Message)
-	if len(rows) != 1 || rows[0].wake != rows[0].task+":1" || inbound.WakeEventIDs[0] != rows[0].wake {
-		t.Fatalf("wake %+v ids %+v", rows, inbound.WakeEventIDs)
+	if len(rows) != 1 || rows[0].task != inbox || rows[0].wake != wake || inbound.WakeEventIDs[0] != wake {
+		t.Fatalf("wake %+v ids %+v inbox %s", rows, inbound.WakeEventIDs, inbox)
 	}
+	return questionIdentity{
+		task:   rows[0].task,
+		wake:   rows[0].wake,
+		ack:    hermesAckPath(home, questionIdentitySub, wake),
+		inbox:  inbox,
+		digest: inbound.InboundDigest,
+	}
+}
+
+func inboxStemForQuestion(t *testing.T, home, id string) string {
+	t.Helper()
 	entries, err := os.ReadDir(filepath.Join(home, "inbox"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), ".txt") {
-		t.Fatalf("inbox %#v", entries)
+	needle := "question_id: " + id + "\n"
+	var stem string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".txt") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(home, "inbox", entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), needle) {
+			continue
+		}
+		if stem != "" {
+			t.Fatalf("two inbox files for %q", id)
+		}
+		stem = strings.TrimSuffix(entry.Name(), ".txt")
 	}
-	return questionIdentity{
-		task:  rows[0].task,
-		wake:  rows[0].wake,
-		inbox: strings.TrimSuffix(entries[0].Name(), ".txt"),
+	if stem == "" {
+		t.Fatalf("no inbox for %q", id)
 	}
+	return stem
 }
 
 func checkQuestionIdentity(t *testing.T, id string, got questionIdentity) {
@@ -1015,6 +1082,9 @@ func checkQuestionIdentity(t *testing.T, id string, got questionIdentity) {
 	}
 	sum := sha256.Sum256([]byte(id))
 	digest := hex.EncodeToString(sum[:])[:16]
+	if deliveryIDOK(id) && (got.task == id || got.inbox == id) {
+		t.Fatalf("legal id %q passed through as %q", id, got.task)
+	}
 	if got.task != id && !strings.Contains(got.task, digest) {
 		t.Fatalf("task %q lost digest of %q", got.task, id)
 	}
@@ -1312,4 +1382,214 @@ func containsString(items []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestReminderLedgerFormatFaultStillDelivers(t *testing.T) {
+	cur := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	good, err := json.Marshal(reminderRecord{
+		AtUnixNano: cur.UnixNano(),
+		GapNS:      int64(time.Minute),
+		Completed:  map[string]bool{"origin": true, "fallback": true, "inbox": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name       string
+		body       string
+		bad        string
+		missing    bool
+		sibling    bool
+		unreadable bool
+		want       string
+	}{
+		{name: "missing", missing: true},
+		{name: "empty", want: "empty"},
+		{name: "blank", body: " \n\t", want: "empty"},
+		{name: "truncated-json", body: "{", want: "unexpected end of JSON input"},
+		{name: "invalid-json", body: "not-json", want: "invalid character"},
+		{name: "not-valid-json", body: "{not valid JSON", want: "invalid character"},
+		{name: "top-level-array", body: "[]", want: "cannot unmarshal array"},
+		{name: "top-level-string", body: `"x"`, want: "cannot unmarshal string"},
+		{name: "top-level-number", body: "1", want: "cannot unmarshal number"},
+		{name: "top-level-bool", body: "true", want: "cannot unmarshal bool"},
+		{name: "questions-null", body: `{"questions":null}`},
+		{name: "questions-string", body: `{"questions":"nope"}`, want: "reminders.json questions"},
+		{name: "questions-array", body: `{"questions":[1]}`, want: "reminders.json questions"},
+		{name: "questions-number", body: `{"questions":1}`, want: "reminders.json questions"},
+		{name: "questions-bool", body: `{"questions":true}`, want: "reminders.json questions"},
+		{name: "gap_ns string", bad: `{"at_unix_nano":1,"gap_ns":"60000000000"}`, sibling: true, want: "gap_ns"},
+		{name: "gap_ns bool", bad: `{"at_unix_nano":1,"gap_ns":true}`, sibling: true, want: "gap_ns"},
+		{name: "gap_ns array", bad: `{"at_unix_nano":1,"gap_ns":[1]}`, sibling: true, want: "gap_ns"},
+		{name: "gap_ns object", bad: `{"at_unix_nano":1,"gap_ns":{"ns":1}}`, sibling: true, want: "gap_ns"},
+		{name: "gap_ns fraction", bad: `{"at_unix_nano":1,"gap_ns":1.5}`, sibling: true, want: "gap_ns"},
+		{name: "gap_ns overflow", bad: `{"at_unix_nano":1,"gap_ns":9223372036854775808}`, sibling: true, want: "gap_ns"},
+		{name: "at_unix_nano string", bad: `{"at_unix_nano":"1","gap_ns":1}`, sibling: true, want: "at_unix_nano"},
+		{name: "wake_seq string", bad: `{"at_unix_nano":1,"gap_ns":1,"wake_seq":"1"}`, sibling: true, want: "wake_seq"},
+		{name: "wake_id number", bad: `{"at_unix_nano":1,"gap_ns":1,"wake_id":1}`, sibling: true, want: "wake_id"},
+		{name: "digest bool", bad: `{"at_unix_nano":1,"gap_ns":1,"digest":true}`, sibling: true, want: "digest"},
+		{name: "completed string", bad: `{"at_unix_nano":1,"gap_ns":1,"completed":"yes"}`, sibling: true, want: "completed"},
+		{name: "completed value", bad: `{"at_unix_nano":1,"gap_ns":1,"completed":{"origin":"yes"}}`, sibling: true, want: "completed"},
+		{name: "record string", bad: `"nope"`, sibling: true, want: "q-bad"},
+		{name: "record array", bad: `[1]`, sibling: true, want: "q-bad"},
+		{name: "unreadable", body: `{"questions":{}}`, unreadable: true, want: "permission denied"},
+	}
+	origWrite := inboxWrite
+	t.Cleanup(func() { inboxWrite = origWrite })
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			var trace []string
+			var calls [][]string
+			inboxWrite = func(name string, data []byte, perm os.FileMode) error {
+				trace = append(trace, "inbox")
+				return origWrite(name, data, perm)
+			}
+			exec := func(_ context.Context, argv []string) error {
+				calls = append(calls, append([]string{}, argv...))
+				if len(argv) == 0 {
+					t.Fatal("empty argv")
+				}
+				trace = append(trace, argv[0])
+				return nil
+			}
+			clock := cur
+			now := func() time.Time { return clock }
+			if !tc.missing {
+				body := []byte(tc.body)
+				if tc.bad != "" {
+					body = ledgerWithSibling(t, good, tc.bad)
+				}
+				path := reminderPath(home)
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, body, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if tc.unreadable {
+					if err := os.Chmod(path, 0); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+				}
+			}
+			keepText := "keep " + tc.name
+			newText := "new " + tc.name
+			if tc.sibling {
+				before := len(trace)
+				svc := New(exec, now)
+				err := deliverLedgerQuestion(svc, home, "q-keep", keepText)
+				if len(trace) != before {
+					t.Fatalf("sibling resent before gap: %v err %v", trace[before:], err)
+				}
+				if _, statErr := os.Stat(inboxPath(home, "q-keep")); !os.IsNotExist(statErr) {
+					t.Fatalf("sibling inbox %v", statErr)
+				}
+				got := svc.sent["q-keep"]
+				if got.gap != time.Minute || !got.at.Equal(cur) {
+					t.Fatalf("sibling state %+v err %v", got, err)
+				}
+			}
+			before := len(trace)
+			err := deliverLedgerQuestion(New(exec, now), home, "q-new", newText)
+			gotTrace := trace[before:]
+			if len(gotTrace) != 3 || gotTrace[0] != "codex" || gotTrace[1] != "lark-cli" || gotTrace[2] != "inbox" {
+				t.Fatalf("delivery returned before hops: %v err %v", gotTrace, err)
+			}
+			wantCodex := []string{"codex", "queue", "--thread", "thread-a", "--message", newText}
+			wantLark := []string{"lark-cli", "im", "+messages-send", "--chat-id", "chat-b", "--text", newText}
+			gotCalls := calls[len(calls)-2:]
+			if !reflect.DeepEqual(gotCalls[0], wantCodex) || !reflect.DeepEqual(gotCalls[1], wantLark) {
+				t.Fatalf("argv %#v", gotCalls)
+			}
+			inboxRaw, readErr := os.ReadFile(inboxPath(home, "q-new"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if !strings.Contains(string(inboxRaw), newText) || !strings.Contains(string(inboxRaw), "question_id: q-new\n") {
+				t.Fatalf("inbox %s", inboxRaw)
+			}
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("diagnostic %v, want %q", err, tc.want)
+			}
+			held := len(trace)
+			if againErr := deliverLedgerQuestion(New(exec, now), home, "q-new", newText); len(trace) != held {
+				t.Fatalf("new question was not recorded: %v err %v", trace[held:], againErr)
+			}
+			if tc.sibling {
+				if gap := savedQuestionGap(t, home, "q-keep"); gap != int64(time.Minute) {
+					t.Fatalf("sibling gap %d", gap)
+				}
+				if againErr := deliverLedgerQuestion(New(exec, now), home, "q-keep", keepText); len(trace) != held {
+					t.Fatalf("saved sibling resent before gap: %v err %v", trace[held:], againErr)
+				}
+				clock = clock.Add(time.Minute + time.Nanosecond)
+				opened := len(trace)
+				openErr := deliverLedgerQuestion(New(exec, now), home, "q-keep", keepText)
+				if len(trace) != opened+3 || trace[opened] != "codex" || trace[opened+1] != "lark-cli" || trace[opened+2] != "inbox" {
+					t.Fatalf("sibling did not deliver after its gap: %v err %v", trace[opened:], openErr)
+				}
+			}
+		})
+	}
+}
+
+func deliverLedgerQuestion(svc *Service, home, id, text string) error {
+	return svc.Deliver(context.Background(), Message{
+		QuestionID: id,
+		Objective:  "obj",
+		Origin:     "codex:thread-a",
+		Fallback:   "lark:chat-b",
+		Text:       text,
+		Home:       home,
+	})
+}
+
+func ledgerWithSibling(t *testing.T, good []byte, bad string) []byte {
+	t.Helper()
+	doc := struct {
+		Questions map[string]json.RawMessage `json:"questions"`
+	}{Questions: map[string]json.RawMessage{
+		"q-keep": good,
+		"q-bad":  json.RawMessage(bad),
+	}}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+func savedQuestionGap(t *testing.T, home, id string) int64 {
+	t.Helper()
+	raw, err := os.ReadFile(reminderPath(home))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Questions map[string]json.RawMessage `json:"questions"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("saved ledger: %v\n%s", err, raw)
+	}
+	rec, ok := doc.Questions[id]
+	if !ok {
+		t.Fatalf("saved ledger dropped %s: %s", id, raw)
+	}
+	var fields struct {
+		GapNS json.RawMessage `json:"gap_ns"`
+	}
+	if err := json.Unmarshal(rec, &fields); err != nil {
+		t.Fatal(err)
+	}
+	var gap int64
+	if err := json.Unmarshal(fields.GapNS, &gap); err != nil {
+		t.Fatalf("gap_ns for %s: %s", id, fields.GapNS)
+	}
+	return gap
 }

@@ -271,10 +271,10 @@ func run(ctx context.Context, home, attemptID string) error {
 			} else {
 				goalStatus = "budget_limited"
 			}
+			// A delivered SIGTERM is not the group exiting. The deadline stays
+			// armed and killGroup is what reaps a group that ignores it.
 			if pid > 1 {
-				if err := SignalGroup(pid, syscall.SIGTERM); err == nil && stop != nil {
-					stop()
-				}
+				_ = SignalGroup(pid, syscall.SIGTERM)
 			}
 		}
 		waitErr = session.Cmd.Wait()
@@ -312,7 +312,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		}
 	}
 	if goalMode {
-		driveErr = noteGrokExit(ctx, db, attempt.ID, goalRunner, waitErr, driveErr)
+		driveErr = noteGrokExit(ctx, db, attempt.ID, goalRunner, waitErr, driveErr, goalStatus != "")
 		if errors.Is(driveErr, runner.ErrGrokCrash) {
 			goalStatus = ""
 		}
@@ -435,7 +435,9 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 	attempt.Usage = r.ParseUsage(output)
 	attempt.ErrorClass = r.Classify(code, output)
 	attempt.ErrorExcerpt = excerpt(output, attempt.ErrorClass)
-	if timedOut {
+	// A goal terminal already observed is host cleanup when the reaper follows
+	// up. That signal must not be stored as the hard-limit timeout.
+	if timedOut && goalStatus == "" {
 		attempt.ErrorClass = model.ErrorTimeout
 		if attempt.ErrorExcerpt == "" {
 			attempt.ErrorExcerpt = "hard-limit timeout"
@@ -548,7 +550,9 @@ func requiresGoal(card model.Card) bool {
 
 // noteGrokExit records the WaitStatus fact and calls ConsumeGrokProcessExit.
 // A crash replaces driveErr. A PTY line is not this fact.
-func noteGrokExit(ctx context.Context, db *store.Store, attemptID string, g runner.Grok, waitErr, driveErr error) error {
+// keepGoal means a goal terminal was already observed. The host reaper's
+// follow-up signal is cleanup, so it does not replace that terminal with a crash.
+func noteGrokExit(ctx context.Context, db *store.Store, attemptID string, g runner.Grok, waitErr, driveErr error, keepGoal bool) error {
 	exit := runner.GrokProcessExit{}
 	var ee *exec.ExitError
 	if errors.As(waitErr, &ee) {
@@ -558,6 +562,10 @@ func noteGrokExit(ctx context.Context, db *store.Store, attemptID string, g runn
 		}
 	}
 	crash, crashed := runner.ConsumeGrokProcessExit(exit)
+	if keepGoal {
+		crashed = false
+		crash = nil
+	}
 	appendEvent(ctx, db, attemptID, "grok_process_exit", map[string]any{
 		"signaled":    exit.Signaled,
 		"signal":      exit.Signal,

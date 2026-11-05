@@ -115,6 +115,17 @@ func (r *Runner) classifyAttempt(ctx context.Context, db *store.Store, cardID st
 	if err := db.CreateAttempt(ctx, &attempt); err != nil {
 		return "", err
 	}
+	rawMark, err := json.Marshal(map[string]string{"card": sideID})
+	if err != nil {
+		return "", err
+	}
+	if err := db.AppendEvent(ctx, &model.Event{
+		Entity: "attempt:" + attemptID,
+		Type:   classifyAttemptEvent,
+		Data:   rawMark,
+	}); err != nil {
+		return "", err
+	}
 	// The caller's context carries classify.Classify's 30s timeout.
 	runErr := host.Run(ctx, r.Home, attemptID)
 	out, _ := os.ReadFile(filepath.Join(dir, "output.log"))
@@ -157,6 +168,24 @@ func classifyRejected(runErr error, got model.Attempt, gotErr error) string {
 	return ""
 }
 
+// classifyAttemptEvent marks an attempt created by the classification call.
+// Harvest uses it so a user card whose id merely starts with cls- stays on
+// the ordinary path.
+const classifyAttemptEvent = "classify_attempt"
+
+func classificationAttempt(ctx context.Context, db *store.Store, attemptID string) (bool, error) {
+	events, err := db.ListEvents(ctx, "attempt:"+attemptID)
+	if err != nil {
+		return false, err
+	}
+	for _, ev := range events {
+		if ev.Type == classifyAttemptEvent {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // classifyAnswer is the executor's final answer. The tier parser only sees
 // line-start TIER and REASON, so structured logs are reduced to that text.
 func classifyAnswer(runnerName, raw string) string {
@@ -171,6 +200,22 @@ func classifyAnswer(runnerName, raw string) string {
 		}
 	case model.RunnerGrok:
 		if text, ok := grokAnswer(raw); ok {
+			return text
+		}
+	case model.RunnerCursor:
+		if text, ok := cursorAnswer(raw); ok {
+			return text
+		}
+	case model.RunnerKimi:
+		if text, ok := kimiAnswer(raw); ok {
+			return text
+		}
+	case model.RunnerAGY:
+		if text, ok := agyAnswer(raw); ok {
+			return text
+		}
+	case model.RunnerOpenCode:
+		if text, ok := openCodeAnswer(raw); ok {
 			return text
 		}
 	}
@@ -244,7 +289,131 @@ func grokAnswer(raw string) (string, bool) {
 	if !found {
 		return "", false
 	}
-	return strings.Join(parts, "\n"), true
+	// Text fragments are one stream. A newline between them would split
+	// "TIER: T" and "3" into a tier the line parser cannot accept.
+	return strings.Join(parts, ""), true
+}
+
+func cursorAnswer(raw string) (string, bool) {
+	var last string
+	found := false
+	for _, msg := range jsonObjects(raw) {
+		var ev struct {
+			Type   string `json:"type"`
+			Result string `json:"result"`
+		}
+		if json.Unmarshal(msg, &ev) != nil || ev.Type != "result" {
+			continue
+		}
+		found = true
+		last = ev.Result
+	}
+	if !found {
+		return "", false
+	}
+	return last, true
+}
+
+func kimiAnswer(raw string) (string, bool) {
+	var last string
+	found := false
+	for _, msg := range jsonObjects(raw) {
+		var ev struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(msg, &ev) != nil || strings.ToLower(strings.TrimSpace(ev.Role)) != "assistant" {
+			continue
+		}
+		found = true
+		if text := kimiContentText(ev.Content); text != "" {
+			last = text
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return last, true
+}
+
+func kimiContentText(raw json.RawMessage) string {
+	raw = json.RawMessage(strings.TrimSpace(string(raw)))
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, block := range blocks {
+		typ := strings.ToLower(strings.TrimSpace(block.Type))
+		if typ != "" && typ != "text" {
+			continue
+		}
+		b.WriteString(block.Text)
+	}
+	return b.String()
+}
+
+func agyAnswer(raw string) (string, bool) {
+	var last string
+	found := false
+	for _, msg := range jsonObjects(raw) {
+		var ev struct {
+			Response string `json:"response"`
+			Result   string `json:"result"`
+			Text     string `json:"text"`
+		}
+		if json.Unmarshal(msg, &ev) != nil {
+			continue
+		}
+		body := ev.Response
+		if strings.TrimSpace(body) == "" {
+			body = ev.Result
+		}
+		if strings.TrimSpace(body) == "" {
+			body = ev.Text
+		}
+		if strings.TrimSpace(body) == "" {
+			continue
+		}
+		found = true
+		last = body
+	}
+	if !found {
+		return "", false
+	}
+	return last, true
+}
+
+func openCodeAnswer(raw string) (string, bool) {
+	var b strings.Builder
+	found := false
+	for _, msg := range jsonObjects(raw) {
+		var ev struct {
+			Type string `json:"type"`
+			Part struct {
+				Text string `json:"text"`
+			} `json:"part"`
+		}
+		if json.Unmarshal(msg, &ev) != nil || ev.Type != "text" {
+			continue
+		}
+		found = true
+		b.WriteString(ev.Part.Text)
+	}
+	if !found {
+		return "", false
+	}
+	return b.String(), true
 }
 
 func jsonObjects(raw string) []json.RawMessage {

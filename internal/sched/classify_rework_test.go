@@ -41,6 +41,33 @@ func TestClassifyRunnerSamplesKeepTier(t *testing.T) {
 				`{"type":"plan","data":"TIER: T1\nREASON: plan"}` + "\n" +
 				decoy + "\n",
 		},
+		{
+			name:   "grok fragments",
+			runner: model.RunnerGrok,
+			body: `{"type":"text","data":"TIER: T"}` + "\n" +
+				`{"type":"text","data":"3\nREASON: complex"}` + "\n" +
+				decoy + "\n",
+		},
+		{
+			name:   "cursor",
+			runner: model.RunnerCursor,
+			body:   `{"type":"result","result":"TIER: T3\nREASON: complex"}` + "\n" + decoy + "\n",
+		},
+		{
+			name:   "kimi",
+			runner: model.RunnerKimi,
+			body:   `{"role":"assistant","content":"TIER: T3\nREASON: complex"}` + "\n" + decoy + "\n",
+		},
+		{
+			name:   "agy",
+			runner: model.RunnerAGY,
+			body:   `{"status":"SUCCESS","response":"TIER: T3\nREASON: complex"}` + "\n" + decoy + "\n",
+		},
+		{
+			name:   "opencode",
+			runner: model.RunnerOpenCode,
+			body:   `{"type":"text","part":{"text":"TIER: T3\nREASON: complex"}}` + "\n" + decoy + "\n",
+		},
 	}
 	for _, sample := range samples {
 		t.Run(sample.name, func(t *testing.T) {
@@ -57,7 +84,59 @@ func TestClassifyRunnerSamplesKeepTier(t *testing.T) {
 			if n := classifyErrors(t, db, card.ID); n != 0 {
 				t.Fatalf("classify_error events %d", n)
 			}
+			attempts, err := db.ListAttempts(context.Background(), "cls-"+card.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(attempts) != 1 {
+				t.Fatalf("classify attempts %+v", attempts)
+			}
+			if attempts[0].Outcome == "" || attempts[0].Outcome == model.OutcomePassed {
+				t.Fatalf("classifier attempt outcome %q", attempts[0].Outcome)
+			}
 		})
+	}
+}
+
+func TestClassifyAttemptIsNotHarvestedAsPassed(t *testing.T) {
+	answer := "TIER: T3\nREASON: complex"
+	home := classifyCLIHome(t, model.RunnerClaude, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' "+shellQuote(`{"type":"result","result":"TIER: T3\nREASON: complex"}`)+"\nexit 0\n")
+	db := mustOpen(t, home)
+	card := readyDevCard(t, db)
+	if err := New(home).Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if mustCard(t, db, card.ID).Tier != model.TierT3 {
+		t.Fatalf("tier %s, want T3 from %s", mustCard(t, db, card.ID).Tier, answer)
+	}
+	attempts, err := db.ListAttempts(context.Background(), "cls-"+card.ID)
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("classify attempts %+v %v", attempts, err)
+	}
+	// The call stores no_output itself. Clearing it is the window harvest
+	// must still recognize as the classification attempt.
+	attempts[0].Outcome = ""
+	if err := db.UpdateAttempt(context.Background(), &attempts[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(home).Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetAttempt(context.Background(), attempts[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome == "" || got.Outcome == model.OutcomePassed {
+		t.Fatalf("classifier attempt outcome %q", got.Outcome)
+	}
+	cards, err := db.ListCards(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range cards {
+		if item.Kind == model.KindReview {
+			t.Fatalf("classifier attempt entered review: %+v", item)
+		}
 	}
 }
 
@@ -151,7 +230,7 @@ func classifyCLIHome(t *testing.T, runner model.RunnerName, script string) strin
 	home, db, repo := newHome(t)
 	_, objID := seedRepo(t, db, repo, "true")
 	bin := t.TempDir()
-	path := filepath.Join(bin, string(runner))
+	path := filepath.Join(bin, classifyExecutable(runner))
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +263,13 @@ func readyDevCard(t *testing.T, db *store.Store) model.Card {
 		t.Fatal(err)
 	}
 	return card
+}
+
+func classifyExecutable(runner model.RunnerName) string {
+	if runner == model.RunnerCursor {
+		return "cursor-agent"
+	}
+	return string(runner)
 }
 
 func shellQuote(s string) string {

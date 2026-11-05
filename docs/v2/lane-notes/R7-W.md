@@ -3,7 +3,7 @@
 ## 做了什么
 sched.New 的 Engine 调用 loop.New(db, workspace.Git, 投递器).Step 再 DevStep，并把 CARDEX_HOME 设成这次 serve 的 home。设计错误写 design_error。只有错误文本点名、且已有真实退出码的设计族尝试才走 harvest 和 loop.Dispose。仍在运行的尝试保持运行，不虚构退出码。
 requires 含 goal_mode 时，host 把 SessionDir 设成这次 CLI 写入的会话目录。会话变为 complete 或 budget_limited 后只经 SignalGroup(SIGTERM) 结束，并保留该终态。internal/runner/grok.go 仅在 SessionID 非空时为 goal 追加 -s。参数冲突留给 R7-INT。
-分级先按执行器抽出最终回答，再交给已有的行首 TIER/REASON 解析。非零退出、错误类或超时退回种类默认并记 classify_error。收尾用未过期的 context。卡 id 前缀 cls- 的尝试不进入普通收割。
+分级先按执行器抽出最终回答，再交给已有的行首 TIER/REASON 解析。Grok 的 text 按原字节拼接。非零退出、错误类或超时退回种类默认并记 classify_error。收尾用未过期的 context。只有分类调用创建的尝试不进入普通收割。
 通知的 Home、Origin、Fallback、SubscriptionID 经同一个 fillDelivery。SubscriptionID 保持空。Fallback 只读本次 home 的 config.json 顶层 notify.fallback。卡 origin 优先，否则用目标 origin。hermes 缺订阅 id 时记 delivery_skip，原因含「缺订阅 id」，不写 hermes-inbox，也不记 delivery_error 或 design_error。inbox 和已配置的后备照常投递。非法 fallback 记一条 notify_warning 且不跳转。
 runServe 调用 sched.Serve。schedule 把模板 requires 抄到卡上。空 tier 走 productionClassify。30 秒超时仍由 classify.Classify 包住。
 
@@ -28,3 +28,6 @@ DesignStep 仍是 ErrNotImplemented。workspace.Git 没有 Head 和 CompareCommi
 修复记录：B3 分级使用执行器最终回答 → internal/sched/classify_prod.go:162 → TestClassifyRunnerSamplesKeepTier
 修复记录：B4 分级失败退回默认且 cls- 不进收割 → internal/sched/classify_prod.go:49,137,144 internal/sched/loop.go:163 → TestClassifyNonzeroExitUsesKindDefault, TestClassifyTimeoutThenNextTick
 修复记录：B5 通知不取 SourceGroup，后备只读 notify.fallback，缺订阅 id 记跳过 → internal/sched/deliver.go:33,75,142 internal/sched/engine.go:66 internal/sched/loop.go:1016 → TestDeliveryFieldsSameAcrossPaths, TestHermesSkipAndFallback, TestCardOriginPreferredOverTarget
+修复记录：B2 已观察到的 goal 终态在 SIGTERM 成功后仍保持有界回收，宿主补杀不算崩溃也不写成 hard_limit_timeout → internal/host/run.go:277,440,565 → TestGoalTerminalIgnoredSignalStillFinishes
+修复记录：B3 Grok text 按原字节拼接，Cursor result、Kimi assistant content、AGY response、OpenCode part.text 先抽出再交给行首解析 → internal/sched/classify_prod.go:192,294,297,317,366,397 → TestClassifyRunnerSamplesKeepTier
+修复记录：B6 收割只豁免分类调用创建的尝试，不按卡 id 前缀 → internal/sched/classify_prod.go:122,174 internal/sched/loop.go:165 → TestClsWorkHarvestedOnManualAndAuto, TestClassifyAttemptIsNotHarvestedAsPassed

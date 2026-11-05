@@ -160,7 +160,13 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 		if attempt.EndedAt.IsZero() && attempt.Exit == nil {
 			continue
 		}
-		if strings.HasPrefix(attempt.Card, "cls-") {
+		// Only the attempt the classification call created is exempt.
+		// A user card whose id starts with cls- stays on this path.
+		classifying, err := classificationAttempt(ctx, db, attempt.ID)
+		if err != nil {
+			return err
+		}
+		if classifying {
 			if attempt.Outcome == "" {
 				attempt.Outcome = model.OutcomeNoOutput
 				pctx, cancel := classifyPersistContext(ctx)

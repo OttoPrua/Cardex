@@ -310,6 +310,8 @@ func TestFreezeCurrentSense(t *testing.T) {
 		{name: "bare-no", text: "## 可冻结\n否\n", sense: senseNo},
 		{name: "conditional", text: "## 开放问题\n- 不该写入\n## 可冻结\n等接口确认后才可以冻结\n", sense: senseUnclear},
 		{name: "leading-yes-unmet", text: "## 可冻结\n是，如果接口确认通过才可以冻结；目前尚未确认。\n", sense: senseUnclear},
+		{name: "leading-yes-wait", text: "## 可冻结\n是，但要等接口确认后再冻结。\n", sense: senseUnclear},
+		{name: "leading-yes-other", text: "## 可冻结\n是，先保持现状。\n", sense: senseUnclear},
 		{name: "ordinary-agree", text: "## 结论\n同意，采用方案 A。\n", sense: senseNo},
 		{name: "section-yes", text: "## 可冻结\n是\n", sense: senseYes},
 		{name: "keyi", text: "## 可冻结\n可以冻结\n", sense: senseYes},
@@ -327,7 +329,9 @@ func TestFreezeCurrentSense(t *testing.T) {
 		{name: "detail", kind: model.KindDesign, layer: model.LayerDetail},
 		{name: "plan", kind: model.KindPlan, layer: model.LayerModule},
 		{name: "replan", kind: model.KindReplan, layer: model.LayerModule},
-		{name: "normalize", kind: model.KindDesign, layer: model.LayerModule, viaNormalize: true},
+		{name: "normalize-design", kind: model.KindDesign, layer: model.LayerModule, viaNormalize: true},
+		{name: "normalize-plan", kind: model.KindPlan, layer: model.LayerModule, viaNormalize: true},
+		{name: "normalize-replan", kind: model.KindReplan, layer: model.LayerModule, viaNormalize: true},
 	}
 	for _, entry := range entries {
 		for _, tc := range texts {
@@ -374,6 +378,9 @@ func TestFreezeCurrentSense(t *testing.T) {
 				default:
 					if freezes != 0 || gotNode.Status == model.NodeFrozen || plans != wantPlans || norms != 1 {
 						t.Fatalf("freezes %d status %s plans %d norms %d", freezes, gotNode.Status, plans, norms)
+					}
+					if entry.viaNormalize && cardStatus(t, st, source.ID) != model.CardNeedsInput {
+						t.Fatalf("source %s", cardStatus(t, st, source.ID))
 					}
 					if questionText(gotNode, "不该写入") {
 						t.Fatal("conditional proposal was applied")

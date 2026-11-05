@@ -449,7 +449,7 @@ func TestScheduleRunEnqueuesOnce(t *testing.T) {
 	t.Setenv("PATH", bin)
 	mustHome(t, home, "project", "add", "--id", "p1", "--repo", repo)
 	mustHome(t, home, "objective", "add", "--id", "o1", "--project", "p1", "--title", "Sweep", "--mode", "manual")
-	body := []byte(`{"schedules":[{"name":"lamp-sweep","every":"24h","card_template":{"objective":"o1","kind":"dev","title":"Sweep the lamp","body":"fictional sweep"}}]}`)
+	body := []byte(`{"schedules":[{"name":"lamp-sweep","every":"24h","card_template":{"objective":"o1","kind":"dev","title":"Sweep the lamp","body":"fictional sweep","requires":["web","goal_mode"]}}]}`)
 	if err := os.WriteFile(filepath.Join(home, "config.json"), body, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -471,8 +471,100 @@ func TestScheduleRunEnqueuesOnce(t *testing.T) {
 	if len(cards) != 1 || cards[0].Title != "Sweep the lamp" || cards[0].Objective != "o1" || cards[0].Status != model.CardReady {
 		t.Fatalf("cards %+v", cards)
 	}
+	if strings.Join(cards[0].Requires, ",") != "web,goal_mode" {
+		t.Fatalf("requires %+v", cards[0].Requires)
+	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Fatalf("schedule started an executor: %v", err)
+	}
+}
+
+func TestHostSubcommandUsesGit(t *testing.T) {
+	home := t.TempDir()
+	repo := filepath.Join(home, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+	gitCmd("init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd("-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "add", "a.txt")
+	gitCmd("-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "base")
+	wt := filepath.Join(home, "wt")
+	cmd := exec.Command("git", "worktree", "add", "-b", "cardex/o/c/c", wt, "main")
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("worktree: %v\n%s", err, out)
+	}
+	db, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	proj := model.Project{ID: "p", RepoPath: repo, TestCmd: "true"}
+	obj := model.Objective{ID: "o", Project: "p", Title: "o", Mode: model.ModeManual, FreezeMode: model.FreezeFast, Status: model.ObjectiveActive, IntegrationBranch: "main"}
+	ch := model.Channel{ID: "ch", Runner: model.RunnerFake, Health: model.HealthOK, Models: []string{"fake"}}
+	card := model.Card{ID: "c", Objective: "o", Kind: model.KindDev, Title: "c", Tier: model.TierT2, Status: model.CardRunning}
+	if err := db.CreateProject(ctx, &proj); err != nil || db.CreateObjective(ctx, &obj) != nil || db.CreateChannel(ctx, &ch) != nil || db.CreateCard(ctx, &card) != nil {
+		t.Fatal("seed")
+	}
+	id := "a-host"
+	dir := filepath.Join(home, "attempts", id)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := []byte(`{"attempts":{"0":{"write_files":[{"path":"from-host.txt","content":"ok\n"}],"exit_code":0}}}`)
+	if err := os.WriteFile(filepath.Join(dir, "script.json"), script, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prompt := filepath.Join(dir, "prompt.txt")
+	if err := os.WriteFile(prompt, []byte("prompt\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hard-duration"), []byte("30s"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	attempt := model.Attempt{
+		ID: id, Card: "c", Index: 0, Route: model.Route{Channel: "ch", Model: "fake"},
+		Worktree: wt, PromptPath: prompt, StartedAt: time.Now().UTC(),
+	}
+	if err := db.CreateAttempt(ctx, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr lockBuf
+	if code := cmdHost(home, []string{id}, &stdout, &stderr); code != 0 {
+		t.Fatalf("host %d %s", code, stderr.String())
+	}
+	db, err = store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	events, err := db.ListEvents(ctx, "attempt:"+id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := ""
+	for _, event := range events {
+		if event.Type == "workspace_commit" {
+			data = string(event.Data)
+		}
+	}
+	if !strings.Contains(data, "head") || strings.Contains(data, "not implemented") {
+		t.Fatalf("host subcommand workspace_commit %s", data)
 	}
 }
 

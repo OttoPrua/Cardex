@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -95,6 +97,34 @@ func grokHome() string {
 	return paths[0]
 }
 
+// GrokGoalSessionDir is the directory this goal launch writes: GROK_HOME/sessions
+// plus v1's cwd encoding and the session id passed as -s. An empty home or id
+// returns an empty dir so Drive does not watch a path the CLI will not use.
+func GrokGoalSessionDir(cwd, sessionID string) string {
+	home := strings.TrimSpace(grokHome())
+	sessionID = strings.TrimSpace(sessionID)
+	if home == "" || sessionID == "" {
+		return ""
+	}
+	return filepath.Join(home, "sessions", grokEncodeCwd(cwd), sessionID)
+}
+
+func grokEncodeCwd(cwd string) string {
+	enc := url.PathEscape(cwd)
+	if len(enc) <= 255 {
+		return enc
+	}
+	sum := sha256.Sum256([]byte(cwd))
+	base := filepath.Base(strings.ReplaceAll(cwd, string(filepath.Separator), "-"))
+	if base == "" || base == "." || base == "/" {
+		base = "cwd"
+	}
+	if len(base) > 40 {
+		base = base[:40]
+	}
+	return base + "-" + fmt.Sprintf("%x", sum[:8])
+}
+
 // promptArg is the prompt file's text. Cursor, Kimi, and AGY pass it on argv.
 // Headless grok keeps the path on --prompt-file. An empty path is an empty prompt.
 func promptArg(path string) (string, error) {
@@ -144,6 +174,9 @@ func (g Grok) buildGoal(spec LaunchSpec) ([]string, []string, error) {
 	}
 	if spec.WorkDir != "" {
 		args = append(args, "--cwd", spec.WorkDir)
+	}
+	if id := strings.TrimSpace(spec.SessionID); id != "" {
+		args = append(args, "-s", id)
 	}
 	if grokPrivilegeWidening(args) {
 		return nil, nil, fmt.Errorf("grok: privilege-widening flags")
@@ -200,7 +233,7 @@ func optionTakesValue(arg string) bool {
 	switch arg {
 	case "--model", "--output-format", "--sandbox", "--permission-mode",
 		"--prompt-file", "--cwd", "--workspace", "--prompt", "--mode",
-		"--effort", "--reasoning-effort":
+		"--effort", "--reasoning-effort", "-s":
 		return true
 	default:
 		return false

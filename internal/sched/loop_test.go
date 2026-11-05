@@ -177,6 +177,94 @@ func TestTickManualMergesWithoutAutoCards(t *testing.T) {
 	}
 }
 
+func TestClsWorkHarvestedOnManualAndAuto(t *testing.T) {
+	for _, mode := range []model.ObjectiveMode{model.ModeManual, model.ModeAuto} {
+		t.Run(string(mode), func(t *testing.T) {
+			ctx := context.Background()
+			home, db, repo := newHome(t)
+			_, objID := seedRepo(t, db, repo, "true")
+			obj, err := db.GetObjective(ctx, objID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			obj.Mode = mode
+			if err := db.UpdateObjective(ctx, &obj); err != nil {
+				t.Fatal(err)
+			}
+			seedRoutes(t, db)
+			script := `{"attempts":{"0":{"write_files":[{"path":"note.txt","content":"shipped\n"}]}}}`
+			card := model.Card{
+				ID: "cls-work", Objective: objID, Kind: model.KindDev, Title: "cls-work", Body: script,
+				Tier: model.TierT2, Status: model.CardReady, Acceptance: []string{"true"},
+			}
+			if err := db.CreateCard(ctx, &card); err != nil {
+				t.Fatal(err)
+			}
+			called := map[string]int{}
+			r := New(home)
+			r.Dispose = passDisposition(db)
+			r.Engine = func(_ context.Context, id string) error {
+				called[id]++
+				return nil
+			}
+			deadline := time.Now().Add(25 * time.Second)
+			for time.Now().Before(deadline) {
+				if err := r.Tick(ctx); err != nil {
+					t.Fatal(readLog(home, err))
+				}
+				got, err := db.GetCard(ctx, "cls-work")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Status == model.CardMerged {
+					break
+				}
+				time.Sleep(30 * time.Millisecond)
+			}
+			got, err := db.GetCard(ctx, "cls-work")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status == model.CardRunning || got.Status != model.CardMerged {
+				dumpCards(t, db)
+				t.Fatalf("cls-work status %s", got.Status)
+			}
+			attempts, err := db.ListAttempts(ctx, "cls-work")
+			if err != nil || len(attempts) == 0 {
+				t.Fatalf("attempts %+v %v", attempts, err)
+			}
+			if attempts[0].Outcome == "" || attempts[0].Outcome == model.OutcomeNoOutput {
+				t.Fatalf("cls-work outcome %q", attempts[0].Outcome)
+			}
+			review, err := db.GetCard(ctx, "rv-cls-work")
+			if err != nil || review.Kind != model.KindReview {
+				t.Fatalf("review %+v %v", review, err)
+			}
+			show, err := exec.Command("git", "-C", repo, "show", "main:note.txt").Output()
+			if err != nil || !strings.Contains(string(show), "shipped") {
+				t.Fatalf("note %q %v", show, err)
+			}
+			cards, err := db.ListCards(ctx, objID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == model.ModeManual {
+				if called[objID] != 0 {
+					t.Fatalf("manual engine calls %d", called[objID])
+				}
+				for _, item := range cards {
+					switch item.Kind {
+					case model.KindDesign, model.KindPlan, model.KindReplan:
+						t.Fatalf("manual grew %+v", item)
+					}
+				}
+			} else if called[objID] == 0 {
+				t.Fatal("auto did not advance")
+			}
+		})
+	}
+}
+
 func TestTickFill(t *testing.T) {
 	now := time.Now().UTC()
 	t.Run("true", func(t *testing.T) {
@@ -495,22 +583,43 @@ func TestTickAutoCallsRealEngine(t *testing.T) {
 	if err := db.CreateProject(ctx, &proj); err != nil || db.CreateObjective(ctx, &obj) != nil {
 		t.Fatal(err)
 	}
-	var designs, devs int
-	prevD, prevV := designStep, devStep
-	t.Cleanup(func() { designStep, devStep = prevD, prevV })
-	designStep = func(context.Context, string) error { designs++; return nil }
-	devStep = func(context.Context, string) error { devs++; return nil }
 	manual := obj
 	manual.ID = "manual"
 	manual.Mode = model.ModeManual
 	if err := db.CreateObjective(ctx, &manual); err != nil {
 		t.Fatal(err)
 	}
-	if err := New(home).Tick(ctx); err != nil {
+	decoy := t.TempDir()
+	t.Setenv("CARDEX_HOME", decoy)
+	runner := New(home)
+	if runner.Engine == nil {
+		t.Fatal("New left Engine nil")
+	}
+	if err := runner.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if designs != 1 || devs != 1 {
-		t.Fatalf("design %d dev %d", designs, devs)
+	if os.Getenv("CARDEX_HOME") != decoy {
+		t.Fatalf("CARDEX_HOME leaked: %s", os.Getenv("CARDEX_HOME"))
+	}
+	cards, err := db.ListCards(ctx, "auto")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, card := range cards {
+		if card.Kind == model.KindResearch && strings.Contains(card.Title, "盘点") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("auto tick did not run design, cards %+v", cards)
+	}
+	manualCards, err := db.ListCards(ctx, "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(manualCards) != 0 {
+		t.Fatalf("manual objective entered design: %+v", manualCards)
 	}
 }
 

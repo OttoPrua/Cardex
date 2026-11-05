@@ -9,15 +9,12 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
-	"cardex/internal/board"
 	"cardex/internal/sched"
 	"cardex/internal/store"
 )
@@ -151,47 +148,14 @@ func runServe(ctx context.Context, home, addr string, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
-	db, err := store.Open(filepath.Join(home, "cardex.db"))
-	if err != nil {
-		fmt.Fprintln(stderr, err)
+	// sched.Serve is the production loop. It builds the runner with sched.New
+	// and writes the listening line when WithLog is set.
+	err = sched.Serve(sched.WithLog(ctx, stdout), home, addr)
+	if err != nil && ctx.Err() == nil {
+		fmt.Fprintf(stderr, "tick error: %v\n", err)
 		return 1
 	}
-	defer db.Close()
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	srv := &http.Server{Handler: board.Handler()}
-	go func() { _ = srv.Serve(ln) }()
-	defer func() {
-		shut, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		_ = srv.Shutdown(shut)
-	}()
-	fmt.Fprintf(stdout, "serve listening %s\n", ln.Addr())
-	loop := sched.New(home)
-	for n := 1; ; n++ {
-		if ctx.Err() != nil {
-			return 0
-		}
-		err := loop.Tick(ctx)
-		if ctx.Err() != nil {
-			return 0
-		}
-		if err != nil && !errors.Is(err, sched.ErrNotImplemented) {
-			fmt.Fprintf(stderr, "tick error: %v\n", err)
-			return 1
-		}
-		fmt.Fprintf(stdout, "serve stub-loop iteration %d\n", n)
-		timer := time.NewTimer(150 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return 0
-		case <-timer.C:
-		}
-	}
+	return 0
 }
 
 func reservedPort(addr string) bool {

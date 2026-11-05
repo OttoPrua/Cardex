@@ -62,6 +62,22 @@ func run(ctx context.Context, home, attemptID string) error {
 	if attempt.Worktree == "" {
 		return errors.New("host: attempt has no worktree")
 	}
+	var goalMode bool
+	var goalRunner runner.Grok
+	if grok, isGrok := r.(runner.Grok); isGrok && requiresGoal(card) {
+		grok.GoalMode = true
+		if attempt.PromptPath != "" {
+			body, err := os.ReadFile(attempt.PromptPath)
+			if err != nil {
+				return fmt.Errorf("host: goal prompt: %w", err)
+			}
+			grok.Prompt = string(body)
+		}
+		grok.SessionDir = runner.GrokGoalSessionDir(attempt.Worktree, attempt.ID)
+		r = grok
+		goalMode = true
+		goalRunner = grok
+	}
 
 	cfg := loadConfig(home)
 	spec := runner.LaunchSpec{
@@ -70,6 +86,9 @@ func run(ctx context.Context, home, attemptID string) error {
 		WorkDir:      attempt.Worktree,
 		PromptPath:   attempt.PromptPath,
 		Model:        attempt.Route.Model,
+	}
+	if goalMode {
+		spec.SessionID = attempt.ID
 	}
 	scriptPath := filepath.Join(home, "attempts", attempt.ID, "script.json")
 	if st, err := os.Stat(scriptPath); err == nil && !st.IsDir() {
@@ -186,10 +205,11 @@ func run(ctx context.Context, home, attemptID string) error {
 	})
 
 	var (
-		waitErr  error
-		driveErr error
-		pid      int
-		fired    interface{ Load() bool }
+		waitErr    error
+		driveErr   error
+		pid        int
+		goalStatus string
+		fired      interface{ Load() bool }
 	)
 	if needPTY {
 		session, err := pty.Start(wrapped)
@@ -245,6 +265,18 @@ func run(ctx context.Context, home, attemptID string) error {
 		}{pr, session.Master})
 		// Drive has returned. Unblock the capture writer and keep draining.
 		closeRead()
+		if goalMode && (driveErr == nil || errors.Is(driveErr, runner.ErrGrokBudgetLimited)) {
+			if driveErr == nil {
+				goalStatus = "complete"
+			} else {
+				goalStatus = "budget_limited"
+			}
+			// A delivered SIGTERM is not the group exiting. The deadline stays
+			// armed and killGroup is what reaps a group that ignores it.
+			if pid > 1 {
+				_ = SignalGroup(pid, syscall.SIGTERM)
+			}
+		}
 		waitErr = session.Cmd.Wait()
 		waitCopy(copied, stop, killed, pid)
 		_ = session.Master.Close()
@@ -279,16 +311,22 @@ func run(ctx context.Context, home, attemptID string) error {
 			_ = logRead.Close()
 		}
 	}
+	if goalMode {
+		driveErr = noteGrokExit(ctx, db, attempt.ID, goalRunner, waitErr, driveErr, goalStatus != "")
+		if errors.Is(driveErr, runner.ErrGrokCrash) {
+			goalStatus = ""
+		}
+	}
 	timedOut := fired != nil && fired.Load()
 	if driveErr != nil && timedOut && (errors.Is(driveErr, context.Canceled) || errors.Is(driveErr, io.ErrClosedPipe) || errors.Is(driveErr, os.ErrClosed)) {
 		driveErr = nil
 	}
 	output := capture.Bytes()
 	if err := capture.Close(); err != nil {
-		_ = finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, err, driveErr, timedOut)
+		_ = finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, err, driveErr, timedOut, goalStatus)
 		return err
 	}
-	return finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, nil, driveErr, timedOut)
+	return finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, nil, driveErr, timedOut, goalStatus)
 }
 
 func commandFor(argv, extra []string) (*exec.Cmd, error) {
@@ -389,7 +427,7 @@ func handoffReview(ctx context.Context, db *store.Store, attempt *model.Attempt,
 	return nil
 }
 
-func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card model.Card, output []byte, code int, r runner.Runner, prior, driveErr error, timedOut bool) error {
+func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card model.Card, output []byte, code int, r runner.Runner, prior, driveErr error, timedOut bool, goalStatus string) error {
 	commitCtx, commitCancel := persistContext(ctx)
 	defer commitCancel()
 	attempt.Exit = &code
@@ -397,7 +435,9 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 	attempt.Usage = r.ParseUsage(output)
 	attempt.ErrorClass = r.Classify(code, output)
 	attempt.ErrorExcerpt = excerpt(output, attempt.ErrorClass)
-	if timedOut {
+	// A goal terminal already observed is host cleanup when the reaper follows
+	// up. That signal must not be stored as the hard-limit timeout.
+	if timedOut && goalStatus == "" {
 		attempt.ErrorClass = model.ErrorTimeout
 		if attempt.ErrorExcerpt == "" {
 			attempt.ErrorExcerpt = "hard-limit timeout"
@@ -427,6 +467,16 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 	if attempt.ErrorExcerpt == "" && prior != nil {
 		attempt.ErrorExcerpt = trimExcerpt(prior.Error())
 	}
+	switch goalStatus {
+	case "budget_limited":
+		timedOut = false
+		attempt.ErrorClass = model.ErrorBudgetLimited
+	case "complete":
+		timedOut = false
+		if attempt.ErrorClass == model.ErrorTimeout {
+			attempt.ErrorClass = ""
+		}
+	}
 	// Commit keeps this bound. Write-back below opens another one: a child of
 	// an expired commit context is already expired, so the result would be lost.
 	head, commitErr := workspaceFrom(commitCtx).Commit(commitCtx, attempt.Worktree, "cardex "+card.ID+" "+attempt.ID)
@@ -447,6 +497,9 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 	}
 	if timedOut {
 		finishEvent["stop"] = "hard_limit_timeout"
+	}
+	if goalStatus != "" {
+		finishEvent["goal_status"] = goalStatus
 	}
 	if driveErr != nil && !errors.Is(driveErr, context.Canceled) {
 		finishEvent["drive_error"] = driveErr.Error()
@@ -484,6 +537,47 @@ func trimExcerpt(s string) string {
 		return s[:400]
 	}
 	return s
+}
+
+func requiresGoal(card model.Card) bool {
+	for _, item := range card.Requires {
+		if item == "goal_mode" {
+			return true
+		}
+	}
+	return false
+}
+
+// noteGrokExit records the WaitStatus fact and calls ConsumeGrokProcessExit.
+// A crash replaces driveErr. A PTY line is not this fact.
+// keepGoal means a goal terminal was already observed. The host reaper's
+// follow-up signal is cleanup, so it does not replace that terminal with a crash.
+func noteGrokExit(ctx context.Context, db *store.Store, attemptID string, g runner.Grok, waitErr, driveErr error, keepGoal bool) error {
+	exit := runner.GrokProcessExit{}
+	var ee *exec.ExitError
+	if errors.As(waitErr, &ee) {
+		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			exit.Signaled = true
+			exit.Signal = int(ws.Signal())
+		}
+	}
+	crash, crashed := runner.ConsumeGrokProcessExit(exit)
+	if keepGoal {
+		crashed = false
+		crash = nil
+	}
+	appendEvent(ctx, db, attemptID, "grok_process_exit", map[string]any{
+		"signaled":    exit.Signaled,
+		"signal":      exit.Signal,
+		"crash":       crashed,
+		"goal_mode":   g.GoalMode,
+		"prompt":      g.Prompt,
+		"session_dir": g.SessionDir,
+	})
+	if crashed {
+		return crash
+	}
+	return driveErr
 }
 
 func exitCode(err error) int {

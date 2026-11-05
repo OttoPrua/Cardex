@@ -2,6 +2,7 @@ package sched
 
 import (
 	"context"
+	"strings"
 
 	"cardex/internal/classify"
 	"cardex/internal/model"
@@ -24,8 +25,14 @@ func (r *Runner) classifyBeforeRoute(ctx context.Context, db *store.Store, card 
 	if r != nil {
 		call = r.Classify
 	}
-	res, err := classify.Classify(ctx, card, classify.Options{
-		Channel: classifierChannel(ctx, db),
+	channelID := classifierChannel(ctx, db)
+	if r != nil && r.Classify != nil && strings.TrimSpace(channelID) == "" {
+		if err := r.noteClassify(ctx, db, card.ID, "classifier channel unavailable"); err != nil {
+			return card, "", err
+		}
+	}
+	res, err := classify.Classify(withClassifyCard(ctx, card.ID), card, classify.Options{
+		Channel: channelID,
 		Call:    call,
 	})
 	if err != nil {

@@ -65,9 +65,11 @@ type Runner struct {
 	Dispose func(ctx context.Context, card *model.Card, res harvest.Result) error
 	// rankAnswer runs after Questions stores an answer. New approves 批准.
 	rankAnswer func(ctx context.Context, db *store.Store, q model.Question) error
-	// Classify is the §7.4 single call. New leaves it nil.
-	// A nil call persists the kind default; v2 has no one-shot executor.
+	// Classify is the §7.4 single call. New installs productionClassify.
+	// A nil call persists the kind default.
 	Classify classify.Call
+	// mail is the production deliverer. Design questions and notify share it.
+	mail notify.Deliverer
 }
 
 // New returns the production runner for home with loop.Dispose installed.
@@ -82,6 +84,11 @@ func New(home string) *Runner {
 		}
 		return loop.FollowRanking(loop.WithHome(ctx, home), db)
 	}
+	r.ensureMail()
+	// DesignStep stays ErrNotImplemented: that export and its test sit outside
+	// this lane. The default engine calls loop.New(...).Step directly, then DevStep.
+	r.Engine = r.productionEngine
+	r.Classify = r.productionClassify
 	return r
 }
 
@@ -151,6 +158,21 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			continue
 		}
 		if attempt.EndedAt.IsZero() && attempt.Exit == nil {
+			continue
+		}
+		// Only the attempt the classification call created is exempt.
+		// A user card whose id starts with cls- stays on this path.
+		classifying, err := classificationAttempt(ctx, db, attempt.ID)
+		if err != nil {
+			return err
+		}
+		if classifying {
+			if attempt.Outcome == "" {
+				attempt.Outcome = model.OutcomeNoOutput
+				pctx, cancel := classifyPersistContext(ctx)
+				_ = db.UpdateAttempt(pctx, &attempt)
+				cancel()
+			}
 			continue
 		}
 		card, err := db.GetCard(ctx, attempt.Card)
@@ -446,6 +468,11 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if settled {
 		return "", nil
 	}
+	// A script-less fake exits before it can write a design result, and §5
+	// then opens a question. Injected Launch stubs still start.
+	if r.holdFakeDesign(ctx, db, card, rt, channels) {
+		return "", nil
+	}
 	if rel.released {
 		card.Channel = rt.Channel
 		card.Model = rt.Model
@@ -654,6 +681,45 @@ func (r *Runner) promptText(ctx context.Context, in prompt.Input) (string, error
 		return r.Prompt(ctx, in)
 	}
 	return buildPrompt(ctx, in)
+}
+
+// holdFakeDesign keeps a script-less fake card ready when starting it would
+// let §5 open a question. Production Serve leaves Launch nil, so design-family
+// and review cards wait until a script is planted. An injected Launch is a
+// stub that only records the attempt, so those cards start. The inventory
+// research card stays ready even when Launch is wrapped: the wrapper starts a
+// real host, and a script-less fake still has no result.
+func (r *Runner) holdFakeDesign(ctx context.Context, db *store.Store, card model.Card, rt model.Route, channels []model.Channel) bool {
+	if r == nil || !holdableFakeKind(card.Kind) {
+		return false
+	}
+	if r.Launch != nil && !inventoryResearch(card) {
+		return false
+	}
+	if len(r.scriptFor(card)) > 0 {
+		return false
+	}
+	for _, ch := range channels {
+		if ch.ID == rt.Channel {
+			return ch.Runner == model.RunnerFake
+		}
+	}
+	ch, err := db.GetChannel(ctx, rt.Channel)
+	if err != nil {
+		return true
+	}
+	return ch.Runner == model.RunnerFake
+}
+
+func holdableFakeKind(kind model.CardKind) bool {
+	return designFamilyKind(kind) || kind == model.KindReview
+}
+
+func inventoryResearch(card model.Card) bool {
+	if card.Kind != model.KindResearch || card.Node != "" {
+		return false
+	}
+	return strings.Contains(card.Title, "盘点") || strings.Contains(card.Body, "Q0")
 }
 
 func (r *Runner) scriptFor(card model.Card) []byte {
@@ -958,37 +1024,33 @@ func (r *Runner) notify(ctx context.Context, db *store.Store) error {
 	if err != nil {
 		return err
 	}
-	objs, err := db.ListObjectives(ctx, "")
-	if err != nil {
-		return err
-	}
-	originOf := map[string]string{}
-	for _, obj := range objs {
-		originOf[obj.ID] = obj.Origin
-	}
 	for i := range questions {
 		q := questions[i]
 		if q.Answer != "" {
 			continue
 		}
-		msg := notify.Message{
-			QuestionID: q.ID,
-			Objective:  q.Objective,
-			Text:       q.Text,
-			Home:       r.Home,
-			Origin:     originOf[q.Objective],
+		msg, err := r.deliveryMessage(ctx, db, q)
+		if err != nil {
+			return err
 		}
-		var err error
 		if r.Notify != nil {
 			err = r.Notify(ctx, msg)
 		} else {
-			err = deliverMsg(ctx, msg)
+			r.ensureMail()
+			err = r.mail.Deliver(ctx, msg)
+			err = r.handoffDelivery(ctx, db, msg, err)
 		}
 		if err != nil {
 			if errors.Is(err, notify.ErrNotImplemented) {
 				continue
 			}
-			return err
+			if r.Notify != nil {
+				return err
+			}
+			if noteErr := r.noteDelivery(ctx, db, q, err); noteErr != nil {
+				return noteErr
+			}
+			continue
 		}
 		// Dedup and backoff live in notify. A prior delivery must not skip the
 		// call; record only the first handoff so a quiet tick adds no new row.

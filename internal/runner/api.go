@@ -22,6 +22,7 @@ type LaunchSpec struct {
 	Model        string // 选定的模型。
 	Script       []byte // fake 执行器的 JSON 脚本；空则读 ScriptPath。
 	ScriptPath   string // JSON 脚本路径。
+	SessionID    string // goal 模式本次会话；空则不传 -s。
 }
 
 // RunResult is what a fake attempt produced.

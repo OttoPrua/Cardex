@@ -165,6 +165,13 @@ func TestGrokGoalBuildAndNeedsPTY(t *testing.T) {
 	if !slices.Equal(env, wantEnv) {
 		t.Fatalf("env\n got %q\nwant %q", env, wantEnv)
 	}
+	withID, _, err := g.Build(runner.LaunchSpec{Model: "grok-4.6", WorkDir: "/work/tree", SessionID: "att-9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(withID, append(append([]string{}, want...), "-s", "att-9")) {
+		t.Fatalf("session argv %q", withID)
+	}
 }
 
 func TestGrokWritablePathsAbsent(t *testing.T) {

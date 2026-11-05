@@ -215,10 +215,10 @@ func TestRankingApproveHook(t *testing.T) {
 	}
 }
 
-// TestNewKeepsRankingHookAndNilClassify builds the runner with New.
+// TestNewKeepsRankingHookAndClassify builds the runner with New.
 // A stored 批准 runs the hook New installed. Any other answer does not,
 // even when a 批准 is already stored and FollowRanking would publish it.
-func TestNewKeepsRankingHookAndNilClassify(t *testing.T) {
+func TestNewKeepsRankingHookAndClassify(t *testing.T) {
 	rows := []struct {
 		name    string
 		answer  string
@@ -248,8 +248,8 @@ func TestNewKeepsRankingHookAndNilClassify(t *testing.T) {
 				}
 			}
 			r := New(home)
-			if r.Classify != nil {
-				t.Fatal("New set Classify")
+			if r.Classify == nil {
+				t.Fatal("New left Classify nil")
 			}
 			if r.Dispose == nil {
 				t.Fatal("New left Dispose nil")

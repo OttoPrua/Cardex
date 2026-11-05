@@ -1191,7 +1191,13 @@ func grokInteractiveQuotaScreen(output []byte, prompt string, finishTail bool) b
 // sessionUpdate is goal_updated, at params.update.status. An arbitrary or
 // nested status field is not that position. An unfinished record is not read.
 // A line consumed as the known prompt is not that update, JSON included.
+// One complete JSON document contributes only that update on the document
+// object itself. A nested goal_updated line inside it is not a JSONL record.
+// Anything else stays JSONL, and a known prompt echo is not a budget fact.
 func goalUpdatedStatus(output []byte, prompt string) (string, bool) {
+	if completeJSONObject(output) {
+		return documentGoalStatus(output, prompt)
+	}
 	echoLines := goalPromptEchoLines(prompt)
 	echoIdx := 0
 	rest := output
@@ -1226,6 +1232,34 @@ func goalUpdatedStatus(output []byte, prompt string) (string, bool) {
 		status = rec.Params.Update.Status
 	}
 	return status, found
+}
+
+// documentGoalStatus reads params.update on one complete document. The
+// document is not a budget fact when it is the known prompt echo.
+func documentGoalStatus(output []byte, prompt string) (string, bool) {
+	trim := bytes.TrimSpace(output)
+	if prompt != "" {
+		echo := "/goal " + strings.TrimRight(prompt, "\r\n")
+		echo = strings.TrimRight(strings.ReplaceAll(echo, "\r\n", "\n"), "\r")
+		if strings.TrimSpace(string(trim)) == strings.TrimSpace(echo) {
+			return "", false
+		}
+	}
+	var rec struct {
+		Params struct {
+			Update struct {
+				SessionUpdate string `json:"sessionUpdate"`
+				Status        string `json:"status"`
+			} `json:"update"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(trim, &rec) != nil {
+		return "", false
+	}
+	if rec.Params.Update.SessionUpdate != "goal_updated" {
+		return "", false
+	}
+	return rec.Params.Update.Status, true
 }
 
 // ReadGrokGoalSession reports a goal terminal from v1's session channel:
@@ -1277,44 +1311,53 @@ func finalGoalUpdate(path, goalID string) (status, verdict, sessionID string, ok
 	if err != nil {
 		return "", "", "", false
 	}
+	// A complete document exposes only its top-level goal update. A nested
+	// goal_updated object on its own line is not the session's final update.
+	// JSONL is everything else.
+	if completeJSONObject(raw) {
+		return agreedGoalUpdate(bytes.TrimSpace(raw), goalID)
+	}
 	rest := raw
 	matched := false
 	for len(rest) > 0 {
 		line, next, _ := cutScanLine(rest)
 		rest = next
 		line = strings.TrimSpace(line)
-		if line == "" {
+		if line == "" || heldJSONRecord(line) {
 			continue
 		}
-		if heldJSONRecord(line) {
-			continue
-		}
-		var rec struct {
-			Params struct {
-				SessionID string `json:"sessionId"`
-				Update    struct {
-					SessionUpdate         string `json:"sessionUpdate"`
-					GoalID                string `json:"goal_id"`
-					Status                string `json:"status"`
-					LastClassifierVerdict string `json:"last_classifier_verdict"`
-				} `json:"update"`
-			} `json:"params"`
-		}
-		if json.Unmarshal([]byte(line), &rec) != nil {
-			continue
-		}
-		if rec.Params.Update.SessionUpdate != "goal_updated" {
-			continue
-		}
-		if strings.TrimSpace(rec.Params.Update.GoalID) != goalID {
+		st, verd, sid, hit := agreedGoalUpdate([]byte(line), goalID)
+		if !hit {
 			continue
 		}
 		matched = true
-		sessionID = rec.Params.SessionID
-		status = rec.Params.Update.Status
-		verdict = rec.Params.Update.LastClassifierVerdict
+		status, verdict, sessionID = st, verd, sid
 	}
 	return status, verdict, sessionID, matched
+}
+
+func agreedGoalUpdate(raw []byte, goalID string) (status, verdict, sessionID string, ok bool) {
+	var rec struct {
+		Params struct {
+			SessionID string `json:"sessionId"`
+			Update    struct {
+				SessionUpdate         string `json:"sessionUpdate"`
+				GoalID                string `json:"goal_id"`
+				Status                string `json:"status"`
+				LastClassifierVerdict string `json:"last_classifier_verdict"`
+			} `json:"update"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(raw, &rec) != nil {
+		return "", "", "", false
+	}
+	if rec.Params.Update.SessionUpdate != "goal_updated" {
+		return "", "", "", false
+	}
+	if strings.TrimSpace(rec.Params.Update.GoalID) != goalID {
+		return "", "", "", false
+	}
+	return rec.Params.Update.Status, rec.Params.Update.LastClassifierVerdict, rec.Params.SessionID, true
 }
 
 func summaryAgrees(path, sessionID string) bool {

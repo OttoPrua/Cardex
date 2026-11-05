@@ -1936,6 +1936,94 @@ func TestNestedErrorFallbackAndWholeDocument(t *testing.T) {
 	}
 }
 
+// TestNestedBudgetIsNotJSONLRecord locks the budget side of the document
+// boundary. A goal_updated object that exists only inside one complete JSON
+// document is not an error class and not a session terminal. A top-level
+// goal_updated event still is, as JSONL or as that document's own fields.
+func TestNestedBudgetIsNotJSONLRecord(t *testing.T) {
+	const nested = "{\n\"status\":\"SUCCESS\",\"response\":\"done\",\"examples\":[\n{\"params\":{\"update\":{\"sessionUpdate\":\"goal_updated\",\"status\":\"budget_limited\"}}}\n]\n}"
+	const topLevel = "{\n\"params\":{\"update\":{\"sessionUpdate\":\"goal_updated\",\"status\":\"budget_limited\"}}\n}\n"
+	jsonl := readFixture(t, "grok_goal_budget_limited.jsonl")
+	modes := []struct {
+		name string
+		g    runner.Grok
+	}{
+		{name: "grok", g: runner.Grok{}},
+		{name: "grok_goal", g: runner.Grok{GoalMode: true}},
+	}
+	rows := []struct {
+		name string
+		out  []byte
+		want model.ErrorClass
+	}{
+		{name: "nested_document", out: []byte(nested), want: ""},
+		{name: "toplevel_document", out: []byte(topLevel), want: model.ErrorBudgetLimited},
+		{name: "jsonl_fixture", out: jsonl, want: model.ErrorBudgetLimited},
+	}
+	for _, mode := range modes {
+		for _, row := range rows {
+			t.Run(mode.name+"/"+row.name, func(t *testing.T) {
+				if got := mode.g.Classify(0, row.out); got != row.want {
+					t.Fatalf("class %q want %q", got, row.want)
+				}
+			})
+		}
+	}
+	others := []struct {
+		name string
+		cl   runner.Runner
+	}{
+		{name: "cursor", cl: runner.Cursor{}},
+		{name: "kimi", cl: runner.Kimi{}},
+		{name: "agy", cl: runner.AGY{}},
+	}
+	for _, ad := range others {
+		t.Run(ad.name+"/nested_document", func(t *testing.T) {
+			if got := ad.cl.Classify(0, []byte(nested)); got != "" {
+				t.Fatalf("class %q", got)
+			}
+		})
+	}
+
+	t.Run("session_jsonl_fixture", func(t *testing.T) {
+		dir := installSessionFixture(t, "grok_goal_budget_limited.jsonl")
+		term, ok := runner.ReadGrokGoalSession(dir)
+		if !ok || !errors.Is(term, runner.ErrGrokBudgetLimited) {
+			t.Fatalf("reader ok=%v err=%v", ok, term)
+		}
+	})
+	t.Run("session_nested_document", func(t *testing.T) {
+		dir := installSessionFixture(t, "grok_goal_budget_limited.jsonl")
+		line := strings.TrimSpace(string(readFixture(t, "grok_goal_budget_limited.jsonl")))
+		doc := "{\n\"status\":\"SUCCESS\",\"response\":\"done\",\"examples\":[\n" + line + "\n]\n}\n"
+		if err := os.WriteFile(filepath.Join(dir, "updates.jsonl"), []byte(doc), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		term, ok := runner.ReadGrokGoalSession(dir)
+		if ok || errors.Is(term, runner.ErrGrokBudgetLimited) {
+			t.Fatalf("nested document became terminal ok=%v err=%v", ok, term)
+		}
+	})
+	t.Run("session_toplevel_document", func(t *testing.T) {
+		dir := installSessionFixture(t, "grok_goal_budget_limited.jsonl")
+		var obj map[string]any
+		if err := json.Unmarshal(readFixture(t, "grok_goal_budget_limited.jsonl"), &obj); err != nil {
+			t.Fatal(err)
+		}
+		doc, err := json.MarshalIndent(obj, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "updates.jsonl"), append(doc, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		term, ok := runner.ReadGrokGoalSession(dir)
+		if !ok || !errors.Is(term, runner.ErrGrokBudgetLimited) {
+			t.Fatalf("reader ok=%v err=%v", ok, term)
+		}
+	})
+}
+
 type chunkRW struct {
 	wrote  bytes.Buffer
 	chunks [][]byte

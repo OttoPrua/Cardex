@@ -948,6 +948,8 @@ func designOriginal(kind model.CardKind) bool {
 
 // absorbNormalizedOriginal applies a successful normalize onto a design,
 // plan, or replan card through the design absorber and finishes that card.
+// The normalize attempt gets the same loop.absorbed mark design advance
+// already treats as consumed, so that step does not apply the result again.
 // A dev original keeps the text backfill instead.
 func (st *step) absorbNormalizedOriginal(norm model.Card, parent model.Card, attempt model.Attempt) error {
 	text := readResult(attempt)
@@ -960,6 +962,9 @@ func (st *step) absorbNormalizedOriginal(norm model.Card, parent model.Card, att
 	}
 	if nodes, err := st.db.ListNodes(st.ctx, st.snap.obj.ID); err == nil {
 		st.snap.nodes = nodes
+	}
+	if err := d.markAttempt(st.ctx, attempt.ID); err != nil {
+		return err
 	}
 	norm.Status = model.CardDone
 	return st.saveCard(norm)

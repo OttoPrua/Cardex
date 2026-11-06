@@ -9,7 +9,9 @@ import (
 
 	"cardex/internal/harvest"
 	"cardex/internal/model"
+	"cardex/internal/notify"
 	"cardex/internal/route"
+	"cardex/internal/workspace"
 )
 
 func TestFollowupR6ReviewSelect(t *testing.T) {
@@ -592,6 +594,125 @@ func deliveredEpisode(f *fx, id, episode string) bool {
 	f.t.Helper()
 	for _, event := range f.events("notice_delivered") {
 		if event.Entity == "notice:"+id && eventEpisode(event) == episode {
+			return true
+		}
+	}
+	return false
+}
+
+func TestFollowupR6NormalizeOnce(t *testing.T) {
+	list := "## 新卡\n[{\"key\":\"child\",\"kind\":\"dev\",\"title\":\"Child work\"}]\n"
+	question := "## 开放问题\nshould the parser keep comments\n\n## 可冻结\n是\n"
+	cases := []struct {
+		name     string
+		kind     model.CardKind
+		body     string
+		child    bool
+		question bool
+		freeze   bool
+		dispose  bool
+	}{
+		{name: "replan list", kind: model.KindReplan, body: list, child: true, dispose: true},
+		{name: "plan list", kind: model.KindPlan, body: list, child: true, dispose: true},
+		{name: "design question and freeze", kind: model.KindDesign, body: question, question: true, freeze: true, dispose: true},
+		{name: "design step absorbs an unmarked replan normalize", kind: model.KindReplan, body: list, child: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFx(t, model.ModeAuto)
+			var attemptID string
+			if tc.dispose {
+				parent := f.card(model.Card{ID: "src", Kind: tc.kind, Status: model.CardRunning, Body: "old\n"})
+				norm := f.card(model.Card{ID: "norm", Kind: model.KindNormalize, Tier: model.TierT1, Status: model.CardHarvesting, Deps: []string{parent.ID}})
+				disposePassed(t, f, norm, tc.body)
+				attemptID = norm.ID + "-d"
+				if !attemptAbsorbed(f, attemptID) {
+					t.Fatal("normalize attempt missing loop.absorbed after Dispose")
+				}
+			} else {
+				plantNormalize(t, f, tc.kind, model.CardRunning, tc.body)
+				norm := f.mustCard("norm")
+				norm.Status = model.CardDone
+				if err := f.db.UpdateCard(f.ctx, &norm); err != nil {
+					t.Fatal(err)
+				}
+				attemptID = norm.ID + "-0"
+				if attemptAbsorbed(f, attemptID) {
+					t.Fatal("planted normalize was already absorbed")
+				}
+			}
+			if tc.dispose {
+				assertNormalizeOnce(t, f, tc.child, tc.question, tc.freeze)
+			}
+			f.design()
+			if tc.dispose {
+				f.step()
+			}
+			assertNormalizeOnce(t, f, tc.child, tc.question, tc.freeze)
+			if !attemptAbsorbed(f, attemptID) {
+				t.Fatal("normalize attempt missing loop.absorbed")
+			}
+			f.design()
+			assertNormalizeOnce(t, f, tc.child, tc.question, tc.freeze)
+		})
+	}
+}
+
+func (f *fx) design() {
+	f.t.Helper()
+	if err := New(f.db, workspace.Git{}, notify.Stub{}).Step(f.ctx, f.obj.ID); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func assertNormalizeOnce(t *testing.T, f *fx, child, question, freeze bool) {
+	t.Helper()
+	got := f.mustCard("src")
+	switch got.Status {
+	case model.CardRunning, model.CardReady, model.CardWaiting, model.CardHarvesting:
+		t.Fatalf("source left open %+v", got)
+	}
+	if f.mustCard("norm").Status != model.CardDone {
+		t.Fatalf("norm %s", f.mustCard("norm").Status)
+	}
+	n := 0
+	for _, card := range f.cards() {
+		if card.Kind == model.KindDev && card.Title == "Child work" {
+			n++
+		}
+	}
+	if child && n != 1 {
+		t.Fatalf("child cards %d %+v", n, f.cards())
+	}
+	if !child && n != 0 {
+		t.Fatalf("unexpected child %+v", f.cards())
+	}
+	node := mustNode(t, f)
+	q := 0
+	for _, item := range node.OpenQuestions {
+		if strings.Contains(item.Text, "should the parser keep comments") {
+			q++
+		}
+	}
+	if question && q != 1 {
+		t.Fatalf("questions %d %+v", q, node.OpenQuestions)
+	}
+	if !question && q != 0 {
+		t.Fatalf("unexpected questions %+v", node.OpenQuestions)
+	}
+	freezes := len(f.events(evFreezable))
+	if freeze && freezes != 1 {
+		t.Fatalf("freezes %d", freezes)
+	}
+	if !freeze && freezes != 0 {
+		t.Fatalf("unexpected freezes %d", freezes)
+	}
+}
+
+func attemptAbsorbed(f *fx, attemptID string) bool {
+	f.t.Helper()
+	for _, event := range f.events(evAbsorbed) {
+		if event.Entity == "attempt:"+attemptID {
 			return true
 		}
 	}

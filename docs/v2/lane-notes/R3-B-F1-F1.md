@@ -25,3 +25,4 @@ N4 manual 认证通知在尝试已处置且投递失败后，同目标 DevStep �
 N5 重投 origin 取通知所属目标，空 origin 用 notify.fallback，不用当前步骤目标 → internal/loop/dev_apply.go:665 → TestFollowupR6NoticeOrigin
 N6 plan/replan 整理吸收开放问题与清单，缺清单不因此 needs_input → internal/loop/dev_apply.go:952 → TestFollowupR6NormalizeAbsorb
 N9 直接 plan/replan 的模糊可冻结或结论派一张整理卡，且不把源卡标完成 → internal/loop/dev_apply.go:738 → TestFollowupR6UnclearFreeze
+B1 设计类整理成功后该次尝试记下设计推进认的 loop.absorbed，避免同一产出再应用 → internal/loop/dev_apply.go:966 → TestFollowupR6NormalizeOnce

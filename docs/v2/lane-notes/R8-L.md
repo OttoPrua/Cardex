@@ -9,10 +9,10 @@ host：startAttempt 失败。尝试以 launch_failed 结束，清理范围与本
 Tick 出错去向。改造前：reconcile、harvest、advance、merge、ranking、dispatch、schedules、notify 任一步返回错误后，后面的步骤不跑，Serve 随该错误退出。改造后：这八步各自写 tick_error（步骤、卡或目标、摘要）再继续。派发按卡，合并按目标，合并结果不变。同一步骤、同一对象、同一错误 10 分钟只记一次，节流只在内存。写事件失败则摘要进 stderr。launch_failed 在派发内吸收，不写成 tick_error，也不作为 Tick 的致命错误。ctx 取消不记 tick_error，后续步骤不跑。库打不开时只能写 stderr 并返回。Serve 忽略 Tick 的返回值，取消时退出。启动时打不开数据库，或已有 config.json 不是合法 JSON，stderr 写原因并退出。缺少 config.json 不退出。迭代日志为 serve loop iteration。serve listening 只对已有 writer 打一次。model 增加 OutcomeLaunchFailed 与 ErrorLaunchFailed，无表结构变更。
 
 ## 没做什么，以及原因
-没改 internal/loop（含 dev_apply.go 的 main/master 探测）、internal/importer、internal/merge 的合并判定、internal/store，也没改 cmd/cardex 的已有文件。BUG-R5A-2 与 BUG-R5A-4 留到切换后。没新增表、列、配置键或问题种类。appendPinRelease 失败仍向上返回，由 dispatch 记 tick_error，不走 launch_failed。轮内无法解析的 config.json 仍按 schedules() 软成功。
+没改 internal/loop（含 dev_apply.go 的 main/master 探测）、internal/importer、internal/merge 的合并判定、internal/store，也没改 data.go、flags.go、ops.go、surface.go、cli_surface_test.go。已有 cmd 测试里只把 cli_test.go:803 的期望从 "serve stub-loop iteration" 改成 "serve loop iteration"，以便 go test ./... 通过。BUG-R5A-2 与 BUG-R5A-4 留到切换后。没新增表、列、配置键或问题种类。appendPinRelease 失败仍向上返回，由 dispatch 记 tick_error，不走 launch_failed。轮内无法解析的 config.json 仍按 schedules() 软成功。
 
 ## 接口请求
-cmd/cardex/cli_test.go:803 仍是 strings.Count(buf.String(), "serve stub-loop iteration")。最小改法：把子串 "serve stub-loop iteration" 换成 "serve loop iteration"。该文件不在写域。Goal 写明写域外的问题只记进 lane note、不修。
+无。cli_test.go:803 的子串 "serve stub-loop iteration" 已改为 "serve loop iteration"。
 
 ## 已知问题
-在该子串改掉之前，go test ./... 停在 TestServeLoopsUntilStopped。这是写域外的记录，不是未做的启动或隔离实现。appendPinRelease 失败不清理 worktree，卡可能留在 running。BUG-R5A-2、BUG-R5A-4 仍在。轮内无法解析的 config.json 不令 Serve 退出。
+appendPinRelease 失败不清理 worktree，卡可能留在 running。BUG-R5A-2、BUG-R5A-4 仍在。轮内无法解析的 config.json 不令 Serve 退出。

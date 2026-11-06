@@ -491,9 +491,12 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 			r.noteTickError(ctx, db, "dispatch", "card", card.ID, err)
 			continue
 		}
-		if ch != "" {
-			used[ch] = true
+		// launch_failed and other handled non-starts return an empty channel.
+		// Only a real start occupies the claim and the channel.
+		if ch == "" {
+			continue
 		}
+		used[ch] = true
 		live[card.ID] = true
 		if card.Kind != model.KindReview && len(card.Claims) > 0 {
 			card.Status = model.CardRunning
@@ -912,7 +915,8 @@ func (r *Runner) fill(ctx context.Context, db *store.Store, used map[string]bool
 			continue
 		}
 		// One channel, not an explicit pin: Select still applies health, capability, concurrency, and redline.
-		if _, err := r.launchCard(ctx, db, card, obj, []model.Channel{ch}, pos, inUse, quotas); err != nil {
+		started, err := r.launchCard(ctx, db, card, obj, []model.Channel{ch}, pos, inUse, quotas)
+		if err != nil {
 			if errors.Is(err, route.ErrNoCandidate) || errors.Is(err, route.ErrPinnedUnavailable) {
 				continue
 			}
@@ -927,6 +931,9 @@ func (r *Runner) fill(ctx context.Context, db *store.Store, used map[string]bool
 				backlog = append(backlog[:i], backlog[i+1:]...)
 				break
 			}
+		}
+		if started == "" {
+			continue
 		}
 		used[ch.ID] = true
 		if len(card.Claims) > 0 {

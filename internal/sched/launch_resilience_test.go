@@ -630,6 +630,59 @@ func stopHomeHosts(home string, db *store.Store) {
 	}
 }
 
+func TestLaunchResilienceFailedClaimDoesNotBlockSibling(t *testing.T) {
+	ctx := context.Background()
+	home, db, repo := newHome(t)
+	writeEmptySchedules(t, home)
+	_, obj := seedRepo(t, db, repo, "true")
+	seedRoutes(t, db)
+	for _, id := range []string{"c1", "c2"} {
+		card := model.Card{
+			ID: id, Objective: obj, Kind: model.KindDev, Title: id,
+			Tier: model.TierT2, Status: model.CardReady,
+			Channel: "cha", Model: "model-a",
+			Claims: []model.Claim{{ID: "cl-" + id, Path: "f.go", Symbol: "Run"}},
+		}
+		if err := db.CreateCard(ctx, &card); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := New(home)
+	r.Prompt = func(_ context.Context, in prompt.Input) (string, error) {
+		if in.Card.ID == "c1" {
+			return "", errors.New("prompt down")
+		}
+		return "PROMPT-OK", nil
+	}
+	var launched []string
+	r.Launch = func(_ context.Context, _ string, id string) (int, error) {
+		launched = append(launched, id)
+		return 77, nil
+	}
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c1, err := db.GetCard(ctx, "c1")
+	if err != nil || c1.Status != model.CardWaiting || !strings.HasPrefix(c1.WaitReason, "backoff:") {
+		t.Fatalf("lower card %+v %v", c1, err)
+	}
+	failed, err := db.ListAttempts(ctx, "c1")
+	if err != nil || len(failed) != 1 || failed[0].Outcome != model.OutcomeLaunchFailed {
+		t.Fatalf("lower attempts %+v %v", failed, err)
+	}
+	c2, err := db.GetCard(ctx, "c2")
+	if err != nil || c2.Status != model.CardRunning {
+		t.Fatalf("higher card %+v %v", c2, err)
+	}
+	started, err := db.ListAttempts(ctx, "c2")
+	if err != nil || len(started) != 1 || started[0].PID != 77 {
+		t.Fatalf("higher attempts %+v %v", started, err)
+	}
+	if len(launched) != 1 {
+		t.Fatalf("launches %v", launched)
+	}
+}
+
 func captureStderr(t *testing.T) func() string {
 	t.Helper()
 	old := os.Stderr

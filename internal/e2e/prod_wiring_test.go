@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"cardex/internal/question"
 	"cardex/internal/runner"
 	"cardex/internal/sched"
+	"cardex/internal/store"
 )
 
 // TestProdWiring drives one auto objective through sched.Serve.
@@ -335,4 +337,103 @@ func (w *lockWriter) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.b.String()
+}
+
+// TestProdWiringCLIFirstDispatch appends the production path for a CLI-created
+// objective's first card. It does not assign Engine, Classify, Dispose, Launch,
+// Notify, or Prompt.
+func TestProdWiringCLIFirstDispatch(t *testing.T) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("caller")
+	}
+	module := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	bin := filepath.Join(t.TempDir(), "cardex")
+	build := exec.Command("go", "build", "-o", bin, "./cmd/cardex")
+	build.Dir = module
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	home := t.TempDir()
+	repo := t.TempDir()
+	wt := filepath.Join(t.TempDir(), "wt")
+	prodGit(t, repo, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, "README"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prodGit(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "add", "README")
+	prodGit(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "seed")
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte("{\"schedules\":[]}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prodCLI(t, bin, home, "project", "add", "--id", "p", "--repo", repo, "--worktree-root", wt, "--test-cmd", "true")
+	prodCLI(t, bin, home, "channel", "set", "--id", "ch", "--runner", "grok", "--model", "m", "--concurrency", "1")
+	prodCLI(t, bin, home, "channel", "set", "--id", "ch", "--runner", "fake", "--model", "m", "--concurrency", "1")
+	prodCLI(t, bin, home, "objective", "add", "--id", "o", "--project", "p", "--title", "o", "--mode", "manual", "--channel", "ch", "--model", "m")
+	prodCLI(t, bin, home, "card", "add", "--id", "c", "--objective", "o", "--title", "c", "--kind", "dev", "--tier", "T2")
+	mainSHA := prodGit(t, repo, "rev-parse", "refs/heads/main")
+	db, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() {
+		attempts, err := db.ListAttempts(context.Background(), "")
+		if err != nil {
+			return
+		}
+		for _, attempt := range attempts {
+			if attempt.PID > 1 {
+				_ = host.SignalProcess(attempt.PID, syscall.SIGKILL)
+			}
+			if pgid := executorPGID(home, attempt.ID); pgid > 1 {
+				_ = host.SignalGroup(pgid, syscall.SIGKILL)
+			}
+		}
+	})
+	r := sched.New(home)
+	if r.Engine == nil || r.Dispose == nil || r.Classify == nil {
+		t.Fatal("production runner is missing a hook")
+	}
+	if err := r.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if prodGit(t, repo, "rev-parse", "refs/heads/cardex/o/main") != mainSHA {
+		t.Fatal("integration ref is not main HEAD")
+	}
+	if prodGit(t, repo, "rev-parse", "refs/heads/main") != mainSHA {
+		t.Fatal("main moved")
+	}
+	card, err := db.GetCard(context.Background(), "c")
+	if err != nil || card.Status != model.CardRunning {
+		t.Fatalf("card %+v %v", card, err)
+	}
+	attempts, err := db.ListAttempts(context.Background(), "c")
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("attempts %+v %v", attempts, err)
+	}
+	if _, err := os.Stat(attempts[0].Worktree); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func prodCLI(t *testing.T, bin, home string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(bin, append([]string{"--home", home}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cardex %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+}
+
+func prodGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
 }

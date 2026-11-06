@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"cardex/internal/claims"
@@ -70,6 +71,9 @@ type Runner struct {
 	Classify classify.Call
 	// mail is the production deliverer. Design questions and notify share it.
 	mail notify.Deliverer
+	// tickMu guards tickAt, the in-memory tick_error throttle.
+	tickMu sync.Mutex
+	tickAt map[string]time.Time
 }
 
 // New returns the production runner for home with loop.Dispose installed.
@@ -113,38 +117,105 @@ func (r *Runner) now() time.Time {
 
 // Tick runs design §6.1 once. A second call with no new facts does not
 // launch, merge, schedule, or notify the same work again.
+// A step error is recorded and later steps still run. The first of those
+// errors is returned after the round. A canceled context stops the round.
 func (r *Runner) Tick(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	var first error
+	keep := func(err error) bool {
+		if err == nil {
+			return false
+		}
+		if ctx.Err() != nil {
+			return true
+		}
+		if first == nil {
+			first = err
+		}
+		return false
+	}
+	var reconcileErr error
 	if err := host.Reconcile(ctx, r.Home); err != nil {
-		return err
+		if keep(err) {
+			return ctx.Err()
+		}
+		reconcileErr = err
 	}
 	db, err := store.Open(filepath.Join(r.Home, "cardex.db"))
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if reconcileErr != nil {
+			fmt.Fprintf(os.Stderr, "tick_error step=%s object=%s error=%s\n", "reconcile", "tick", clipSummary(reconcileErr.Error()))
+		}
+		fmt.Fprintf(os.Stderr, "tick_error step=%s object=%s error=%s\n", "store", "tick", clipSummary(err.Error()))
+		if first == nil {
+			first = err
+		}
+		return first
 	}
 	defer db.Close()
+	if reconcileErr != nil {
+		r.noteTickError(ctx, db, "reconcile", "", "", reconcileErr)
+	}
 	if err := r.harvest(ctx, db); err != nil {
-		return err
+		if keep(err) {
+			return ctx.Err()
+		}
+		if !errors.As(err, &tickNoted{}) {
+			r.noteTickError(ctx, db, "harvest", "", "", err)
+		}
 	}
 	if err := r.advance(ctx, db); err != nil {
-		return err
+		if keep(err) {
+			return ctx.Err()
+		}
+		if !errors.As(err, &tickNoted{}) {
+			r.noteTickError(ctx, db, "advance", "", "", err)
+		}
 	}
 	if err := r.mergeStep(ctx, db); err != nil {
-		return err
+		if keep(err) {
+			return ctx.Err()
+		}
+		if !errors.As(err, &tickNoted{}) {
+			r.noteTickError(ctx, db, "merge", "", "", err)
+		}
 	}
 	// A stored 批准 from question.New is applied here, before dispatch, so this tick routes with the new table.
 	if err := loop.FollowRanking(loop.WithHome(ctx, r.Home), db); err != nil {
-		return err
+		if keep(err) {
+			return ctx.Err()
+		}
+		r.noteTickError(ctx, db, "ranking", "", "", err)
 	}
 	if _, err := r.dispatch(ctx, db); err != nil {
-		return err
+		if keep(err) {
+			return ctx.Err()
+		}
+		if !errors.As(err, &tickNoted{}) {
+			r.noteTickError(ctx, db, "dispatch", "", "", err)
+		}
 	}
 	if err := r.schedules(ctx, db); err != nil {
-		return err
+		if keep(err) {
+			return ctx.Err()
+		}
+		r.noteTickError(ctx, db, "schedules", "", "", err)
 	}
-	return r.notify(ctx, db)
+	if err := r.notify(ctx, db); err != nil {
+		if keep(err) {
+			return ctx.Err()
+		}
+		r.noteTickError(ctx, db, "notify", "", "", err)
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return first
 }
 
 func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
@@ -152,6 +223,7 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 	if err != nil {
 		return err
 	}
+	var first error
 	for i := range attempts {
 		attempt := attempts[i]
 		if attempt.Outcome != "" || host.LiveHost(attempt) {
@@ -164,7 +236,10 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 		// A user card whose id starts with cls- stays on this path.
 		classifying, err := classificationAttempt(ctx, db, attempt.ID)
 		if err != nil {
-			return err
+			if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
+				return err
+			}
+			continue
 		}
 		if classifying {
 			if attempt.Outcome == "" {
@@ -177,7 +252,10 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 		}
 		card, err := db.GetCard(ctx, attempt.Card)
 		if err != nil {
-			return err
+			if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
+				return err
+			}
+			continue
 		}
 		if info, statErr := os.Stat(attempt.Worktree); statErr != nil || !info.IsDir() {
 			excerpt := attempt.ErrorExcerpt
@@ -186,7 +264,9 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			}
 			res := harvest.Result{Outcome: model.OutcomeNoOutput, Excerpt: excerpt}
 			if err := r.deliver(ctx, db, &card, &attempt, res); err != nil {
-				return err
+				if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
+					return err
+				}
 			}
 			continue
 		}
@@ -204,7 +284,10 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			Repo:       attempt.Worktree,
 		})
 		if err != nil {
-			return err
+			if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
+				return err
+			}
+			continue
 		}
 		if fam := r.familyOf(ctx, db, attempt.Route.Channel); fam != "" && card.AuthorFamily == "" {
 			card.AuthorFamily = fam
@@ -220,10 +303,12 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			card.Claims = kept
 		}
 		if err := r.deliver(ctx, db, &card, &attempt, res); err != nil {
-			return err
+			if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
+				return err
+			}
 		}
 	}
-	return nil
+	return first
 }
 
 // deliver hands the harvested result to the disposition collaborator.
@@ -268,24 +353,28 @@ func (r *Runner) advance(ctx context.Context, db *store.Store) error {
 	if err != nil {
 		return err
 	}
+	var first error
 	for _, obj := range objs {
 		if obj.Mode != model.ModeAuto || obj.Status != model.ObjectiveActive {
 			continue
 		}
+		var stepErr error
 		if r.Engine != nil {
-			if err := r.Engine(ctx, obj.ID); err != nil && !errors.Is(err, loop.ErrNotImplemented) {
-				return err
+			stepErr = r.Engine(ctx, obj.ID)
+		} else {
+			stepErr = designStep(ctx, obj.ID)
+			if stepErr == nil || errors.Is(stepErr, loop.ErrNotImplemented) {
+				stepErr = devStep(ctx, obj.ID)
 			}
+		}
+		if stepErr == nil || errors.Is(stepErr, loop.ErrNotImplemented) {
 			continue
 		}
-		if err := designStep(ctx, obj.ID); err != nil && !errors.Is(err, loop.ErrNotImplemented) {
-			return err
-		}
-		if err := devStep(ctx, obj.ID); err != nil && !errors.Is(err, loop.ErrNotImplemented) {
+		if err := r.keepStep(ctx, db, "advance", "objective", obj.ID, stepErr, &first); err != nil {
 			return err
 		}
 	}
-	return nil
+	return first
 }
 
 func (r *Runner) mergeStep(ctx context.Context, db *store.Store) error {
@@ -294,15 +383,18 @@ func (r *Runner) mergeStep(ctx context.Context, db *store.Store) error {
 		return err
 	}
 	q := merge.New(db)
+	var first error
 	for _, obj := range objs {
 		if obj.Status != model.ObjectiveActive && obj.Status != model.ObjectiveDoneCandidate {
 			continue
 		}
 		if err := q.Step(ctx, obj.ID); err != nil {
-			return err
+			if err := r.keepStep(ctx, db, "merge", "objective", obj.ID, err, &first); err != nil {
+				return err
+			}
 		}
 	}
-	return nil
+	return first
 }
 
 func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool, error) {
@@ -379,7 +471,11 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 		}
 		allowed, err := r.allow(ctx, db, &card, obj, occupy, true)
 		if err != nil {
-			return nil, err
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			r.noteTickError(ctx, db, "dispatch", "card", card.ID, err)
+			continue
 		}
 		if !allowed {
 			continue
@@ -389,7 +485,11 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 			if errors.Is(err, route.ErrNoCandidate) || errors.Is(err, route.ErrPinnedUnavailable) {
 				continue
 			}
-			return nil, err
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			r.noteTickError(ctx, db, "dispatch", "card", card.ID, err)
+			continue
 		}
 		if ch != "" {
 			used[ch] = true
@@ -490,9 +590,14 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if !cont && gitRefExists(ctx, project.RepoPath, "refs/heads/"+cardBranchName(obj.ID, wsCard)) {
 		cont = true
 	}
+	existed := cont
 	root := project.WorktreeRoot
 	if strings.TrimSpace(root) == "" {
 		root = filepath.Join(r.Home, "worktrees")
+	}
+	baseSHA, err := workspace.Git{}.EnsureIntegrationBranch(ctx, project.RepoPath, obj.IntegrationBranch)
+	if err != nil {
+		return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, launchScratch{})
 	}
 	wt, err := workspace.Git{}.Create(ctx, workspace.CreateRequest{
 		CardID:            wsCard,
@@ -503,17 +608,28 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		IntegrationBranch: obj.IntegrationBranch,
 		Continue:          cont,
 	})
-	if err != nil {
-		return "", err
+	scratch := launchScratch{
+		repo:         project.RepoPath,
+		worktree:     filepath.Join(root, wsCard+"-"+attemptID),
+		branch:       cardBranchName(obj.ID, wsCard),
+		base:         baseSHA,
+		dropWorktree: true,
+		dropBranch:   !existed,
 	}
+	if err != nil {
+		return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, scratch)
+	}
+	scratch.worktree = wt.Path
+	scratch.branch = wt.Branch
+	scratch.base = wt.BaseCommit
 	if readOnly {
 		if err := detachHead(ctx, wt.Path); err != nil {
-			return "", err
+			return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, scratch)
 		}
 	}
 	dir := filepath.Join(r.Home, "attempts", attemptID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", err
+		return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, scratch)
 	}
 	promptPath := filepath.Join(dir, "prompt.txt")
 	attempt := model.Attempt{
@@ -529,26 +645,26 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		StartedAt:   r.now().UTC(),
 	}
 	if err := db.CreateAttempt(ctx, &attempt); err != nil {
-		return "", err
+		return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, scratch)
 	}
 	card.Status = model.CardRunning
 	card.WaitReason = ""
 	if err := db.UpdateCard(ctx, &card); err != nil {
-		return "", err
+		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, scratch)
 	}
 	if rel.released {
 		if err := appendPinRelease(ctx, db, r.now(), card.ID, rel, rt); err != nil {
 			return "", err
 		}
 	}
-	if inUse != nil && rt.Channel != "" {
-		inUse[rt.Channel]++
-	}
 	if err := r.writePrompt(ctx, db, card, obj, project.RepoPath, &attempt); err != nil {
-		return "", err
+		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, scratch)
 	}
 	if err := r.startAttempt(ctx, db, &attempt); err != nil {
-		return "", err
+		return r.failLaunch(ctx, db, &card, &attempt, launchStepHost, err, scratch)
+	}
+	if inUse != nil && rt.Channel != "" {
+		inUse[rt.Channel]++
 	}
 	return rt.Channel, nil
 }
@@ -561,18 +677,24 @@ func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.
 	if err != nil {
 		return "", err
 	}
+	scratch := launchScratch{
+		repo:     project.RepoPath,
+		worktree: attempt.Worktree,
+		branch:   attempt.Branch,
+		base:     attempt.BaseCommit,
+	}
 	if card.Status != model.CardRunning {
 		card.Status = model.CardRunning
 		card.WaitReason = ""
 		if err := db.UpdateCard(ctx, &card); err != nil {
-			return "", err
+			return r.failLaunch(ctx, db, &card, attempt, launchStepPrompt, err, scratch)
 		}
 	}
 	if err := r.writePrompt(ctx, db, card, obj, project.RepoPath, attempt); err != nil {
-		return "", err
+		return r.failLaunch(ctx, db, &card, attempt, launchStepPrompt, err, scratch)
 	}
 	if err := r.startAttempt(ctx, db, attempt); err != nil {
-		return "", err
+		return r.failLaunch(ctx, db, &card, attempt, launchStepHost, err, scratch)
 	}
 	return attempt.Route.Channel, nil
 }
@@ -754,7 +876,11 @@ func (r *Runner) fill(ctx context.Context, db *store.Store, used map[string]bool
 	for _, ch := range channels {
 		est, err := quotas.Remaining(ctx, ch.ID)
 		if err != nil {
-			return err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			r.noteTickError(ctx, db, "dispatch", "card", "", err)
+			continue
 		}
 		if used[ch.ID] || !windowFills(ch, est, now) || readyNeeds(cards, ch.ID) {
 			continue
@@ -770,7 +896,11 @@ func (r *Runner) fill(ctx context.Context, db *store.Store, used map[string]bool
 			}
 			allowed, err := r.allow(ctx, db, &candidate, o, occupy, false)
 			if err != nil {
-				return err
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				r.noteTickError(ctx, db, "dispatch", "card", candidate.ID, err)
+				continue
 			}
 			if !allowed {
 				continue
@@ -786,7 +916,11 @@ func (r *Runner) fill(ctx context.Context, db *store.Store, used map[string]bool
 			if errors.Is(err, route.ErrNoCandidate) || errors.Is(err, route.ErrPinnedUnavailable) {
 				continue
 			}
-			return err
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			r.noteTickError(ctx, db, "dispatch", "card", card.ID, err)
+			continue
 		}
 		for i := range backlog {
 			if backlog[i].ID == card.ID {

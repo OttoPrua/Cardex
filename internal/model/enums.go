@@ -47,6 +47,7 @@ const (
 	OutcomeRefusal          Outcome = "refusal"           // 模型拒答。
 	OutcomeBudgetLimited    Outcome = "budget_limited"    // 单卡预算用尽。
 	OutcomeViolation        Outcome = "violation"         // 触碰硬底线。
+	OutcomeLaunchFailed     Outcome = "launch_failed"     // 建 worktree、拼 prompt 或启动宿主失败。
 )
 
 // ErrorClass is the runner classification. Values are the design §5 table.
@@ -66,6 +67,7 @@ const (
 	ErrorRefusal          ErrorClass = "refusal"           // 拒答。
 	ErrorBudgetLimited    ErrorClass = "budget_limited"    // 预算用尽。
 	ErrorViolation        ErrorClass = "violation"         // 触碰硬底线。
+	ErrorLaunchFailed     ErrorClass = "launch_failed"     // 启动失败，与 OutcomeLaunchFailed 同一取值。
 )
 
 // FreezeMode decides who confirms a freeze. Design §6.2.
@@ -168,6 +170,12 @@ const (
 	QuestionCustom  QuestionKind = "custom"  // 其他需要拍板的问题。
 )
 
+// Event types written by the scheduler. Event.Type is otherwise a free string.
+const (
+	EventLaunchFailed = "launch_failed" // 启动失败。
+	EventTickError    = "tick_error"    // 一轮中某一步出错。
+)
+
 // AllCardKinds returns every §6.3 kind.
 func AllCardKinds() []CardKind {
 	return []CardKind{
@@ -230,6 +238,7 @@ func AllOutcomes() []Outcome {
 		OutcomePassed, OutcomeTestsFailed, OutcomeNoOutput, OutcomeResultUnparsable,
 		OutcomeQuotaHit, OutcomeAuthFailed, OutcomeTransport, OutcomeTimeout,
 		OutcomePermissionDenied, OutcomeRefusal, OutcomeBudgetLimited, OutcomeViolation,
+		OutcomeLaunchFailed,
 	}
 }
 
@@ -239,6 +248,7 @@ func AllErrorClasses() []ErrorClass {
 		ErrorPassed, ErrorTestsFailed, ErrorNoOutput, ErrorResultUnparsable,
 		ErrorQuotaHit, ErrorAuthFailed, ErrorTransport, ErrorTimeout,
 		ErrorPermissionDenied, ErrorRefusal, ErrorBudgetLimited, ErrorViolation,
+		ErrorLaunchFailed,
 	}
 }
 

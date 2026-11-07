@@ -29,12 +29,13 @@ type pinRelease struct {
 }
 
 // resolveLaunchRoute reuses the route recorded on the latest launch_failed
-// event since the last successful start. A card or objective pin still selects
-// normally. A missing channel, or health other than ok, falls back once and
-// records why. Concurrency does not. A saved channel that is not in this
-// call's candidate set waits, the same way an explicit pin waits.
+// event since the last successful start. An explicit channel on the card or
+// the objective still selects normally. A model-only pin does not skip the
+// saved route. A missing channel, or health other than ok, falls back once
+// and records why. A saved channel at its concurrency limit, or outside this
+// call's candidate set, waits: no attempt, no fallback, and no drop.
 func (r *Runner) resolveLaunchRoute(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas, classified model.Tier) (model.Route, model.RouteReason, pinRelease, bool, error) {
-	if card.Channel == "" && card.Model == "" && obj.Channel == "" && obj.Model == "" {
+	if card.Channel == "" && obj.Channel == "" {
 		saved, ok, err := savedLaunchRoute(ctx, db, card.ID)
 		if err != nil {
 			return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
@@ -65,6 +66,13 @@ func (r *Runner) reuseSavedRoute(ctx context.Context, db *store.Store, card mode
 		return r.chooseLaunchRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
 	}
 	if _, inSet := channelByID(channels, saved.Channel); !inSet {
+		return model.Route{}, model.RouteReason{}, pinRelease{}, false, route.ErrPinnedUnavailable
+	}
+	used := 0
+	if inUse != nil {
+		used = inUse[saved.Channel]
+	}
+	if used >= ch.Concurrency {
 		return model.Route{}, model.RouteReason{}, pinRelease{}, false, route.ErrPinnedUnavailable
 	}
 	modelName := saved.Model

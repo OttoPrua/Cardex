@@ -15,6 +15,7 @@ cmd/cardex/cli_test.go:803 的期望子串从 "serve stub-loop iteration" 改为
 ## 已知问题
 N2：续作 worktree 已建、卡分支已有提交时，中途失败会留下这次的 worktree。不在本次范围，不单开 lane。
 appendPinRelease 失败不清理 worktree，卡可能留在 running。BUG-R5A-2、BUG-R5A-4 仍在。轮内无法解析的 config.json 不令 Serve 退出。
+N4 的 launch_failed 事件不在退避事务里，N5 的辅助监听和 serve-addr 失败退出 Serve，都不在本次 findings。
 
 ## 修复记录
 B1 启动失败后的重试复用失败前的路线，仅渠道缺失或 health 非 ok 才退回 → internal/sched/launch_fail.go:157 internal/sched/launch_route.go:55 internal/sched/loop.go:568 → TestLaunchFailedRouteReused
@@ -23,3 +24,6 @@ B3 serve-loop.log 打开、写入、关闭失败只写 stderr 并继续 → inte
 B4 只改 cli_test.go 一处日志子串 → cmd/cardex/cli_test.go:803 → TestServeLoopsUntilStopped
 N1 尝试终结与卡退避同一事务，卡写入失败则回滚 → internal/sched/launch_fail.go:76 → TestLaunchBackoffWriteRollsBack
 N3 集成分支按已读 SHA 创建，主分支随后前进不是失败 → internal/workspace/ref.go:72 → TestEnsureIntegrationBranchIgnoresPrimaryAdvance TestDispatchAfterPrimaryAdvances
+B1 保存路线的复用在并发已满时等待，且仅指定模型也不跳过该路线 → internal/sched/launch_route.go:38 internal/sched/launch_route.go:75 → TestLaunchFailedRouteReused TestLaunchFailedModelOnlyKeepsRoute
+B1-a 渠道并发已满则保留保存路线并等待，不新增尝试、不换渠道、不记丢弃 → internal/sched/launch_route.go:75 → TestLaunchFailedRouteReused TestLaunchFailedModelOnlyKeepsRoute
+B1-b 仅指定模型仍复用最近失败路线，渠道删除或 health 非 ok 才回退 → internal/sched/launch_route.go:38 → TestLaunchFailedModelOnlyKeepsRoute

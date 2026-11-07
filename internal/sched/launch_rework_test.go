@@ -122,6 +122,7 @@ func TestLaunchFailedRouteReused(t *testing.T) {
 			case "health":
 				setHealth(t, db, "cha", tc.health)
 			}
+			heldHosts := hosts
 			now = now.Add(31 * time.Second)
 			if err := r.Tick(ctx); err != nil {
 				t.Fatal(err)
@@ -142,14 +143,55 @@ func TestLaunchFailedRouteReused(t *testing.T) {
 			}
 			switch tc.mode {
 			case "worktree", "prompt", "host", "fill":
-				if got.Status != model.CardRunning {
-					t.Fatalf("retry status %+v", got)
+				if got.Status != model.CardReady {
+					t.Fatalf("full status %+v", got)
+				}
+				waiting, err := db.ListAttempts(ctx, "c")
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantAttempts := 1
+				if tc.mode == "worktree" {
+					wantAttempts = 0
+				}
+				if len(waiting) != wantAttempts {
+					t.Fatalf("attempts while full %+v", waiting)
+				}
+				if drop := routeDroppedText(t, db, "c"); drop != "" {
+					t.Fatalf("dropped while full %s", drop)
+				}
+				if hosts != heldHosts {
+					t.Fatalf("hosts %d while full, was %d", hosts, heldHosts)
+				}
+				if n := openRoutes(t, db, "cha"); n != 1 {
+					t.Fatalf("occupancy while full %d", n)
+				}
+				releaseOccupy(t, db)
+				now = now.Add(time.Second)
+				if err := r.Tick(ctx); err != nil {
+					t.Fatal(err)
+				}
+				got, err = db.GetCard(ctx, "c")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Status != model.CardRunning || got.Channel != "" || got.Model != "" {
+					t.Fatalf("retry stored %+v", got)
+				}
+				obj, err = db.GetObjective(ctx, objID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if obj.Channel != "" || obj.Model != "" {
+					t.Fatalf("route stored on objective %+v", obj)
 				}
 				started := startedAttempt(t, db, "c")
 				if started.Route.Channel != "cha" || started.Route.Model != "model-a" {
 					t.Fatalf("reused route %+v", started.Route)
 				}
-				assertChannelFull(t, db, objID, "cha")
+				if n := openRoutes(t, db, "cha"); n != 1 {
+					t.Fatalf("occupancy after start %d", n)
+				}
 			case "fill-other":
 				if got.Status != model.CardReady {
 					t.Fatalf("fill switched or held %+v", got)
@@ -160,6 +202,9 @@ func TestLaunchFailedRouteReused(t *testing.T) {
 				again, err := db.ListAttempts(ctx, "c")
 				if err != nil || len(again) != 1 || again[0].Outcome != model.OutcomeLaunchFailed || again[0].Route.Channel != "cha" {
 					t.Fatalf("attempts %+v %v", again, err)
+				}
+				if drop := routeDroppedText(t, db, "c"); drop != "" {
+					t.Fatalf("dropped out of window %s", drop)
 				}
 			case "missing", "health":
 				if got.Status != model.CardRunning {
@@ -176,6 +221,306 @@ func TestLaunchFailedRouteReused(t *testing.T) {
 				next := eventAfter(t, db, "c", failed.ID)
 				if !strings.Contains(string(next.Data), want) {
 					t.Fatalf("next event %s %s", next.Type, next.Data)
+				}
+			}
+		})
+	}
+}
+
+func TestLaunchFailedModelOnlyKeepsRoute(t *testing.T) {
+	cases := []struct {
+		name   string
+		pin    string
+		mode   string
+		health model.Health
+	}{
+		{name: "card model dispatch", pin: "card", mode: "reuse"},
+		{name: "objective model dispatch", pin: "objective", mode: "reuse"},
+		{name: "card model fill keeps saved", pin: "card", mode: "fill-in"},
+		{name: "objective model fill keeps saved", pin: "objective", mode: "fill-in"},
+		{name: "card model dispatch full", pin: "card", mode: "full"},
+		{name: "objective model dispatch full", pin: "objective", mode: "full"},
+		{name: "card model fill full", pin: "card", mode: "fill-full"},
+		{name: "objective model fill full", pin: "objective", mode: "fill-full"},
+		{name: "card model fill other window", pin: "card", mode: "fill-other"},
+		{name: "objective model fill other window", pin: "objective", mode: "fill-other"},
+		{name: "card model channel missing", pin: "card", mode: "missing"},
+		{name: "objective model channel missing", pin: "objective", mode: "missing"},
+		{name: "card model health", pin: "card", mode: "health", health: model.HealthAuthFailed},
+		{name: "objective model health", pin: "objective", mode: "health", health: model.HealthDegraded},
+		{name: "card channel pin", pin: "card-channel", mode: "pin"},
+		{name: "objective channel pin", pin: "obj-channel", mode: "pin"},
+		{name: "card channel pin full", pin: "card-channel", mode: "pin-full"},
+		{name: "objective channel pin full", pin: "obj-channel", mode: "pin-full"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			home, db, repo := newHome(t)
+			writeEmptySchedules(t, home)
+			_, objID := seedRepo(t, db, repo, "true")
+			seedRoutes(t, db)
+			now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+			reset := now.Add(30 * time.Minute)
+			fill := tc.mode == "fill-in" || tc.mode == "fill-full" || tc.mode == "fill-other"
+			kind := model.KindDev
+			tier := model.TierT2
+			if fill {
+				kind = model.KindBacklog
+				tier = model.TierT1
+			}
+			cardModel := ""
+			if tc.pin == "card" {
+				cardModel = "model-b"
+			}
+			card := model.Card{
+				ID: "c", Objective: objID, Kind: kind, Title: "c", Tier: tier,
+				Status: model.CardReady, Model: cardModel,
+			}
+			if err := db.CreateCard(ctx, &card); err != nil {
+				t.Fatal(err)
+			}
+			if tc.pin == "objective" {
+				obj, err := db.GetObjective(ctx, objID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				obj.Model = "model-b"
+				if err := db.UpdateObjective(ctx, &obj); err != nil {
+					t.Fatal(err)
+				}
+			}
+			savedCh, savedModel := "chb", "model-b"
+			if tc.pin == "card-channel" || tc.pin == "obj-channel" {
+				savedCh, savedModel = "cha", "model-a"
+			}
+			if fill {
+				setFillWindow(t, db, savedCh, reset, true)
+			}
+			var hosts int
+			r := New(home)
+			r.Now = func() time.Time { return now }
+			r.Launch = func(context.Context, string, string) (int, error) {
+				hosts++
+				if hosts == 1 {
+					return 0, errors.New("host down")
+				}
+				return 84, nil
+			}
+			if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			failed := firstLaunchFailed(t, db, "c")
+			if failed.Step != "host" || failed.Channel != savedCh || failed.Model != savedModel {
+				t.Fatalf("launch_failed %+v", failed)
+			}
+			switch tc.mode {
+			case "reuse", "fill-in", "full", "fill-full", "fill-other", "missing", "health":
+				addCarrier(t, db, "a", savedModel)
+				assertEarlierCarrier(t, db, "a", savedCh, savedModel)
+			}
+			switch tc.mode {
+			case "fill-in":
+				setFillWindow(t, db, "a", reset, true)
+			case "fill-full":
+				setFillWindow(t, db, "a", reset, true)
+				setConcurrency(t, db, savedCh, 1)
+				occupyChannel(t, db, objID, savedCh, now)
+			case "fill-other":
+				setFillWindow(t, db, savedCh, reset, false)
+				setFillWindow(t, db, "a", reset, true)
+			case "full":
+				setConcurrency(t, db, savedCh, 1)
+				occupyChannel(t, db, objID, savedCh, now)
+			case "missing":
+				if err := db.DeleteChannel(ctx, savedCh); err != nil {
+					t.Fatal(err)
+				}
+			case "health":
+				setHealth(t, db, savedCh, tc.health)
+			case "pin", "pin-full":
+				pinTo := "chb"
+				if tc.mode == "pin-full" {
+					pinTo = savedCh
+					setConcurrency(t, db, savedCh, 1)
+					occupyChannel(t, db, objID, savedCh, now)
+				}
+				if tc.pin == "card-channel" {
+					got, err := db.GetCard(ctx, "c")
+					if err != nil {
+						t.Fatal(err)
+					}
+					got.Channel = pinTo
+					if err := db.UpdateCard(ctx, &got); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					obj, err := db.GetObjective(ctx, objID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					obj.Channel = pinTo
+					if err := db.UpdateObjective(ctx, &obj); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if tc.mode == "fill-other" && (windowOn(t, db, savedCh) || !windowOn(t, db, "a")) {
+				t.Fatal("fill windows were not split")
+			}
+			if (tc.mode == "fill-in" || tc.mode == "fill-full") && (!windowOn(t, db, savedCh) || !windowOn(t, db, "a")) {
+				t.Fatal("saved and earlier channels are not both in the fill window")
+			}
+			heldHosts := hosts
+			now = now.Add(31 * time.Second)
+			if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			wantCh, wantModel := "", ""
+			switch tc.pin {
+			case "card":
+				wantModel = "model-b"
+			case "objective":
+				// Stored on the objective, checked below.
+			case "card-channel":
+				wantCh = "chb"
+				if tc.mode == "pin-full" {
+					wantCh = savedCh
+				}
+			case "obj-channel":
+				// Stored on the objective, checked below.
+			}
+			assertCardPin := func() {
+				t.Helper()
+				got, err := db.GetCard(ctx, "c")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Channel != wantCh || got.Model != wantModel {
+					t.Fatalf("card pin %+v", got)
+				}
+				obj, err := db.GetObjective(ctx, objID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				objCh, objModel := "", ""
+				if tc.pin == "objective" {
+					objModel = "model-b"
+				}
+				if tc.pin == "obj-channel" {
+					objCh = "chb"
+					if tc.mode == "pin-full" {
+						objCh = savedCh
+					}
+				}
+				if obj.Channel != objCh || obj.Model != objModel {
+					t.Fatalf("objective pin %+v", obj)
+				}
+			}
+			assertCardPin()
+			switch tc.mode {
+			case "full", "fill-full", "fill-other":
+				got, err := db.GetCard(ctx, "c")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Status != model.CardReady {
+					t.Fatalf("status while held %+v", got)
+				}
+				again, err := db.ListAttempts(ctx, "c")
+				if err != nil || len(again) != 1 || again[0].Outcome != model.OutcomeLaunchFailed || again[0].Route.Channel != savedCh {
+					t.Fatalf("attempts while held %+v %v", again, err)
+				}
+				if drop := routeDroppedText(t, db, "c"); drop != "" {
+					t.Fatalf("dropped while held %s", drop)
+				}
+				if hosts != heldHosts {
+					t.Fatalf("hosts %d while held", hosts)
+				}
+				if tc.mode == "fill-other" {
+					return
+				}
+				if n := openRoutes(t, db, savedCh); n != 1 {
+					t.Fatalf("occupancy while full %d", n)
+				}
+				releaseOccupy(t, db)
+				now = now.Add(time.Second)
+				if err := r.Tick(ctx); err != nil {
+					t.Fatal(err)
+				}
+				assertCardPin()
+				got, err = db.GetCard(ctx, "c")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Status != model.CardRunning {
+					t.Fatalf("status after release %+v", got)
+				}
+				started := startedAttempt(t, db, "c")
+				if started.Route.Channel != failed.Channel || started.Route.Model != failed.Model {
+					t.Fatalf("reused %+v saved %s/%s", started.Route, failed.Channel, failed.Model)
+				}
+				if n := openRoutes(t, db, savedCh); n != 1 {
+					t.Fatalf("occupancy after start %d", n)
+				}
+			case "reuse", "fill-in":
+				got, err := db.GetCard(ctx, "c")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Status != model.CardRunning {
+					t.Fatalf("status %+v", got)
+				}
+				started := startedAttempt(t, db, "c")
+				if started.Route.Channel != failed.Channel || started.Route.Model != failed.Model {
+					t.Fatalf("reused %+v saved %s/%s", started.Route, failed.Channel, failed.Model)
+				}
+				if drop := routeDroppedText(t, db, "c"); drop != "" {
+					t.Fatalf("dropped on reuse %s", drop)
+				}
+			case "missing", "health":
+				got, err := db.GetCard(ctx, "c")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Status != model.CardRunning {
+					t.Fatalf("fallback status %+v", got)
+				}
+				started := startedAttempt(t, db, "c")
+				if started.Route.Channel != "a" || started.Route.Model != savedModel {
+					t.Fatalf("fallback route %+v", started.Route)
+				}
+				want := "saved route dropped: channel " + savedCh + " is missing"
+				if tc.mode == "health" {
+					want = "saved route dropped: channel " + savedCh + " health is " + string(tc.health)
+				}
+				next := eventAfter(t, db, "c", failed.ID)
+				if !strings.Contains(string(next.Data), want) {
+					t.Fatalf("next event %s %s", next.Type, next.Data)
+				}
+			case "pin", "pin-full":
+				got, err := db.GetCard(ctx, "c")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Status != model.CardRunning {
+					t.Fatalf("pin status %+v", got)
+				}
+				started := startedAttempt(t, db, "c")
+				pinCh := "chb"
+				pinModel := "model-b"
+				if tc.mode == "pin-full" {
+					pinCh = savedCh
+					pinModel = savedModel
+					if n := openRoutes(t, db, savedCh); n != 2 {
+						t.Fatalf("explicit pin occupancy %d", n)
+					}
+				}
+				if started.Route.Channel != pinCh || started.Route.Model != pinModel {
+					t.Fatalf("pin route %+v", started.Route)
+				}
+				if drop := routeDroppedText(t, db, "c"); drop != "" {
+					t.Fatalf("dropped on pin %s", drop)
 				}
 			}
 		})
@@ -649,35 +994,125 @@ func occupyChannel(t *testing.T, db *store.Store, objID, channel string, now tim
 	}
 }
 
-func assertChannelFull(t *testing.T, db *store.Store, objID, channel string) {
+func releaseOccupy(t *testing.T, db *store.Store) {
 	t.Helper()
 	ctx := context.Background()
-	ch, err := db.GetChannel(ctx, channel)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ch.Concurrency != 1 {
-		t.Fatalf("concurrency %d", ch.Concurrency)
-	}
-	holder, err := db.GetCard(ctx, "hold")
-	if err != nil || holder.Status != model.CardPaused || holder.Objective != objID {
-		t.Fatalf("holder %+v %v", holder, err)
-	}
 	attempts, err := db.ListAttempts(ctx, "hold")
-	if err != nil || len(attempts) != 1 || attempts[0].Outcome != "" || attempts[0].Route.Channel != channel || !attempts[0].EndedAt.IsZero() {
-		t.Fatalf("holder attempt %+v %v", attempts, err)
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("hold attempts %+v %v", attempts, err)
 	}
-	cha, err := db.GetPositioning(ctx, "pos-cha")
+	ended := attempts[0]
+	ended.EndedAt = ended.StartedAt.Add(time.Second)
+	if ended.EndedAt.IsZero() {
+		ended.EndedAt = time.Unix(1, 0).UTC()
+	}
+	if err := db.UpdateAttempt(ctx, &ended); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func openRoutes(t *testing.T, db *store.Store, channel string) int {
+	t.Helper()
+	attempts, err := db.ListAttempts(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	chb, err := db.GetPositioning(ctx, "pos-chb")
+	n := 0
+	for _, attempt := range attempts {
+		if attempt.Route.Channel != channel {
+			continue
+		}
+		if attempt.Outcome == "" && attempt.EndedAt.IsZero() && attempt.Exit == nil {
+			n++
+		}
+	}
+	return n
+}
+
+func routeDroppedText(t *testing.T, db *store.Store, cardID string) string {
+	t.Helper()
+	events, err := db.ListEvents(context.Background(), "card:"+cardID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if chb.Preference >= cha.Preference {
-		t.Fatalf("preference cha %d chb %d", cha.Preference, chb.Preference)
+	for _, ev := range events {
+		if ev.Type == eventLaunchRouteDropped {
+			return string(ev.Data)
+		}
 	}
+	return ""
+}
+
+func addCarrier(t *testing.T, db *store.Store, id, modelName string) {
+	t.Helper()
+	ctx := context.Background()
+	ch := model.Channel{
+		ID: id, Runner: model.RunnerFake, Family: "early", SourceGroup: "early",
+		Models: []string{modelName}, Concurrency: 4, Health: model.HealthOK, Tier: model.TierT2,
+	}
+	if err := db.CreateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	pos := model.Positioning{
+		ID: "pos-" + id, Model: modelName, Family: "early",
+		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 0,
+	}
+	if err := db.CreatePositioning(ctx, &pos); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertEarlierCarrier(t *testing.T, db *store.Store, earlier, saved, modelName string) {
+	t.Helper()
+	channels, err := db.ListChannels(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	earlierAt, savedAt := -1, -1
+	for i, ch := range channels {
+		switch ch.ID {
+		case earlier:
+			earlierAt = i
+			if ch.Health != model.HealthOK {
+				t.Fatalf("earlier health %+v", ch)
+			}
+			offers := false
+			for _, name := range ch.Models {
+				if name == modelName {
+					offers = true
+				}
+			}
+			if !offers {
+				t.Fatalf("earlier models %+v", ch.Models)
+			}
+		case saved:
+			savedAt = i
+		}
+	}
+	if earlierAt < 0 || savedAt < 0 || earlierAt >= savedAt {
+		t.Fatalf("carrier order earlier %d saved %d", earlierAt, savedAt)
+	}
+}
+
+func setConcurrency(t *testing.T, db *store.Store, id string, n int) {
+	t.Helper()
+	ch, err := db.GetChannel(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch.Concurrency = n
+	if err := db.UpdateChannel(context.Background(), &ch); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func windowOn(t *testing.T, db *store.Store, id string) bool {
+	t.Helper()
+	ch, err := db.GetChannel(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(ch.QuotaWindows) > 0
 }
 
 func blockWorktree(t *testing.T, db *store.Store, projectID string) string {

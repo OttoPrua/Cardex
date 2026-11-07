@@ -18,5 +18,7 @@ rg（42 行）：生产代码没有 `reservedPort`、`refusing to use ~/.cardex`
 请 R8-L 改 `cmd/cardex/cli_test.go`。`TestServeLoopsUntilStopped` 不要对 `127.0.0.1:8787` 和 `:8788` 调用 `runServe`：端口空闲时会进 `sched.Serve` 并绑定，直到测试结束。`TestRefusesUserCardexHome` 改为临时目录中的 v1 home，不要把 `UserHomeDir()/.cardex` 交给 `Main`。
 
 ## 已知问题
-本机 8787/8788 已被占用（`cardex-bo` 78292、`node` 78319），所以上述端口测试因 bind 失败而返回非 0，本 lane 没有监听。全量 `go test ./...` 通过，`TestSignalGuard` 源码扫描为 clean，注入 syscall 次数为 0。
-真实 `~/.cardex` 的 inode 仍是 118774381。测试前目录 mtime 为 1794043814064519494；测试后变为 1794044254030951926，之后仍会变。顶层条目数保持 80，测试前排序的前 40 个名字都还在。没有 `cardex.db`、`cardex.db-wal`、`cardex.db-shm`、`serve-addr`、`serve-loop.log` 或 `.doctor-write-*`。测试后唯一比旧 mtime 新的顶层条目是 46 字节的 `.lock`，下一次列出时已经消失。v2 只在 `store.Open` 里写 `cardex.db.lock`，而 v1 检查在打开数据库之前返回，所以只读的 `TestRefusesUserCardexHome` 只 `Stat` `cardex.db` 并 `ReadDir` `tasks/`，不会创建或删除 `.lock`。mtime 变化是正在运行的 v1 换锁。
+`TestRefusesUserCardexHome` 仍把真实 `UserHomeDir()/.cardex` 交给 `Main`。这是另一条规则，本次不改。inode 仍是 118774381。测试前目录 mtime 为 1794043814064519494；测试后变为 1794044254030951926，之后仍会变。顶层条目数保持 80，测试前排序的前 40 个名字都还在。没有 `cardex.db`、`cardex.db-wal`、`cardex.db-shm`、`serve-addr`、`serve-loop.log` 或 `.doctor-write-*`。测试后唯一比旧 mtime 新的顶层条目是 46 字节的 `.lock`，下一次列出时已经消失。v2 只在 `store.Open` 里写 `cardex.db.lock`，而 v1 检查在打开数据库之前返回，所以只读的该测试只 `Stat` `cardex.db` 并 `ReadDir` `tasks/`，不会创建或删除 `.lock`。mtime 变化是正在运行的 v1 换锁。
+
+## 修复记录
+检查 8787 或 8788 是否被拒绝时不得进入阻塞 serve，须在 listen 前返回 → cmd/cardex/cli_test.go:791、cmd/cardex/home_takeover_test.go:199 → TestServeLoopsUntilStopped、TestServeAddrIsNotPortRefused

@@ -196,20 +196,29 @@ func TestServeAddrIsNotPortRefused(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CARDEX_HOME", "")
 	v1 := makeV1(t)
-	for _, addr := range []string{"127.0.0.1:8787", "127.0.0.1:8788"} {
-		code, out, errb := runServeText(t, v1, addr)
-		if code == 0 {
-			t.Fatalf("%s exited 0\n%s", addr, out)
-		}
-		if !strings.Contains(errb, "import-legacy") {
-			t.Fatalf("%s stderr %s", addr, errb)
-		}
-		if strings.Contains(errb, "reserved") || strings.Contains(errb, "8787") || strings.Contains(errb, "8788") {
-			t.Fatalf("%s port refusal %s", addr, errb)
-		}
-		if _, err := os.Stat(filepath.Join(v1, "serve-addr")); !os.IsNotExist(err) {
-			t.Fatalf("%s listened", addr)
-		}
+	cases := []struct {
+		addr string
+	}{
+		{addr: "127.0.0.1:8787"},
+		{addr: "127.0.0.1:8788"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.addr, func(t *testing.T) {
+			code, out, errb := runServeText(t, v1, tc.addr)
+			if code == 0 {
+				t.Fatalf("exited 0\n%s", out)
+			}
+			if !strings.Contains(errb, "import-legacy") {
+				t.Fatalf("stderr %s", errb)
+			}
+			if strings.Contains(errb, "reserved") || strings.Contains(errb, "8787") || strings.Contains(errb, "8788") {
+				t.Fatalf("port refusal %s", errb)
+			}
+			if _, err := os.Stat(filepath.Join(v1, "serve-addr")); !os.IsNotExist(err) {
+				t.Fatal("listened")
+			}
+			t.Logf("exit %d stderr %s", code, errb)
+		})
 	}
 	code, out, errb := runMain(t, "serve", "--help")
 	text := out + errb

@@ -787,11 +787,20 @@ func assertNeedsInput(t *testing.T, card model.Card, title string) {
 }
 
 func TestServeLoopsUntilStopped(t *testing.T) {
-	if code := runServe(t.Context(), t.TempDir(), "127.0.0.1:8787", io.Discard, io.Discard); code == 0 {
-		t.Fatal("accepted port 8787")
-	}
-	if code := runServe(t.Context(), t.TempDir(), "127.0.0.1:8788", io.Discard, io.Discard); code == 0 {
-		t.Fatal("accepted port 8788")
+	// A v1 home fails in resolveHome, so these calls never reach sched.Serve.
+	for _, addr := range []string{"127.0.0.1:8787", "127.0.0.1:8788"} {
+		home := makeV1(t)
+		var errb strings.Builder
+		code := runServe(t.Context(), home, addr, io.Discard, &errb)
+		if code == 0 || !strings.Contains(errb.String(), "import-legacy") {
+			t.Fatalf("%s code %d stderr %s", addr, code, errb.String())
+		}
+		if strings.Contains(errb.String(), "reserved") {
+			t.Fatalf("%s port refusal %s", addr, errb.String())
+		}
+		if _, err := os.Stat(filepath.Join(home, "serve-addr")); !os.IsNotExist(err) {
+			t.Fatalf("%s wrote serve-addr: %v", addr, err)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	var buf lockBuf
@@ -816,6 +825,7 @@ func TestServeLoopsUntilStopped(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("serve exit %d\n%s", code, buf.String())
 		}
+		t.Logf("ephemeral serve exit %d\n%s", code, buf.String())
 	case <-time.After(3 * time.Second):
 		t.Fatal("serve did not return")
 	}

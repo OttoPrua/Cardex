@@ -248,6 +248,11 @@ func TestLaunchFailedModelOnlyKeepsRoute(t *testing.T) {
 		{name: "objective model channel missing", pin: "objective", mode: "missing"},
 		{name: "card model health", pin: "card", mode: "health", health: model.HealthAuthFailed},
 		{name: "objective model health", pin: "objective", mode: "health", health: model.HealthDegraded},
+		{name: "card model M objective channel z dispatch", pin: "override", mode: "reuse"},
+		{name: "card model M objective channel z fill", pin: "override", mode: "fill-in"},
+		{name: "card model M objective channel z dispatch full", pin: "override", mode: "full"},
+		{name: "card model M objective channel z fill full", pin: "override", mode: "fill-full"},
+		{name: "card model M objective channel z fill other window", pin: "override", mode: "fill-other"},
 		{name: "card channel pin", pin: "card-channel", mode: "pin"},
 		{name: "objective channel pin", pin: "obj-channel", mode: "pin"},
 		{name: "card channel pin full", pin: "card-channel", mode: "pin-full"},
@@ -270,8 +275,11 @@ func TestLaunchFailedModelOnlyKeepsRoute(t *testing.T) {
 				tier = model.TierT1
 			}
 			cardModel := ""
-			if tc.pin == "card" {
+			switch tc.pin {
+			case "card":
 				cardModel = "model-b"
+			case "override":
+				cardModel = "M"
 			}
 			card := model.Card{
 				ID: "c", Objective: objID, Kind: kind, Title: "c", Tier: tier,
@@ -280,12 +288,17 @@ func TestLaunchFailedModelOnlyKeepsRoute(t *testing.T) {
 			if err := db.CreateCard(ctx, &card); err != nil {
 				t.Fatal(err)
 			}
-			if tc.pin == "objective" {
+			if tc.pin == "objective" || tc.pin == "override" {
 				obj, err := db.GetObjective(ctx, objID)
 				if err != nil {
 					t.Fatal(err)
 				}
-				obj.Model = "model-b"
+				if tc.pin == "objective" {
+					obj.Model = "model-b"
+				}
+				if tc.pin == "override" {
+					obj.Channel = "z"
+				}
 				if err := db.UpdateObjective(ctx, &obj); err != nil {
 					t.Fatal(err)
 				}
@@ -293,6 +306,10 @@ func TestLaunchFailedModelOnlyKeepsRoute(t *testing.T) {
 			savedCh, savedModel := "chb", "model-b"
 			if tc.pin == "card-channel" || tc.pin == "obj-channel" {
 				savedCh, savedModel = "cha", "model-a"
+			}
+			if tc.pin == "override" {
+				savedCh, savedModel = "b", "M"
+				addCarrier(t, db, savedCh, savedModel)
 			}
 			if fill {
 				setFillWindow(t, db, savedCh, reset, true)
@@ -380,6 +397,8 @@ func TestLaunchFailedModelOnlyKeepsRoute(t *testing.T) {
 			switch tc.pin {
 			case "card":
 				wantModel = "model-b"
+			case "override":
+				wantModel = "M"
 			case "objective":
 				// Stored on the objective, checked below.
 			case "card-channel":
@@ -406,6 +425,9 @@ func TestLaunchFailedModelOnlyKeepsRoute(t *testing.T) {
 				objCh, objModel := "", ""
 				if tc.pin == "objective" {
 					objModel = "model-b"
+				}
+				if tc.pin == "override" {
+					objCh = "z"
 				}
 				if tc.pin == "obj-channel" {
 					objCh = "chb"

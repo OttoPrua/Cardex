@@ -29,13 +29,16 @@ type pinRelease struct {
 }
 
 // resolveLaunchRoute reuses the route recorded on the latest launch_failed
-// event since the last successful start. An explicit channel on the card or
-// the objective still selects normally. A model-only pin does not skip the
-// saved route. A missing channel, or health other than ok, falls back once
-// and records why. A saved channel at its concurrency limit, or outside this
-// call's candidate set, waits: no attempt, no fallback, and no drop.
+// event since the last successful start when the effective spec is not an
+// explicit channel. Card channel or model is that spec; otherwise the
+// objective is. A card model therefore keeps the saved route when the
+// objective names a channel. An explicit card channel, or an objective
+// channel when the card specifies neither, still selects normally. A missing
+// channel, or health other than ok, falls back once and records why. A saved
+// channel at its concurrency limit, or outside this call's candidate set,
+// waits: no attempt, no fallback, and no drop.
 func (r *Runner) resolveLaunchRoute(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas, classified model.Tier) (model.Route, model.RouteReason, pinRelease, bool, error) {
-	if card.Channel == "" && obj.Channel == "" {
+	if effectiveSpecChannel(card, obj) == "" {
 		saved, ok, err := savedLaunchRoute(ctx, db, card.ID)
 		if err != nil {
 			return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
@@ -45,6 +48,16 @@ func (r *Runner) resolveLaunchRoute(ctx context.Context, db *store.Store, card m
 		}
 	}
 	return r.chooseLaunchRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
+}
+
+// effectiveSpecChannel is the channel of the spec selection uses.
+// A card channel or model wins over the objective. A model-only spec,
+// including a card model that overrides an objective channel, returns "".
+func effectiveSpecChannel(card model.Card, obj model.Objective) string {
+	if card.Channel != "" || card.Model != "" {
+		return card.Channel
+	}
+	return obj.Channel
 }
 
 func (r *Runner) reuseSavedRoute(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, saved model.Route, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas, classified model.Tier) (model.Route, model.RouteReason, pinRelease, bool, error) {

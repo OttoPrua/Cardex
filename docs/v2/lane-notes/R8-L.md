@@ -27,3 +27,6 @@ N3 集成分支按已读 SHA 创建，主分支随后前进不是失败 → inte
 B1 保存路线的复用在并发已满时等待，且仅指定模型也不跳过该路线 → internal/sched/launch_route.go:38 internal/sched/launch_route.go:75 → TestLaunchFailedRouteReused TestLaunchFailedModelOnlyKeepsRoute
 B1-a 渠道并发已满则保留保存路线并等待，不新增尝试、不换渠道、不记丢弃 → internal/sched/launch_route.go:75 → TestLaunchFailedRouteReused TestLaunchFailedModelOnlyKeepsRoute
 B1-b 仅指定模型仍复用最近失败路线，渠道删除或 health 非 ok 才回退 → internal/sched/launch_route.go:38 → TestLaunchFailedModelOnlyKeepsRoute
+B1-a 有效指定不是显式渠道时保存路线并发已满则等待，不新增尝试、不换渠道、不记丢弃，卡级模型盖过目标渠道也一样 → internal/sched/launch_route.go:41 internal/sched/launch_route.go:56 → TestLaunchFailedModelOnlyKeepsRoute
+B1-b 卡仅指定模型、目标指定渠道时，普通派发和 backlog 都复用最近失败路线 → internal/sched/launch_route.go:41 internal/sched/launch_route.go:56 → TestLaunchFailedModelOnlyKeepsRoute
+B1-a／B1-b 共同遗漏 是否恢复失败路线按卡级指定优先、否则目标级指定判断，被卡级模型覆盖的目标渠道不阻止恢复 → internal/sched/launch_route.go:41 internal/sched/launch_route.go:56 → TestLaunchFailedModelOnlyKeepsRoute

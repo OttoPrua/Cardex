@@ -8,13 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
 
+	"cardex/internal/homeguard"
 	"cardex/internal/sched"
 	"cardex/internal/store"
 )
@@ -129,7 +129,7 @@ func splitGlobal(args []string) (home string, asJSON bool, rest []string, err er
 
 func cmdServe(home string, args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("serve", "run the board and the scheduler loop until interrupted", "--addr", stdout, stderr)
-	addr := fs.String("addr", "127.0.0.1:0", "listen address; 8787 and 8788 are refused")
+	addr := fs.String("addr", "127.0.0.1:0", "listen address")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -139,10 +139,6 @@ func cmdServe(home string, args []string, stdout, stderr io.Writer) int {
 }
 
 func runServe(ctx context.Context, home, addr string, stdout, stderr io.Writer) int {
-	if reservedPort(addr) {
-		fmt.Fprintln(stderr, "refusing reserved port")
-		return 2
-	}
 	home, err := resolveHome(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -158,31 +154,23 @@ func runServe(ctx context.Context, home, addr string, stdout, stderr io.Writer) 
 	return 0
 }
 
-func reservedPort(addr string) bool {
-	_, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		port = addr
-	}
-	return port == "8787" || port == "8788"
-}
-
 func resolveHome(home string) (string, error) {
 	if home == "" {
 		home = os.Getenv("CARDEX_HOME")
 	}
 	if home == "" {
-		return "", errors.New("missing --home or CARDEX_HOME")
+		user, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		home = filepath.Join(user, ".cardex")
 	}
 	abs, err := filepath.Abs(home)
 	if err != nil {
 		return "", err
 	}
-	user, err := os.UserHomeDir()
-	if err == nil {
-		banned := filepath.Join(user, ".cardex")
-		if abs == banned || strings.HasPrefix(abs, banned+string(filepath.Separator)) {
-			return "", errors.New("refusing to use ~/.cardex")
-		}
+	if err := homeguard.Check(abs); err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return "", err

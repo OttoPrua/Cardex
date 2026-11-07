@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"cardex/internal/homeguard"
 	_ "modernc.org/sqlite"
 )
 
@@ -94,19 +95,11 @@ func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 }
 
 func refuseCardexHome(path string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err
 	}
-	banned := filepath.Join(home, ".cardex")
-	if abs == banned || strings.HasPrefix(abs, banned+string(filepath.Separator)) {
-		return fmt.Errorf("refusing path under ~/.cardex")
-	}
-	return nil
+	return homeguard.Check(filepath.Dir(abs))
 }
 
 // WithTx runs fn inside a transaction. Nested calls join the outer transaction.

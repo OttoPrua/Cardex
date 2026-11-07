@@ -80,12 +80,20 @@ func TestCurrentProposeApprove(t *testing.T) {
 }
 
 func TestOpenRefusesCardexHome(t *testing.T) {
-	user, err := os.UserHomeDir()
-	if err != nil {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "tasks"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Open(filepath.Join(user, ".cardex")); err == nil {
-		t.Fatal("opened ~/.cardex")
+	if err := os.WriteFile(filepath.Join(dir, "tasks", "a.json"), []byte(`{"id":"a"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Open(dir)
+	if err == nil || !strings.Contains(err.Error(), "import-legacy") {
+		t.Fatalf("Open v1 home: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "cardex.db")); !os.IsNotExist(statErr) {
+		t.Fatal("Open created cardex.db in a v1 home")
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"cardex/internal/homeguard"
 	"cardex/internal/model"
 	"cardex/internal/positioning"
 	"cardex/internal/quota"
@@ -37,7 +38,11 @@ func collectDoctor(home string) []finding {
 	var out []finding
 	resolved, err := resolveHome(home)
 	if err != nil {
-		out = append(out, finding{err.Error(), "pass a writable --home outside ~/.cardex"})
+		suggestion := "pass a writable --home"
+		if homeguard.IsV1(err) {
+			suggestion = "用 import-legacy 导入到新目录：" + homeguard.Usage
+		}
+		out = append(out, finding{err.Error(), suggestion})
 		resolved = ""
 	} else if problem, suggestion, bad := homeWritable(resolved); bad {
 		out = append(out, finding{problem, suggestion})

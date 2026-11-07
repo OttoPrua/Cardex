@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"cardex/internal/homeguard"
 	"cardex/internal/store"
 )
 
@@ -293,12 +294,8 @@ func resolveHome() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	user, err := os.UserHomeDir()
-	if err == nil {
-		banned := filepath.Join(user, ".cardex")
-		if abs == banned || strings.HasPrefix(abs, banned+string(filepath.Separator)) {
-			return "", errors.New("refusing to use ~/.cardex")
-		}
+	if err := homeguard.Check(abs); err != nil {
+		return "", err
 	}
 	return abs, nil
 }

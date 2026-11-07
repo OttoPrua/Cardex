@@ -67,19 +67,14 @@ func (g Git) EnsureIntegrationBranch(ctx context.Context, repo, branch string) (
 	if primary == "" {
 		return "", fmt.Errorf("workspace: no main or master branch")
 	}
-	if _, err := runGit(ctx, repo, "branch", short, primary); err != nil {
+	// Bind the new ref to the SHA already read. A later advance of the primary
+	// branch is not a launch failure, and an existing ref is left where it is.
+	if _, err := runGit(ctx, repo, "branch", short, primarySHA); err != nil {
 		ok, exErr := g.RefExists(ctx, repo, full)
 		if exErr == nil && ok {
 			return runGit(ctx, repo, "rev-parse", full)
 		}
 		return "", err
-	}
-	again, err := runGit(ctx, repo, "rev-parse", "refs/heads/"+primary)
-	if err != nil {
-		return "", err
-	}
-	if again != primarySHA {
-		return "", fmt.Errorf("workspace: primary branch %s moved", primary)
 	}
 	tip, err := runGit(ctx, repo, "rev-parse", full)
 	if err != nil {

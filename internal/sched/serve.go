@@ -82,17 +82,8 @@ func Serve(ctx context.Context, home, addr string) error {
 		if w := serveWriter(ctx); w != nil {
 			fmt.Fprintf(w, "serve loop iteration %d\n", n)
 		}
-		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return err
-		}
-		_, werr := fmt.Fprintf(f, "iteration %d\n", n)
-		cerr := f.Close()
-		if werr != nil {
-			return werr
-		}
-		if cerr != nil {
-			return cerr
+		if err := writeServeLoop(logPath, n); err != nil {
+			fmt.Fprintf(os.Stderr, "serve-loop.log: %v\n", err)
 		}
 		timer := time.NewTimer(150 * time.Millisecond)
 		select {
@@ -102,6 +93,21 @@ func Serve(ctx context.Context, home, addr string) error {
 		case <-timer.C:
 		}
 	}
+}
+
+// writeServeLoop appends one iteration line. Open, write, and close errors
+// are returned to the caller, which keeps the serve loop running.
+func writeServeLoop(path string, n int) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	_, werr := fmt.Fprintf(f, "iteration %d\n", n)
+	cerr := f.Close()
+	if werr != nil {
+		return werr
+	}
+	return cerr
 }
 
 // serveStartup opens the database and, when config.json exists, checks that

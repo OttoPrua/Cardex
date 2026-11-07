@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,6 +122,65 @@ func TestEnsureIntegrationBranchNeitherPrimary(t *testing.T) {
 	if ok, exErr := g.RefExists(ctx, repo, "cardex/obj/main"); exErr != nil || ok {
 		t.Fatalf("ref exists %v %v", ok, exErr)
 	}
+}
+
+func TestEnsureIntegrationBranchIgnoresPrimaryAdvance(t *testing.T) {
+	ctx := context.Background()
+	repo := initRepo(t)
+	h1 := gitOut(t, repo, "rev-parse", "refs/heads/main")
+	h2 := gitOut(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "commit-tree", "HEAD^{tree}", "-p", h1, "-m", "advance")
+	installPrimaryAdvanceHook(t, repo, h2)
+	var g Git
+	got, err := g.EnsureIntegrationBranch(ctx, repo, "cardex/obj/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != h1 {
+		t.Fatalf("integration %s want %s", got, h1)
+	}
+	if tip := gitOut(t, repo, "rev-parse", "refs/heads/cardex/obj/main"); tip != h1 {
+		t.Fatalf("ref %s want %s", tip, h1)
+	}
+	if main := gitOut(t, repo, "rev-parse", "refs/heads/main"); main != h2 {
+		t.Fatalf("main %s want %s (hook did not advance primary)", main, h2)
+	}
+	again, err := g.EnsureIntegrationBranch(ctx, repo, "cardex/obj/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != h1 {
+		t.Fatalf("existing ref %s", again)
+	}
+	if main := gitOut(t, repo, "rev-parse", "refs/heads/main"); main != h2 {
+		t.Fatalf("second ensure moved main to %s", main)
+	}
+}
+
+func installPrimaryAdvanceHook(t *testing.T, repo, h2 string) {
+	t.Helper()
+	hooks := t.TempDir()
+	empty := t.TempDir()
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$1" != "prepared" ]; then
+  exit 0
+fi
+while read -r old new ref; do
+  case "$ref" in
+    refs/heads/cardex/*)
+      git -C %q -c core.hooksPath=%q update-ref refs/heads/main %q || exit 1
+      ;;
+  esac
+done
+exit 0
+`, repo, empty, h2)
+	path := filepath.Join(hooks, "reference-transaction")
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repo, "config", "core.hooksPath", hooks)
 }
 
 func TestDropLaunchKeepsCommittedBranch(t *testing.T) {

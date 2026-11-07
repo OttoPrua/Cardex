@@ -49,8 +49,9 @@ func clipSummary(s string) string {
 
 // failLaunch cleans this launch, ends the attempt when one exists, and puts
 // the card on the existing backoff wait. It does not switch channel.
-// A handled launch failure returns ("", nil) so the tick can continue.
-func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Card, attempt *model.Attempt, step string, cause error, scratch launchScratch) (string, error) {
+// The attempt outcome, the disposition marker, and the card backoff commit
+// together. A handled launch failure returns ("", nil) so the tick can continue.
+func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Card, attempt *model.Attempt, step string, cause error, rt model.Route, scratch launchScratch) (string, error) {
 	if card == nil {
 		return "", fmt.Errorf("sched: launch card required")
 	}
@@ -64,22 +65,32 @@ func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Ca
 	if err != nil {
 		return "", err
 	}
-	if attempt != nil && attempt.ID != "" {
-		exit := 1
-		attempt.Outcome = model.OutcomeLaunchFailed
-		attempt.ErrorClass = model.ErrorLaunchFailed
-		attempt.ErrorExcerpt = summary
-		attempt.EndedAt = r.now().UTC()
-		attempt.Exit = &exit
-		if err := db.UpdateAttempt(ctx, attempt); err != nil {
-			return "", err
-		}
-	}
 	fresh, err := db.GetCard(ctx, card.ID)
 	if err != nil {
 		return "", err
 	}
-	if err := r.holdLaunchBackoff(ctx, db, &fresh, prior); err != nil {
+	r.applyLaunchBackoff(&fresh, prior)
+	if rt.Channel == "" && attempt != nil {
+		rt = attempt.Route
+	}
+	err = db.WithTx(ctx, func(ctx context.Context) error {
+		if attempt != nil && attempt.ID != "" {
+			exit := 1
+			attempt.Outcome = model.OutcomeLaunchFailed
+			attempt.ErrorClass = model.ErrorLaunchFailed
+			attempt.ErrorExcerpt = summary
+			attempt.EndedAt = r.now().UTC()
+			attempt.Exit = &exit
+			if err := db.UpdateAttempt(ctx, attempt); err != nil {
+				return err
+			}
+			if err := markLaunchDisposed(ctx, db, r.now(), attempt); err != nil {
+				return err
+			}
+		}
+		return db.UpdateCard(ctx, &fresh)
+	})
+	if err != nil {
 		return "", err
 	}
 	*card = fresh
@@ -87,7 +98,7 @@ func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Ca
 	if attempt != nil {
 		attemptID = attempt.ID
 	}
-	if werr := r.writeLaunchFailed(ctx, db, card.ID, attemptID, step, summary); werr != nil {
+	if werr := r.writeLaunchFailed(ctx, db, card.ID, attemptID, step, summary, rt); werr != nil {
 		fmt.Fprintf(os.Stderr, "launch_failed card=%s step=%s error=%s write=%v\n", card.ID, step, summary, werr)
 	} else {
 		prior++
@@ -100,7 +111,7 @@ func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Ca
 	return "", nil
 }
 
-func (r *Runner) holdLaunchBackoff(ctx context.Context, db *store.Store, card *model.Card, prior int) error {
+func (r *Runner) applyLaunchBackoff(card *model.Card, prior int) {
 	cfg := loop.LoadConfig(r.Home)
 	wait := cfg.RetryBackoff
 	if prior >= 1 {
@@ -109,15 +120,32 @@ func (r *Runner) holdLaunchBackoff(ctx context.Context, db *store.Store, card *m
 	if wait <= 0 {
 		card.Status = model.CardReady
 		card.WaitReason = ""
-	} else {
-		until := r.now().UTC().Add(wait)
-		card.Status = model.CardWaiting
-		card.WaitReason = "backoff:" + until.Format(time.RFC3339Nano)
+		return
 	}
-	return db.UpdateCard(ctx, card)
+	until := r.now().UTC().Add(wait)
+	card.Status = model.CardWaiting
+	card.WaitReason = "backoff:" + until.Format(time.RFC3339Nano)
 }
 
-func (r *Runner) writeLaunchFailed(ctx context.Context, db *store.Store, cardID, attemptID, step, summary string) error {
+// markLaunchDisposed records the marker generic disposition already skips.
+// The attempt entity is attempt:<id> and the type is dev_disposed.
+func markLaunchDisposed(ctx context.Context, db *store.Store, now time.Time, attempt *model.Attempt) error {
+	data, err := json.Marshal(map[string]string{
+		"outcome": string(attempt.Outcome),
+		"card":    attempt.Card,
+	})
+	if err != nil {
+		return err
+	}
+	return db.AppendEvent(ctx, &model.Event{
+		TS:     now.UTC(),
+		Entity: "attempt:" + attempt.ID,
+		Type:   "dev_disposed",
+		Data:   data,
+	})
+}
+
+func (r *Runner) writeLaunchFailed(ctx context.Context, db *store.Store, cardID, attemptID, step, summary string, rt model.Route) error {
 	payload := map[string]string{
 		"card":  cardID,
 		"step":  step,
@@ -125,6 +153,12 @@ func (r *Runner) writeLaunchFailed(ctx context.Context, db *store.Store, cardID,
 	}
 	if attemptID != "" {
 		payload["attempt"] = attemptID
+	}
+	if rt.Channel != "" {
+		payload["channel"] = rt.Channel
+	}
+	if rt.Model != "" {
+		payload["model"] = rt.Model
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {

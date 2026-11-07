@@ -564,7 +564,8 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	// dispatch and fill ignore ErrNoCandidate and ErrPinnedUnavailable.
 	// A stored channel that is missing, not ok, or blocked until a future reset
 	// is released on this request only. The objective row is not written.
-	rt, reason, rel, settled, err := r.chooseLaunchRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
+	// A route saved on launch_failed is reused here for both callers.
+	rt, reason, rel, settled, err := r.resolveLaunchRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
 	if err != nil {
 		return "", err
 	}
@@ -600,7 +601,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	}
 	baseSHA, err := workspace.Git{}.EnsureIntegrationBranch(ctx, project.RepoPath, obj.IntegrationBranch)
 	if err != nil {
-		return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, launchScratch{})
+		return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, launchScratch{})
 	}
 	wt, err := workspace.Git{}.Create(ctx, workspace.CreateRequest{
 		CardID:            wsCard,
@@ -620,19 +621,19 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		dropBranch:   !existed,
 	}
 	if err != nil {
-		return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, scratch)
+		return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, scratch)
 	}
 	scratch.worktree = wt.Path
 	scratch.branch = wt.Branch
 	scratch.base = wt.BaseCommit
 	if readOnly {
 		if err := detachHead(ctx, wt.Path); err != nil {
-			return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, scratch)
+			return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, scratch)
 		}
 	}
 	dir := filepath.Join(r.Home, "attempts", attemptID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, scratch)
+		return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, rt, scratch)
 	}
 	promptPath := filepath.Join(dir, "prompt.txt")
 	attempt := model.Attempt{
@@ -648,12 +649,12 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		StartedAt:   r.now().UTC(),
 	}
 	if err := db.CreateAttempt(ctx, &attempt); err != nil {
-		return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, scratch)
+		return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, rt, scratch)
 	}
 	card.Status = model.CardRunning
 	card.WaitReason = ""
 	if err := db.UpdateCard(ctx, &card); err != nil {
-		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, scratch)
+		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, rt, scratch)
 	}
 	if rel.released {
 		if err := appendPinRelease(ctx, db, r.now(), card.ID, rel, rt); err != nil {
@@ -661,10 +662,10 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		}
 	}
 	if err := r.writePrompt(ctx, db, card, obj, project.RepoPath, &attempt); err != nil {
-		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, scratch)
+		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, rt, scratch)
 	}
 	if err := r.startAttempt(ctx, db, &attempt); err != nil {
-		return r.failLaunch(ctx, db, &card, &attempt, launchStepHost, err, scratch)
+		return r.failLaunch(ctx, db, &card, &attempt, launchStepHost, err, rt, scratch)
 	}
 	if inUse != nil && rt.Channel != "" {
 		inUse[rt.Channel]++
@@ -690,14 +691,14 @@ func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.
 		card.Status = model.CardRunning
 		card.WaitReason = ""
 		if err := db.UpdateCard(ctx, &card); err != nil {
-			return r.failLaunch(ctx, db, &card, attempt, launchStepPrompt, err, scratch)
+			return r.failLaunch(ctx, db, &card, attempt, launchStepPrompt, err, attempt.Route, scratch)
 		}
 	}
 	if err := r.writePrompt(ctx, db, card, obj, project.RepoPath, attempt); err != nil {
-		return r.failLaunch(ctx, db, &card, attempt, launchStepPrompt, err, scratch)
+		return r.failLaunch(ctx, db, &card, attempt, launchStepPrompt, err, attempt.Route, scratch)
 	}
 	if err := r.startAttempt(ctx, db, attempt); err != nil {
-		return r.failLaunch(ctx, db, &card, attempt, launchStepHost, err, scratch)
+		return r.failLaunch(ctx, db, &card, attempt, launchStepHost, err, attempt.Route, scratch)
 	}
 	return attempt.Route.Channel, nil
 }

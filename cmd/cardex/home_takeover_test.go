@@ -195,7 +195,13 @@ func TestDoctorSuggestions(t *testing.T) {
 func TestServeAddrIsNotPortRefused(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("CARDEX_HOME", "")
-	v1 := makeV1(t)
+	// The v1 error quotes this path. Digits in the path are not a port refusal.
+	parent := filepath.Join(t.TempDir(), "x8787y8788")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	v1 := filepath.Join(parent, "home")
+	writeTaskFile(t, v1)
 	cases := []struct {
 		addr string
 	}{
@@ -211,7 +217,8 @@ func TestServeAddrIsNotPortRefused(t *testing.T) {
 			if !strings.Contains(errb, "import-legacy") {
 				t.Fatalf("stderr %s", errb)
 			}
-			if strings.Contains(errb, "reserved") || strings.Contains(errb, "8787") || strings.Contains(errb, "8788") {
+			reported := strings.ReplaceAll(errb, v1, "")
+			if strings.Contains(reported, "reserved") || strings.Contains(reported, "8787") || strings.Contains(reported, "8788") {
 				t.Fatalf("port refusal %s", errb)
 			}
 			if _, err := os.Stat(filepath.Join(v1, "serve-addr")); !os.IsNotExist(err) {

@@ -4,8 +4,10 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFileReceiverDeliveryWritesTarget(t *testing.T) {
@@ -104,6 +106,99 @@ func TestFileReceiverDeliveryWritesTarget(t *testing.T) {
 					t.Fatalf("target %s %v %s", path, err, body)
 				}
 			}
+		})
+	}
+}
+
+// TestFileDedupWritesReceiverAndInbox checks that a file origin or fallback
+// which string-equals file: plus a receiver target still writes that target.
+// Those hops land in the home inbox, so they must not consume the receiver.
+func TestFileDedupWritesReceiverAndInbox(t *testing.T) {
+	const text = "notice that must reach the configured file"
+	cases := []struct {
+		name     string
+		origin   func(target string) string
+		fallback func(target string) string
+		wantExec [][]string
+		retry    bool
+	}{
+		{
+			name:   "origin file string equals receiver target",
+			origin: func(target string) string { return "file:" + target },
+			retry:  true,
+		},
+		{
+			name:     "fallback file string equals receiver target",
+			origin:   func(string) string { return "codex:thread-0001" },
+			fallback: func(target string) string { return "file:" + target },
+			wantExec: [][]string{codexArgv("thread-0001", text)},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			target := filepath.Join(t.TempDir(), "example-notice.txt")
+			var origin, fallback string
+			if tc.origin != nil {
+				origin = tc.origin(target)
+			}
+			if tc.fallback != nil {
+				fallback = tc.fallback(target)
+			}
+			msg := Message{
+				QuestionID: "q-file-dedup",
+				Objective:  "obj",
+				Origin:     origin,
+				Fallback:   fallback,
+				Text:       text,
+				Home:       home,
+				Receivers: []Receiver{{
+					ID:      "example-manager",
+					Adapter: "file",
+					Target:  target,
+					Enabled: true,
+					Scope:   Scope{All: true},
+				}},
+			}
+			if target == inboxPath(home, msg.QuestionID) {
+				t.Fatal("target collided with the home inbox")
+			}
+			var commands [][]string
+			cur := time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC)
+			svc := New(func(_ context.Context, argv []string) error {
+				commands = append(commands, append([]string{}, argv...))
+				return nil
+			}, func() time.Time { return cur })
+			check := func() {
+				t.Helper()
+				if err := svc.Deliver(context.Background(), msg); err != nil {
+					t.Fatal(err)
+				}
+				body, err := os.ReadFile(target)
+				if err != nil || strings.Count(string(body), text) != 1 {
+					t.Fatalf("target %v %s", err, body)
+				}
+				inboxBody, err := os.ReadFile(inboxPath(home, msg.QuestionID))
+				if err != nil || strings.Count(string(inboxBody), text) != 1 {
+					t.Fatalf("inbox %v %s", err, inboxBody)
+				}
+				if !reflect.DeepEqual(commands, tc.wantExec) {
+					t.Fatalf("commands %#v", commands)
+				}
+			}
+			check()
+			if !tc.retry {
+				return
+			}
+			if err := os.Remove(target); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(inboxPath(home, msg.QuestionID)); err != nil {
+				t.Fatal(err)
+			}
+			st := svc.sent[msg.QuestionID]
+			cur = st.at.Add(st.gap + time.Nanosecond)
+			check()
 		})
 	}
 }

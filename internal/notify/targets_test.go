@@ -34,11 +34,15 @@ func TestResolveDedupesScopeFallbackAndInbox(t *testing.T) {
 		"origin=codex:thread-0001",
 		"receiver:by-dir=lark:chat-1",
 		"receiver:scoped=file:notes",
-		"fallback=file:box",
+		"fallback=inbox",
 		"inbox=inbox",
 	}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("hops %v", got)
+	}
+	fallback := hops[len(hops)-2]
+	if fallback.Kind != "file" || fallback.ID != "box" {
+		t.Fatalf("file fallback %+v", fallback)
 	}
 }
 

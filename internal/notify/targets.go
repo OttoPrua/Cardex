@@ -16,6 +16,10 @@ const (
 	SkipProfileAmbiguous = "hermes profile 匹配不唯一"
 	// SkipSessionAmbiguous is the hermes hop skip when several sessions match.
 	SkipSessionAmbiguous = "hermes session 匹配不唯一"
+	// inboxAddress is the landing of the home inbox. File origin and fallback
+	// hops write that inbox, so they use this address too. A file receiver
+	// keeps file:<target>, the path it actually writes.
+	inboxAddress = "inbox"
 )
 
 // SkipError is a hermes hop that was not delivered. Error text stays the
@@ -132,7 +136,9 @@ func Resolve(msg Message) (hops []Hop, skips []string, problems []error) {
 	} else if strings.TrimSpace(msg.Fallback) != "" && msg.Fallback != msg.Origin {
 		problems = append(problems, fmt.Errorf("notify: fallback %q", msg.Fallback))
 	}
-	add(Hop{Key: "inbox", Address: "inbox", Kind: "inbox"})
+	// The home inbox hop always stays. A file origin or fallback may already
+	// use inboxAddress, because that is the place those hops write.
+	hops = append(hops, Hop{Key: "inbox", Address: inboxAddress, Kind: "inbox"})
 	return hops, skips, problems
 }
 
@@ -150,6 +156,12 @@ func originHop(key, kind, id string, msg Message) (Hop, string, error) {
 	}
 	if !knownAdapter(kind) {
 		return Hop{}, "", fmt.Errorf("notify: adapter %q", kind)
+	}
+	// A file origin or fallback writes the home inbox, not id as a path.
+	// file:<id> would match a receiver target this hop never writes.
+	if kind == "file" {
+		hop.Address = inboxAddress
+		return hop, "", nil
 	}
 	hop.Address = kind + ":" + id
 	return hop, "", nil

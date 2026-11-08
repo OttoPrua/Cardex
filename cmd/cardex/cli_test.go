@@ -809,7 +809,7 @@ func TestServeLoopsUntilStopped(t *testing.T) {
 		done <- runServe(ctx, t.TempDir(), "127.0.0.1:0", &buf, io.Discard)
 	}()
 	deadline := time.Now().Add(5 * time.Second)
-	for strings.Count(buf.String(), "loop iteration") < 2 {
+	for strings.Count(buf.String(), "serve loop iteration") < 2 {
 		if time.Now().After(deadline) {
 			cancel()
 			t.Fatalf("serve output:\n%s", buf.String())

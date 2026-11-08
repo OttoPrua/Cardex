@@ -655,8 +655,10 @@ func TestPromptFailureResumesSameBranch(t *testing.T) {
 	if err := db.CreateCard(ctx, &card); err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	n := 0
 	r := New(home)
+	r.Now = func() time.Time { return now }
 	r.Prompt = func(context.Context, prompt.Input) (string, error) {
 		n++
 		if n == 1 {
@@ -665,25 +667,44 @@ func TestPromptFailureResumesSameBranch(t *testing.T) {
 		return "PROMPT-OK", nil
 	}
 	r.Launch = func(context.Context, string, string) (int, error) { return 81, nil }
-	if err := r.Tick(ctx); err == nil {
-		t.Fatal("prompt failure did not surface")
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
 	}
 	first, err := db.ListAttempts(ctx, "c")
-	if err != nil || len(first) != 1 || first[0].PID != 0 {
+	if err != nil || len(first) != 1 || first[0].Outcome != model.OutcomeLaunchFailed || first[0].EndedAt.IsZero() {
 		t.Fatalf("partial %+v %v", first, err)
 	}
-	if !branchExists(repo, first[0].Branch) {
-		t.Fatal("branch missing after prompt failure")
+	name := first[0].Branch
+	if branchExists(repo, name) {
+		t.Fatal("uncommitted branch kept after prompt failure")
+	}
+	got, err := db.GetCard(ctx, "c")
+	if err != nil || got.Status != model.CardWaiting || !strings.HasPrefix(got.WaitReason, "backoff:") {
+		t.Fatalf("card %+v %v", got, err)
 	}
 	if err := r.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	again, err := db.ListAttempts(ctx, "c")
-	if err != nil || len(again) != 1 || again[0].ID != first[0].ID || again[0].PID != 81 {
-		t.Fatalf("resume %+v %v", again, err)
+	held, err := db.ListAttempts(ctx, "c")
+	if err != nil || len(held) != 1 {
+		t.Fatalf("retried before backoff %+v %v", held, err)
 	}
-	if again[0].Branch != first[0].Branch {
-		t.Fatalf("branch changed %s -> %s", first[0].Branch, again[0].Branch)
+	now = now.Add(31 * time.Second)
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	again, err := db.ListAttempts(ctx, "c")
+	if err != nil || len(again) != 2 {
+		t.Fatalf("retry %+v %v", again, err)
+	}
+	var launched *model.Attempt
+	for i := range again {
+		if again[i].PID == 81 {
+			launched = &again[i]
+		}
+	}
+	if launched == nil || launched.ID == first[0].ID || launched.Branch != name || !branchExists(repo, name) {
+		t.Fatalf("new attempt %+v", again)
 	}
 }
 
@@ -700,6 +721,9 @@ func TestBacklogFailureResumesSameAttempt(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			home, db, repo := newHome(t)
+			if err := os.WriteFile(filepath.Join(home, "config.json"), []byte("{\"schedules\":[]}\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
 			_, obj := seedRepo(t, db, repo, "true")
 			channelNear(t, db, "ch", now.Add(30*time.Minute), 0.9, 0)
 			card := model.Card{
@@ -730,26 +754,40 @@ func TestBacklogFailureResumesSameAttempt(t *testing.T) {
 					return 83, nil
 				}
 			}
-			if err := r.Tick(ctx); err == nil {
-				t.Fatal("first tick swallowed the failure")
+			if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
 			}
 			first, err := db.ListAttempts(ctx, "back")
-			if err != nil || len(first) != 1 || first[0].PID != 0 || !first[0].EndedAt.IsZero() {
+			if err != nil || len(first) != 1 || first[0].Outcome != model.OutcomeLaunchFailed || first[0].EndedAt.IsZero() {
 				t.Fatalf("partial %+v %v", first, err)
 			}
 			got, err := db.GetCard(ctx, "back")
-			if err != nil || got.Status != model.CardRunning {
+			if err != nil || got.Status != model.CardWaiting || !strings.HasPrefix(got.WaitReason, "backoff:") || got.Channel != "" {
 				t.Fatalf("card %+v %v", got, err)
 			}
 			if err := r.Tick(ctx); err != nil {
 				t.Fatal(err)
 			}
-			again, err := db.ListAttempts(ctx, "back")
-			if err != nil || len(again) != 1 || again[0].ID != first[0].ID || again[0].PID != 83 {
-				t.Fatalf("resume %+v %v", again, err)
+			held, err := db.ListAttempts(ctx, "back")
+			if err != nil || len(held) != 1 {
+				t.Fatalf("retried before backoff %+v %v", held, err)
 			}
-			if again[0].Branch != first[0].Branch || !branchExists(repo, again[0].Branch) {
-				t.Fatalf("branch %s", again[0].Branch)
+			now = now.Add(31 * time.Second)
+			if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			again, err := db.ListAttempts(ctx, "back")
+			if err != nil || len(again) != 2 {
+				t.Fatalf("retry %+v %v", again, err)
+			}
+			var launched *model.Attempt
+			for i := range again {
+				if again[i].PID == 83 {
+					launched = &again[i]
+				}
+			}
+			if launched == nil || launched.ID == first[0].ID || launched.Branch != first[0].Branch || !branchExists(repo, launched.Branch) {
+				t.Fatalf("branch %+v", again)
 			}
 		})
 	}
@@ -764,43 +802,61 @@ func TestHostStartFailureResumesOnNewRunner(t *testing.T) {
 	if err := db.CreateCard(ctx, &card); err != nil {
 		t.Fatal(err)
 	}
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	r := New(home)
+	r.Now = func() time.Time { return now }
 	r.Launch = func(context.Context, string, string) (int, error) { return 0, errors.New("host down") }
-	if err := r.Tick(ctx); err == nil {
-		t.Fatal("host failure did not surface")
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
 	}
 	first, err := db.ListAttempts(ctx, "c")
-	if err != nil || len(first) != 1 || first[0].PID != 0 || !first[0].EndedAt.IsZero() {
+	if err != nil || len(first) != 1 || first[0].Outcome != model.OutcomeLaunchFailed || first[0].EndedAt.IsZero() {
 		t.Fatalf("partial %+v %v", first, err)
 	}
+	if branchExists(repo, first[0].Branch) {
+		t.Fatal("uncommitted branch kept")
+	}
 	got, err := db.GetCard(ctx, "c")
-	if err != nil || got.Status != model.CardRunning {
+	if err != nil || got.Status != model.CardWaiting || !strings.HasPrefix(got.WaitReason, "backoff:") {
 		t.Fatalf("card %+v %v", got, err)
 	}
+	early := New(home)
+	early.Now = func() time.Time { return now }
+	early.Launch = func(context.Context, string, string) (int, error) { return 82, nil }
+	if err := early.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	held, err := db.ListAttempts(ctx, "c")
+	if err != nil || len(held) != 1 {
+		t.Fatalf("resumed before backoff %+v %v", held, err)
+	}
+	now = now.Add(31 * time.Second)
 	next := New(home)
+	next.Now = func() time.Time { return now }
 	next.Launch = func(context.Context, string, string) (int, error) { return 82, nil }
 	if err := next.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
 	again, err := db.ListAttempts(ctx, "c")
-	if err != nil || len(again) != 1 || again[0].ID != first[0].ID || again[0].PID != 82 {
+	if err != nil || len(again) != 2 {
 		t.Fatalf("restart %+v %v", again, err)
 	}
-	if err := next.Tick(ctx); err != nil {
-		t.Fatal(err)
-	}
-	quiet, err := db.ListAttempts(ctx, "c")
-	if err != nil {
-		t.Fatal(err)
-	}
-	consumed := false
-	for _, attempt := range quiet {
-		if attempt.ID == first[0].ID && attempt.Outcome == model.OutcomeNoOutput {
-			consumed = true
+	var launched model.Attempt
+	found := false
+	for _, attempt := range again {
+		if attempt.PID == 82 {
+			launched = attempt
+			found = true
+		}
+		if attempt.ID == first[0].ID && attempt.Outcome != model.OutcomeLaunchFailed {
+			t.Fatalf("first attempt changed %+v", attempt)
 		}
 	}
-	if !consumed || len(quiet) > 2 {
-		t.Fatalf("harvest %+v", quiet)
+	if !found || launched.ID == first[0].ID {
+		t.Fatalf("restart %+v", again)
+	}
+	if got, err := db.GetCard(ctx, "c"); err != nil || got.Status != model.CardRunning {
+		t.Fatalf("relaunched card %+v %v", got, err)
 	}
 }
 
@@ -1595,22 +1651,36 @@ func TestWorkspaceExistsBeforeAttemptResumes(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(home, "attempts"), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 		r := New(home)
+		r.Now = func() time.Time { return now }
 		r.Launch = func(context.Context, string, string) (int, error) { return 94, nil }
-		if err := r.Tick(ctx); err == nil {
-			t.Fatal("tick succeeded before the attempt row existed")
+		if err := r.Tick(ctx); err != nil {
+			t.Fatal(err)
 		}
 		first, err := db.ListAttempts(ctx, "c")
 		if err != nil || len(first) != 0 {
 			t.Fatalf("attempt stored early %+v %v", first, err)
 		}
 		name := "cardex/" + obj + "/c/c"
-		if !branchExists(repo, name) {
-			t.Fatal("branch was not created")
+		if branchExists(repo, name) {
+			t.Fatal("uncommitted branch kept")
+		}
+		got, err := db.GetCard(ctx, "c")
+		if err != nil || got.Status != model.CardWaiting || !strings.HasPrefix(got.WaitReason, "backoff:") {
+			t.Fatalf("card %+v %v", got, err)
 		}
 		if err := os.Remove(filepath.Join(home, "attempts")); err != nil {
 			t.Fatal(err)
 		}
+		if err := r.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+		held, err := db.ListAttempts(ctx, "c")
+		if err != nil || len(held) != 0 {
+			t.Fatalf("retried before backoff %+v %v", held, err)
+		}
+		now = now.Add(31 * time.Second)
 		if err := r.Tick(ctx); err != nil {
 			t.Fatal(err)
 		}

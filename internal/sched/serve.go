@@ -2,6 +2,7 @@ package sched
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"cardex/internal/board"
+	"cardex/internal/store"
 )
 
 type serveLogKey struct{}
@@ -43,6 +45,10 @@ func Serve(ctx context.Context, home, addr string) error {
 	if err := os.MkdirAll(home, 0o755); err != nil {
 		return err
 	}
+	if err := serveStartup(home); err != nil {
+		fmt.Fprintf(os.Stderr, "serve: %s\n", err)
+		return err
+	}
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -58,7 +64,6 @@ func Serve(ctx context.Context, home, addr string) error {
 		defer cancel()
 		_ = srv.Shutdown(shut)
 	}()
-	fmt.Printf("serve listening %s\n", ln.Addr())
 	if w := serveWriter(ctx); w != nil {
 		fmt.Fprintf(w, "serve listening %s\n", ln.Addr())
 	}
@@ -69,28 +74,16 @@ func Serve(ctx context.Context, home, addr string) error {
 		if err := ctx.Err(); err != nil {
 			return nil
 		}
-		err := runner.Tick(ctx)
+		_ = runner.Tick(ctx)
 		if ctx.Err() != nil {
 			return nil
 		}
-		if err != nil {
-			return err
-		}
 		n++
 		if w := serveWriter(ctx); w != nil {
-			fmt.Fprintf(w, "serve stub-loop iteration %d\n", n)
+			fmt.Fprintf(w, "serve loop iteration %d\n", n)
 		}
-		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-		if err != nil {
-			return err
-		}
-		_, werr := fmt.Fprintf(f, "iteration %d\n", n)
-		cerr := f.Close()
-		if werr != nil {
-			return werr
-		}
-		if cerr != nil {
-			return cerr
+		if err := writeServeLoop(logPath, n); err != nil {
+			fmt.Fprintf(os.Stderr, "serve-loop.log: %v\n", err)
 		}
 		timer := time.NewTimer(150 * time.Millisecond)
 		select {
@@ -100,4 +93,41 @@ func Serve(ctx context.Context, home, addr string) error {
 		case <-timer.C:
 		}
 	}
+}
+
+// writeServeLoop appends one iteration line. Open, write, and close errors
+// are returned to the caller, which keeps the serve loop running.
+func writeServeLoop(path string, n int) error {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	_, werr := fmt.Fprintf(f, "iteration %d\n", n)
+	cerr := f.Close()
+	if werr != nil {
+		return werr
+	}
+	return cerr
+}
+
+// serveStartup opens the database and, when config.json exists, checks that
+// it parses. A missing config file keeps the current default-schedule path.
+func serveStartup(home string) error {
+	db, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	db.Close()
+	path := filepath.Join(home, "config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("config: %w", err)
+	}
+	if !json.Valid(data) {
+		return fmt.Errorf("config: cannot parse %s", path)
+	}
+	return nil
 }

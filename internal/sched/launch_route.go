@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"time"
 
 	"cardex/internal/model"
@@ -12,8 +14,9 @@ import (
 )
 
 const (
-	eventPinReleased = "pin_released"
-	pinReasonMissing = "missing"
+	eventPinReleased        = "pin_released"
+	eventLaunchRouteDropped = "launch_route_dropped"
+	pinReasonMissing        = "missing"
 )
 
 // pinRelease is one explicit channel or model dropped for this request only.
@@ -23,6 +26,159 @@ type pinRelease struct {
 	reason   string
 	channel  string
 	model    string
+}
+
+// resolveLaunchRoute reuses the route recorded on the latest launch_failed
+// event since the last successful start when the effective spec is not an
+// explicit channel. Card channel or model is that spec; otherwise the
+// objective is. A card model therefore keeps the saved route when the
+// objective names a channel. An explicit card channel, or an objective
+// channel when the card specifies neither, still selects normally. A missing
+// channel, or health other than ok, falls back once and records why. A saved
+// channel at its concurrency limit, or outside this call's candidate set,
+// waits: no attempt, no fallback, and no drop.
+func (r *Runner) resolveLaunchRoute(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas, classified model.Tier) (model.Route, model.RouteReason, pinRelease, bool, error) {
+	if effectiveSpecChannel(card, obj) == "" {
+		saved, ok, err := savedLaunchRoute(ctx, db, card.ID)
+		if err != nil {
+			return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
+		}
+		if ok {
+			return r.reuseSavedRoute(ctx, db, card, obj, saved, channels, pos, inUse, quotas, classified)
+		}
+	}
+	return r.chooseLaunchRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
+}
+
+// effectiveSpecChannel is the channel of the spec selection uses.
+// A card channel or model wins over the objective. A model-only spec,
+// including a card model that overrides an objective channel, returns "".
+func effectiveSpecChannel(card model.Card, obj model.Objective) string {
+	if card.Channel != "" || card.Model != "" {
+		return card.Channel
+	}
+	return obj.Channel
+}
+
+func (r *Runner) reuseSavedRoute(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, saved model.Route, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas, classified model.Tier) (model.Route, model.RouteReason, pinRelease, bool, error) {
+	configured, err := db.ListChannels(ctx)
+	if err != nil {
+		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
+	}
+	ch, found := channelByID(configured, saved.Channel)
+	if !found || ch.Health != model.HealthOK {
+		why := pinReasonMissing
+		health := ""
+		if found {
+			why = route.ReasonHealth
+			health = string(ch.Health)
+		}
+		if werr := r.writeRouteDropped(ctx, db, card.ID, saved, why, health); werr != nil {
+			fmt.Fprintf(os.Stderr, "launch route dropped card=%s channel=%s reason=%s write=%v\n", card.ID, saved.Channel, why, werr)
+		}
+		return r.chooseLaunchRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
+	}
+	if _, inSet := channelByID(channels, saved.Channel); !inSet {
+		return model.Route{}, model.RouteReason{}, pinRelease{}, false, route.ErrPinnedUnavailable
+	}
+	used := 0
+	if inUse != nil {
+		used = inUse[saved.Channel]
+	}
+	if used >= ch.Concurrency {
+		return model.Route{}, model.RouteReason{}, pinRelease{}, false, route.ErrPinnedUnavailable
+	}
+	modelName := saved.Model
+	if modelName == "" && len(ch.Models) > 0 {
+		modelName = ch.Models[0]
+	}
+	rt := model.Route{Channel: ch.ID, Model: modelName}
+	return rt, model.RouteReason{
+		Candidates: []model.RouteCandidate{{
+			Channel: rt.Channel, Model: rt.Model, Family: ch.Family,
+		}},
+		Filtered: []model.FilteredCandidate{},
+		Scores:   []model.RouteScore{{Channel: rt.Channel, Model: rt.Model}},
+	}, pinRelease{}, false, nil
+}
+
+func channelByID(channels []model.Channel, id string) (model.Channel, bool) {
+	for i := range channels {
+		if channels[i].ID == id {
+			return channels[i], true
+		}
+	}
+	return model.Channel{}, false
+}
+
+// savedLaunchRoute is the latest launch_failed route since the last start
+// that got past launch. An event with no channel does not count.
+func savedLaunchRoute(ctx context.Context, db *store.Store, cardID string) (model.Route, bool, error) {
+	attempts, err := db.ListAttempts(ctx, cardID)
+	if err != nil {
+		return model.Route{}, false, err
+	}
+	var success time.Time
+	for _, attempt := range attempts {
+		if attempt.Outcome == model.OutcomeLaunchFailed {
+			continue
+		}
+		if attempt.PID > 0 || attempt.Outcome != "" {
+			if success.IsZero() || attempt.StartedAt.After(success) {
+				success = attempt.StartedAt
+			}
+		}
+	}
+	events, err := db.ListEvents(ctx, "card:"+cardID)
+	if err != nil {
+		return model.Route{}, false, err
+	}
+	var found model.Route
+	ok := false
+	for _, ev := range events {
+		if ev.Type != model.EventLaunchFailed {
+			continue
+		}
+		if !success.IsZero() && !ev.TS.After(success) {
+			continue
+		}
+		var payload struct {
+			Channel string `json:"channel"`
+			Model   string `json:"model"`
+		}
+		if json.Unmarshal(ev.Data, &payload) != nil || payload.Channel == "" {
+			continue
+		}
+		found = model.Route{Channel: payload.Channel, Model: payload.Model}
+		ok = true
+	}
+	return found, ok, nil
+}
+
+func (r *Runner) writeRouteDropped(ctx context.Context, db *store.Store, cardID string, saved model.Route, why, health string) error {
+	text := "saved route dropped: channel " + saved.Channel + " is missing"
+	if why == route.ReasonHealth {
+		text = "saved route dropped: channel " + saved.Channel + " health is " + health
+	}
+	payload := map[string]string{
+		"channel": saved.Channel,
+		"model":   saved.Model,
+		"reason":  why,
+		"text":    text,
+	}
+	if health != "" {
+		payload["health"] = health
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return db.AppendEvent(ctx, &model.Event{
+		TS:     r.now().UTC(),
+		Entity: "card:" + cardID,
+		Type:   eventLaunchRouteDropped,
+		Data:   data,
+	})
 }
 
 // chooseLaunchRoute selects the attempt route.

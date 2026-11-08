@@ -7,19 +7,63 @@ import (
 	"testing"
 )
 
-func TestResolveHomeStillRequiresExplicitHome(t *testing.T) {
+func TestResolveHomeUsesCLIOrder(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	def := filepath.Join(root, ".cardex")
+	envHome := t.TempDir()
+	flagHome := t.TempDir()
+	old := os.Args
+	t.Cleanup(func() { os.Args = old })
+
+	cases := []struct {
+		name string
+		args []string
+		env  string
+		want string
+	}{
+		{name: "default", args: []string{"cardex"}, env: "", want: def},
+		{name: "env", args: []string{"cardex"}, env: envHome, want: envHome},
+		{name: "flag", args: []string{"cardex", "--home", flagHome}, env: envHome, want: flagHome},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			os.Args = tc.args
+			t.Setenv("CARDEX_HOME", tc.env)
+			got, err := resolveHome()
+			if err != nil || got != tc.want {
+				t.Fatalf("resolveHome %s want %s err %v", got, tc.want, err)
+			}
+		})
+	}
+	if _, err := os.Stat(def); !os.IsNotExist(err) {
+		t.Fatal("board created the default home")
+	}
+}
+
+func TestResolveHomeRefusesV1DefaultHome(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)
 	t.Setenv("CARDEX_HOME", "")
 	old := os.Args
-	os.Args = []string{"cardex"}
+	os.Args = []string{"cardex", "serve"}
 	t.Cleanup(func() { os.Args = old })
 
-	if _, err := resolveHome(); err == nil || !strings.Contains(err.Error(), "missing --home or CARDEX_HOME") {
-		t.Fatalf("missing home: %v", err)
+	dir := filepath.Join(root, ".cardex")
+	if err := os.MkdirAll(filepath.Join(dir, "tasks"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".cardex")); !os.IsNotExist(err) {
-		t.Fatal("board created ~/.cardex")
+	if err := os.WriteFile(filepath.Join(dir, "tasks", "a.json"), []byte(`{"id":"a"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveHome(); err == nil || !strings.Contains(err.Error(), "import-legacy") {
+		t.Fatalf("v1 default: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cardex.db")); !os.IsNotExist(err) {
+		t.Fatal("board created cardex.db")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "serve-addr")); !os.IsNotExist(err) {
+		t.Fatal("v1 default listened")
 	}
 }
 

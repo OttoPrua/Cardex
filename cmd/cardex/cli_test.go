@@ -809,7 +809,7 @@ func TestServeLoopsUntilStopped(t *testing.T) {
 		done <- runServe(ctx, t.TempDir(), "127.0.0.1:0", &buf, io.Discard)
 	}()
 	deadline := time.Now().Add(5 * time.Second)
-	for strings.Count(buf.String(), "serve stub-loop iteration") < 2 {
+	for strings.Count(buf.String(), "loop iteration") < 2 {
 		if time.Now().After(deadline) {
 			cancel()
 			t.Fatalf("serve output:\n%s", buf.String())
@@ -832,14 +832,18 @@ func TestServeLoopsUntilStopped(t *testing.T) {
 }
 
 func TestRefusesUserCardexHome(t *testing.T) {
-	user, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("CARDEX_HOME", "")
+	dir := filepath.Join(root, ".cardex")
+	writeTaskFile(t, dir)
 	var errb bytes.Buffer
-	code := Main([]string{"--home", filepath.Join(user, ".cardex"), "project", "list"}, io.Discard, &errb)
-	if code == 0 || !strings.Contains(errb.String(), ".cardex") {
+	code := Main([]string{"--home", dir, "project", "list"}, io.Discard, &errb)
+	if code == 0 || !strings.Contains(errb.String(), "import-legacy") {
 		t.Fatalf("code %d err %s", code, errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cardex.db")); !os.IsNotExist(err) {
+		t.Fatalf("created cardex.db: %v", err)
 	}
 }
 

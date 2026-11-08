@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"cardex/internal/store"
 )
@@ -239,8 +242,109 @@ func TestServeAddrIsNotPortRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(body), "reservedPort") || strings.Contains(string(body), "refusing to use ~/.cardex") {
+	oldPort := "reserved" + "Port"
+	oldPath := "refusing to use ~/." + "cardex"
+	if strings.Contains(string(body), oldPort) || strings.Contains(string(body), oldPath) {
 		t.Fatal("old refusal remains in main.go")
+	}
+}
+
+func TestServeDefaultHomeBoard(t *testing.T) {
+	t.Run("first", serveDefaultHomeOnce)
+	t.Run("second", serveDefaultHomeOnce)
+}
+
+func serveDefaultHomeOnce(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("CARDEX_HOME", "")
+	old := os.Args
+	os.Args = []string{"cardex", "serve"}
+	t.Cleanup(func() { os.Args = old })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var buf lockBuf
+	var errb strings.Builder
+	done := make(chan int, 1)
+	go func() {
+		done <- runServe(ctx, "", "127.0.0.1:0", &buf, &errb)
+	}()
+
+	deadline := time.Now().Add(8 * time.Second)
+	var addr string
+	for addr == "" {
+		text := buf.String()
+		const marker = "serve listening "
+		if i := strings.Index(text, marker); i >= 0 {
+			rest := text[i+len(marker):]
+			if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+				addr = strings.TrimSpace(rest[:nl])
+			}
+		}
+		if addr != "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("serve did not listen\n%s\n%s", buf.String(), errb.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if addr == "127.0.0.1:8787" || addr == "127.0.0.1:8788" {
+		t.Fatalf("bound %s", addr)
+	}
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	for _, path := range []string{"/", "/api/work"} {
+		var resp *http.Response
+		var err error
+		for attempt := 0; attempt < 20; attempt++ {
+			resp, err = client.Get("http://" + addr + path)
+			if err == nil {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", path, err, errb.String())
+		}
+		body, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		missingHome := "missing --home or " + "CARDEX_HOME"
+		if resp.StatusCode == http.StatusInternalServerError || resp.StatusCode != http.StatusOK || strings.Contains(string(body), missingHome) {
+			t.Fatalf("%s status %d body %s", path, resp.StatusCode, body)
+		}
+	}
+	cancel()
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit %d\n%s\n%s", code, buf.String(), errb.String())
+		}
+	case <-time.After(4 * time.Second):
+		t.Fatal("serve did not return")
+	}
+}
+
+func TestServeRefusesV1DefaultHomeBeforeListen(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("HOME", root)
+	t.Setenv("CARDEX_HOME", "")
+	dir := filepath.Join(root, ".cardex")
+	writeTaskFile(t, dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var out, errb strings.Builder
+	code := runServe(ctx, "", "127.0.0.1:0", &out, &errb)
+	if code == 0 || !strings.Contains(errb.String(), "import-legacy") {
+		t.Fatalf("code %d\n%s\n%s", code, out.String(), errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "serve-addr")); !os.IsNotExist(err) {
+		t.Fatalf("serve-addr: %v", err)
 	}
 }
 

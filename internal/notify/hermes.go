@@ -246,12 +246,15 @@ func (s *Service) deliverHermes(root, originID string, msg Message, now time.Tim
 	if err != nil {
 		return err
 	}
-	s.hermesWrote = true
-	s.hermesWake = wakeID
-	s.hermesDigest = digest
-	s.hermesRoot = root
-	s.hermesSub = msg.SubscriptionID
-	s.hermesKey = key
+	s.hops = append(s.hops, hermesHopWake{
+		Key:      key,
+		Root:     root,
+		Sub:      msg.SubscriptionID,
+		WakeID:   wakeID,
+		Digest:   digest,
+		Seq:      seq,
+		OriginID: originID,
+	})
 	if s.receiveHermes != nil {
 		if err := s.receiveHermes(root, msg.SubscriptionID); err != nil {
 			return err

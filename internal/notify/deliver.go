@@ -24,6 +24,19 @@ func ReminderGap(previous time.Duration) time.Duration {
 	return previous * 2
 }
 
+// hermesHopWake is one Hermes inbox written for one delivery hop.
+// Two hops in the same attempt do not share it: each ack marks only its hop,
+// and a missing ack rewrites only that hop's wake.
+type hermesHopWake struct {
+	Key      string
+	Root     string
+	Sub      string
+	WakeID   string
+	Digest   string
+	Seq      int
+	OriginID string
+}
+
 type deliveryState struct {
 	at        time.Time
 	gap       time.Duration
@@ -34,6 +47,7 @@ type deliveryState struct {
 	wakeRoot  string
 	wakeSub   string
 	wakeKey   string
+	wakes     []hermesHopWake
 }
 
 // Service delivers one question to the origin, then the fallback, then the inbox.
@@ -48,13 +62,8 @@ type Service struct {
 	mu   sync.Mutex
 	sent map[string]deliveryState
 
-	// Hermes identity written by the attempt currently inside Deliver.
-	hermesWrote  bool
-	hermesWake   string
-	hermesDigest string
-	hermesRoot   string
-	hermesSub    string
-	hermesKey    string
+	// Hermes hops written by the attempt currently inside Deliver.
+	hops []hermesHopWake
 }
 
 // New returns a deliverer. now may be nil, in which case time.Now is used.
@@ -84,30 +93,13 @@ func (s *Service) Deliver(ctx context.Context, msg Message) error {
 	diag := s.hydrateLocked(home, msg.QuestionID)
 	state := s.sent[msg.QuestionID]
 	if !s.dueLocked(msg.QuestionID, now) {
-		root, sub := watchHermes(msg, state)
-		if state.wakeSeq > 0 && state.wakeID != "" && !hermesAckCovers(root, sub, state.wakeID, state.digest) {
-			if strings.TrimSpace(msg.SubscriptionID) == "" {
-				msg.SubscriptionID = sub
-			}
-			return errors.Join(diag, s.rewriteHermes(msg, now, state.wakeSeq, root))
-		}
-		if state.wakeSeq > 0 && state.wakeID != "" && hermesAckCovers(root, sub, state.wakeID, state.digest) {
-			if err := s.markHermesDelivered(home, msg.QuestionID, state); err != nil {
-				return errors.Join(diag, err)
-			}
-		}
-		return diag
+		return errors.Join(diag, s.settleHermes(home, msg, now, state))
 	}
 	seq := state.wakeSeq + 1
 	if seq < 1 {
 		seq = 1
 	}
-	s.hermesWrote = false
-	s.hermesWake = ""
-	s.hermesDigest = ""
-	s.hermesRoot = ""
-	s.hermesSub = ""
-	s.hermesKey = ""
+	s.hops = nil
 	completed, err := s.deliverOnce(ctx, msg, now, seq)
 	next := deliveryState{
 		at:        now,
@@ -117,14 +109,16 @@ func (s *Service) Deliver(ctx context.Context, msg Message) error {
 		wakeID:    state.wakeID,
 		digest:    state.digest,
 	}
-	if s.hermesWrote {
-		next.wakeSeq = seq
-		next.wakeID = s.hermesWake
-		next.digest = s.hermesDigest
-		next.wakeSub = s.hermesSub
-		next.wakeKey = s.hermesKey
-		if s.hermesRoot != "" && s.hermesRoot != home {
-			next.wakeRoot = s.hermesRoot
+	if len(s.hops) > 0 {
+		next.wakes = append([]hermesHopWake(nil), s.hops...)
+		last := s.hops[len(s.hops)-1]
+		next.wakeSeq = last.Seq
+		next.wakeID = last.WakeID
+		next.digest = last.Digest
+		next.wakeSub = last.Sub
+		next.wakeKey = last.Key
+		if last.Root != "" && last.Root != home {
+			next.wakeRoot = last.Root
 		}
 	}
 	s.sent[msg.QuestionID] = next
@@ -148,68 +142,107 @@ func (s *Service) hydrateLocked(home, id string) error {
 	return err
 }
 
-// rewriteHermes writes the current delivery again. The reminder gap stays put,
-// and the wake sequence is the one this delivery already owns.
-func (s *Service) rewriteHermes(msg Message, now time.Time, seq int, root string) error {
-	if strings.TrimSpace(root) == "" {
-		root = homeOf(msg)
+// settleHermes applies each stored Hermes wake on its own.
+// An ack marks that hop delivered. A missing ack rewrites that same wake.
+// The reminder gap and sequence stay where the last due attempt left them.
+func (s *Service) settleHermes(home string, msg Message, now time.Time, state deliveryState) error {
+	wakes := state.wakes
+	if len(wakes) == 0 && state.wakeSeq > 0 && state.wakeID != "" {
+		wakes = []hermesHopWake{{
+			Key:      state.wakeKey,
+			Root:     state.wakeRoot,
+			Sub:      state.wakeSub,
+			WakeID:   state.wakeID,
+			Digest:   state.digest,
+			Seq:      state.wakeSeq,
+			OriginID: hopOriginID(msg, state.wakeKey),
+		}}
+	}
+	if len(wakes) == 0 {
+		return nil
 	}
 	var errs []error
-	wrote := false
-	tryAt := func(base, originID, key string) {
-		wrote = true
-		if strings.TrimSpace(base) == "" {
-			base = root
+	changed := false
+	for _, wake := range wakes {
+		if wake.WakeID == "" {
+			continue
 		}
-		if err := s.deliverHermes(base, originID, msg, now, seq, key); err != nil {
+		root, sub := wake.Root, wake.Sub
+		if strings.TrimSpace(root) == "" {
+			root = homeOf(msg)
+		}
+		if strings.TrimSpace(sub) == "" {
+			sub = msg.SubscriptionID
+		}
+		if hermesAckCovers(root, sub, wake.WakeID, wake.Digest) {
+			if wake.Key != "" && !state.completed[wake.Key] {
+				if state.completed == nil {
+					state.completed = map[string]bool{}
+				}
+				state.completed[wake.Key] = true
+				changed = true
+			}
+			continue
+		}
+		if err := s.rewriteOne(msg, now, wake); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if key := s.sent[msg.QuestionID].wakeKey; strings.HasPrefix(key, "receiver:") {
-		id := strings.TrimPrefix(key, "receiver:")
-		for _, rec := range msg.Receivers {
-			if rec.ID != id || rec.Adapter != "hermes" {
-				continue
-			}
-			msg.SubscriptionID = rec.ID
-			tryAt(rec.Root, rec.Target, key)
-			return errors.Join(errs...)
-		}
+	if !changed {
+		return errors.Join(errs...)
 	}
-	if kind, id, ok := ParseOrigin(msg.Origin); ok && kind == "hermes" {
-		tryAt(root, id, "origin")
-	}
-	if kind, id, ok := ParseOrigin(msg.Fallback); ok && kind == "hermes" && msg.Fallback != msg.Origin {
-		tryAt(root, id, "fallback")
-	}
-	if !wrote {
-		return nil
+	s.sent[msg.QuestionID] = state
+	if err := saveReminder(home, msg.QuestionID, state); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
 
-func watchHermes(msg Message, state deliveryState) (root, sub string) {
-	root = state.wakeRoot
-	if strings.TrimSpace(root) == "" {
-		root = homeOf(msg)
+// rewriteOne writes one hop again. It does not touch any other hop's inbox.
+func (s *Service) rewriteOne(msg Message, now time.Time, wake hermesHopWake) error {
+	originID := wake.OriginID
+	if originID == "" {
+		originID = hopOriginID(msg, wake.Key)
 	}
-	sub = state.wakeSub
+	if originID == "" {
+		return nil
+	}
+	sub := wake.Sub
 	if strings.TrimSpace(sub) == "" {
 		sub = msg.SubscriptionID
 	}
-	return root, sub
+	root := wake.Root
+	if strings.TrimSpace(root) == "" {
+		root = homeOf(msg)
+	}
+	hopMsg := msg
+	hopMsg.SubscriptionID = sub
+	seq := wake.Seq
+	if seq < 1 {
+		seq = 1
+	}
+	return s.deliverHermes(root, originID, hopMsg, now, seq, wake.Key)
 }
 
-func (s *Service) markHermesDelivered(home, id string, state deliveryState) error {
-	if state.wakeKey == "" || state.completed[state.wakeKey] {
-		return nil
+func hopOriginID(msg Message, key string) string {
+	switch {
+	case key == "origin":
+		if kind, id, ok := ParseOrigin(msg.Origin); ok && kind == "hermes" {
+			return id
+		}
+	case key == "fallback":
+		if kind, id, ok := ParseOrigin(msg.Fallback); ok && kind == "hermes" {
+			return id
+		}
+	case strings.HasPrefix(key, "receiver:"):
+		id := strings.TrimPrefix(key, "receiver:")
+		for _, rec := range msg.Receivers {
+			if rec.ID == id && rec.Adapter == "hermes" {
+				return rec.Target
+			}
+		}
 	}
-	if state.completed == nil {
-		state.completed = map[string]bool{}
-	}
-	state.completed[state.wakeKey] = true
-	s.sent[id] = state
-	return saveReminder(home, id, state)
+	return ""
 }
 
 func homeOf(msg Message) string {

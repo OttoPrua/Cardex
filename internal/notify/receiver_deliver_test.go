@@ -151,6 +151,128 @@ func TestEventsFilterDoesNotDropOriginCommand(t *testing.T) {
 	}
 }
 
+func TestTwoHermesHopsAckIndependently(t *testing.T) {
+	home := t.TempDir()
+	earlierRoot := t.TempDir()
+	laterRoot := t.TempDir()
+	cur := time.Date(2026, 11, 8, 1, 0, 0, 0, time.UTC)
+	var execs int
+	svc := New(func(context.Context, []string) error {
+		execs++
+		return nil
+	}, func() time.Time { return cur })
+	msg := Message{
+		QuestionID: "q-two",
+		Objective:  "obj",
+		Origin:     "codex:thread-0001",
+		Text:       "need a decision",
+		Home:       home,
+		Kind:       "freeze",
+		Project:    "p",
+		Receivers: []Receiver{
+			{ID: "thread-0001", Adapter: "hermes", Target: "profile-a/thread-0001", Root: laterRoot, Enabled: true, Scope: Scope{All: true}},
+			{ID: "example-manager", Adapter: "hermes", Target: "profile-a/example-manager", Root: earlierRoot, Enabled: true, Scope: Scope{All: true}},
+		},
+	}
+	if err := svc.Deliver(context.Background(), msg); err == nil || !strings.Contains(err.Error(), "hermes_ack_missing") {
+		t.Fatalf("first %v", err)
+	}
+	if execs != 1 {
+		t.Fatalf("origin execs %d", execs)
+	}
+	before, found, err := loadReminder(home, msg.QuestionID)
+	if err != nil || !found {
+		t.Fatal(err)
+	}
+	earlier, ok := hopByKey(before, "receiver:example-manager")
+	later, okLater := hopByKey(before, "receiver:thread-0001")
+	if !ok || !okLater {
+		t.Fatalf("wakes %+v", before.wakes)
+	}
+	if earlier.Root != earlierRoot || later.Root != laterRoot || earlier.Sub == later.Sub || earlier.Digest == "" || later.Digest == "" {
+		t.Fatalf("earlier %+v later %+v", earlier, later)
+	}
+	earlierPath := hermesInboundPath(earlier.Root, earlier.Sub, earlier.WakeID)
+	laterPath := hermesInboundPath(later.Root, later.Sub, later.WakeID)
+	if earlierPath == laterPath {
+		t.Fatal("hops share one wake file")
+	}
+	earlierBytes := mustReadFile(t, earlierPath)
+	laterBytes := mustReadFile(t, laterPath)
+	if _, err := os.Stat(hermesAckPath(earlier.Root, earlier.Sub, earlier.WakeID)); !os.IsNotExist(err) {
+		t.Fatal("earlier ack already present")
+	}
+	writeTestAck(t, earlier.Root, earlier.Sub, earlier.WakeID, earlier.Digest, cur)
+	if err := svc.Deliver(context.Background(), msg); err == nil || !strings.Contains(err.Error(), "hermes_ack_missing") {
+		t.Fatalf("second %v", err)
+	}
+	if execs != 1 {
+		t.Fatalf("origin resent %d", execs)
+	}
+	after := svc.sent[msg.QuestionID]
+	if after.wakeSeq != before.wakeSeq || after.gap != before.gap || !after.at.Equal(before.at) {
+		t.Fatalf("gap moved before %+v after %+v", before, after)
+	}
+	if !after.completed["receiver:example-manager"] || after.completed["receiver:thread-0001"] {
+		t.Fatalf("completed %+v", after.completed)
+	}
+	if got := mustReadFile(t, earlierPath); string(got) != string(earlierBytes) {
+		t.Fatal("acked hop was rewritten")
+	}
+	if got := mustReadFile(t, laterPath); string(got) != string(laterBytes) {
+		t.Fatal("unacked hop left its wake")
+	}
+	if wakes := nonAckJSON(t, later.Root, later.Sub); len(wakes) != 1 || wakes[0] != later.WakeID {
+		t.Fatalf("later wakes %v", wakes)
+	}
+	if _, err := os.Stat(hermesAckPath(later.Root, later.Sub, later.WakeID)); !os.IsNotExist(err) {
+		t.Fatal("later hop was acked")
+	}
+	reloaded, found, err := loadReminder(home, msg.QuestionID)
+	if err != nil || !found || !reloaded.completed["receiver:example-manager"] || reloaded.completed["receiver:thread-0001"] {
+		t.Fatalf("reloaded %+v found %v err %v", reloaded, found, err)
+	}
+	if _, ok := hopByKey(reloaded, "receiver:example-manager"); !ok {
+		t.Fatal("reloaded dropped the earlier hop")
+	}
+	if _, ok := hopByKey(reloaded, "receiver:thread-0001"); !ok {
+		t.Fatal("reloaded dropped the later hop")
+	}
+}
+
+func hopByKey(st deliveryState, key string) (hermesHopWake, bool) {
+	for _, hop := range st.wakes {
+		if hop.Key == key {
+			return hop, true
+		}
+	}
+	return hermesHopWake{}, false
+}
+
+func mustReadFile(t *testing.T, path string) []byte {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func nonAckJSON(t *testing.T, root, sub string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(hermesInboxDir(root, sub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".json") && !strings.HasSuffix(entry.Name(), ".ack.json") {
+			names = append(names, strings.TrimSuffix(entry.Name(), ".json"))
+		}
+	}
+	return names
+}
+
 func rootMessage(home, root string) Message {
 	return Message{
 		QuestionID: "q-root",

@@ -1,6 +1,7 @@
 package notify
 
 import (
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -245,7 +246,7 @@ func scopeMatches(rec Receiver, msg Message) bool {
 		return false
 	}
 	for _, project := range rec.Scope.Projects {
-		if project == msg.Project && project != "" {
+		if projectMatches(project, msg.Project) {
 			return true
 		}
 	}
@@ -268,6 +269,53 @@ func scopeMatches(rec Receiver, msg Message) bool {
 		}
 	}
 	return false
+}
+
+// projectMatches keeps a stored v1 project name equal to that name, and also
+// equal to the project id import-legacy stores for it. importer.projectID is
+// the generator; notify cannot import importer.
+func projectMatches(name, delivered string) bool {
+	if name == "" || delivered == "" {
+		return false
+	}
+	return name == delivered || delivered == legacyProjectID(name)
+}
+
+func legacyProjectID(project string) string {
+	return "v1proj-" + legacySanitize(project)
+}
+
+func legacySanitize(s string) string {
+	if legacyPreserved(s) {
+		return s
+	}
+	return "g" + hex.EncodeToString([]byte(s))
+}
+
+func legacyPreserved(s string) bool {
+	if s == "" || legacyGenerated(s) {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func legacyGenerated(s string) bool {
+	if len(s) == 0 || s[0] != 'g' {
+		return false
+	}
+	rest := s[1:]
+	if len(rest)%2 != 0 {
+		return false
+	}
+	_, err := hex.DecodeString(rest)
+	return err == nil
 }
 
 func eventsAllow(rec Receiver, kind string) bool {

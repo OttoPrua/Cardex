@@ -4,8 +4,22 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
+
+// hermesTestSeq keeps each notify test wake distinct from earlier tests,
+// including one left behind after the same receiver id is registered again.
+var hermesTestSeq atomic.Uint64
+
+func hermesTestQuestionID(now time.Time) string {
+	n := hermesTestSeq.Add(1)
+	stamp := now.UnixNano()
+	if stamp < 0 {
+		stamp = 0
+	}
+	return fmt.Sprintf("notify-test-%d-%d", stamp, n)
+}
 
 // PrepareHermesTest writes one hermes test wake under the receiver root.
 // root is the inbox base the ack must be written under. ackPath is <wake>.ack.json.
@@ -25,7 +39,7 @@ func PrepareHermesTest(home string, rec Receiver, now time.Time) (root, ackPath,
 		now = time.Now()
 	}
 	msg := Message{
-		QuestionID:     "notify-test",
+		QuestionID:     hermesTestQuestionID(now),
 		Objective:      "notify-test",
 		Text:           "cardex notify test " + rec.ID,
 		Home:           home,
@@ -76,7 +90,7 @@ func TestDeliver(ctx context.Context, exec Exec, home string, rec Receiver) erro
 		}
 		return exec(ctx, larkArgv(rec.Target, text))
 	case "file":
-		return writeInbox(home, Message{
+		return writeReceiverFile(rec.Target, Message{
 			QuestionID: "notify-test",
 			Objective:  "notify-test",
 			Origin:     "file:" + rec.Target,

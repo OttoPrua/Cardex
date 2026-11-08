@@ -287,7 +287,12 @@ func (s *Service) deliverHop(ctx context.Context, msg Message, hop Hop, now time
 		hopMsg := msg
 		hopMsg.SubscriptionID = hop.Sub
 		return s.deliverHermes(hop.Root, hop.ID, hopMsg, now, seq, hop.Key)
-	case "codex", "lark", "file":
+	case "codex", "lark":
+		return s.deliverAdapter(ctx, home, hop.Kind, hop.ID, msg, now, seq)
+	case "file":
+		if strings.HasPrefix(hop.Key, "receiver:") {
+			return writeReceiverFile(hop.ID, msg)
+		}
 		return s.deliverAdapter(ctx, home, hop.Kind, hop.ID, msg, now, seq)
 	default:
 		return fmt.Errorf("notify: adapter %q", hop.Kind)
@@ -343,7 +348,23 @@ func writeInbox(home string, msg Message) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	body := fmt.Sprintf("question_id: %s\nobjective: %s\norigin: %s\n\n%s\n",
+	return inboxWrite(path, []byte(noticeBody(msg)), 0o644)
+}
+
+func noticeBody(msg Message) string {
+	return fmt.Sprintf("question_id: %s\nobjective: %s\norigin: %s\n\n%s\n",
 		msg.QuestionID, msg.Objective, msg.Origin, msg.Text)
-	return inboxWrite(path, []byte(body), 0o644)
+}
+
+// writeReceiverFile writes one file-receiver notice to its configured path.
+// Origin and fallback file hops stay on the home inbox.
+func writeReceiverFile(target string, msg Message) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return errors.New("notify: file target is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(target, []byte(noticeBody(msg)), 0o644)
 }

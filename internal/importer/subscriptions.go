@@ -96,7 +96,10 @@ func convertSubscription(index int, sub v1Subscription, tasks map[string]importe
 		label = "subscriptions[" + itoa(index) + "]"
 	}
 	var notes []string
-	adapter := strings.TrimSpace(sub.Provider)
+	adapter := strings.ToLower(strings.TrimSpace(sub.Provider))
+	if adapter == "" {
+		adapter = "codex"
+	}
 	target := subscriptionTarget(adapter, sub)
 	if adapter == "" || target == "" || strings.TrimSpace(sub.ID) == "" {
 		notes = append(notes, "subscription "+label+": missing id, adapter, or target")

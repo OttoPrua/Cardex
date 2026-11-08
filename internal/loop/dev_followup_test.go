@@ -184,7 +184,7 @@ func TestFollowupReviewFamily(t *testing.T) {
 	}{
 		{name: "positioning row of the successful model", position: true, rowFamily: "anthropic", wantFamily: "anthropic"},
 		{name: "channel family when the model has no row", wantFamily: "openai"},
-		{name: "empty positioning family keeps the stale card family", position: true, rowFamily: "", wantFamily: "old-family"},
+		{name: "empty positioning family uses the successful channel", position: true, rowFamily: "", wantFamily: "openai"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

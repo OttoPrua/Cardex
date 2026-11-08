@@ -17,12 +17,14 @@ import (
 const resultMarker = "\n\n<!-- cardex-result -->\n"
 
 // Notice is one file-adapter delivery.
+// Episode distinguishes one fault from a later fault that reuses QuestionID.
 type Notice struct {
 	QuestionID string
 	Origin     string
 	Text       string
 	Kind       string
 	Objective  string
+	Episode    string
 }
 
 // Notifier writes a development-loop notification. Tests inject a file stand-in.
@@ -125,11 +127,11 @@ func markNoticeDelivered(ctx context.Context, db *store.Store, n Notice) error {
 		return err
 	}
 	for _, event := range events {
-		if event.Type == "notice_delivered" {
+		if event.Type == "notice_delivered" && eventEpisode(event) == n.Episode {
 			return nil
 		}
 	}
-	raw, err := json.Marshal(map[string]string{"kind": n.Kind})
+	raw, err := json.Marshal(map[string]string{"kind": n.Kind, "episode": n.Episode})
 	if err != nil {
 		return err
 	}

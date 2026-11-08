@@ -160,7 +160,7 @@ func TestFactSummaryStatuses(t *testing.T) {
 
 func TestPrefacesRender(t *testing.T) {
 	shared := []string{
-		"[fact]", "[fact web]", "[experiment]", "[decision]", "[otto]",
+		"[fact]", "[fact web]", "[experiment]", "[decision]", "[owner]",
 		"不要自己大范围阅读", "把缺的事实列成 `[fact]` 问题后结束本卡", "定点核对几处文件可以自己做",
 		"问题编号", "[fact] Q<id> 复查：<原因>",
 	}

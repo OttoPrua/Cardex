@@ -710,7 +710,7 @@ func TestS12(t *testing.T) {
 }
 
 func TestS13(t *testing.T) {
-	// fast 模式下非方向层自动冻结，方向层仍要 Otto 确认。
+	// fast 模式下非方向层自动冻结，方向层仍要使用者确认。
 	h := New(t)
 	t.Setenv("CARDEX_HOME", h.Home)
 	ctx := t.Context()

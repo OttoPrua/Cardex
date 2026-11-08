@@ -7,10 +7,12 @@ import (
 	"testing"
 )
 
-// managementSessionOttoSites are the write-domain files that tell a Hermes or
-// Codex management session which decisions to hand to Otto. docs/v2/guide.md
-// speaks to Otto and is not one of these sites.
-func managementSessionOttoSites(t *testing.T, root string) []string {
+const ownerHandoffHeading = "## Handing a decision to 使用者（owner）"
+
+// managementSessionOwnerSites are the write-domain files that tell a Hermes or
+// Codex management session which decisions to hand to the user. docs/v2/guide.md
+// speaks to the user and is not one of these sites.
+func managementSessionOwnerSites(t *testing.T, root string) []string {
 	t.Helper()
 	dir := filepath.Join(root, "skills", "cardex-dispatch")
 	entries, err := os.ReadDir(dir)
@@ -27,7 +29,7 @@ func managementSessionOttoSites(t *testing.T, root string) []string {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(body), "## Handing a decision to Otto") {
+		if strings.Contains(string(body), ownerHandoffHeading) {
 			sites = append(sites, path)
 		}
 	}
@@ -39,27 +41,26 @@ func managementSessionOttoSites(t *testing.T, root string) []string {
 		}
 	}
 	if !found {
-		t.Fatalf("shipped skill %s is not an Otto handoff site; found %v", shipped, sites)
+		t.Fatalf("shipped skill %s is not a user handoff site; found %v", shipped, sites)
 	}
 	return sites
 }
 
-func ottoHandoffSection(body string) string {
-	const heading = "## Handing a decision to Otto"
-	i := strings.Index(body, heading)
+func ownerHandoffSection(body string) string {
+	i := strings.Index(body, ownerHandoffHeading)
 	if i < 0 {
 		return ""
 	}
-	rest := body[i+len(heading):]
+	rest := body[i+len(ownerHandoffHeading):]
 	if j := strings.Index(rest, "\n## "); j >= 0 {
 		rest = rest[:j]
 	}
 	return rest
 }
 
-// ottoRequiredClause is the list after "required for" and before the period.
-// Automatic freezes stated after that period are not Otto assignments.
-func ottoRequiredClause(handoff string) string {
+// ownerRequiredClause is the list after "required for" and before the period.
+// Automatic freezes stated after that period are not user assignments.
+func ownerRequiredClause(handoff string) string {
 	const marker = "required for "
 	i := strings.Index(handoff, marker)
 	if i < 0 {
@@ -72,13 +73,31 @@ func ottoRequiredClause(handoff string) string {
 	return rest
 }
 
-func TestManagementSessionOttoHandoff(t *testing.T) {
+func e2eModuleRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("go.mod not found")
+		}
+		dir = parent
+	}
+}
+
+func TestManagementSessionOwnerHandoff(t *testing.T) {
 	root := e2eModuleRoot(t)
-	sites := managementSessionOttoSites(t, root)
+	sites := managementSessionOwnerSites(t, root)
 	cases := []struct {
 		name   string
 		phrase string
-		// where is "clause" (Otto's required list), "handoff", or "file".
+		// where is "clause" (the required list), "handoff", or "file".
 		where string
 		// forbid reports the phrase must be absent from where.
 		forbid bool
@@ -90,9 +109,9 @@ func TestManagementSessionOttoHandoff(t *testing.T) {
 		{name: "safe-mode module freeze", phrase: "safe-mode module freeze", where: "clause"},
 		{name: "frozen-node reopen", phrase: "reopen of an already frozen node", where: "clause"},
 		{name: "positioning proposal approval", phrase: "Approving a positioning proposal uses `positioning approve <id>`", where: "file"},
-		{name: "do not pick Otto options", phrase: "Do not pick those options in this session", where: "handoff"},
-		{name: "fast-mode module freeze stays off Otto's list", phrase: "fast-mode", where: "clause", forbid: true},
-		{name: "detail-layer freeze stays off Otto's list", phrase: "detail-layer", where: "clause", forbid: true},
+		{name: "do not pick those options", phrase: "Do not pick those options in this session", where: "handoff"},
+		{name: "fast-mode module freeze stays off the required list", phrase: "fast-mode", where: "clause", forbid: true},
+		{name: "detail-layer freeze stays off the required list", phrase: "detail-layer", where: "clause", forbid: true},
 	}
 	for _, site := range sites {
 		bodyBytes, err := os.ReadFile(site)
@@ -100,8 +119,8 @@ func TestManagementSessionOttoHandoff(t *testing.T) {
 			t.Fatal(err)
 		}
 		body := string(bodyBytes)
-		handoff := ottoHandoffSection(body)
-		clause := ottoRequiredClause(handoff)
+		handoff := ownerHandoffSection(body)
+		clause := ownerRequiredClause(handoff)
 		rel, err := filepath.Rel(root, site)
 		if err != nil {
 			rel = site
@@ -138,23 +157,5 @@ func TestManagementSessionOttoHandoff(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func e2eModuleRoot(t *testing.T) string {
-	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("go.mod not found")
-		}
-		dir = parent
 	}
 }

@@ -9,7 +9,7 @@
 
 `classify.Classify` 在卡上已有 tier 时不调用。否则用包内固定 prompt 对 classifier 渠道做一次调用，期限 30 秒，按正文哈希缓存。超时、解析失败或渠道不可用时退回 kind 的默认 tier。
 
-供 R3 使用的开放问题：`model.OpenQuestion` 字段为 id、text、type、status、asks、answer、evidence、confidence、commit、cited_paths。类型 fact、experiment、decision、otto；状态 open、researching、answered、stale、unanswered。查询方法是 `(*store.Store).ListOpenQuestions`。旧字符串读成 text，type=decision，status=open。`research` 的默认 tier 是 T1。
+供 R3 使用的开放问题：`model.OpenQuestion` 字段为 id、text、type、status、asks、answer、evidence、confidence、commit、cited_paths。类型 fact、experiment、decision、owner；状态 open、researching、answered、stale、unanswered。查询方法是 `(*store.Store).ListOpenQuestions`。旧字符串读成 text，type=decision，status=open。`research` 的默认 tier 是 T1。
 
 ## 没做什么，以及原因
 未调用真实模型，未做额度探针、派发、`sched.Loop`、backlog 填充、`cardex route explain`、看板和定位 CLI。Reject 不修改 Current。

@@ -140,6 +140,10 @@ func place(rel string, rec *v1Record, parseErr string) placement {
 		p.Status = model.CardCanceled
 		p.V1Status = status
 		p.V2Place = "canceled"
+	case "owner_choice":
+		p.Status = model.CardCanceled
+		p.V1Status = status
+		p.V2Place = "history"
 	default:
 		why := "unrecognized status"
 		if status == "" {

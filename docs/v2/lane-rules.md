@@ -5,8 +5,8 @@
 ## 位置
 
 - 你只在本 lane 的 worktree 里工作，路径和分支见 lane prompt。
-- 集成分支是 `v2`，位于 `/Volumes/Storage/Development/Cardex/worktrees/cardex-v2/`。lane 不得向它合并或提交。
-- v1 源码在 `/Volumes/Storage/Development/Cardex/repo/`，只读，作为素材来源。可以移植其中的逻辑，例如 CLI 参数、PTY 实现、错误文本分类，但不要沿用它的结构。
+- 集成分支是 `v2`，位于项目根下的 `worktrees/cardex-v2/`。lane 不得向它合并或提交。
+- v1 源码在项目根下的 `repo/`，只读，作为素材来源。可以移植其中的逻辑，例如 CLI 参数、PTY 实现、错误文本分类，但不要沿用它的结构。
 
 ## 不碰运行环境
 
@@ -14,7 +14,7 @@
 - 不动 launchd，不动已安装的 cardex，不占用 8787、8788 端口。
 - 不启动真实的 provider CLI 会话。真实渠道只在 R5 由 prompt 明确授权时使用。
 - 测试一律用 `t.TempDir()` 作 `CARDEX_HOME`，端口用 0 或随机端口。
-- 手工冒烟用 `/Volumes/Storage/Development/Cardex/cache/cardex-v2-dev/home/`，端口用 8790。
+- 手工冒烟用项目根下的 `cache/cardex-v2-dev/home/`，端口用 8790。
 - 不 push，不打 tag，不发 Release。
 
 ## 写域

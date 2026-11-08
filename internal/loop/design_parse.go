@@ -50,7 +50,7 @@ type factBlock struct {
 var (
 	recheckRE = regexp.MustCompile(`(?i)^\[fact(?:\s+web)?\]\s*Q([A-Za-z0-9_-]+)\s*复查[:：]\s*(.*)$`)
 	dropRE    = regexp.MustCompile(`(?i)^(?:删除|关闭|drop)\s+Q([A-Za-z0-9_-]+)$`)
-	tagRE     = regexp.MustCompile(`(?i)^\[(fact web|fact|experiment|decision|otto)\]\s*(.*)$`)
+	tagRE     = regexp.MustCompile(`(?i)^\[(` + strings.Join(model.OpenQuestionTagNames(), "|") + `)\]\s*(.*)$`)
 	childRE   = regexp.MustCompile(`(?i)^(?:\[(module|detail)\]|(module|detail)\s*[:：])\s*(.+)$`)
 	qHeadRE   = regexp.MustCompile(`(?i)^###\s*Q([A-Za-z0-9_-]+)\s*$`)
 	pathRE    = regexp.MustCompile(`(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+\.[A-Za-z0-9]+`)
@@ -77,7 +77,7 @@ func decideFreeze(layer model.Layer, mode model.FreezeMode) freezeKind {
 }
 
 func blocksFreezable(q model.OpenQuestion) bool {
-	if q.Type == model.OQOtto {
+	if q.Type == model.OQOwner {
 		return false
 	}
 	return q.Status == model.OQOpen || q.Status == model.OQResearching
@@ -122,7 +122,8 @@ func isWebText(text string) bool {
 func dedupKey(text string) string {
 	s := strings.TrimSpace(text)
 	low := strings.ToLower(s)
-	for _, tag := range []string{"[fact web]", "[fact]", "[experiment]", "[decision]", "[otto]"} {
+	for _, name := range model.OpenQuestionTagNames() {
+		tag := "[" + name + "]"
 		if strings.HasPrefix(low, tag) {
 			s = strings.TrimSpace(s[len(tag):])
 			break
@@ -202,16 +203,7 @@ func parseQuestionLines(body string) []parsedLine {
 }
 
 func tagType(tag string) model.OpenQuestionType {
-	switch strings.ToLower(strings.TrimSpace(tag)) {
-	case "fact", "fact web":
-		return model.OQFact
-	case "experiment":
-		return model.OQExperiment
-	case "otto":
-		return model.OQOtto
-	default:
-		return model.OQDecision
-	}
+	return model.CanonicalOpenQuestionType(model.OpenQuestionType(tag))
 }
 
 func parseChildLines(body string) []childSpec {

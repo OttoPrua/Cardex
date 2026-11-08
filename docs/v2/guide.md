@@ -1,6 +1,6 @@
 # Cardex 使用说明
 
-这份说明给 Otto。命令以 `cardex` 的 `usage` 为准。数据目录用 `--home` 或环境变量 `CARDEX_HOME` 指向你选的一个目录。
+这份说明给 使用者（owner）。命令以 `cardex` 的 `usage` 为准。数据目录用 `--home` 或环境变量 `CARDEX_HOME` 指向你选的一个目录。
 
 ## 安装
 
@@ -35,14 +35,14 @@ cardex channel set --id ch1 --runner grok --redline 0.25 --model lumen-model --w
 `safe` 下，方向和模块冻结都来问你；细节层先走复核。`fast` 下，模块和细节在设计写明可冻结后直接冻结；方向层仍然来问你。方向层不论 `safe` 还是 `fast` 都不会自己冻结。
 
 ```
-cardex objective add --project p --title 账单 --mode auto --freeze-mode fast --origin otto:session
+cardex objective add --project p --title 账单 --mode auto --freeze-mode fast --origin codex:<thread>
 ```
 
 `objective list` 和 `objective show` 看状态。`objective pause`、`objective resume`、`objective cancel` 改目标状态。
 
 ## 设计时的事实研究
 
-设计结果里的开放问题用标签区分。`[fact]` 是查一下就知道的，Cardex 派一张研究卡去查，不来问你。研究卡默认走便宜的 T1。`[experiment]` 做原型。`[decision]` 由设计卡自己权衡：问题留在设计节点上，不因此生成 Otto 的待办。`[otto]` 需要 Otto 决定。
+设计结果里的开放问题用标签区分。`[fact]` 是查一下就知道的，Cardex 派一张研究卡去查，不来问你。研究卡默认走便宜的 T1。`[experiment]` 做原型。`[decision]` 由设计卡自己权衡：问题留在设计节点上，不因此生成 使用者（owner） 的待办。`[owner]` 需要 使用者（owner） 决定。
 
 研究卡写回 `## 事实`，按 `### Q<id>` 给结论、证据和把握。证据要能指向文件和行号。下一张设计卡的正文里会带 `## 事实摘要`。
 
@@ -52,7 +52,7 @@ cardex objective add --project p --title 账单 --mode auto --freeze-mode fast -
 
 读选项用 `cardex --json question show <id>`。它给出 text、options 和 answer。普通 `question show` 只有 id 和答案，读不到选项。`question list` 包含已经回答的问题，不会自动排除。`question answer <id> <option>` 把一个已经列在该问题上的选项存下来。冻结题的选项是 `同意` 和 `拒绝`，第一个是同意。空答案不会被收下。
 
-方向冻结、预算用尽、熔断和目标完成，都交给 Otto。管理会话只在 Otto 已经选好选项时替他提交。
+方向冻结、预算用尽、熔断和目标完成，都交给 使用者（owner）。管理会话只在 使用者（owner） 已经选好选项时替他提交。
 
 ## 配置通知
 

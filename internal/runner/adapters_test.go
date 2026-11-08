@@ -244,7 +244,7 @@ func TestParseUsageShapes(t *testing.T) {
 	}
 }
 
-func TestWritablePathsDoNotTouchDisk(t *testing.T) {
+func TestWritablePathsLeaveDiskAlone(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	sets := [][]string{

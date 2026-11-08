@@ -6,6 +6,9 @@ import (
 	"strings"
 )
 
+// legacyOwnerQuestionToken is the open-question type spelling used before owner.
+const legacyOwnerQuestionToken = "otto"
+
 // OpenQuestionList is the JSON form of design-node open questions.
 // A legacy array of strings decodes each string as text with type decision and status open.
 type OpenQuestionList []OpenQuestion
@@ -97,11 +100,85 @@ func legacyOpenQuestion(text string) OpenQuestion {
 	return q
 }
 
-// CanonicalOpenQuestionType trims and lowercases a type. Empty and unknown become decision.
+// OpenQuestionTagNames is the tag vocabulary, longest-prefix first.
+// The legacy personal-name token is accepted and normalized to owner.
+func OpenQuestionTagNames() []string {
+	return []string{"fact web", "fact", "experiment", "decision", string(OQOwner), legacyOwnerQuestionToken}
+}
+
+// CanonicalOpenQuestionType trims and lowercases a type. The fact-web tag and the
+// legacy personal-name token normalize to fact and owner. Empty and unknown become decision.
 func CanonicalOpenQuestionType(raw OpenQuestionType) OpenQuestionType {
-	return OpenQuestionType(canonicalEnum(string(raw), func(s string) bool {
-		return OpenQuestionType(s).Valid()
+	s := strings.ToLower(strings.TrimSpace(string(raw)))
+	switch s {
+	case "fact web":
+		s = string(OQFact)
+	case legacyOwnerQuestionToken:
+		s = string(OQOwner)
+	}
+	return OpenQuestionType(canonicalEnum(s, func(v string) bool {
+		return OpenQuestionType(v).Valid()
 	}, string(OQDecision)))
+}
+
+// RewriteStoredOwnerQuestionTypes rewrites a stored open-question JSON array so the
+// legacy personal-name type token becomes owner. Every other value is left as stored.
+// A second call changes nothing.
+func RewriteStoredOwnerQuestionTypes(data []byte) ([]byte, bool, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
+		return data, false, nil
+	}
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, false, err
+	}
+	changed := false
+	out := make([]json.RawMessage, len(raw))
+	for i, item := range raw {
+		item = bytes.TrimSpace(item)
+		if len(item) == 0 || item[0] != '{' {
+			out[i] = item
+			continue
+		}
+		var obj map[string]json.RawMessage
+		if err := json.Unmarshal(item, &obj); err != nil {
+			return nil, false, err
+		}
+		typeRaw, ok := obj["type"]
+		if !ok {
+			out[i] = item
+			continue
+		}
+		var typ string
+		if err := json.Unmarshal(bytes.TrimSpace(typeRaw), &typ); err != nil {
+			out[i] = item
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(typ), legacyOwnerQuestionToken) {
+			out[i] = item
+			continue
+		}
+		repl, err := json.Marshal(string(OQOwner))
+		if err != nil {
+			return nil, false, err
+		}
+		obj["type"] = repl
+		next, err := json.Marshal(obj)
+		if err != nil {
+			return nil, false, err
+		}
+		out[i] = next
+		changed = true
+	}
+	if !changed {
+		return data, false, nil
+	}
+	next, err := json.Marshal(out)
+	if err != nil {
+		return nil, false, err
+	}
+	return next, true, nil
 }
 
 // CanonicalOpenQuestionStatus trims and lowercases a status. Empty and unknown become open.

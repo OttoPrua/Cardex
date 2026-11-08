@@ -74,7 +74,7 @@ const (
 type FreezeMode string
 
 const (
-	FreezeSafe FreezeMode = "safe" // 方向和模块层需要 Otto 确认。
+	FreezeSafe FreezeMode = "safe" // 方向和模块层需要使用者确认。
 	FreezeFast FreezeMode = "fast" // 模块和细节层自动冻结。
 )
 
@@ -205,7 +205,7 @@ const (
 	OQFact       OpenQuestionType = "fact"       // 查一下就知道。
 	OQExperiment OpenQuestionType = "experiment" // 做了才知道。
 	OQDecision   OpenQuestionType = "decision"   // 需要权衡。无标签的旧条目用这个。
-	OQOtto       OpenQuestionType = "otto"       // 需要 Otto 决定。
+	OQOwner      OpenQuestionType = "owner"      // 只有使用者本人能定的事。
 )
 
 // OpenQuestionStatus is the lifecycle of a design-node open question.
@@ -219,9 +219,9 @@ const (
 	OQUnanswered  OpenQuestionStatus = "unanswered"  // 研究卡没有作答。
 )
 
-// AllOpenQuestionTypes returns fact, experiment, decision, and otto.
+// AllOpenQuestionTypes returns fact, experiment, decision, and owner.
 func AllOpenQuestionTypes() []OpenQuestionType {
-	return []OpenQuestionType{OQFact, OQExperiment, OQDecision, OQOtto}
+	return []OpenQuestionType{OQFact, OQExperiment, OQDecision, OQOwner}
 }
 
 // AllOpenQuestionStatuses returns every open-question status.
@@ -355,7 +355,7 @@ func (r RunnerName) Valid() bool { return r == RunnerFake || oneOf(r, AllRunners
 // Valid reports whether k is a question kind.
 func (k QuestionKind) Valid() bool { return oneOf(k, AllQuestionKinds()) }
 
-// Valid reports whether t is fact, experiment, decision, or otto.
+// Valid reports whether t is fact, experiment, decision, or owner.
 func (t OpenQuestionType) Valid() bool { return oneOf(t, AllOpenQuestionTypes()) }
 
 // Valid reports whether s is an open-question status.

@@ -27,7 +27,7 @@ v2 没有单次调用执行器，Channel 没有 classifier 槽。launchCard 只�
 
 ## 已知问题
 
-无 BUG skip。N1 问题选项、N2 decision 与 otto、X1 skill 定位提案措辞已写入指南和 skill，见下方修复记录。
+无 BUG skip。N1 问题选项、N2 decision 与 owner、X1 skill 定位提案措辞已写入指南和 skill，见下方修复记录。
 
 ## 修复记录
 
@@ -50,5 +50,5 @@ S23 未改。状态以 R4-C-F1 为准。集成前若只走辅助函数，不是 
 模型钉只在每个承载渠道都缺失、健康不是 ok、或封锁到已知重置时才放开。仍有健康未封锁的承载则保留模型，并从请求副本去掉不可用承载。更高优先级、只提供别的模型的渠道不会抢走这次启动。目标级模型钉同样。两条规则同时在 releaseUnusablePin 和 chooseLaunchRoute 的回退里生效 → internal/sched/launch_route.go:51 internal/sched/launch_route.go:143 internal/sched/launch_route.go:189 internal/sched/launch_route.go:243 internal/sched/launch_pin_test.go:131 → TestLaunchUnusableChannel
 生产调度不再导出 LaunchHost。端到端测试在自己的辅助函数里启动 host，只记录本次启动且大于 1 的 pid，信号只走 host.SignalGroup 和 host.SignalProcess → internal/sched/launch.go:47 internal/e2e/scenarios_test.go:2484 internal/e2e/scenarios_test.go:2511 internal/e2e/scenarios_test.go:2522 → TestSignalGuard
 回答问题要先用 `cardex --json question show <id>` 读 text、options 和 answer。普通 question show 只有 id 和答案。question list 包含已经回答的问题 → docs/v2/guide.md:53 skills/cardex-dispatch/SKILL.md:23 skills/cardex-dispatch/SKILL.md:27 → 无新测试夹具
-`[decision]` 由设计卡权衡，问题留在设计节点上，不生成 Otto 待办。`[otto]` 需要 Otto 决定 → docs/v2/guide.md:45 → 无新测试夹具
-管理会话不再被要求只能批准已经选定的定位提案。方向冻结、预算耗尽、熔断和目标完成仍只交给 Otto，不扩大其他授权 → skills/cardex-dispatch/SKILL.md:31 skills/cardex-dispatch/SKILL.md:35 → 无新测试夹具
+`[decision]` 由设计卡权衡，问题留在设计节点上，不生成 使用者（owner） 待办。`[owner]` 需要 使用者（owner） 决定 → docs/v2/guide.md:45 → 无新测试夹具
+管理会话不再被要求只能批准已经选定的定位提案。方向冻结、预算耗尽、熔断和目标完成仍只交给 使用者（owner），不扩大其他授权 → skills/cardex-dispatch/SKILL.md:31 skills/cardex-dispatch/SKILL.md:35 → 无新测试夹具

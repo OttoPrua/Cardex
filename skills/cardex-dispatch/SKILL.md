@@ -1,19 +1,19 @@
 ---
 name: cardex-dispatch
-description: Operate Cardex v2 from a Hermes or Codex management session. Use when creating objectives or cards, checking status, answering a question, approving a positioning proposal, or handing a decision to Otto.
+description: Operate Cardex v2 from a Hermes or Codex management session. Use when creating objectives or cards, checking status, answering a question, approving a positioning proposal, or handing a decision to 使用者（owner）.
 ---
 
 # Cardex dispatch
 
-This skill covers `--origin`, answering a question, approving a positioning proposal, and handing a decision to Otto. Use it from a Hermes or Codex management session. Point every command at the data directory with `--home` or `CARDEX_HOME`.
+This skill covers `--origin`, answering a question, approving a positioning proposal, and handing a decision to 使用者（owner）. Use it from a Hermes or Codex management session. Point every command at the data directory with `--home` or `CARDEX_HOME`.
 
 ## Create with --origin
 
 `objective add` and `card add` record an origin of the form `kind:id`. Pass `--origin` on the command. A non-empty `--origin` wins over `CARDEX_ORIGIN`. Both sides of the colon must be non-empty; the id is everything after the first colon.
 
 ```
-cardex objective add --project p --title 账单 --mode auto --freeze-mode fast --origin hermes:session
-cardex card add --objective o --title 实现 --kind dev --origin hermes:session
+cardex objective add --project p --title 账单 --mode auto --freeze-mode fast --origin hermes:<profile>/<session>
+cardex card add --objective o --title 实现 --kind dev --origin hermes:<profile>/<session>
 ```
 
 The objective stores origin on the objective, and `objective show` prints it. The card stores origin as an `origin` event, and `card show` prints it back.
@@ -30,9 +30,9 @@ Answering a question uses `question answer <id> <option>`. Read the stored text,
 
 Approving a positioning proposal uses `positioning approve <id>` after `positioning proposals` and `positioning show`. An approved proposal becomes the current table. `positioning reject <id>` returns an error and leaves the current table unchanged.
 
-## Handing a decision to Otto
+## Handing a decision to 使用者（owner）
 
-Handing a decision to Otto is required for a direction freeze, a safe-mode module freeze, a reopen of an already frozen node, a budget exhaustion, a breaker, and an objective-done question. Do not pick those options in this session. A fast-mode module freeze and a detail-layer freeze stay automatic.
+Handing a decision to 使用者（owner） is required for a direction freeze, a safe-mode module freeze, a reopen of an already frozen node, a budget exhaustion, a breaker, and an objective-done question. Do not pick those options in this session. A fast-mode module freeze and a detail-layer freeze stay automatic.
 
 ## 接收通知
 

@@ -34,7 +34,7 @@ func TestS25(t *testing.T) {
 	}
 	obj := model.Objective{
 		ID: "obj", Project: proj.ID, Title: "账单", Mode: model.ModeAuto, FreezeMode: model.FreezeFast,
-		Status: model.ObjectiveActive, IntegrationBranch: branch, Origin: "otto:s25",
+		Status: model.ObjectiveActive, IntegrationBranch: branch, Origin: "codex:thread-0001",
 	}
 	if err := h.DB.CreateObjective(ctx, &obj); err != nil {
 		t.Fatal(err)

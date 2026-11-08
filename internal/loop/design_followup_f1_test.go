@@ -228,7 +228,7 @@ func TestNormalizeAbsorbFinishesManualSource(t *testing.T) {
 		{
 			name:     "plan",
 			kind:     model.KindPlan,
-			text:     "## 开放问题\n- [otto] 拆开做\n## 新卡\n[{\"key\":\"impl\",\"kind\":\"dev\",\"title\":\"实现接口\"}]\n## 可冻结\n是，可以冻结\n",
+			text:     "## 开放问题\n- [owner] 拆开做\n## 新卡\n[{\"key\":\"impl\",\"kind\":\"dev\",\"title\":\"实现接口\"}]\n## 可冻结\n是，可以冻结\n",
 			question: "拆开做",
 			title:    "实现接口",
 			freeze:   true,

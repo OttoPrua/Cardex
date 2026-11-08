@@ -341,7 +341,7 @@ func TestNormalizeHarvestRestoresSource(t *testing.T) {
 		for _, entry := range entries {
 			t.Run(string(kind)+"/pass/"+entry, func(t *testing.T) {
 				st, obj, node, source, sourceAttempt, norm := normalizeFromUnusable(t, kind, model.FreezeFast)
-				harvestNormalize(t, st, obj.ID, norm, entry, model.CardDone, model.OutcomePassed, "## 开放问题\n- [otto] 整理回填\n")
+				harvestNormalize(t, st, obj.ID, norm, entry, model.CardDone, model.OutcomePassed, "## 开放问题\n- [owner] 整理回填\n")
 				if err := loopStep(t, depsOf(st), obj.ID); err != nil {
 					t.Fatal(err)
 				}
@@ -391,7 +391,7 @@ func TestNormalizeHarvestRestoresSource(t *testing.T) {
 				if err := setCardStatus(t, st, source.ID, kept); err != nil {
 					t.Fatal(err)
 				}
-				harvestNormalize(t, st, obj.ID, norm, entry, model.CardDone, model.OutcomePassed, "## 开放问题\n- [otto] 整理回填\n")
+				harvestNormalize(t, st, obj.ID, norm, entry, model.CardDone, model.OutcomePassed, "## 开放问题\n- [owner] 整理回填\n")
 				if cardStatus(t, st, source.ID) != kept {
 					t.Fatalf("source status %s", cardStatus(t, st, source.ID))
 				}

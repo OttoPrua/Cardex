@@ -310,6 +310,11 @@ func writeRow(ctx context.Context, db *store.Store, v1Home, id string, pl placem
 	if err := db.CreateCard(ctx, &card); err != nil {
 		return err
 	}
+	if pl.Legacy.Status == "owner_choice" {
+		if err := writeOwnerQuestion(ctx, db, objID, id, pl.Title); err != nil {
+			return err
+		}
+	}
 	if err := writeLegacySource(ctx, db, v1Home, id, pl.Legacy.SourcePath); err != nil {
 		return err
 	}
@@ -317,6 +322,32 @@ func writeRow(ctx context.Context, db *store.Store, v1Home, id string, pl placem
 		return nil
 	}
 	return writeHint(ctx, db, id, pl.Hint)
+}
+
+func writeOwnerQuestion(ctx context.Context, db *store.Store, objective, cardID, title string) error {
+	nodeID := "n-" + cardID
+	if _, err := db.GetNode(ctx, nodeID); err == nil {
+		return nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	text := strings.TrimSpace(title)
+	if text == "" {
+		text = cardID
+	}
+	return db.CreateNode(ctx, &model.DesignNode{
+		ID:        nodeID,
+		Objective: objective,
+		Layer:     model.LayerDirection,
+		DocPath:   "docs/design/import.md",
+		Status:    model.NodeDrafting,
+		OpenQuestions: model.OpenQuestionList{{
+			ID:     "oq-" + cardID,
+			Text:   text,
+			Type:   model.OQOwner,
+			Status: model.OQOpen,
+		}},
+	})
 }
 
 func writeLegacySource(ctx context.Context, db *store.Store, v1Home, cardID, rel string) error {

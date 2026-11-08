@@ -231,7 +231,7 @@ func TestFreezeTable(t *testing.T) {
 			node := seedNode(t, st, obj.ID, "", tc.layer)
 			if tc.layer == model.LayerModule && tc.mode == model.FreezeFast {
 				node.OpenQuestions = model.OpenQuestionList{{
-					ID: "otto", Text: "留给 Otto", Type: model.OQOtto, Status: model.OQOpen, CitedPaths: []string{},
+					ID: "owner", Text: "留给使用者", Type: model.OQOwner, Status: model.OQOpen, CitedPaths: []string{},
 				}}
 				if err := st.UpdateNode(t.Context(), &node); err != nil {
 					t.Fatal(err)
@@ -503,7 +503,7 @@ func TestTagsSpikeAndReopen(t *testing.T) {
 - [fact web] 上游文档怎么说
 - [experiment] 缓存能不能撑住
 - [decision] 要不要拆包
-- [otto] 是否继续
+- [owner] 是否继续
 - 没有标签的这条
 `)
 	if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
@@ -517,7 +517,7 @@ func TestTagsSpikeAndReopen(t *testing.T) {
 	if got["仓库测试命令是什么"].Type != model.OQFact || got["上游文档怎么说"].Type != model.OQFact || !isWebText(got["上游文档怎么说"].Text) {
 		t.Fatalf("facts %+v", node.OpenQuestions)
 	}
-	if got["缓存能不能撑住"].Type != model.OQExperiment || got["要不要拆包"].Type != model.OQDecision || got["是否继续"].Type != model.OQOtto {
+	if got["缓存能不能撑住"].Type != model.OQExperiment || got["要不要拆包"].Type != model.OQDecision || got["是否继续"].Type != model.OQOwner {
 		t.Fatalf("kinds %+v", node.OpenQuestions)
 	}
 	if got["没有标签的这条"].Type != model.OQDecision {

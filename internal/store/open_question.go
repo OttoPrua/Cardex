@@ -54,6 +54,51 @@ func migrateOpenQuestions(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
+// migrateLegacyOwnerQuestionTypes rewrites the legacy personal-name type token to owner.
+// Rows that do not contain that token are not updated.
+func migrateLegacyOwnerQuestionTypes(ctx context.Context, conn *sql.Conn) error {
+	rows, err := conn.QueryContext(ctx, `SELECT id, open_questions FROM design_nodes`)
+	if err != nil {
+		return err
+	}
+	type row struct {
+		id  string
+		raw string
+	}
+	var pending []row
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.id, &item.raw); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		pending = append(pending, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range pending {
+		if strings.TrimSpace(item.raw) == "" {
+			continue
+		}
+		next, changed, err := model.RewriteStoredOwnerQuestionTypes([]byte(item.raw))
+		if err != nil {
+			return err
+		}
+		if !changed {
+			continue
+		}
+		if _, err := conn.ExecContext(ctx, `UPDATE design_nodes SET open_questions=? WHERE id=?`, string(next), item.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ListOpenQuestions returns questions limited to nodeID and status.
 // An empty nodeID searches every node. An empty status does not filter by status.
 func (s *Store) ListOpenQuestions(ctx context.Context, nodeID string, status model.OpenQuestionStatus) ([]model.OpenQuestion, error) {

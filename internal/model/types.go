@@ -12,7 +12,7 @@ type Project struct {
 	WorktreeRoot   string   `json:"worktree_root"`   // worktree 根目录，默认在项目根的 worktrees/cardex/。
 	TestCmd        string   `json:"test_cmd"`        // 默认的全量测试命令。
 	DesignDir      string   `json:"design_dir"`      // 设计文档目录，默认 docs/design/。
-	ForbiddenPaths []string `json:"forbidden_paths"` // 触碰前需要 Otto 确认的路径。
+	ForbiddenPaths []string `json:"forbidden_paths"` // 触碰前需要使用者确认的路径。
 }
 
 // Acceptance is an objective's commands and checklist. Both are optional.
@@ -60,7 +60,7 @@ type DesignNode struct {
 type OpenQuestion struct {
 	ID         string             `json:"id"`          // 问题标识。
 	Text       string             `json:"text"`        // 问题原文。旧字符串条目只填这一项。
-	Type       OpenQuestionType   `json:"type"`        // fact、experiment、decision 或 otto。
+	Type       OpenQuestionType   `json:"type"`        // fact、experiment、decision 或 owner。
 	Status     OpenQuestionStatus `json:"status"`      // open、researching、answered、stale 或 unanswered。
 	Asks       int                `json:"asks"`        // 复查次数。
 	Answer     string             `json:"answer"`      // 结论。

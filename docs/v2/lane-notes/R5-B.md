@@ -41,7 +41,7 @@ v1 卡的 `goal` 为对象时按状态落位，不再整卡 unparsed。两次 dr
 
 ## 这次观察
 
-证据在 `/Volumes/Storage/Development/Cardex/cache/cardex-v2-import-rehearsal/evidence/`。源目录调用只有 `internal/importer/import.go:26` Stat、`:133` ReadDir、`:158` ReadFile、`:226` ReadFile、`:345` Stat。`:338` 的 Stat 是 v2 home。生产代码没有源写入。先前 `/var/folders/.../grok-goal-97e62b3682ae/implementer/` 里的报告、curl 状态码和 go test 输出都还在，已复制到 `evidence/prior-rehearsal/`（38 个文件，无缺失）。该目录里的 `cardex` 二进制和 `serve.pid` 不是报告、curl 或测试输出，未复制。
+证据在 `cache/cardex-v2-import-rehearsal/evidence/`。源目录调用只有 `internal/importer/import.go:26` Stat、`:133` ReadDir、`:158` ReadFile、`:226` ReadFile、`:345` Stat。`:338` 的 Stat 是 v2 home。生产代码没有源写入。先前 `/var/folders/.../grok-goal-97e62b3682ae/implementer/` 里的报告、curl 状态码和 go test 输出都还在，已复制到 `evidence/prior-rehearsal/`（38 个文件，无缺失）。该目录里的 `cardex` 二进制和 `serve.pid` 不是报告、curl 或测试输出，未复制。
 
 只读清点后，对 `~/.cardex` 做了一次 `--dry-run` 和一次导入，v2 home 是 `observe-r5b-rework`。两份清点是 `inventory-before.txt`、`inventory-after.txt`，差异是 `inventory-diff.txt`。`inventory-class.txt` 为 A，差异 0 条，没有 `cardex.db`，没有 `v2/`。dry-run 与导入的 v1 计数相同：canceled 654、done 2580、failed 19、held 470、running 2、unparsed 75。tasks+archive 为 3725，比 3643 多 82。75 份 workflow 不在 3643 里：owner_choice 57、writing 11、locally_integrated 7，即这 75 条 unparsed。导入写入新 home 的 3800 张卡，等于 3725+75。
 

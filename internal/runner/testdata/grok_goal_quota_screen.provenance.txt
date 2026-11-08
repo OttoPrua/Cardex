@@ -1,4 +1,4 @@
-frame: /Volumes/Storage/Development/Cardex/artifacts/cardex-refactor-plan-20261030/rounds/R2/R2-B.screen.log
+frame: artifacts/cardex-refactor-plan-20261030/rounds/R2/R2-B.screen.log
 offset: 1643
 length: 142
 time: 2026-10-31T01:29:23+08:00

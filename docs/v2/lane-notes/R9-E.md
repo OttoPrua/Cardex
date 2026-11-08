@@ -1,7 +1,7 @@
 # R9-E
 
 ## 做了什么
-`Runner.harvest` 把已解析的 `r.Home` 传给 `harvest.Harvest`（`internal/sched/loop.go:285`）。Home 非空且 attempt id 安全时，`writeEvidence`（`internal/harvest/harvest.go:78`）写 `attempts/<id>/acceptance.log`：每条验收命令先写 `command`、`exit`、`duration`，再接原始输出。工作区根上有 `.cardex-result.md` 才复制 `result.md`，缺文件不报错。超过 1 MiB 保留首尾各 64 KiB，中间一行 `omitted N bytes`，N 是去掉的原始字节数。写失败在 deliver 成功后只记一条 `attempt:<id>` 的 `evidence_write_failed`（`internal/sched/loop.go:313`），数据是目录路径和错误文本，不含文件正文，也不改变 outcome 或处置。摘录仍是原始输出末 2000 字；已有摘录不覆盖。
+`Runner.harvest` 把已解析的 `r.Home` 传给 `harvest.Harvest`（`internal/sched/loop.go:285`）。Home 非空且 attempt id 安全时，`writeEvidence`（`internal/harvest/harvest.go:78`）写 `attempts/<id>/acceptance.log`：每条验收命令先写一行 `command`、`exit`、`duration`，再接原始输出；下一条 header 在输出不以换行结尾时另起一行，原始输出字节不变。工作区根上有 `.cardex-result.md` 才复制 `result.md`，缺文件不报错。超过 1 MiB 保留首尾各 64 KiB，中间一行 `omitted N bytes`，N 是去掉的原始字节数。写失败在 deliver 成功后只记一条 `attempt:<id>` 的 `evidence_write_failed`（`internal/sched/loop.go:313`），数据是目录路径和错误文本，不含文件正文，也不改变 outcome 或处置。摘录仍是原始输出末 2000 字；已有摘录不覆盖。
 `review_verdict` 记在父卡 `card:<id>`：复核卡、复核尝试、结论、意见（超过 64 KiB 截断并标 `truncated`）、吸收后的 `rework_count`、是否打开了返工上限问题。`ReworkNote` 仍是完整的最新意见。
 生产路径上的 `rework`：
 - `internal/loop/dev_apply.go:111` `ActionRework`，source `tests_failed`，`question_opened` false

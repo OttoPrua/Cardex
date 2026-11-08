@@ -165,13 +165,41 @@ func TestHarvestEvidenceFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := string(log)
-		if !strings.Contains(text, "command=\"printf hello\" exit=0 duration=") || !strings.Contains(text, "command=\"false\" exit=1 duration=") {
+		if !strings.HasPrefix(text, "command=\"printf hello\" exit=0 duration=") || !strings.Contains(text, "hello\ncommand=\"false\" exit=1 duration=") {
 			t.Fatalf("log %q", text)
 		}
-		if !strings.Contains(text, "hello") {
-			t.Fatalf("log missing output %q", text)
+		falseAt := strings.Index(text, "command=\"false\" exit=1 duration=")
+		if falseAt <= 0 || text[falseAt-1] != '\n' {
+			t.Fatalf("second header is not on its own line: %q", text)
+		}
+		if strings.Contains(text, "hellocommand=") {
+			t.Fatalf("header glued to raw output: %q", text)
 		}
 		if res.Excerpt != "hello" || strings.Contains(res.Excerpt, "command=") || strings.Contains(res.Excerpt, "OUTPUT-SECRET") {
+			t.Fatalf("excerpt %q", res.Excerpt)
+		}
+	})
+
+	t.Run("a header stays one line when output already ends with a newline", func(t *testing.T) {
+		dir, head := newRepo(t)
+		home := t.TempDir()
+		in := harvestInput(dir, head, model.Card{
+			ID: "c", Kind: model.KindDev, Acceptance: []string{"printf 'hello\n'", "false"},
+		}, 1, nil, "")
+		in.Home = home
+		res, err := Harvest(context.Background(), in)
+		if err != nil || res.EvidenceErr != nil {
+			t.Fatalf("harvest %v evidence %v", err, res.EvidenceErr)
+		}
+		log, err := os.ReadFile(filepath.Join(home, "attempts", "att", "acceptance.log"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(log)
+		if !strings.Contains(text, "hello\ncommand=\"false\" exit=1 duration=") || strings.Contains(text, "hello\n\ncommand=") {
+			t.Fatalf("log %q", text)
+		}
+		if res.Excerpt != "hello" {
 			t.Fatalf("excerpt %q", res.Excerpt)
 		}
 	})

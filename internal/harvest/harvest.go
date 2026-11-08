@@ -149,6 +149,10 @@ func runAcceptance(ctx context.Context, dir string, commands []string) (acceptSt
 		}
 		start := time.Now()
 		out, err := cmd.CombinedOutput()
+		// A later header starts on its own line. The separator is not part of the raw output.
+		if log.Len() > 0 && log.Bytes()[log.Len()-1] != '\n' {
+			log.WriteByte('\n')
+		}
 		fmt.Fprintf(&log, "command=%s exit=%d duration=%s\n", strconv.Quote(command), exitCode(err), time.Since(start))
 		log.Write(out)
 		all.Write(out)

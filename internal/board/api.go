@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"cardex/internal/homeguard"
 	"cardex/internal/store"
 )
 
@@ -27,7 +28,8 @@ var pageTmpl = template.Must(template.ParseFS(templateFS, "templates/page.html")
 const logTailBytes = 32 * 1024
 
 // Handler is the read-only board mounted by serve. It takes no arguments;
-// the database is {home}/cardex.db, with home from --home or CARDEX_HOME.
+// the database is {home}/cardex.db. Home is --home, else CARDEX_HOME, else
+// the user directory's .cardex, then the v1-data check.
 func Handler() http.Handler {
 	return http.HandlerFunc(serve)
 }
@@ -287,18 +289,18 @@ func resolveHome() (string, error) {
 		home = os.Getenv("CARDEX_HOME")
 	}
 	if home == "" {
-		return "", errors.New("missing --home or CARDEX_HOME")
+		user, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		home = filepath.Join(user, ".cardex")
 	}
 	abs, err := filepath.Abs(home)
 	if err != nil {
 		return "", err
 	}
-	user, err := os.UserHomeDir()
-	if err == nil {
-		banned := filepath.Join(user, ".cardex")
-		if abs == banned || strings.HasPrefix(abs, banned+string(filepath.Separator)) {
-			return "", errors.New("refusing to use ~/.cardex")
-		}
+	if err := homeguard.Check(abs); err != nil {
+		return "", err
 	}
 	return abs, nil
 }

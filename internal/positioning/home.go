@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"cardex/internal/homeguard"
 	"cardex/internal/model"
 	"cardex/internal/store"
 	_ "modernc.org/sqlite"
@@ -55,7 +56,7 @@ type savedProposal struct {
 	Status  string              `json:"status"`
 }
 
-// Open binds a positioning table to home. home must not be ~/.cardex.
+// Open binds a positioning table to home. A v1 data directory is refused.
 func Open(home string) (*Home, error) {
 	if err := refuseHome(home); err != nil {
 		return nil, err
@@ -83,19 +84,11 @@ func refuseHome(path string) error {
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("positioning home is required")
 	}
-	user, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err
 	}
-	banned := filepath.Join(user, ".cardex")
-	if abs == banned || strings.HasPrefix(abs, banned+string(filepath.Separator)) {
-		return fmt.Errorf("refusing path under ~/.cardex")
-	}
-	return nil
+	return homeguard.Check(abs)
 }
 
 // Current returns the approved version, or the config.json positioning section when nothing has been approved.

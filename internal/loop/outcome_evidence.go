@@ -21,13 +21,14 @@ func reviewOpinion(raw string) string {
 
 // sectionBodyNested returns the body of the first heading named name,
 // including deeper headings. The next heading at the same or higher level ends it.
-// An open ``` or ~~~ fence (optional info string) hides headings until a line
-// of that same marker. An unclosed fence runs through the rest of the text.
+// A fence of at least three ` or ~ (optional info string) hides headings until
+// a line of only that same character at least as long as the opener. An unclosed
+// fence runs through the rest of the text.
 func sectionBodyNested(raw, name string) (string, bool) {
 	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
 	start := -1
 	level := 0
-	open := ""
+	var open fenceOpen
 	for i, line := range lines {
 		var skip bool
 		open, skip = advanceFence(open, line)
@@ -46,7 +47,7 @@ func sectionBodyNested(raw, name string) (string, bool) {
 		return "", false
 	}
 	end := len(lines)
-	open = ""
+	open = fenceOpen{}
 	for i := start; i < len(lines); i++ {
 		var skip bool
 		open, skip = advanceFence(open, lines[i])
@@ -62,36 +63,51 @@ func sectionBodyNested(raw, name string) (string, bool) {
 	return strings.Join(lines[start:end], "\n"), true
 }
 
-// advanceFence tracks a ``` or ~~~ fence. A longer run of the same character
-// is not a fence. The returned bool is true when line is inside a fence or is
-// a fence line, so heading detection must skip it.
-func advanceFence(open, line string) (string, bool) {
-	marker, closer := fenceLine(line)
-	if open != "" {
-		if marker == open && closer {
-			return "", true
+// fenceOpen is an unmatched code fence. The zero value means none is open.
+type fenceOpen struct {
+	ch byte
+	n  int
+}
+
+// advanceFence tracks an open fence by marker character and length.
+// A trimmed line whose first run is three or more ` or ~ opens one.
+// While open, heading detection skips every line, including the fence lines.
+// A trimmed line of only the same character, at least as long as the opener
+// and with no info string, closes it. A shorter run, the other character, or
+// a line that still has an info string does not. The returned bool is true
+// when heading detection must skip the line.
+func advanceFence(open fenceOpen, line string) (fenceOpen, bool) {
+	ch, n, rest, ok := leadingFence(line)
+	if open.n > 0 {
+		if ok && ch == open.ch && n >= open.n && strings.TrimSpace(rest) == "" {
+			return fenceOpen{}, true
 		}
 		return open, true
 	}
-	if marker != "" {
-		return marker, true
+	if ok {
+		return fenceOpen{ch: ch, n: n}, true
 	}
-	return "", false
+	return fenceOpen{}, false
 }
 
-func fenceLine(line string) (string, bool) {
+// leadingFence reports a run of at least three ` or ~ at the start of a trimmed line.
+func leadingFence(line string) (ch byte, n int, rest string, ok bool) {
 	trim := strings.TrimSpace(line)
-	for _, marker := range [...]string{"```", "~~~"} {
-		if !strings.HasPrefix(trim, marker) {
-			continue
-		}
-		rest := trim[len(marker):]
-		if rest != "" && rest[0] == marker[0] {
-			return "", false
-		}
-		return marker, strings.TrimSpace(rest) == ""
+	if trim == "" {
+		return 0, 0, "", false
 	}
-	return "", false
+	ch = trim[0]
+	if ch != '`' && ch != '~' {
+		return 0, 0, "", false
+	}
+	i := 0
+	for i < len(trim) && trim[i] == ch {
+		i++
+	}
+	if i < 3 {
+		return 0, 0, "", false
+	}
+	return ch, i, trim[i:], true
 }
 
 func headingLevel(line string) (int, string, bool) {

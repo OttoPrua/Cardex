@@ -249,6 +249,20 @@ func TestReviewVerdictStoresSectionText(t *testing.T) {
 	backtickBody := "rework\n```lang\n# inside\nfalse\n```\nafter the fence\n"
 	unclosedBody := "rework\n~~~\n# still inside\nlater line\n## 同级\nPEER-INSIDE\n"
 	closedBody := "rework\n```sh\n# 复现\nfalse\n```\n取消后任务仍运行\n### 仍在本节\nnested outside"
+	// Four-or-more openers keep the fenced body and the line after the closer.
+	findingBody := "rework\n~~~~sh\n# 复现\nfalse\n~~~~\n取消后任务仍运行\n"
+	backtick4Body := "rework\n````sh\n# 复现\nfalse\n````\n取消后任务仍运行\n"
+	pass4Body := "pass\n````sh\n# 复现\nfalse\n````\n取消后任务仍运行\n"
+	// A longer same-character closer restores the next section boundary.
+	tildeLongerBody := "rework\n~~~sh\n# 复现\nfalse\n~~~~"
+	backtickLongerBody := "rework\n```sh\n# 复现\nfalse\n````"
+	// A shorter run, the other character, or an info string does not close.
+	shorterBody := "rework\n~~~~sh\n# 复现\nfalse\n~~~\n## 同级\nstill inside\n~~~~\n取消后任务仍运行"
+	otherBody := "rework\n~~~~sh\n```\n## 同级\nstill inside\n~~~~\n取消后任务仍运行"
+	infoBody := "rework\n~~~~sh\n~~~~info\n## 同级\nstill inside\n~~~~\n取消后任务仍运行"
+	fiveBody := "rework\n`````sh\n````\n# 复现\nfalse\n`````\n取消后任务仍运行"
+	unclosed4Body := "rework\n````\n# still inside\nlater line\n## 同级\nPEER-INSIDE\n"
+	nextSection := "\n## 下一节\n其他内容\n"
 	cases := []struct {
 		name         string
 		verdict      string
@@ -271,6 +285,17 @@ func TestReviewVerdictStoresSectionText(t *testing.T) {
 		{name: "backtick fence", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "```lang", raw: "## 复核结论\n" + backtickBody, want: backtickBody},
 		{name: "unclosed fence", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "~~~", raw: "## 复核结论\n" + unclosedBody, want: unclosedBody},
 		{name: "heading after closed fence", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "```sh", raw: "PREAMBLE-STAYS-OUT\n## 复核结论\n" + closedBody + "\n## 下一节\nPEER-STAYS-OUT\n", want: closedBody},
+		{name: "finding tilde fence", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "~~~~sh", raw: "## 复核结论\n" + findingBody, want: findingBody},
+		{name: "four backtick fence", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "````sh", raw: "## 复核结论\n" + backtick4Body, want: backtick4Body},
+		{name: "four backtick pass", verdict: "pass", count: 0, wantCount: 0, status: model.CardMergeQueued, raw: "## 复核结论\n" + pass4Body, want: pass4Body},
+		{name: "four backtick over limit", verdict: "rework", count: 2, wantCount: 2, status: model.CardNeedsInput, question: true, reworkEvent: true, note: "````sh", questionText: "rework_count would exceed 2 (review rework): ````sh", raw: "## 复核结论\n" + backtick4Body, want: backtick4Body},
+		{name: "tilde longer closer", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "~~~sh", raw: "## 复核结论\n" + tildeLongerBody + nextSection, want: tildeLongerBody},
+		{name: "backtick longer closer", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "```sh", raw: "## 复核结论\n" + backtickLongerBody + nextSection, want: backtickLongerBody},
+		{name: "shorter run does not close", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "~~~~sh", raw: "## 复核结论\n" + shorterBody + nextSection, want: shorterBody},
+		{name: "other character does not close", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "~~~~sh ```", raw: "## 复核结论\n" + otherBody + nextSection, want: otherBody},
+		{name: "info string does not close", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "~~~~sh ~~~~info", raw: "## 复核结论\n" + infoBody + nextSection, want: infoBody},
+		{name: "five backtick fence", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "`````sh ````", raw: "## 复核结论\n" + fiveBody + nextSection, want: fiveBody},
+		{name: "unclosed four backtick fence", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "````", raw: "## 复核结论\n" + unclosed4Body, want: unclosed4Body},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -317,6 +342,9 @@ func TestReviewVerdictStoresSectionText(t *testing.T) {
 			}
 			if strings.Contains(raw, "PEER-STAYS-OUT") && !strings.Contains(want, "PEER-STAYS-OUT") && strings.Contains(data.Opinion, "PEER-STAYS-OUT") {
 				t.Fatalf("opinion kept the peer section %q", data.Opinion)
+			}
+			if strings.Contains(raw, "其他内容") && !strings.Contains(want, "其他内容") && strings.Contains(data.Opinion, "其他内容") {
+				t.Fatalf("opinion kept the next section %q", data.Opinion)
 			}
 			reworks := f.events("rework")
 			if tc.reworkEvent {

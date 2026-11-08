@@ -27,3 +27,4 @@ N1：设计错误恢复收割传入 runner home，不退回默认 home → `inte
 N2：证据目录用传入 home 原值拼接，只在判空时 trim → `internal/harvest/evidence.go:49` → `TestHarvestEvidenceFiles`
 N3：64 KiB 截断停在完整 UTF-8 字符边界并保留 truncated → `internal/loop/outcome_evidence.go:65` → `TestReviewVerdictStoresSectionText`
 保存复核意见时，``` 与 ~~~ 围栏（可带 info）内的 # 行不是章节边界，未闭合围栏一直到文末；写域内只有这一处提取器会写入 review_verdict → `internal/loop/outcome_evidence.go:26`、`internal/loop/outcome_evidence.go:68`、`internal/loop/outcome_evidence.go:82` → `TestReviewVerdictStoresSectionText`
+合法围栏（至少三个 ` 或 ~，可带 info，含四个及以上）内的标题不结束章节，同字符且长度不小于开启长度、行上没有 info 的闭合才恢复章节边界；写域核对后只有 reviewOpinion 写入 review_verdict 意见（`internal/loop/dev_apply.go:869`），ReviewOf 的 sectionBody（`internal/loop/outcome.go:597`）和 harvest 结果切分（`internal/harvest/parse.go:137`）不是该提取器故未改 → `internal/loop/outcome_evidence.go:27`、`internal/loop/outcome_evidence.go:79` → `TestReviewVerdictStoresSectionText`

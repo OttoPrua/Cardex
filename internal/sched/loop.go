@@ -282,6 +282,7 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			Output:     output,
 			ErrorClass: attempt.ErrorClass,
 			Repo:       attempt.Worktree,
+			Home:       r.Home,
 		})
 		if err != nil {
 			if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
@@ -306,9 +307,31 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
 				return err
 			}
+			continue
+		}
+		if res.EvidenceErr != nil {
+			_ = noteEvidenceWriteFailed(ctx, db, attempt.ID, res.EvidenceErr)
 		}
 	}
 	return first
+}
+
+// noteEvidenceWriteFailed records one event for a failed acceptance.log or
+// result.md write. The payload names the attempt directory, not the file bodies.
+func noteEvidenceWriteFailed(ctx context.Context, db *store.Store, attemptID string, cause error) error {
+	raw, err := json.Marshal(map[string]string{
+		"attempt_id": attemptID,
+		"path":       "attempts/" + attemptID,
+		"error":      cause.Error(),
+	})
+	if err != nil {
+		return err
+	}
+	return db.AppendEvent(ctx, &model.Event{
+		Entity: "attempt:" + attemptID,
+		Type:   "evidence_write_failed",
+		Data:   raw,
+	})
 }
 
 // deliver hands the harvested result to the disposition collaborator.

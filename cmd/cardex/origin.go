@@ -13,7 +13,9 @@ import (
 // model.Card has no origin field; the event is the existing place that can keep it.
 type cardView struct {
 	model.Card
-	Origin string `json:"origin,omitempty"`
+	Origin   string            `json:"origin,omitempty"`
+	History  []cardHistoryItem `json:"history"`
+	Attempts []cardAttemptView `json:"attempts"`
 }
 
 func resolvedOrigin(args []string) string {

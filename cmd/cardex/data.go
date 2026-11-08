@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"cardex/internal/model"
 	"cardex/internal/store"
@@ -479,18 +482,34 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, "card show <id>")
 		return 2
 	}
-	db, err := openStore(home)
+	dir, err := resolveHome(home)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	db, err := store.Open(filepath.Join(dir, "cardex.db"))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	defer db.Close()
-	c, err := db.GetCard(context.Background(), fs.Arg(0))
+	ctx := context.Background()
+	c, err := db.GetCard(ctx, fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	origin, err := loadCardOrigin(context.Background(), db, c.ID)
+	origin, err := loadCardOrigin(ctx, db, c.ID)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	history, err := cardShowHistory(ctx, db, c.ID)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	attempts, err := cardShowAttempts(ctx, db, dir, c.ID)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -499,7 +518,86 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 	if origin != "" {
 		line += "\t" + origin
 	}
-	return emit(stdout, asJSON, cardView{Card: c, Origin: origin}, line)
+	return emit(stdout, asJSON, cardView{Card: c, Origin: origin, History: history, Attempts: attempts}, line)
+}
+
+type cardHistoryItem struct {
+	TS   string          `json:"ts"`
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+}
+
+type cardAttemptView struct {
+	ID       string   `json:"id"`
+	Evidence []string `json:"evidence"`
+}
+
+func cardShowHistory(ctx context.Context, db *store.Store, id string) ([]cardHistoryItem, error) {
+	events, err := db.ListEvents(ctx, "card:"+id)
+	if err != nil {
+		return nil, err
+	}
+	out := []cardHistoryItem{}
+	for _, event := range events {
+		if event.Type != "review_verdict" && event.Type != "rework" {
+			continue
+		}
+		ts := ""
+		if !event.TS.IsZero() {
+			ts = event.TS.UTC().Format(time.RFC3339Nano)
+		}
+		out = append(out, cardHistoryItem{TS: ts, Type: event.Type, Data: cardEventData(event.Data)})
+	}
+	return out, nil
+}
+
+func cardShowAttempts(ctx context.Context, db *store.Store, home, cardID string) ([]cardAttemptView, error) {
+	attempts, err := db.ListAttempts(ctx, cardID)
+	if err != nil {
+		return nil, err
+	}
+	out := []cardAttemptView{}
+	for _, attempt := range attempts {
+		out = append(out, cardAttemptView{
+			ID:       attempt.ID,
+			Evidence: cardEvidencePaths(home, attempt.ID),
+		})
+	}
+	return out, nil
+}
+
+func cardEvidencePaths(home, id string) []string {
+	out := []string{}
+	if strings.TrimSpace(home) == "" || !cardSafeID(id) {
+		return out
+	}
+	for _, name := range []string{"output.log", "acceptance.log", "result.md"} {
+		path := filepath.Join(home, "attempts", id, name)
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		out = append(out, "attempts/"+id+"/"+name)
+	}
+	return out
+}
+
+func cardSafeID(id string) bool {
+	return id != "" && id != "." && id != ".." && !strings.ContainsAny(id, `/\\`)
+}
+
+func cardEventData(data json.RawMessage) json.RawMessage {
+	if len(data) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	if json.Valid(data) {
+		return data
+	}
+	encoded, err := json.Marshal(string(data))
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return encoded
 }
 
 func emit(stdout io.Writer, asJSON bool, v any, line string) int {

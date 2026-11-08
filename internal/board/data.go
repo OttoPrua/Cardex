@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -106,10 +108,17 @@ type windowView struct {
 }
 
 type cardView struct {
-	ID       string        `json:"id"`
-	Title    string        `json:"title"`
-	Status   string        `json:"status"`
-	Attempts []attemptView `json:"attempts"`
+	ID       string         `json:"id"`
+	Title    string         `json:"title"`
+	Status   string         `json:"status"`
+	Attempts []attemptView  `json:"attempts"`
+	History  []historyEvent `json:"history"`
+}
+
+type historyEvent struct {
+	TS   string          `json:"ts"`
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
 }
 
 type eventView struct {
@@ -128,6 +137,7 @@ type attemptView struct {
 	Events       []eventView       `json:"events"`
 	LogTailURL   string            `json:"log_tail_url"`
 	Ended        bool              `json:"ended"`
+	Evidence     []string          `json:"evidence"`
 }
 
 // RouteReasonJSON is the route reason as HTML-escaped text in the card template.
@@ -355,7 +365,18 @@ func loadCard(ctx context.Context, db *store.Store, id string) (*cardView, error
 	if err != nil {
 		return nil, err
 	}
-	view := &cardView{ID: card.ID, Title: card.Title, Status: string(card.Status), Attempts: []attemptView{}}
+	history, err := cardHistory(ctx, db, card.ID)
+	if err != nil {
+		return nil, err
+	}
+	home, err := resolveHome()
+	if err != nil {
+		return nil, err
+	}
+	view := &cardView{
+		ID: card.ID, Title: card.Title, Status: string(card.Status),
+		Attempts: []attemptView{}, History: history,
+	}
 	for _, a := range attempts {
 		events, err := db.ListEvents(ctx, "attempt:"+a.ID)
 		if err != nil {
@@ -376,9 +397,45 @@ func loadCard(ctx context.Context, db *store.Store, id string) (*cardView, error
 			Events:       evs,
 			LogTailURL:   "/attempts/" + a.ID + "/output.log",
 			Ended:        !a.EndedAt.IsZero(),
+			Evidence:     evidencePaths(home, a.ID),
 		})
 	}
 	return view, nil
+}
+
+func cardHistory(ctx context.Context, db *store.Store, id string) ([]historyEvent, error) {
+	events, err := db.ListEvents(ctx, "card:"+id)
+	if err != nil {
+		return nil, err
+	}
+	out := []historyEvent{}
+	for _, event := range events {
+		if event.Type != "review_verdict" && event.Type != "rework" {
+			continue
+		}
+		ts := ""
+		if !event.TS.IsZero() {
+			ts = event.TS.UTC().Format(time.RFC3339Nano)
+		}
+		out = append(out, historyEvent{TS: ts, Type: event.Type, Data: eventData(event.Data)})
+	}
+	return out, nil
+}
+
+func evidencePaths(home, id string) []string {
+	out := []string{}
+	if strings.TrimSpace(home) == "" || !safeID(id) {
+		return out
+	}
+	for _, name := range []string{"output.log", "acceptance.log", "result.md"} {
+		path := filepath.Join(home, "attempts", id, name)
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		out = append(out, "attempts/"+id+"/"+name)
+	}
+	return out
 }
 
 func loadHistory(ctx context.Context, db *store.Store, query, status string, page int) (*historyView, error) {

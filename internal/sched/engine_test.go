@@ -268,6 +268,51 @@ func TestDesignErrorDisposesNamedExit(t *testing.T) {
 	}
 }
 
+func TestDesignErrorHarvestWritesEvidence(t *testing.T) {
+	ctx := context.Background()
+	home, db, wt := designErrorRepo(t)
+	body := "## 事实\nkept result\n"
+	if err := os.WriteFile(filepath.Join(wt, ".cardex-result.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	obj := model.Objective{
+		ID: "auto", Project: "p", Title: "auto", Mode: model.ModeAuto, FreezeMode: model.FreezeFast,
+		Status: model.ObjectiveActive, IntegrationBranch: "main",
+	}
+	if err := db.CreateObjective(ctx, &obj); err != nil {
+		t.Fatal(err)
+	}
+	card := model.Card{
+		ID: "named", Objective: obj.ID, Kind: model.KindResearch, Title: "研究",
+		Body: "notes", Tier: model.TierT1, Status: model.CardRunning,
+		Acceptance: []string{"false"},
+	}
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	code := 0
+	ended := time.Now().UTC()
+	attempt := model.Attempt{
+		ID: "att-ev", Card: card.ID, Index: 0, Worktree: wt,
+		StartedAt: ended.Add(-time.Minute), EndedAt: ended, Exit: &code,
+	}
+	if err := db.CreateAttempt(ctx, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	runner := New(home)
+	if err := runner.noteDesignFailure(ctx, db, obj.ID, fmt.Errorf("design failed for attempt %s", attempt.ID)); err != nil {
+		t.Fatal(err)
+	}
+	acc := filepath.Join(home, "attempts", attempt.ID, "acceptance.log")
+	if _, err := os.Stat(acc); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(home, "attempts", attempt.ID, "result.md"))
+	if err != nil || string(got) != body {
+		t.Fatalf("result.md %q %v", got, err)
+	}
+}
+
 func designErrorRepo(t *testing.T) (string, *store.Store, string) {
 	t.Helper()
 	home, db, repo := newHome(t)

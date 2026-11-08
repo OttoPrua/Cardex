@@ -161,6 +161,40 @@ func TestProdWiring(t *testing.T) {
 		t.Fatalf("inbox %v %v", entries, err)
 	}
 	t.Logf("inbox %s", entries[0].Name())
+	attempts, err := os.ReadDir(filepath.Join(h.Home, "attempts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	both := 0
+	for _, entry := range attempts {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(h.Home, "attempts", entry.Name())
+		if _, err := os.Stat(filepath.Join(dir, "acceptance.log")); err != nil {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(dir, "result.md")); err != nil {
+			continue
+		}
+		both++
+	}
+	if both == 0 {
+		t.Fatal("no harvested attempt has both acceptance.log and result.md")
+	}
+	events, err := h.DB.ListEvents(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verdicts := 0
+	for _, event := range events {
+		if event.Type == "review_verdict" {
+			verdicts++
+		}
+	}
+	if verdicts == 0 {
+		t.Fatal("production wiring recorded no review_verdict")
+	}
 }
 
 func TestProdLookupAllRunners(t *testing.T) {

@@ -30,7 +30,9 @@
   - 配置是 `$CARDEX_HOME/config.json`，只用标准库解析，未知键忽略并给出警告。
 - **目录。**
   - 开发期：home 用 `/Volumes/Storage/Development/Cardex/cache/cardex-v2-dev/home/`，看板端口 `127.0.0.1:8790`。
-  - 切换后：home 是 `~/.cardex/v2/`，看板端口 `8788`，launchd 标签 `com.cardex.serve`。旧文件留在 `~/.cardex/` 原位不动。
+  - 切换后（2026-11-07 Otto 改定）：v2 直接接管 v1 的位置，home 是 `~/.cardex`，看板 `0.0.0.0:8788`，launchd 标签 `com.cardex.serve`。切换时 v1 的 `~/.cardex` 整个改名为 `~/.cardex-v1`，作为导入来源和回退依据，不删除；v2 在新建的 `~/.cardex` 里从导入开始。
+  - home 解析顺序：`--home`，否则 `CARDEX_HOME`，否则 `~/.cardex`。v2 拒绝使用 v1 的数据目录（`tasks/` 里有 `.json` 文件且没有 `cardex.db`），报错时给出 `import-legacy` 的用法。v2 不保留任何端口。
+  - 开发环境的保护放在开发工具上：lane、复核和测试用的 signal 沙箱禁止写 `~/.cardex` 和 `~/.cardex-v1`；影子运行在沙箱外，靠显式的 `CARDEX_HOME` 和脚本静态检查。
 - **不在 v2 中的东西。** Gemini、claudego 兼容、旧 bootstrap 恢复入口、cross、assemble/plan/brief、一次性授权流程、旧 fallback 链、Owner 矩阵和 mixed routing、手工回执和 SHA 读回。
 
 ## 3. 数据模型
@@ -411,15 +413,16 @@ cardex host <attempt-id>                                 # 内部使用
   - 其余（`done`、`failed`、`canceled`）：作为只读历史。
   - v1 的 FrozenRoute 和 `runner_pref`：只作为路由提示保存，不强制。
   - 事件不逐条迁移，只保留指向原文件的路径。
-- **切换步骤**（需要 Otto 授权，由主对话和原安装 owner 执行）：
-  1. 等 v1 没有正在跑的尝试；
-  2. 卸载 v1 的 tick 和 board launchd 项，plist 备份留作回退；
-  3. 安装 v2 二进制，旧二进制改名保留；
-  4. 对 `~/.cardex` 执行 `import-legacy`，写入 `~/.cardex/v2/`；
-  5. 注册 `com.cardex.serve`；
-  6. 冒烟测试：`doctor`、看板、一个小的真实目标；
-  7. 发布新版 cardex-dispatch skill。
-- **回退**：卸载 `com.cardex.serve`，恢复旧 plist 和旧二进制。`~/.cardex` 下的 v1 文件从头到尾都没有被改动。
+- **切换步骤**（需要 Otto 授权，由主对话和原安装 owner 执行；2026-11-07 按“v2 接管原位置”改写，逐条命令见切换手册）：
+  1. 等 v1 没有正在跑的尝试：没有 `.lock`，tick 作业不在运行，没有 pid 仍存活的 `bound` 尝试；
+  2. 卸载 v1 的 tick、board、manager-wake 三个 launchd 项，plist 移到回退目录；
+  3. 把 `~/.cardex` 整个改名为 `~/.cardex-v1`；
+  4. 安装 v2 二进制到 `/opt/homebrew/bin/cardex`，v1 的 `cardex` 和 `cardex-board` 移到回退目录；
+  5. `cardex --home ~/.cardex import-legacy ~/.cardex-v1`，再写 v2 的 `config.json`（显式写 `schedules`）并配置渠道；
+  6. 注册 `com.cardex.serve`：`serve --addr 0.0.0.0:8788`，PATH 让渠道名解析到各 CLI 已验收的外置包装；
+  7. 冒烟测试：`doctor`、看板、一个小的真实目标；
+  8. 发布新版 cardex-dispatch skill。
+- **回退**：卸载 `com.cardex.serve`；`~/.cardex` 改名为 `~/.cardex-v2-failed`，`~/.cardex-v1` 改回 `~/.cardex`；恢复 v1 的两个二进制和三个 plist。v1 的文件从头到尾都没有被改动。`~/.cardex-v1` 的删除另行授权。
 
 ## 15. 不做（v2.0）
 

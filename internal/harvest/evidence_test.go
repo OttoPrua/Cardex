@@ -116,17 +116,66 @@ func TestHarvestEvidenceFiles(t *testing.T) {
 
 	t.Run("blank home writes nothing", func(t *testing.T) {
 		dir, head := newRepo(t)
-		home := t.TempDir()
+		cwd := t.TempDir()
+		t.Chdir(cwd)
 		write(t, dir, ".cardex-result.md", "## 事实\nx\n")
 		in := harvestInput(dir, head, model.Card{ID: "c", Kind: model.KindResearch}, 0, nil, "")
-		in.Home = "  "
+		in.Home = " \t "
 		res, err := Harvest(context.Background(), in)
 		if err != nil || res.EvidenceErr != nil {
 			t.Fatalf("harvest %v evidence %v", err, res.EvidenceErr)
 		}
-		entries, err := os.ReadDir(home)
-		if err != nil || len(entries) != 0 {
-			t.Fatalf("home entries %+v %v", entries, err)
+		for _, root := range []string{cwd, dir} {
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if entry.Name() == "attempts" {
+					t.Fatalf("wrote attempts under %s", root)
+				}
+			}
+		}
+		if _, err := os.Stat(filepath.Join("attempts", "att", "acceptance.log")); !os.IsNotExist(err) {
+			t.Fatalf("relative acceptance.log: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join("attempts", "att", "result.md")); !os.IsNotExist(err) {
+			t.Fatalf("relative result.md: %v", err)
+		}
+	})
+
+	t.Run("trailing space home is joined as given", func(t *testing.T) {
+		dir, head := newRepo(t)
+		parent := t.TempDir()
+		home := filepath.Join(parent, "home ")
+		if err := os.MkdirAll(home, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		trimmed := strings.TrimSpace(home)
+		if trimmed == home {
+			t.Fatal("fixture lost its trailing space")
+		}
+		body := "## 事实\nkept\n"
+		write(t, dir, ".cardex-result.md", body)
+		in := harvestInput(dir, head, model.Card{ID: "c", Kind: model.KindResearch}, 0, nil, "")
+		in.Home = home
+		res, err := Harvest(context.Background(), in)
+		if err != nil || res.EvidenceErr != nil {
+			t.Fatalf("harvest %v evidence %v", err, res.EvidenceErr)
+		}
+		acc := filepath.Join(home, "attempts", in.Attempt.ID, "acceptance.log")
+		if _, err := os.Stat(acc); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(home, "attempts", in.Attempt.ID, "result.md"))
+		if err != nil || string(got) != body {
+			t.Fatalf("result.md %q %v", got, err)
+		}
+		if _, err := os.Stat(filepath.Join(trimmed, "attempts", in.Attempt.ID, "acceptance.log")); !os.IsNotExist(err) {
+			t.Fatalf("acceptance.log under trimmed home: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(trimmed, "attempts", in.Attempt.ID, "result.md")); !os.IsNotExist(err) {
+			t.Fatalf("result.md under trimmed home: %v", err)
 		}
 	})
 

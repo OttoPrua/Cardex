@@ -864,7 +864,9 @@ func (st *step) absorbPlan(card model.Card, attempt model.Attempt) error {
 }
 
 func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
-	verdict, opinion, ok := ReviewOf(readResult(attempt))
+	raw := readResult(attempt)
+	verdict, opinion, ok := ReviewOf(raw)
+	stored := reviewOpinion(raw)
 	if !ok || len(card.Deps) == 0 {
 		card.Status = model.CardNeedsInput
 		if err := st.saveCard(card); err != nil {
@@ -881,7 +883,7 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		if err := st.saveCard(parent); err != nil {
 			return err
 		}
-		if err := st.noteReviewVerdict(parent, card, attempt, verdict, opinion, false); err != nil {
+		if err := st.noteReviewVerdict(parent, card, attempt, verdict, stored, false); err != nil {
 			return err
 		}
 		card.Status = model.CardDone
@@ -913,7 +915,7 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 			return err
 		}
 	}
-	if err := st.noteReviewVerdict(parent, card, attempt, verdict, opinion, questionOpened); err != nil {
+	if err := st.noteReviewVerdict(parent, card, attempt, verdict, stored, questionOpened); err != nil {
 		return err
 	}
 	if err := st.noteRework(parent, attempt, reworkSourceReview, questionOpened); err != nil {

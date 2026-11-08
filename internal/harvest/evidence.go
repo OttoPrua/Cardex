@@ -36,11 +36,11 @@ func truncateEvidence(in []byte) []byte {
 }
 
 // writeEvidence writes acceptance.log for a harvested attempt and, when the
-// result file was present, result.md. home or attemptID empty skips both.
+// result file was present, result.md. A blank home or attempt id skips both.
+// The home path is joined as given; only the emptiness check trims it.
 func writeEvidence(home, attemptID string, acceptance []byte, haveResult bool, result []byte) error {
-	home = strings.TrimSpace(home)
 	attemptID = strings.TrimSpace(attemptID)
-	if home == "" || attemptID == "" {
+	if strings.TrimSpace(home) == "" || attemptID == "" {
 		return nil
 	}
 	if attemptID == "." || attemptID == ".." || strings.ContainsAny(attemptID, `/\\`) {

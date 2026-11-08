@@ -172,6 +172,7 @@ func (r *Runner) disposeOpenDesign(ctx context.Context, db *store.Store, objecti
 		Exit:       *hit.Exit,
 		ErrorClass: hit.ErrorClass,
 		Repo:       hit.Worktree,
+		Home:       r.Home,
 	})
 	if err != nil {
 		return err

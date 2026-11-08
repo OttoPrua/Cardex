@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"cardex/internal/model"
 )
@@ -59,7 +60,7 @@ func TestReviewRoundsKeepVerdictsAndNote(t *testing.T) {
 		if err := json.Unmarshal(ev.Data, &data); err != nil {
 			t.Fatal(err)
 		}
-		if data.ReviewCardID != round.id || data.ReviewAttemptID != round.id+"-0" || data.Verdict != round.verdict || data.Opinion != round.opinion || data.Truncated || data.ReworkCount != round.count || data.QuestionOpened {
+		if data.ReviewCardID != round.id || data.ReviewAttemptID != round.id+"-0" || data.Verdict != round.verdict || data.Opinion != round.verdict+"\n"+round.opinion+"\n" || data.Truncated || data.ReworkCount != round.count || data.QuestionOpened {
 			t.Fatalf("round %d %+v", i, data)
 		}
 	}
@@ -106,7 +107,8 @@ func TestReviewOpinionTruncatesEventOnly(t *testing.T) {
 	if err := json.Unmarshal(verdicts[0].Data, &data); err != nil {
 		t.Fatal(err)
 	}
-	if !data.Truncated || data.Opinion != strings.Repeat("Z", 64*1024) || strings.Contains(data.Opinion, "TAILMARK") || data.QuestionOpened || data.ReworkCount != 1 {
+	section := "rework\n" + opinion + "\n"
+	if !data.Truncated || data.Opinion != section[:64*1024] || strings.Contains(data.Opinion, "TAILMARK") || data.QuestionOpened || data.ReworkCount != 1 {
 		t.Fatalf("data truncated %v len %d", data.Truncated, len(data.Opinion))
 	}
 }
@@ -139,7 +141,7 @@ func TestReworkLimitMarksBothEvents(t *testing.T) {
 	if err := json.Unmarshal(verdicts[0].Data, &verdict); err != nil {
 		t.Fatal(err)
 	}
-	if !verdict.QuestionOpened || verdict.ReworkCount != 2 || verdict.Verdict != "rework" || verdict.Opinion != "still broken" || verdict.ReviewAttemptID != attempt.ID {
+	if !verdict.QuestionOpened || verdict.ReworkCount != 2 || verdict.Verdict != "rework" || verdict.Opinion != "rework\nstill broken\n" || strings.Contains(verdict.Opinion, "NOISE-RESULT-SECRET") || verdict.ReviewAttemptID != attempt.ID {
 		t.Fatalf("verdict %+v", verdict)
 	}
 	var rework reworkData
@@ -235,4 +237,153 @@ type reworkData struct {
 	QuestionOpened bool   `json:"question_opened"`
 	AcceptanceLog  string `json:"acceptance_log"`
 	Excerpt        string `json:"excerpt"`
+}
+
+func TestReviewVerdictStoresSectionText(t *testing.T) {
+	cases := []struct {
+		name        string
+		verdict     string
+		count       int
+		wantCount   int
+		status      model.CardStatus
+		question    bool
+		reworkEvent bool
+	}{
+		{name: "pass", verdict: "pass", count: 0, wantCount: 0, status: model.CardMergeQueued},
+		{name: "rework", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true},
+		{name: "over limit", verdict: "rework", count: 2, wantCount: 2, status: model.CardNeedsInput, question: true, reworkEvent: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFx(t, model.ModeManual)
+			ch := f.channel("ch-a", "a")
+			f.card(model.Card{ID: "dev", Status: model.CardReviewing, Channel: ch.ID, ReworkCount: tc.count})
+			raw := "PREAMBLE-STAYS-OUT\n## 复核结论\n" + tc.verdict + "\n### 阻断项\nnested line\n## 下一节\nPEER-STAYS-OUT\n"
+			dir := writeResult(t, raw)
+			review := f.card(model.Card{
+				ID: "rev", Kind: model.KindReview, Tier: model.TierT3,
+				Status: model.CardHarvesting, Deps: []string{"dev"},
+			})
+			attempt := f.attempt(review, 0, model.OutcomePassed, ch.ID, "")
+			attempt.Worktree = dir
+			if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
+				t.Fatal(err)
+			}
+			f.step()
+			got := f.mustCard("dev")
+			if got.Status != tc.status || got.ReworkCount != tc.wantCount || got.ReworkNote != "" {
+				t.Fatalf("card %+v", got)
+			}
+			verdicts := f.events("review_verdict")
+			if len(verdicts) != 1 {
+				t.Fatalf("verdicts %d", len(verdicts))
+			}
+			var data reviewVerdictData
+			if err := json.Unmarshal(verdicts[0].Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			want := tc.verdict + "\n### 阻断项\nnested line"
+			if data.Verdict != tc.verdict || data.Opinion != want || data.Truncated || data.QuestionOpened != tc.question || data.ReworkCount != tc.wantCount {
+				t.Fatalf("verdict %+v", data)
+			}
+			if !strings.Contains(data.Opinion, "阻断项") || !strings.Contains(data.Opinion, "\n") {
+				t.Fatalf("opinion %q", data.Opinion)
+			}
+			if strings.Contains(data.Opinion, "PREAMBLE-STAYS-OUT") || strings.Contains(data.Opinion, "PEER-STAYS-OUT") || strings.Contains(data.Opinion, "下一节") {
+				t.Fatalf("opinion kept text outside the section %q", data.Opinion)
+			}
+			reworks := f.events("rework")
+			if tc.reworkEvent {
+				if len(reworks) != 1 {
+					t.Fatalf("reworks %+v", reworks)
+				}
+			} else if len(reworks) != 0 {
+				t.Fatalf("reworks %+v", reworks)
+			}
+			questions := f.questions()
+			if tc.question {
+				if len(questions) != 1 || questions[0].Text != "rework_count would exceed 2 (review rework)" || strings.Contains(questions[0].Text, "阻断项") {
+					t.Fatalf("question %+v", questions)
+				}
+			} else if len(questions) != 0 {
+				t.Fatalf("questions %+v", questions)
+			}
+		})
+	}
+
+	t.Run("no section stores the full text", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		ch := f.channel("ch-a", "a")
+		f.card(model.Card{ID: "dev", Status: model.CardReviewing, Channel: ch.ID})
+		raw := "before the verdict\nrework\nstill\nbroken\n"
+		dir := writeResult(t, raw)
+		review := f.card(model.Card{
+			ID: "rev", Kind: model.KindReview, Tier: model.TierT3,
+			Status: model.CardHarvesting, Deps: []string{"dev"},
+		})
+		attempt := f.attempt(review, 0, model.OutcomePassed, ch.ID, "")
+		attempt.Worktree = dir
+		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
+			t.Fatal(err)
+		}
+		f.step()
+		got := f.mustCard("dev")
+		if got.ReworkNote != "still broken" || got.ReworkCount != 1 {
+			t.Fatalf("card %+v", got)
+		}
+		verdicts := f.events("review_verdict")
+		if len(verdicts) != 1 {
+			t.Fatalf("verdicts %d", len(verdicts))
+		}
+		var data reviewVerdictData
+		if err := json.Unmarshal(verdicts[0].Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		if data.Verdict != "rework" || data.Opinion != raw || data.Truncated || !strings.Contains(data.Opinion, "before the verdict") || !strings.Contains(data.Opinion, "\n") {
+			t.Fatalf("verdict %+v", data)
+		}
+	})
+
+	t.Run("utf-8 boundary", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		ch := f.channel("ch-a", "a")
+		f.card(model.Card{ID: "dev", Status: model.CardReviewing, Channel: ch.ID})
+		raw := "rework " + strings.Repeat("A", 65535-len("rework ")) + "中"
+		dir := writeResult(t, raw)
+		review := f.card(model.Card{
+			ID: "rev", Kind: model.KindReview, Tier: model.TierT3,
+			Status: model.CardHarvesting, Deps: []string{"dev"},
+		})
+		attempt := f.attempt(review, 0, model.OutcomePassed, ch.ID, "")
+		attempt.Worktree = dir
+		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
+			t.Fatal(err)
+		}
+		f.step()
+		got := f.mustCard("dev")
+		if got.ReworkCount != 1 || !strings.Contains(got.ReworkNote, "中") || strings.Contains(got.ReworkNote, "\n") {
+			t.Fatalf("note %q", got.ReworkNote)
+		}
+		verdicts := f.events("review_verdict")
+		if len(verdicts) != 1 {
+			t.Fatalf("verdicts %d", len(verdicts))
+		}
+		var data reviewVerdictData
+		if err := json.Unmarshal(verdicts[0].Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		if !data.Truncated || data.Verdict != "rework" || len(data.Opinion) > 65536 || !utf8.ValidString(data.Opinion) || strings.ContainsRune(data.Opinion, '\uFFFD') || strings.Contains(data.Opinion, "中") {
+			t.Fatalf("truncated %v len %d valid %v opinion tail %q", data.Truncated, len(data.Opinion), utf8.ValidString(data.Opinion), tailRunes(data.Opinion))
+		}
+		if !utf8.ValidString(string(verdicts[0].Data)) || strings.Contains(strings.ToLower(string(verdicts[0].Data)), `\ufffd`) {
+			t.Fatal("stored event is not valid UTF-8")
+		}
+	})
+}
+
+func tailRunes(s string) string {
+	if len(s) <= 16 {
+		return s
+	}
+	return s[len(s)-16:]
 }

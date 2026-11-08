@@ -116,7 +116,7 @@ func TestHarvestReworkEvidence(t *testing.T) {
 		if err := json.Unmarshal(verdicts[0].Data, &verdict); err != nil {
 			t.Fatal(err)
 		}
-		if verdict.ReviewCardID != "rv" || verdict.ReviewAttemptID != "a-rv" || verdict.Verdict != "rework" || verdict.Opinion != "boundary broke" || verdict.Truncated || verdict.ReworkCount != 1 || verdict.QuestionOpened {
+		if verdict.ReviewCardID != "rv" || verdict.ReviewAttemptID != "a-rv" || verdict.Verdict != "rework" || verdict.Opinion != "rework\nboundary broke\n" || verdict.Truncated || verdict.ReworkCount != 1 || verdict.QuestionOpened {
 			t.Fatalf("verdict %+v", verdict)
 		}
 		var rework reworkEvent
@@ -236,7 +236,7 @@ func TestHarvestReworkEvidence(t *testing.T) {
 		if err := json.Unmarshal(reworks[0].Data, &rework); err != nil {
 			t.Fatal(err)
 		}
-		if !verdict.QuestionOpened || verdict.ReworkCount != 2 || verdict.Opinion != "still broken" || !rework.QuestionOpened || rework.Source != "review" || rework.ReworkCount != 2 || rework.AttemptID != "a-rv" {
+		if !verdict.QuestionOpened || verdict.ReworkCount != 2 || verdict.Opinion != "rework\nstill broken\n" || !rework.QuestionOpened || rework.Source != "review" || rework.ReworkCount != 2 || rework.AttemptID != "a-rv" {
 			t.Fatalf("verdict %+v rework %+v", verdict, rework)
 		}
 	})

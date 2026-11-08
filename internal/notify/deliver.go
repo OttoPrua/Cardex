@@ -31,6 +31,9 @@ type deliveryState struct {
 	wakeSeq   int             // Hermes wake sequence for this delivery; 0 if none
 	wakeID    string
 	digest    string
+	wakeRoot  string
+	wakeSub   string
+	wakeKey   string
 }
 
 // Service delivers one question to the origin, then the fallback, then the inbox.
@@ -49,6 +52,9 @@ type Service struct {
 	hermesWrote  bool
 	hermesWake   string
 	hermesDigest string
+	hermesRoot   string
+	hermesSub    string
+	hermesKey    string
 }
 
 // New returns a deliverer. now may be nil, in which case time.Now is used.
@@ -78,8 +84,17 @@ func (s *Service) Deliver(ctx context.Context, msg Message) error {
 	diag := s.hydrateLocked(home, msg.QuestionID)
 	state := s.sent[msg.QuestionID]
 	if !s.dueLocked(msg.QuestionID, now) {
-		if state.wakeSeq > 0 && state.wakeID != "" && !hermesAckCovers(homeOf(msg), msg.SubscriptionID, state.wakeID, state.digest) {
-			return errors.Join(diag, s.rewriteHermes(msg, now, state.wakeSeq))
+		root, sub := watchHermes(msg, state)
+		if state.wakeSeq > 0 && state.wakeID != "" && !hermesAckCovers(root, sub, state.wakeID, state.digest) {
+			if strings.TrimSpace(msg.SubscriptionID) == "" {
+				msg.SubscriptionID = sub
+			}
+			return errors.Join(diag, s.rewriteHermes(msg, now, state.wakeSeq, root))
+		}
+		if state.wakeSeq > 0 && state.wakeID != "" && hermesAckCovers(root, sub, state.wakeID, state.digest) {
+			if err := s.markHermesDelivered(home, msg.QuestionID, state); err != nil {
+				return errors.Join(diag, err)
+			}
 		}
 		return diag
 	}
@@ -90,6 +105,9 @@ func (s *Service) Deliver(ctx context.Context, msg Message) error {
 	s.hermesWrote = false
 	s.hermesWake = ""
 	s.hermesDigest = ""
+	s.hermesRoot = ""
+	s.hermesSub = ""
+	s.hermesKey = ""
 	completed, err := s.deliverOnce(ctx, msg, now, seq)
 	next := deliveryState{
 		at:        now,
@@ -103,6 +121,11 @@ func (s *Service) Deliver(ctx context.Context, msg Message) error {
 		next.wakeSeq = seq
 		next.wakeID = s.hermesWake
 		next.digest = s.hermesDigest
+		next.wakeSub = s.hermesSub
+		next.wakeKey = s.hermesKey
+		if s.hermesRoot != "" && s.hermesRoot != home {
+			next.wakeRoot = s.hermesRoot
+		}
 	}
 	s.sent[msg.QuestionID] = next
 	if saveErr := saveReminder(home, msg.QuestionID, next); saveErr != nil {
@@ -127,26 +150,66 @@ func (s *Service) hydrateLocked(home, id string) error {
 
 // rewriteHermes writes the current delivery again. The reminder gap stays put,
 // and the wake sequence is the one this delivery already owns.
-func (s *Service) rewriteHermes(msg Message, now time.Time, seq int) error {
-	home := homeOf(msg)
+func (s *Service) rewriteHermes(msg Message, now time.Time, seq int, root string) error {
+	if strings.TrimSpace(root) == "" {
+		root = homeOf(msg)
+	}
 	var errs []error
 	wrote := false
-	try := func(originID string) {
+	tryAt := func(base, originID, key string) {
 		wrote = true
-		if err := s.deliverHermes(home, originID, msg, now, seq); err != nil {
+		if strings.TrimSpace(base) == "" {
+			base = root
+		}
+		if err := s.deliverHermes(base, originID, msg, now, seq, key); err != nil {
 			errs = append(errs, err)
 		}
 	}
+	if key := s.sent[msg.QuestionID].wakeKey; strings.HasPrefix(key, "receiver:") {
+		id := strings.TrimPrefix(key, "receiver:")
+		for _, rec := range msg.Receivers {
+			if rec.ID != id || rec.Adapter != "hermes" {
+				continue
+			}
+			msg.SubscriptionID = rec.ID
+			tryAt(rec.Root, rec.Target, key)
+			return errors.Join(errs...)
+		}
+	}
 	if kind, id, ok := ParseOrigin(msg.Origin); ok && kind == "hermes" {
-		try(id)
+		tryAt(root, id, "origin")
 	}
 	if kind, id, ok := ParseOrigin(msg.Fallback); ok && kind == "hermes" && msg.Fallback != msg.Origin {
-		try(id)
+		tryAt(root, id, "fallback")
 	}
 	if !wrote {
 		return nil
 	}
 	return errors.Join(errs...)
+}
+
+func watchHermes(msg Message, state deliveryState) (root, sub string) {
+	root = state.wakeRoot
+	if strings.TrimSpace(root) == "" {
+		root = homeOf(msg)
+	}
+	sub = state.wakeSub
+	if strings.TrimSpace(sub) == "" {
+		sub = msg.SubscriptionID
+	}
+	return root, sub
+}
+
+func (s *Service) markHermesDelivered(home, id string, state deliveryState) error {
+	if state.wakeKey == "" || state.completed[state.wakeKey] {
+		return nil
+	}
+	if state.completed == nil {
+		state.completed = map[string]bool{}
+	}
+	state.completed[state.wakeKey] = true
+	s.sent[id] = state
+	return saveReminder(home, id, state)
 }
 
 func homeOf(msg Message) string {
@@ -165,33 +228,37 @@ func (s *Service) dueLocked(id string, now time.Time) bool {
 }
 
 func (s *Service) deliverOnce(ctx context.Context, msg Message, now time.Time, seq int) (map[string]bool, error) {
-	home := homeOf(msg)
 	completed := map[string]bool{}
 	var errs []error
-	if kind, id, ok := ParseOrigin(msg.Origin); ok {
-		if err := s.deliverAdapter(ctx, home, kind, id, msg, now, seq); err != nil {
+	hops, skips, problems := Resolve(msg)
+	for _, reason := range skips {
+		errs = append(errs, &SkipError{Reason: reason})
+	}
+	errs = append(errs, problems...)
+	for _, hop := range hops {
+		if err := s.deliverHop(ctx, msg, hop, now, seq); err != nil {
 			errs = append(errs, err)
 		} else {
-			completed["origin"] = true
+			completed[hop.Key] = true
 		}
-	} else if strings.TrimSpace(msg.Origin) != "" {
-		errs = append(errs, fmt.Errorf("notify: origin %q", msg.Origin))
-	}
-	if kind, id, ok := ParseOrigin(msg.Fallback); ok && msg.Fallback != msg.Origin {
-		if err := s.deliverAdapter(ctx, home, kind, id, msg, now, seq); err != nil {
-			errs = append(errs, err)
-		} else {
-			completed["fallback"] = true
-		}
-	} else if strings.TrimSpace(msg.Fallback) != "" && msg.Fallback != msg.Origin {
-		errs = append(errs, fmt.Errorf("notify: fallback %q", msg.Fallback))
-	}
-	if err := writeInbox(home, msg); err != nil {
-		errs = append(errs, err)
-	} else {
-		completed["inbox"] = true
 	}
 	return completed, errors.Join(errs...)
+}
+
+func (s *Service) deliverHop(ctx context.Context, msg Message, hop Hop, now time.Time, seq int) error {
+	home := homeOf(msg)
+	switch hop.Kind {
+	case "inbox":
+		return writeInbox(home, msg)
+	case "hermes":
+		hopMsg := msg
+		hopMsg.SubscriptionID = hop.Sub
+		return s.deliverHermes(hop.Root, hop.ID, hopMsg, now, seq, hop.Key)
+	case "codex", "lark", "file":
+		return s.deliverAdapter(ctx, home, hop.Kind, hop.ID, msg, now, seq)
+	default:
+		return fmt.Errorf("notify: adapter %q", hop.Kind)
+	}
 }
 
 func (s *Service) deliverAdapter(ctx context.Context, home, kind, id string, msg Message, now time.Time, seq int) error {
@@ -199,7 +266,7 @@ func (s *Service) deliverAdapter(ctx context.Context, home, kind, id string, msg
 	case "codex":
 		return s.execArgv(ctx, codexArgv(id, msg.Text))
 	case "hermes":
-		return s.deliverHermes(home, id, msg, now, seq)
+		return s.deliverHermes(home, id, msg, now, seq, "hermes")
 	case "lark":
 		return s.execArgv(ctx, larkArgv(id, msg.Text))
 	case "file":

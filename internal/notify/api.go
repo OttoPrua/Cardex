@@ -18,6 +18,10 @@ type Message struct {
 	Home           string // CARDEX_HOME，file 适配器写到这里的 inbox/。
 	Fallback       string // 配置的后备目的地。
 	SubscriptionID string // hermes 订阅 id。origin 不含它，由调用方传入。
+	Kind           string // 问题种类。events 过滤只用它，origin 不受影响。
+	Project        string // 所属项目，供 scope.projects 匹配。
+	Dir            string // 目录，供 scope.dir_prefixes 匹配。
+	Receivers      []Receiver
 }
 
 // Deliverer sends a message once and reminds later if it is still unanswered.

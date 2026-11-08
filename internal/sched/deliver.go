@@ -25,17 +25,27 @@ func (r *Runner) deliveryMessage(ctx context.Context, db *store.Store, q model.Q
 	return msg, nil
 }
 
-// fillDelivery sets the four fields every delivery path shares.
-// Home is this serve home. SubscriptionID stays empty: v2 does not infer it,
-// and a channel SourceGroup is an account, not a subscription id.
+// fillDelivery sets the fields every delivery path shares.
+// Home is this serve home. SubscriptionID stays empty: the subscription id is
+// resolved from notify.receivers when the message is delivered, and a channel
+// SourceGroup is an account, not a subscription id.
 // Fallback comes only from this home's config.json notify.fallback.
 // Origin prefers the card origin event, otherwise the objective origin.
+// Receivers, kind, project, and dir come from this home so scope matching can run.
 func (r *Runner) fillDelivery(ctx context.Context, db *store.Store, msg *notify.Message) error {
 	if r == nil || msg == nil {
 		return nil
 	}
 	msg.Home = r.Home
 	msg.SubscriptionID = ""
+	if receivers, warnings, loadErr := notify.LoadReceivers(r.Home); loadErr == nil {
+		msg.Receivers = receivers
+		for _, warning := range warnings {
+			if err := r.noteReceiverWarning(ctx, db, warning.String()); err != nil {
+				return err
+			}
+		}
+	}
 	fallback, err := r.notifyFallback(ctx, db)
 	if err != nil {
 		return err
@@ -49,16 +59,21 @@ func (r *Runner) fillDelivery(ctx context.Context, db *store.Store, msg *notify.
 		if strings.TrimSpace(msg.Origin) == "" && strings.TrimSpace(msg.Objective) != "" {
 			if obj, objErr := db.GetObjective(ctx, msg.Objective); objErr == nil {
 				msg.Origin = strings.TrimSpace(obj.Origin)
+				msg.Project = strings.TrimSpace(obj.Project)
+				msg.Dir = r.projectDir(ctx, db, obj.Project)
 			}
 		}
 		return nil
 	}
+	msg.Kind = string(q.Kind)
 	if msg.Objective == "" {
 		msg.Objective = q.Objective
 	}
 	origin := ""
 	if obj, objErr := db.GetObjective(ctx, q.Objective); objErr == nil {
 		origin = strings.TrimSpace(obj.Origin)
+		msg.Project = strings.TrimSpace(obj.Project)
+		msg.Dir = r.projectDir(ctx, db, obj.Project)
 	}
 	if q.ScopeKind == "card" && strings.TrimSpace(q.Scope) != "" {
 		if cardOrigin, cardErr := cardOriginEvent(ctx, db, q.Scope); cardErr == nil && strings.TrimSpace(cardOrigin) != "" {
@@ -107,6 +122,42 @@ func (r *Runner) notifyFallback(ctx context.Context, db *store.Store) (string, e
 	return fallback, nil
 }
 
+func (r *Runner) projectDir(ctx context.Context, db *store.Store, projectID string) string {
+	if db == nil || strings.TrimSpace(projectID) == "" {
+		return ""
+	}
+	project, err := db.GetProject(ctx, projectID)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(project.RepoPath)
+}
+
+func (r *Runner) noteReceiverWarning(ctx context.Context, db *store.Store, reason string) error {
+	if db == nil || strings.TrimSpace(reason) == "" {
+		return nil
+	}
+	const entity = "config:notify"
+	events, err := db.ListEvents(ctx, entity)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if event.Type == "notify_warning" && strings.Contains(string(event.Data), reason) {
+			return nil
+		}
+	}
+	raw, err := json.Marshal(map[string]string{"reason": reason})
+	if err != nil {
+		return err
+	}
+	return db.AppendEvent(ctx, &model.Event{
+		Entity: entity,
+		Type:   "notify_warning",
+		Data:   raw,
+	})
+}
+
 func (r *Runner) noteNotifyWarning(ctx context.Context, db *store.Store, fallback string) error {
 	if db == nil {
 		return nil
@@ -145,7 +196,7 @@ func (r *Runner) handoffDelivery(ctx context.Context, db *store.Store, msg notif
 	}
 	skip, failed := deliveryErrorParts(cause)
 	if skip {
-		if err := r.noteDeliverySkip(ctx, db, msg.QuestionID); err != nil {
+		if err := r.noteDeliverySkip(ctx, db, msg.QuestionID, cause); err != nil {
 			return err
 		}
 	}
@@ -174,13 +225,17 @@ func deliveryErrorParts(cause error) (skip, failed bool) {
 	return skip, failed
 }
 
-func (r *Runner) noteDeliverySkip(ctx context.Context, db *store.Store, questionID string) error {
+func (r *Runner) noteDeliverySkip(ctx context.Context, db *store.Store, questionID string, cause error) error {
 	if db == nil {
 		return nil
 	}
+	reason := notify.SkipReason(cause)
+	if reason == "" {
+		reason = "缺订阅 id"
+	}
 	raw, err := json.Marshal(map[string]string{
 		"question": questionID,
-		"reason":   "缺订阅 id",
+		"reason":   reason,
 	})
 	if err != nil {
 		return err

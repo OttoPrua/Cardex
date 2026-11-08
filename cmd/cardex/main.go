@@ -34,6 +34,7 @@ commands:
   schedule list|run <name>
   scorecard
   import-legacy [--dry-run] <v1-home>
+  notify add|list|remove|test
   doctor
   host <attempt-id>
 `
@@ -82,6 +83,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return cmdSchedule(home, asJSON, rest[1:], stdout, stderr)
 	case "import-legacy":
 		return cmdImport(home, rest[1:], stdout, stderr)
+	case "notify":
+		return cmdNotify(home, asJSON, rest[1:], stdout, stderr)
 	case "doctor":
 		return cmdDoctor(home, rest[1:], stdout, stderr)
 	case "host":

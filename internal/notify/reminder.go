@@ -30,6 +30,9 @@ type reminderRecord struct {
 	WakeSeq    int             `json:"wake_seq"`
 	WakeID     string          `json:"wake_id"`
 	Digest     string          `json:"digest"`
+	WakeRoot   string          `json:"wake_root,omitempty"`
+	WakeSub    string          `json:"wake_sub,omitempty"`
+	WakeKey    string          `json:"wake_key,omitempty"`
 	Completed  map[string]bool `json:"completed,omitempty"`
 }
 
@@ -166,6 +169,9 @@ func recordFromState(st deliveryState) reminderRecord {
 		WakeSeq:    st.wakeSeq,
 		WakeID:     st.wakeID,
 		Digest:     st.digest,
+		WakeRoot:   st.wakeRoot,
+		WakeSub:    st.wakeSub,
+		WakeKey:    st.wakeKey,
 		Completed:  st.completed,
 	}
 }
@@ -177,6 +183,9 @@ func stateFromRecord(rec reminderRecord) deliveryState {
 		wakeSeq:   rec.WakeSeq,
 		wakeID:    rec.WakeID,
 		digest:    rec.Digest,
+		wakeRoot:  rec.WakeRoot,
+		wakeSub:   rec.WakeSub,
+		wakeKey:   rec.WakeKey,
 		completed: rec.Completed,
 	}
 }

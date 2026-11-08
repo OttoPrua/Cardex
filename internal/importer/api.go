@@ -9,6 +9,7 @@ type Report struct {
 	DryRun   bool           // 为真时没有写入 v2 行。
 	Counts   map[string]int // 按 v1 状态和 v2 落位分别计数。
 	Unparsed []string       // 无法解析或无法落位的条目及原因。
+	Notes    []string       // 订阅导入里映射不到、冲突、或没有对应通知的条目。
 }
 
 // Import reads v1Home and, unless dryRun, writes into the v2 home.

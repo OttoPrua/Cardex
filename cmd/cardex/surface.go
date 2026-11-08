@@ -1157,4 +1157,7 @@ func printImportReport(stdout io.Writer, report importer.Report) {
 	for _, line := range report.Unparsed {
 		fmt.Fprintf(stdout, "unparsed: %s\n", line)
 	}
+	for _, line := range report.Notes {
+		fmt.Fprintf(stdout, "note: %s\n", line)
+	}
 }

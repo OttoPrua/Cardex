@@ -33,3 +33,16 @@ Approving a positioning proposal uses `positioning approve <id>` after `position
 ## Handing a decision to Otto
 
 Handing a decision to Otto is required for a direction freeze, a safe-mode module freeze, a reopen of an already frozen node, a budget exhaustion, a breaker, and an objective-done question. Do not pick those options in this session. A fast-mode module freeze and a detail-layer freeze stay automatic.
+
+## 接收通知
+
+The managing session registers itself, then checks that one test message arrives. Pick an id for this session and run:
+
+```
+cardex notify add --id <自取 id> --from-origin
+cardex notify test <id>
+```
+
+`--from-origin` reads `--origin` when that flag is set, otherwise `CARDEX_ORIGIN`. `codex:<thread>` becomes a codex receiver. `hermes:<profile>/<session>` becomes a hermes receiver.
+
+A Hermes receiver reads `<root>/control/manager-wake/hermes-inbox/<id>/*.json`. The inbound file fields are `schema`, `subscription_id`, `provider`, `session_type`, `session_id`, `profile`, `wake_event_ids`, `message`, `inbound_digest`, and `ts`. After reading it, write `<wake>.ack.json` in that same directory. The ack fields are `schema`, `wake_event_ids`, `inbound_digest`, and `received_at`. `cardex notify test` reports received only after that ack file exists.

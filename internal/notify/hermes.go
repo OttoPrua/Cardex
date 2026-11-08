@@ -238,20 +238,26 @@ func hermesAckCovers(home, subscriptionID, wakeID, digest string) bool {
 	return false
 }
 
-func (s *Service) deliverHermes(home, originID string, msg Message, now time.Time, seq int) error {
-	wakeID, digest, err := writeHermesInbound(home, originID, msg, now, seq)
+func (s *Service) deliverHermes(root, originID string, msg Message, now time.Time, seq int, key string) error {
+	if strings.TrimSpace(root) == "" {
+		root = homeOf(msg)
+	}
+	wakeID, digest, err := writeHermesInbound(root, originID, msg, now, seq)
 	if err != nil {
 		return err
 	}
 	s.hermesWrote = true
 	s.hermesWake = wakeID
 	s.hermesDigest = digest
+	s.hermesRoot = root
+	s.hermesSub = msg.SubscriptionID
+	s.hermesKey = key
 	if s.receiveHermes != nil {
-		if err := s.receiveHermes(home, msg.SubscriptionID); err != nil {
+		if err := s.receiveHermes(root, msg.SubscriptionID); err != nil {
 			return err
 		}
 	}
-	if !hermesAckCovers(home, msg.SubscriptionID, wakeID, digest) {
+	if !hermesAckCovers(root, msg.SubscriptionID, wakeID, digest) {
 		return fmt.Errorf("hermes_ack_missing")
 	}
 	return nil

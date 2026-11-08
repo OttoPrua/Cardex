@@ -3,6 +3,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -449,6 +450,166 @@ func TestProdWiringCLIFirstDispatch(t *testing.T) {
 	if _, err := os.Stat(attempts[0].Worktree); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestProdWiringHermesAck appends one production question delivery.
+// sched.New leaves Engine unset by the test. A hermes receiver in the temp
+// home resolves the objective origin, the wake file lands under that
+// receiver's root, and the reminder ledger records the hop after the ack.
+func TestProdWiringHermesAck(t *testing.T) {
+	t.Setenv("GROK_HOME", t.TempDir())
+	root := t.TempDir()
+	home := filepath.Join(root, "home")
+	repo := filepath.Join(root, "repo")
+	wakeRoot := filepath.Join(root, "hermes-root")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(func() {
+		attempts, err := db.ListAttempts(context.Background(), "")
+		if err != nil {
+			return
+		}
+		for _, attempt := range attempts {
+			if attempt.PID > 1 {
+				_ = host.SignalProcess(attempt.PID, syscall.SIGKILL)
+			}
+			if pgid := executorPGID(home, attempt.ID); pgid > 1 {
+				_ = host.SignalGroup(pgid, syscall.SIGKILL)
+			}
+		}
+	})
+	prodGit(t, repo, "init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prodGit(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "add", "a.txt")
+	prodGit(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "base")
+	ctx := context.Background()
+	if err := db.CreateProject(ctx, &model.Project{
+		ID: "p", RepoPath: repo, WorktreeRoot: filepath.Join(root, "wt"),
+		TestCmd: "true", DesignDir: "docs/design/",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateObjective(ctx, &model.Objective{
+		ID: "obj", Project: "p", Title: "obj", Mode: model.ModeAuto, FreezeMode: model.FreezeFast,
+		Status: model.ObjectiveActive, IntegrationBranch: "main", Origin: "hermes:profile-a/example-manager",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateChannel(ctx, &model.Channel{
+		ID: "ch", Runner: model.RunnerFake, Family: "fam", SourceGroup: "fam",
+		Health: model.HealthOK, Models: []string{"m"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateNode(ctx, &model.DesignNode{
+		ID: "dir", Objective: "obj", Layer: model.LayerDirection,
+		Status: model.NodeFreezable, OpenQuestions: model.OpenQuestionList{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := json.Marshal(map[string]any{
+		"schedules": []any{},
+		"notify": map[string]any{
+			"receivers": []map[string]any{{
+				"id": "example-manager", "adapter": "hermes", "target": "profile-a/example-manager",
+				"root": wakeRoot, "enabled": true,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.json"), append(cfg, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := sched.New(home)
+	if r.Engine == nil {
+		t.Fatal("production runner is missing Engine")
+	}
+	tickCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	err = r.Tick(tickCtx)
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	qs, err := db.ListQuestions(ctx, "obj")
+	if err != nil || len(qs) != 1 || qs[0].Answer != "" {
+		t.Fatalf("questions %+v %v", qs, err)
+	}
+	inbox := filepath.Join(wakeRoot, "control", "manager-wake", "hermes-inbox", "example-manager")
+	entries, err := os.ReadDir(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wakePath := ""
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".json") && !strings.HasSuffix(entry.Name(), ".ack.json") {
+			wakePath = filepath.Join(inbox, entry.Name())
+		}
+	}
+	if wakePath == "" {
+		t.Fatalf("no wake under %s", inbox)
+	}
+	t.Logf("wake %s", wakePath)
+	raw, err := os.ReadFile(wakePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inbound struct {
+		WakeEventIDs  []string `json:"wake_event_ids"`
+		InboundDigest string   `json:"inbound_digest"`
+	}
+	if err := json.Unmarshal(raw, &inbound); err != nil || inbound.InboundDigest == "" || len(inbound.WakeEventIDs) == 0 {
+		t.Fatalf("inbound %s %v", raw, err)
+	}
+	ack, err := json.Marshal(map[string]any{
+		"schema":         "cardex.manager_wake.hermes_ack.v1",
+		"wake_event_ids": inbound.WakeEventIDs,
+		"inbound_digest": inbound.InboundDigest,
+		"received_at":    time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ackPath := strings.TrimSuffix(wakePath, ".json") + ".ack.json"
+	if err := os.WriteFile(ackPath, append(ack, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tickCtx, cancel = context.WithTimeout(ctx, 25*time.Second)
+	err = r.Tick(tickCtx)
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bookRaw, err := os.ReadFile(filepath.Join(home, "notify", "reminders.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var book struct {
+		Questions map[string]struct {
+			WakeKey   string          `json:"wake_key"`
+			Completed map[string]bool `json:"completed"`
+		} `json:"questions"`
+	}
+	if err := json.Unmarshal(bookRaw, &book); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := book.Questions[qs[0].ID]
+	if !ok || rec.WakeKey == "" || !rec.Completed[rec.WakeKey] {
+		t.Fatalf("delivered %+v", book.Questions)
+	}
+	t.Logf("delivered %s %s", qs[0].ID, rec.WakeKey)
 }
 
 func prodCLI(t *testing.T, bin, home string, args ...string) {

@@ -240,25 +240,49 @@ type reworkData struct {
 }
 
 func TestReviewVerdictStoresSectionText(t *testing.T) {
+	sample := func(verdict string) (raw, want string) {
+		body := verdict + "\n~~~sh\n# 复现\nfalse\n~~~\n取消后任务仍运行\n"
+		return "## 复核结论\n" + body, body
+	}
+	sampleReworkRaw, sampleReworkWant := sample("rework")
+	samplePassRaw, samplePassWant := sample("pass")
+	backtickBody := "rework\n```lang\n# inside\nfalse\n```\nafter the fence\n"
+	unclosedBody := "rework\n~~~\n# still inside\nlater line\n## 同级\nPEER-INSIDE\n"
+	closedBody := "rework\n```sh\n# 复现\nfalse\n```\n取消后任务仍运行\n### 仍在本节\nnested outside"
 	cases := []struct {
-		name        string
-		verdict     string
-		count       int
-		wantCount   int
-		status      model.CardStatus
-		question    bool
-		reworkEvent bool
+		name         string
+		verdict      string
+		count        int
+		wantCount    int
+		status       model.CardStatus
+		question     bool
+		reworkEvent  bool
+		note         string
+		questionText string
+		raw          string
+		want         string
 	}{
 		{name: "pass", verdict: "pass", count: 0, wantCount: 0, status: model.CardMergeQueued},
 		{name: "rework", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true},
-		{name: "over limit", verdict: "rework", count: 2, wantCount: 2, status: model.CardNeedsInput, question: true, reworkEvent: true},
+		{name: "over limit", verdict: "rework", count: 2, wantCount: 2, status: model.CardNeedsInput, question: true, reworkEvent: true, questionText: "rework_count would exceed 2 (review rework)"},
+		{name: "sample rework", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "~~~sh", raw: sampleReworkRaw, want: sampleReworkWant},
+		{name: "sample pass", verdict: "pass", count: 0, wantCount: 0, status: model.CardMergeQueued, raw: samplePassRaw, want: samplePassWant},
+		{name: "sample over limit", verdict: "rework", count: 2, wantCount: 2, status: model.CardNeedsInput, question: true, reworkEvent: true, note: "~~~sh", questionText: "rework_count would exceed 2 (review rework): ~~~sh", raw: sampleReworkRaw, want: sampleReworkWant},
+		{name: "backtick fence", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "```lang", raw: "## 复核结论\n" + backtickBody, want: backtickBody},
+		{name: "unclosed fence", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "~~~", raw: "## 复核结论\n" + unclosedBody, want: unclosedBody},
+		{name: "heading after closed fence", verdict: "rework", count: 0, wantCount: 1, status: model.CardReady, reworkEvent: true, note: "```sh", raw: "PREAMBLE-STAYS-OUT\n## 复核结论\n" + closedBody + "\n## 下一节\nPEER-STAYS-OUT\n", want: closedBody},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFx(t, model.ModeManual)
 			ch := f.channel("ch-a", "a")
 			f.card(model.Card{ID: "dev", Status: model.CardReviewing, Channel: ch.ID, ReworkCount: tc.count})
-			raw := "PREAMBLE-STAYS-OUT\n## 复核结论\n" + tc.verdict + "\n### 阻断项\nnested line\n## 下一节\nPEER-STAYS-OUT\n"
+			raw := tc.raw
+			want := tc.want
+			if raw == "" {
+				raw = "PREAMBLE-STAYS-OUT\n## 复核结论\n" + tc.verdict + "\n### 阻断项\nnested line\n## 下一节\nPEER-STAYS-OUT\n"
+				want = tc.verdict + "\n### 阻断项\nnested line"
+			}
 			dir := writeResult(t, raw)
 			review := f.card(model.Card{
 				ID: "rev", Kind: model.KindReview, Tier: model.TierT3,
@@ -271,38 +295,51 @@ func TestReviewVerdictStoresSectionText(t *testing.T) {
 			}
 			f.step()
 			got := f.mustCard("dev")
-			if got.Status != tc.status || got.ReworkCount != tc.wantCount || got.ReworkNote != "" {
+			if got.Status != tc.status || got.ReworkCount != tc.wantCount || got.ReworkNote != tc.note || strings.Contains(got.ReworkNote, "取消后任务仍运行") || strings.Contains(got.ReworkNote, "# 复现") {
 				t.Fatalf("card %+v", got)
 			}
 			verdicts := f.events("review_verdict")
-			if len(verdicts) != 1 {
-				t.Fatalf("verdicts %d", len(verdicts))
+			if len(verdicts) != 1 || verdicts[0].Entity != "card:dev" {
+				t.Fatalf("verdicts %+v", verdicts)
 			}
 			var data reviewVerdictData
 			if err := json.Unmarshal(verdicts[0].Data, &data); err != nil {
 				t.Fatal(err)
 			}
-			want := tc.verdict + "\n### 阻断项\nnested line"
-			if data.Verdict != tc.verdict || data.Opinion != want || data.Truncated || data.QuestionOpened != tc.question || data.ReworkCount != tc.wantCount {
+			if data.Verdict != tc.verdict || data.Opinion != want || data.Truncated || data.QuestionOpened != tc.question || data.ReworkCount != tc.wantCount || data.ReviewCardID != review.ID || data.ReviewAttemptID != attempt.ID {
 				t.Fatalf("verdict %+v", data)
 			}
-			if !strings.Contains(data.Opinion, "阻断项") || !strings.Contains(data.Opinion, "\n") {
+			if !strings.Contains(data.Opinion, "\n") {
 				t.Fatalf("opinion %q", data.Opinion)
 			}
-			if strings.Contains(data.Opinion, "PREAMBLE-STAYS-OUT") || strings.Contains(data.Opinion, "PEER-STAYS-OUT") || strings.Contains(data.Opinion, "下一节") {
-				t.Fatalf("opinion kept text outside the section %q", data.Opinion)
+			if strings.Contains(raw, "PREAMBLE-STAYS-OUT") && strings.Contains(data.Opinion, "PREAMBLE-STAYS-OUT") {
+				t.Fatalf("opinion kept the preamble %q", data.Opinion)
+			}
+			if strings.Contains(raw, "PEER-STAYS-OUT") && !strings.Contains(want, "PEER-STAYS-OUT") && strings.Contains(data.Opinion, "PEER-STAYS-OUT") {
+				t.Fatalf("opinion kept the peer section %q", data.Opinion)
 			}
 			reworks := f.events("rework")
 			if tc.reworkEvent {
-				if len(reworks) != 1 {
+				if len(reworks) != 1 || reworks[0].Entity != "card:dev" {
 					t.Fatalf("reworks %+v", reworks)
+				}
+				var rework reworkData
+				if err := json.Unmarshal(reworks[0].Data, &rework); err != nil {
+					t.Fatal(err)
+				}
+				if rework.Source != "review" || rework.AttemptID != attempt.ID || rework.ReworkCount != tc.wantCount || rework.QuestionOpened != tc.question || rework.AcceptanceLog != "" || rework.Excerpt != "" {
+					t.Fatalf("rework %+v", rework)
 				}
 			} else if len(reworks) != 0 {
 				t.Fatalf("reworks %+v", reworks)
 			}
 			questions := f.questions()
 			if tc.question {
-				if len(questions) != 1 || questions[0].Text != "rework_count would exceed 2 (review rework)" || strings.Contains(questions[0].Text, "阻断项") {
+				wantQ := tc.questionText
+				if wantQ == "" {
+					wantQ = "rework_count would exceed 2 (review rework)"
+				}
+				if len(questions) != 1 || questions[0].Text != wantQ || strings.Contains(questions[0].Text, "取消后任务仍运行") || strings.Contains(questions[0].Text, "# 复现") {
 					t.Fatalf("question %+v", questions)
 				}
 			} else if len(questions) != 0 {

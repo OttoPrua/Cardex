@@ -26,3 +26,4 @@ B2：`review_verdict` 的 opinion 取原始「复核结论」整节（含嵌套�
 N1：设计错误恢复收割传入 runner home，不退回默认 home → `internal/sched/engine.go:175` → `TestDesignErrorHarvestWritesEvidence`
 N2：证据目录用传入 home 原值拼接，只在判空时 trim → `internal/harvest/evidence.go:49` → `TestHarvestEvidenceFiles`
 N3：64 KiB 截断停在完整 UTF-8 字符边界并保留 truncated → `internal/loop/outcome_evidence.go:65` → `TestReviewVerdictStoresSectionText`
+保存复核意见时，``` 与 ~~~ 围栏（可带 info）内的 # 行不是章节边界，未闭合围栏一直到文末；写域内只有这一处提取器会写入 review_verdict → `internal/loop/outcome_evidence.go:26`、`internal/loop/outcome_evidence.go:68`、`internal/loop/outcome_evidence.go:82` → `TestReviewVerdictStoresSectionText`

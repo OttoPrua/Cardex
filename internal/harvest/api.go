@@ -18,16 +18,18 @@ type Input struct {
 	Output     []byte           // 执行器输出。
 	ErrorClass model.ErrorClass // runner.Classify 的结果。
 	Repo       string           // 用于比较符号的仓库。
+	Home       string           // serve 解析出的 CARDEX_HOME。空则不写证据文件。
 }
 
 // Result is the outcome and the evidence behind it.
 type Result struct {
-	Outcome    model.Outcome    // 由工作区证据决定的结果。
-	ErrorClass model.ErrorClass // 错误类。
-	Excerpt    string           // 错误或失败摘录。
-	Claims     []model.Claim    // 按实际改动更新后的声明；超出声明不算失败。
-	Evidence   string           // 判定依据。
-	ResultText string           // 宽松解析前的结果文件原文。
+	Outcome     model.Outcome    // 由工作区证据决定的结果。
+	ErrorClass  model.ErrorClass // 错误类。
+	Excerpt     string           // 错误或失败摘录。
+	Claims      []model.Claim    // 按实际改动更新后的声明；超出声明不算失败。
+	Evidence    string           // 判定依据。
+	ResultText  string           // 宽松解析前的结果文件原文。
+	EvidenceErr error            // acceptance.log 或 result.md 写失败。outcome 不变。
 }
 
 // Harvest reads the exit code, the event stream, the diff, acceptance, and the result file.

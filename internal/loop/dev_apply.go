@@ -108,6 +108,9 @@ func (st *step) apply(card model.Card, attempt model.Attempt) error {
 		if err := st.reschedule(card, attempt, dec); err != nil {
 			return err
 		}
+		if err := st.noteRework(card, attempt, reworkSourceTests, false); err != nil {
+			return err
+		}
 	case ActionQuestion, ActionVoid:
 		card.Status = model.CardNeedsInput
 		card.WaitReason = ""
@@ -116,6 +119,11 @@ func (st *step) apply(card model.Card, attempt model.Attempt) error {
 		}
 		if err := st.openQuestion(dec.QuestionKind, card.ID, "card", dec.QuestionText, true); err != nil {
 			return err
+		}
+		if dec.Action == ActionQuestion && reworkLimitQuestion(dec.QuestionText) {
+			if err := st.noteRework(card, attempt, reworkSourceTests, true); err != nil {
+				return err
+			}
 		}
 		if dec.Action == ActionVoid {
 			if err := st.event("attempt:"+attempt.ID, "attempt_voided", map[string]string{
@@ -873,11 +881,15 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		if err := st.saveCard(parent); err != nil {
 			return err
 		}
+		if err := st.noteReviewVerdict(parent, card, attempt, verdict, opinion, false); err != nil {
+			return err
+		}
 		card.Status = model.CardDone
 		return st.saveCard(card)
 	}
 	parent.ReworkNote = opinion
 	dec := reworkOrQuestion(parent, st.cfg.ReworkLimit, "review rework")
+	questionOpened := !dec.SetRework
 	if dec.SetRework {
 		parent.ReworkCount = dec.ReworkCount
 		parent.Status = model.CardReady
@@ -901,8 +913,60 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 			return err
 		}
 	}
+	if err := st.noteReviewVerdict(parent, card, attempt, verdict, opinion, questionOpened); err != nil {
+		return err
+	}
+	if err := st.noteRework(parent, attempt, reworkSourceReview, questionOpened); err != nil {
+		return err
+	}
 	card.Status = model.CardDone
 	return st.saveCard(card)
+}
+
+const (
+	reworkSourceReview = "review"
+	reworkSourceTests  = "tests_failed"
+)
+
+func reworkLimitQuestion(text string) bool {
+	return strings.HasPrefix(text, "rework_count would exceed ")
+}
+
+func (st *step) noteReviewVerdict(parent, review model.Card, attempt model.Attempt, verdict, opinion string, questionOpened bool) error {
+	text, truncated := truncateOpinion(opinion)
+	return st.event("card:"+parent.ID, "review_verdict", map[string]any{
+		"review_card_id":    review.ID,
+		"review_attempt_id": attempt.ID,
+		"verdict":           verdict,
+		"opinion":           text,
+		"truncated":         truncated,
+		"rework_count":      parent.ReworkCount,
+		"question_opened":   questionOpened,
+	})
+}
+
+func (st *step) noteRework(card model.Card, attempt model.Attempt, source string, questionOpened bool) error {
+	data := map[string]any{
+		"source":          source,
+		"attempt_id":      attempt.ID,
+		"rework_count":    card.ReworkCount,
+		"question_opened": questionOpened,
+	}
+	if source == reworkSourceTests {
+		data["acceptance_log"] = "attempts/" + attempt.ID + "/acceptance.log"
+		data["excerpt"] = st.existingExcerpt(attempt)
+	}
+	return st.event("card:"+card.ID, "rework", data)
+}
+
+// existingExcerpt prefers the excerpt already stored on the attempt. Deliver
+// still leaves that value in place when it is non-empty.
+func (st *step) existingExcerpt(attempt model.Attempt) string {
+	stored, err := st.db.GetAttempt(st.ctx, attempt.ID)
+	if err == nil && stored.ErrorExcerpt != "" {
+		return stored.ErrorExcerpt
+	}
+	return attempt.ErrorExcerpt
 }
 
 func (st *step) absorbNormalize(card model.Card, attempt model.Attempt) error {

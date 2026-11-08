@@ -1,12 +1,14 @@
 package harvest
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -43,7 +45,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	acc, accOut, err := runAcceptance(ctx, dir, in.Card.Acceptance)
+	acc, accOut, accLog, err := runAcceptance(ctx, dir, in.Card.Acceptance)
 	if err != nil {
 		return Result{}, err
 	}
@@ -72,6 +74,9 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	}
 	if outcome == model.OutcomeTimeout && acc == acceptTimeout && !runnerClass(in.ErrorClass) {
 		res.ErrorClass = model.ErrorTimeout
+	}
+	if werr := writeEvidence(in.Home, in.Attempt.ID, accLog, result != resultMissing, []byte(raw)); werr != nil {
+		res.EvidenceErr = werr
 	}
 	return res, nil
 }
@@ -107,7 +112,7 @@ func mergeClaims(card string, declared, actual []model.Claim) []model.Claim {
 	return out
 }
 
-func runAcceptance(ctx context.Context, dir string, commands []string) (acceptState, string, error) {
+func runAcceptance(ctx context.Context, dir string, commands []string) (acceptState, string, []byte, error) {
 	var cmds []string
 	for _, c := range commands {
 		if c = strings.TrimSpace(c); c != "" {
@@ -115,7 +120,7 @@ func runAcceptance(ctx context.Context, dir string, commands []string) (acceptSt
 		}
 	}
 	if len(cmds) == 0 {
-		return acceptOK, "", nil
+		return acceptOK, "", nil, nil
 	}
 	timeout := defaultAcceptanceTimeout
 	if dl, ok := ctx.Deadline(); ok {
@@ -129,6 +134,7 @@ func runAcceptance(ctx context.Context, dir string, commands []string) (acceptSt
 	actx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var all strings.Builder
+	var log bytes.Buffer
 	for _, command := range cmds {
 		cmd := exec.CommandContext(actx, "/bin/sh", "-c", command)
 		cmd.Dir = dir
@@ -141,24 +147,38 @@ func runAcceptance(ctx context.Context, dir string, commands []string) (acceptSt
 			}
 			return host.SignalGroup(cmd.Process.Pid, syscall.SIGKILL)
 		}
+		start := time.Now()
 		out, err := cmd.CombinedOutput()
+		fmt.Fprintf(&log, "command=%s exit=%d duration=%s\n", strconv.Quote(command), exitCode(err), time.Since(start))
+		log.Write(out)
 		all.Write(out)
 		if err == nil {
 			continue
 		}
 		if ctx.Err() == context.Canceled && actx.Err() != context.DeadlineExceeded {
-			return acceptOK, "", ctx.Err()
+			return acceptOK, "", nil, ctx.Err()
 		}
 		if actx.Err() == context.DeadlineExceeded {
-			return acceptTimeout, tail(all.String()), nil
+			return acceptTimeout, tail(all.String()), log.Bytes(), nil
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return acceptFailed, tail(all.String()), nil
+			return acceptFailed, tail(all.String()), log.Bytes(), nil
 		}
-		return acceptOK, "", err
+		return acceptOK, "", nil, err
 	}
-	return acceptOK, tail(all.String()), nil
+	return acceptOK, tail(all.String()), log.Bytes(), nil
+}
+
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
 }
 
 func excerptFor(outcome model.Outcome, acc acceptState, accOut string, output []byte) string {

@@ -24,7 +24,7 @@ func TestHelpListsCommands(t *testing.T) {
 	}
 	for _, name := range []string{
 		"serve", "project", "objective", "node", "card", "question", "channel",
-		"route", "positioning", "schedule", "scorecard", "import-legacy", "doctor", "host",
+		"route", "positioning", "schedule", "scorecard", "import-legacy", "notify", "doctor", "host",
 		"add", "list", "show", "set", "pause", "resume", "cancel", "freeze", "reopen",
 		"retry", "revive", "answer", "check", "explain", "proposals", "approve", "reject", "run",
 	} {

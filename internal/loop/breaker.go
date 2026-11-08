@@ -198,7 +198,7 @@ func applyNotify(cfg *Config, top map[string]json.RawMessage) {
 		return
 	}
 	for key := range body {
-		if key != "fallback" {
+		if key != "fallback" && key != "receivers" {
 			cfg.Warnings = append(cfg.Warnings, "unknown notify key "+key)
 		}
 	}

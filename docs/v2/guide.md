@@ -54,6 +54,47 @@ cardex objective add --project p --title 账单 --mode auto --freeze-mode fast -
 
 方向冻结、预算用尽、熔断和目标完成，都交给 Otto。管理会话只在 Otto 已经选好选项时替他提交。
 
+## 配置通知
+
+管理会话先给自己登记一个接收者，再发一条测试。id 自己取。在这个会话里执行：
+
+```
+cardex notify add --id <自取 id> --from-origin
+cardex notify test <id>
+```
+
+`--from-origin` 使用 `--origin`，没有该旗标时使用 `CARDEX_ORIGIN`。`codex:<thread>` 记成 codex 接收者，`hermes:<profile>/<session>` 记成 hermes 接收者。
+
+Hermes 接收者读取 `<root>/control/manager-wake/hermes-inbox/<id>/*.json`。入站字段是 `schema`、`subscription_id`、`provider`、`session_type`、`session_id`、`profile`、`wake_event_ids`、`message`、`inbound_digest`、`ts`。读完后在同一目录写 `<wake>.ack.json`。确认字段是 `schema`、`wake_event_ids`、`inbound_digest`、`received_at`。`notify test` 要等这个确认文件出现才报告已经收到。
+
+`config.json` 里一条完整的 `notify` 配置如下。`scope` 全空时这条只用来解析 origin，不主动订阅。`events` 为空表示全部问题种类。`root` 省略时 Hermes 收件目录落在本次数据目录。
+
+```json
+{
+  "notify": {
+    "fallback": "codex:thread-0001",
+    "receivers": [
+      {
+        "id": "example-manager",
+        "adapter": "hermes",
+        "target": "profile-a/example-manager",
+        "root": "/path/to/hermes-root",
+        "scope": {
+          "projects": ["p"],
+          "objectives": ["obj"],
+          "dir_prefixes": ["/path/to/repo"],
+          "all": false
+        },
+        "events": ["freeze", "reopen", "breaker", "budget", "refusal", "done", "custom"],
+        "enabled": true
+      }
+    ]
+  }
+}
+```
+
+`cardex notify list` 列出每个接收者以及 enabled 或 disabled。`cardex notify remove <id>` 删除一条。重复的 id 不会覆盖已有条目。
+
 ## 看板
 
 `serve` 同时跑调度循环和只读看板。它在标准输出打印实际监听地址，用浏览器打开那个地址即可。不要自行指定被拒绝的保留端口。看板只展示，不改卡、不回答问题。

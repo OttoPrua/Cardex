@@ -25,12 +25,26 @@ type reminderFile struct {
 }
 
 type reminderRecord struct {
-	AtUnixNano int64           `json:"at_unix_nano"`
-	GapNS      int64           `json:"gap_ns"`
-	WakeSeq    int             `json:"wake_seq"`
-	WakeID     string          `json:"wake_id"`
-	Digest     string          `json:"digest"`
-	Completed  map[string]bool `json:"completed,omitempty"`
+	AtUnixNano int64             `json:"at_unix_nano"`
+	GapNS      int64             `json:"gap_ns"`
+	WakeSeq    int               `json:"wake_seq"`
+	WakeID     string            `json:"wake_id"`
+	Digest     string            `json:"digest"`
+	WakeRoot   string            `json:"wake_root,omitempty"`
+	WakeSub    string            `json:"wake_sub,omitempty"`
+	WakeKey    string            `json:"wake_key,omitempty"`
+	Hops       []hermesHopRecord `json:"hermes_hops,omitempty"`
+	Completed  map[string]bool   `json:"completed,omitempty"`
+}
+
+type hermesHopRecord struct {
+	Key      string `json:"key"`
+	Root     string `json:"root,omitempty"`
+	Sub      string `json:"sub,omitempty"`
+	WakeID   string `json:"wake_id"`
+	Digest   string `json:"digest"`
+	Seq      int    `json:"seq"`
+	OriginID string `json:"origin_id,omitempty"`
 }
 
 func reminderPath(home string) string {
@@ -160,23 +174,43 @@ func writeReminders(home string, all reminderFile) error {
 }
 
 func recordFromState(st deliveryState) reminderRecord {
-	return reminderRecord{
+	rec := reminderRecord{
 		AtUnixNano: st.at.UnixNano(),
 		GapNS:      int64(st.gap),
 		WakeSeq:    st.wakeSeq,
 		WakeID:     st.wakeID,
 		Digest:     st.digest,
+		WakeRoot:   st.wakeRoot,
+		WakeSub:    st.wakeSub,
+		WakeKey:    st.wakeKey,
 		Completed:  st.completed,
 	}
+	for _, hop := range st.wakes {
+		rec.Hops = append(rec.Hops, hermesHopRecord{
+			Key: hop.Key, Root: hop.Root, Sub: hop.Sub,
+			WakeID: hop.WakeID, Digest: hop.Digest, Seq: hop.Seq, OriginID: hop.OriginID,
+		})
+	}
+	return rec
 }
 
 func stateFromRecord(rec reminderRecord) deliveryState {
-	return deliveryState{
+	st := deliveryState{
 		at:        time.Unix(0, rec.AtUnixNano).UTC(),
 		gap:       time.Duration(rec.GapNS),
 		wakeSeq:   rec.WakeSeq,
 		wakeID:    rec.WakeID,
 		digest:    rec.Digest,
+		wakeRoot:  rec.WakeRoot,
+		wakeSub:   rec.WakeSub,
+		wakeKey:   rec.WakeKey,
 		completed: rec.Completed,
 	}
+	for _, hop := range rec.Hops {
+		st.wakes = append(st.wakes, hermesHopWake{
+			Key: hop.Key, Root: hop.Root, Sub: hop.Sub,
+			WakeID: hop.WakeID, Digest: hop.Digest, Seq: hop.Seq, OriginID: hop.OriginID,
+		})
+	}
+	return st
 }

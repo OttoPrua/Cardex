@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"cardex/internal/model"
+	"cardex/internal/notify"
 	"cardex/internal/store"
 )
 
@@ -62,6 +63,15 @@ func importHome(ctx context.Context, v2Home, v1Home string, dryRun bool) (Report
 		rows = append(rows, row{rel: rel, id: id, rec: rec, pl: pl})
 	}
 	sort.Strings(report.Unparsed)
+	var tasks []importedTask
+	for _, row := range rows {
+		if row.rec == nil || strings.TrimSpace(row.rec.ID) == "" {
+			continue
+		}
+		tasks = append(tasks, importedTask{ID: strings.TrimSpace(row.rec.ID), Project: projectKey(row.rec)})
+	}
+	notes, receivers := mapSubscriptions(v1Home, tasks, existingReceiverIDs(v2Home))
+	report.Notes = notes
 	if dryRun {
 		return report, nil
 	}
@@ -96,6 +106,15 @@ func importHome(ctx context.Context, v2Home, v1Home string, dryRun bool) (Report
 		}
 		if err := writeRow(ctx, db, v1Home, row.id, row.pl, repos[row.pl.ProjectKey]); err != nil {
 			return Report{}, err
+		}
+	}
+	if len(receivers) > 0 {
+		skipped, err := notify.ImportReceivers(v2Home, receivers)
+		if err != nil {
+			return Report{}, err
+		}
+		for _, id := range skipped {
+			report.Notes = append(report.Notes, "receiver "+id+": already exists")
 		}
 	}
 	return report, nil

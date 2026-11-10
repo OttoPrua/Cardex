@@ -188,8 +188,11 @@ func objectivePinConflicts(req Request, channelID, modelName string) bool {
 	return false
 }
 
-// findPinTarget locates the pinned channel and model without the health check
-// matchPinned uses. Family and Requires can be decided before that check.
+// findPinTarget locates the channel and model a pin would use. A named
+// channel is returned as listed; matchPinned still applies health. A
+// model-only pin uses the first healthy provider, or the first provider
+// when none are healthy, so family and Requires see the channel matchPinned
+// would return.
 func findPinTarget(channels []model.Channel, channelID, modelName string) (model.Channel, string, bool) {
 	if channelID != "" {
 		for _, ch := range channels {
@@ -204,10 +207,22 @@ func findPinTarget(channels []model.Channel, channelID, modelName string) (model
 		}
 		return model.Channel{}, modelName, false
 	}
+	var fallback model.Channel
+	found := false
 	for _, ch := range channels {
-		if modelName != "" && offers(ch, modelName) {
+		if modelName == "" || !offers(ch, modelName) {
+			continue
+		}
+		if ch.Health == model.HealthOK {
 			return ch, modelName, true
 		}
+		if !found {
+			fallback = ch
+			found = true
+		}
+	}
+	if found {
+		return fallback, modelName, true
 	}
 	return model.Channel{}, modelName, false
 }

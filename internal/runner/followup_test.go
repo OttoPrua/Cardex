@@ -17,6 +17,8 @@ import (
 func TestGrokHomeRespectsExisting(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("GROK_LOG_FILE", "")
+	t.Setenv("GROK_LOG_DIR", "")
 	custom := filepath.Join(home, "custom-grok")
 	t.Setenv("GROK_HOME", custom)
 

@@ -35,6 +35,37 @@ func TestProfileAllowsReadNetworkAndWriteList(t *testing.T) {
 	}
 }
 
+func TestProfileAllowsTmpNotVarOrHome(t *testing.T) {
+	dir := t.TempDir()
+	profile := sandbox.Profile([]string{dir})
+	for _, path := range []string{dir, mustReal(t, dir), filepath.Clean(os.TempDir()), mustReal(t, os.TempDir())} {
+		if !profileAllowsSubpath(profile, path) {
+			t.Fatalf("profile missing writable %s\n%s", path, profile)
+		}
+	}
+	for _, path := range []string{"/tmp", "/private/tmp"} {
+		if !profileAllowsSubpath(profile, path) {
+			t.Fatalf("profile missing writable %s\n%s", path, profile)
+		}
+	}
+	for _, banned := range []string{"/var", "/private/var"} {
+		if profileAllowsSubpath(profile, banned) {
+			t.Fatalf("profile allow-writes %s\n%s", banned, profile)
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profileAllowsSubpath(profile, home) || profileAllowsSubpath(profile, mustReal(t, home)) {
+		t.Fatal("profile allow-writes the user home")
+	}
+}
+
+func profileAllowsSubpath(profile, path string) bool {
+	return strings.Contains(profile, `(allow file-write* (subpath "`+path+`"))`)
+}
+
 func TestSkipRecordsOneEvent(t *testing.T) {
 	cmd := exec.Command("/bin/echo", "hi")
 	out, err := sandbox.Skip(cmd)
@@ -138,11 +169,27 @@ func mustReal(t *testing.T, p string) string {
 
 func outsideDir(t *testing.T) string {
 	t.Helper()
-	base := "/tmp"
+	// /tmp is a default writable root. The denial target has to sit outside
+	// that root and outside os.TempDir().
 	tmpReal := mustReal(t, os.TempDir())
-	baseReal := mustReal(t, base)
-	if baseReal == tmpReal || strings.HasPrefix(baseReal, tmpReal+string(os.PathSeparator)) || strings.HasPrefix(tmpReal, baseReal+string(os.PathSeparator)) {
-		base = "/var/tmp"
+	base := ""
+	for _, candidate := range []string{"/var/tmp", "/tmp"} {
+		info, err := os.Stat(candidate)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		baseReal := mustReal(t, candidate)
+		if baseReal == "/tmp" || baseReal == "/private/tmp" {
+			continue
+		}
+		if baseReal == tmpReal || strings.HasPrefix(baseReal, tmpReal+string(os.PathSeparator)) || strings.HasPrefix(tmpReal, baseReal+string(os.PathSeparator)) {
+			continue
+		}
+		base = candidate
+		break
+	}
+	if base == "" {
+		t.Fatal("no directory outside the sandbox write list")
 	}
 	dir, err := os.MkdirTemp(base, "cardex-outside-")
 	if err != nil {

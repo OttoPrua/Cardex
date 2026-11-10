@@ -28,9 +28,14 @@ func (Claude) Classify(exit int, output []byte) model.ErrorClass {
 
 func (Claude) ParseUsage(output []byte) model.Usage { return ParseOutputUsage(output) }
 
-// WritablePaths declares the CLI home and cache. It does not read them.
+// WritablePaths declares the CLI home and cache, plus directories the current
+// process already names in CLAUDE_CONFIG_DIR and CLAUDE_CODE_PLUGIN_CACHE_DIR.
 func (Claude) WritablePaths() []string {
-	return nonempty(homePath(".claude"), cachePath("claude"))
+	return appendEnvDirs(
+		nonempty(homePath(".claude"), cachePath("claude")),
+		envDir("CLAUDE_CONFIG_DIR"),
+		envDir("CLAUDE_CODE_PLUGIN_CACHE_DIR"),
+	)
 }
 
 // Build returns the v1 non-interactive argv and, when spec.Script is an engines

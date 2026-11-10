@@ -586,20 +586,55 @@ func TestRunDeniesAttemptDirWrite(t *testing.T) {
 
 func homeOutsideTMP(t *testing.T) string {
 	t.Helper()
-	base := "/tmp"
-	tmpReal, _ := filepath.EvalSymlinks(os.TempDir())
-	baseReal, err := filepath.EvalSymlinks(base)
-	if err != nil {
-		baseReal = base
-	}
-	sep := string(os.PathSeparator)
-	if baseReal == tmpReal || strings.HasPrefix(baseReal, tmpReal+sep) || strings.HasPrefix(tmpReal, baseReal+sep) {
-		base = "/var/tmp"
-	}
-	dir, err := os.MkdirTemp(base, "cardex-home-")
+	dir, err := os.MkdirTemp(denialBase(t), "cardex-home-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if !denialRoot(t, dir) {
+		t.Fatalf("denial base %s is inside a default writable root", dir)
+	}
 	return dir
+}
+
+// denialBase is a directory whose real path is outside os.TempDir(), /tmp, and /private/tmp.
+// /var/tmp qualifies on macOS, where /tmp is /private/tmp and os.TempDir() is under /var/folders.
+func denialBase(t *testing.T) string {
+	t.Helper()
+	base := ""
+	for _, candidate := range []string{"/var/tmp", "/tmp"} {
+		info, err := os.Stat(candidate)
+		if err != nil || !info.IsDir() {
+			continue
+		}
+		if !denialRoot(t, candidate) {
+			continue
+		}
+		base = candidate
+		break
+	}
+	if base == "" {
+		t.Fatal("no directory outside the sandbox write list")
+	}
+	return base
+}
+
+func denialRoot(t *testing.T, path string) bool {
+	t.Helper()
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		real = path
+	}
+	tmpReal, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		tmpReal = os.TempDir()
+	}
+	sep := string(os.PathSeparator)
+	if real == "/tmp" || real == "/private/tmp" || strings.HasPrefix(real, "/tmp"+sep) || strings.HasPrefix(real, "/private/tmp"+sep) {
+		return false
+	}
+	if real == tmpReal || strings.HasPrefix(real, tmpReal+sep) || strings.HasPrefix(tmpReal, real+sep) {
+		return false
+	}
+	return true
 }

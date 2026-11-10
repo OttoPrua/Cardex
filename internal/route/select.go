@@ -155,6 +155,11 @@ func objectivePinConflicts(req Request, channelID, modelName string) bool {
 		return false
 	}
 	ch, chosen, found := findPinTarget(req.Channels, channelID, modelName)
+	// A model-only pin with no healthy provider stays on the pin path.
+	// matchPinned returns ErrPinnedUnavailable instead of the candidate pool.
+	if channelID == "" && found && ch.Health != model.HealthOK {
+		return false
+	}
 	modelToUse := modelName
 	if modelToUse == "" {
 		modelToUse = chosen

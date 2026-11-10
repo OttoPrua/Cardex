@@ -71,8 +71,26 @@ func TestModelOnlyObjectivePinUsesSelectedChannel(t *testing.T) {
 			channels: []model.Channel{
 				ch("bad", foreign, model.HealthDegraded, "m"),
 				ch("authorish", author, model.HealthAuthFailed, "m"),
+				ch("legal", other, model.HealthOK, "other-m"),
 			},
-			pos:       []model.Positioning{row("m", "", 0)},
+			pos: []model.Positioning{
+				row("m", "", 0),
+				row("other-m", other, 0),
+			},
+			card:      review,
+			objective: model.Objective{Model: "m"},
+			err:       ErrPinnedUnavailable,
+		},
+		{
+			name: "all unhealthy author-family fallback stays unavailable",
+			channels: []model.Channel{
+				ch("bad", author, model.HealthDegraded, "m"),
+				ch("legal", other, model.HealthOK, "other-m"),
+			},
+			pos: []model.Positioning{
+				row("m", "", 0),
+				row("other-m", other, 0),
+			},
 			card:      review,
 			objective: model.Objective{Model: "m"},
 			err:       ErrPinnedUnavailable,

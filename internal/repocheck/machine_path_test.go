@@ -109,9 +109,6 @@ func scanMachinePathsCounted(rel, body string, allow []machinePathAllow) ([]stri
 	var hits []string
 	skipped := 0
 	for i, line := range strings.Split(body, "\n") {
-		if rel == "docs/v2/design.md" && i+1 == 32 {
-			continue
-		}
 		if !lineHasMachinePath(line) {
 			continue
 		}

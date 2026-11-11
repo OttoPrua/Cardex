@@ -11,9 +11,8 @@ import (
 )
 
 // Kimi adapts kimi-cli. v1 forbids --auto/--yolo/--plan next to --prompt.
-// Write-capable auto-approve is an isolated config.toml: default_permission_mode
-// auto and default_plan_mode false. ConfigHome is that directory. Build does not
-// read ~/.kimi-code; the host places credentials in ConfigHome.
+// An empty ConfigHome inherits KIMI_CODE_HOME without changing its config.
+// An explicit ConfigHome gets the auto-permission overlay.
 type Kimi struct {
 	ConfigHome string
 }
@@ -39,12 +38,12 @@ func (k Kimi) Build(spec LaunchSpec) ([]string, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	home, err := k.kimiConfigHome()
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := writeKimiAutoConfig(home); err != nil {
-		return nil, nil, err
+	env := []string{"KIMI_CODE_NO_AUTO_UPDATE=1"}
+	if strings.TrimSpace(k.ConfigHome) != "" {
+		if err := writeKimiAutoConfig(k.ConfigHome); err != nil {
+			return nil, nil, err
+		}
+		env = append(env, "KIMI_CODE_HOME="+k.ConfigHome)
 	}
 	args := []string{
 		"kimi",
@@ -52,18 +51,7 @@ func (k Kimi) Build(spec LaunchSpec) ([]string, []string, error) {
 		"--prompt", body,
 		"--output-format", "stream-json",
 	}
-	env := []string{
-		"KIMI_CODE_NO_AUTO_UPDATE=1",
-		"KIMI_CODE_HOME=" + home,
-	}
 	return args, env, nil
-}
-
-func (k Kimi) kimiConfigHome() (string, error) {
-	if strings.TrimSpace(k.ConfigHome) != "" {
-		return k.ConfigHome, nil
-	}
-	return os.MkdirTemp("", "cardex-kimi-")
 }
 
 func writeKimiAutoConfig(home string) error {

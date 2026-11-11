@@ -40,6 +40,7 @@ commands:
 `
 
 func main() {
+	ensureSystemPath()
 	os.Exit(Main(os.Args[1:], os.Stdout, os.Stderr))
 }
 

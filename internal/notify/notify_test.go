@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -1477,6 +1478,9 @@ func TestReminderLedgerFormatFaultStillDelivers(t *testing.T) {
 					t.Fatal(err)
 				}
 				if tc.unreadable {
+					if runtime.GOOS == "windows" {
+						t.Skip("mode 000 does not block reads on Windows")
+					}
 					if err := os.Chmod(path, 0); err != nil {
 						t.Fatal(err)
 					}

@@ -1,11 +1,12 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="397" viewBox="0 0 1200 397" role="img" aria-labelledby="title description" xml:lang="zh-CN">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="431" viewBox="0 0 1200 431" role="img" aria-labelledby="title description" xml:lang="zh-CN">
   <title id="title">从目标到可验收的改动</title>
   <desc id="description">自动目标的推进路径</desc>
   <defs>
     <pattern id="dots" width="15" height="15" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.45" fill="#bcc9e6"/></pattern>
     <marker id="arrow" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#7387b7"/></marker>
+    <marker id="arrowWarm" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#b8894a"/></marker>
   </defs>
-  <rect x="1" y="1" width="1198" height="395" rx="25" fill="#f8faff" stroke="#d4def1"/>
+  <rect x="1" y="1" width="1198" height="429" rx="25" fill="#f8faff" stroke="#d4def1"/>
   <rect x="946" y="25" width="209" height="126" rx="10" fill="url(#dots)" opacity=".71"/>
   <text x="1034" y="86" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="42" font-weight="600" fill="#aebde2">{{  }}</text>
   <text x="45" y="52" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="17" font-weight="730" fill="#4052ad">OBJECTIVE   /   AUTO</text>
@@ -29,7 +30,7 @@
   <rect x="727" y="174" width="193" height="106" rx="18" fill="#fff" stroke="#d4dff1"/>
   <text x="741" y="199" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#4052ad">04 / VERIFY</text>
   <text x="741" y="233" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="25" font-weight="720" fill="#172744">逐卡验证</text>
-  <text x="741" y="260" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="17.5" font-weight="490" fill="#445775">复核与测试</text>
+  <text x="741" y="260" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="17.5" font-weight="490" fill="#445775">跨模型族复核 + 测试</text>
   <rect x="954" y="174" width="202" height="106" rx="18" fill="#effaf7" stroke="#b9ded7"/>
   <text x="968" y="199" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#18736b">05 / INTEGRATE</text>
   <text x="968" y="233" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="25" font-weight="720" fill="#172744">合入目标分支</text>
@@ -40,6 +41,8 @@
   <rect x="482" y="234" width="194" height="74" rx="14" fill="#eef5ff" stroke="#bfcff0"/>
   <text x="498" y="264" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="23" font-weight="730" fill="#172744">执行卡 B</text>
   <text x="498" y="289" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="16" font-weight="490" fill="#445775">独立 worktree</text>
-  <path d="M45 330 H1155" stroke="#d4deef"/>
-  <text x="45" y="366" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="570" fill="#445775">独立卡可并行 · 写入冲突时等待 · 主分支合并另行决定</text>
+  <path d="M823 281 V326 H579 V312" fill="none" stroke="#b8894a" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrowWarm)"/>
+  <text x="600" y="348" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15" font-weight="600" fill="#8f5a16">未通过：带复核意见重试</text>
+  <path d="M45 364 H1155" stroke="#d4deef"/>
+  <text x="45" y="400" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="570" fill="#445775">独立卡可并行 · 写入冲突时等待 · 主分支合并另行决定</text>
 </svg>

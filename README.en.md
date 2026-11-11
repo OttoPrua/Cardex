@@ -129,4 +129,6 @@ Once configured, start with one change that has a clear acceptance check. Replac
 
 `serve` starts the scheduler and read-only board together, so start it when you are ready to dispatch ready cards. Open the printed address to see objectives, cards, attempts, channels, and decisions. Use `--origin` or `CARDEX_ORIGIN` to associate work with the management session, and [configure notifications](docs/v2/guide.md#配置通知) to receive decisions there. Use `card show ID` and `route explain ID` to inspect a dispatch, and `--json question show ID` to see the available answers.
 
+> The board is read-only but has **no authentication**, and it shows objectives, cards, and questions. For remote viewing, bind to localhost or a private network address such as Tailscale; do not expose `0.0.0.0` to the public internet.
+
 [Design notes](docs/v2/design.md) · [PolyForm Noncommercial 1.0.0](LICENSE)

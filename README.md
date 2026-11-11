@@ -126,4 +126,6 @@ export CARDEX_HOME="$HOME/.cardex-demo"
 
 `serve` 同时开启调度和只读看板；准备好运行待派发的卡后再启动。打开它打印的地址，可看目标、卡、尝试、渠道和待确认事项。管理会话用 `--origin` / `CARDEX_ORIGIN` 关联任务，按 [通知配置](docs/v2/guide.md#配置通知) 登记接收者。要核对一次派发，读 `card show ID` 和 `route explain ID`；要查看待选答案，读 `--json question show ID`。
 
+> 看板只读但**没有鉴权**，会显示目标、卡片和问题内容。需要远程查看时，绑定本机或 Tailscale 这类私有网络地址，不要用 `0.0.0.0` 直接暴露到公网。
+
 [设计说明](docs/v2/design.md) · [PolyForm Noncommercial 1.0.0](LICENSE)

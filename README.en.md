@@ -1,80 +1,66 @@
 # Cardex
 
-**Manage a goal in one conversation and let multiple AI coding tools work together to deliver it.**
+**Set a goal in one conversation and let multiple AI coding tools deliver it together.**
 
-[中文](README.md) · **English** · [Install](#install-and-get-started) · [Supported tools](#tools-and-connection-options) · [Download source](https://github.com/OttoPrua/Cardex/releases/tag/v2.0.0)
+[中文](README.md) · **English** · [Install](#install) · [Supported tools](#supported-tools) · [Upgrade from V1](docs/v2/upgrade-from-v1.md) · [Download source](https://github.com/OttoPrua/Cardex/releases/tag/v2.0.0)
 
 ![Cardex: a Codex or Hermes management session hands work to local Cardex, which dispatches to configured coding tools.](docs/images/cardex-v2-overview.en.svg)
 
-Cardex runs on your machine. Set goals and make key decisions in a **Codex or Hermes management session**. Cardex plans and schedules the work, and each coding tool uses its own subscription or API credentials. Objectives, cards, attempts, and decisions live in local SQLite; code stays in Git, and execution and acceptance logs stay on the machine. The management conversation can pause without losing saved work.
+Cardex is a development orchestrator that runs on your machine. You set goals and answer key questions in a **Codex or Hermes management session**; Cardex splits the work into cards, picks models, dispatches, reviews, and merges, while each coding tool uses its own subscription or API. The scheduler and board never call a model themselves.
 
-## Install and get started
+- **Reuse the subscriptions and APIs you already have.** Claude Code, Codex, Grok, Cursor, Kimi, OpenCode, and Antigravity plug in. Routing weighs tier, capability, and remaining quota, and `route explain` shows why a model was picked.
+- **One card for small jobs, automatic planning for big ones.** A manual objective runs only the cards you add; an automatic one surveys, designs, and splits the work, and asks you only when a decision is needed.
+- **Parallel work, merged only after it checks out.** Each attempt gets its own worktree and conflicting writes wait. A different model family reviews, and the project tests must pass before the objective branch moves.
+- **The conversation can stop; progress stays.** Objectives, cards, attempts, and decisions live in local SQLite, and code lives in Git. After a quota or auth failure, work resumes from the card branch; with no suitable channel it waits or asks, and never silently switches tools.
 
-**One-message setup (recommended): paste this into a Codex or Hermes session that can operate your computer.** A cloud session needs access to the Cardex host first. If you have already downloaded the source, give the agent the extracted folder and continue from there.
+## Install
+
+**Recommended: paste this into a Codex or Hermes session that can operate your computer.**
 
 ```text
-Help me install and configure Cardex in this conversation. If I already downloaded the source,
-start in the extracted directory containing go.mod. Otherwise get the source from
-https://github.com/OttoPrua/Cardex/releases/tag/v2.0.0.
-Read docs/v2/guide.md and skills/cardex-dispatch/SKILL.md, then guide me here:
-1. Identify the management session and host, and confirm the data directory with me.
-   Build from source and run doctor.
-2. Tell me which execution CLIs you found and ask which subscriptions or APIs I want to use.
-   Set up authentication in the tool itself. Separate installed, authenticated, and available models.
-   I do not need to paste keys into chat.
-3. Recommend T1–T3 models, a different model family for review, and quota reserves for my work.
-   Explain the choices and let me accept or adjust them. Save after confirmation and rerun doctor.
-4. Recommend a manual or automatic objective and show the first card and its acceptance check.
-   Ask me before starting the scheduler or running work.
+Help me install and configure Cardex in this conversation. Get the source from
+https://github.com/OttoPrua/Cardex/releases/tag/v2.0.0 (or continue in the extracted folder with go.mod).
+Read docs/v2/guide.md and skills/cardex-dispatch/SKILL.md. If this machine already has Cardex V1 data,
+read docs/v2/upgrade-from-v1.md first. Then guide me step by step:
+1. Confirm the management session, host, and data directory; build from source and run doctor.
+2. List the execution CLIs you find, ask which subscriptions or APIs I want, and set up auth inside
+   each tool (no keys pasted into chat).
+3. Recommend T1–T3 models, a different model family for review, and quota reserves; save only after
+   I confirm, then rerun doctor.
+4. Recommend a manual or automatic objective, show the first card and its acceptance check, and ask
+   before starting the scheduler.
 ```
 
-**Start manually after the first download** (macOS shell; Git and Go 1.24+ required):
-
-1. Download **Source code (zip)** or **tar.gz** from the [download page](https://github.com/OttoPrua/Cardex/releases/tag/v2.0.0). Extract it and open the directory containing `go.mod` in a terminal.
-2. Paste this one command to build locally and check a separate data directory for your first run:
+**Manual** (Git and Go 1.24+):
 
 ```sh
+git clone https://github.com/OttoPrua/Cardex.git && cd Cardex
 go build -o ./cardex ./cmd/cardex && ./cardex --home "$HOME/.cardex-demo" doctor
 ```
 
-3. Once the command finishes, you can configure Cardex. A fresh data directory reports missing channels or model placement; continue in the same management session or follow [the first objective](#run-a-first-objective) below.
+A fresh `doctor` reporting missing channels or model placement is expected; continue with [the first objective](#run-a-first-objective). Choose the data directory with `--home` or `CARDEX_HOME`.
 
-The download page provides a source archive. These examples use `~/.cardex-demo` as the data directory. You can choose another location with `--home` or `CARDEX_HOME`. System-level write isolation for executors is currently implemented on macOS.
+> **Platforms:** macOS is fully supported, with executors running in a seatbelt sandbox. Linux builds and runs, but executors are not sandboxed. Windows is not supported in V2 yet.
 
-[User guide](docs/v2/guide.md) · [Dispatch skill for management sessions](skills/cardex-dispatch/SKILL.md)
+## Supported tools
 
-## Tools and connection options
-
-| Execution tool | Runner | How to connect |
+| Coding tool | runner | How it connects |
 | --- | --- | --- |
-| Claude Code | `claude` | Use the CLI login or connect an Anthropic Messages compatible service through Claude Code |
-| Codex CLI | `codex` | Use the CLI account or a configured Responses compatible provider |
-| Grok Build | `grok` | Use the Grok CLI account and its available models |
-| Cursor Agent | `cursor` | Use models available to your Cursor account |
-| OpenCode | `opencode` | Use a configured `provider/model`, such as OpenCode Go or a custom compatible service |
-| Kimi CLI | `kimi` | Reuse the Kimi CLI account and model configuration |
-| Antigravity | `agy` | Use the Antigravity CLI and its available models |
+| Claude Code | `claude` | CLI login, or an Anthropic Messages compatible service |
+| Codex CLI | `codex` | Signed-in account, or a Responses compatible provider |
+| Grok Build | `grok` | Grok CLI account |
+| Cursor Agent | `cursor` | Models available to your Cursor account |
+| OpenCode | `opencode` | A configured `provider/model` (e.g. OpenCode Go, Chat Completions compatible services) |
+| Kimi CLI | `kimi` | Kimi CLI account |
+| Antigravity | `agy` | Antigravity CLI |
 
-**Subscriptions, metered APIs, and compatible gateways connect through the execution tool.** For example, use Claude Code for Anthropic Messages, Codex CLI for OpenAI Responses, or a matching OpenCode provider for OpenAI Chat Completions. Cardex passes the configured model ID to the tool. Protocol, model, reasoning effort, and quota support depend on the CLI and account. OpenCode is the tool; OpenCode Go is a service plan.
-
-The code also retains [Claude compatible engine profiles](internal/runner/engines.go) for Kimi Code, GLM, MiniMax, MiMo, OpenCode Go, and Ollama Cloud. A Claude channel uses a profile when its `engine_profile` is set. The current `channel set` command does not set that binding; on a fresh install, you can configure the service in its execution CLI first.
-
-## What Cardex helps you do
-
-- **Manage development in one conversation.** Add one card for a small change, or let Cardex survey the repository, plan, and split up a larger goal. You make the decisions that need your input.
-- **Find a suitable model for each card.** Routing considers the task tier, model capabilities, channel health, concurrency, and estimated quota. Use `route explain` to see why a model was selected.
-- **Run independent work in parallel and test it before integrating.** Each attempt gets its own Git worktree. Cards with conflicting write claims wait. Development cards get a review from a different model family, and project tests must pass before the objective branch advances.
-- **Pick up where you left off.** Cards, results, attempt logs, and code stay on your machine. A later attempt can continue from the card branch with saved context and review feedback.
-
-**Eligible quota or authentication failures can be routed again.** A new attempt can pick up from the saved card branch. If no suitable channel is available, Cardex waits or asks; an explicit executor refusal does not silently switch tools.
-
-![An automatic objective: design a direction, get owner approval, run independent cards in parallel, review and test, then merge into the objective branch.](docs/images/cardex-v2-objective.en.svg)
-
-> **Use a manual objective for small changes and an automatic objective for multi-step work.** `manual` processes the cards you add without generating design or planning cards. `auto` advances the design tree and dependencies. In the default `safe` mode, you confirm direction and module freezes. `fast` can freeze ready modules and details automatically; the direction still needs your approval. Integrating into an objective branch and merging into the project’s main branch are separate steps. Push and release decisions remain separate.
+Subscriptions, pay-as-you-go APIs, and compatible gateways all connect through the matching tool; Cardex passes the model ID and does not translate protocols.
 
 ## Run a first objective
 
-Log in or configure the API in each execution CLI first. This example uses Codex for development and Claude for review. You can substitute other model families you have configured. Replace the repo path, model IDs, and test command:
+![An automatic objective: design, owner approval, parallel cards, review and tests, then merge into the objective branch; rejected work retries with review notes.](docs/images/cardex-v2-objective.en.svg)
+
+Using Codex to write and Claude to review; replace the repo path, model IDs, and test command:
 
 ```sh
 export CARDEX_HOME="$HOME/.cardex-demo"
@@ -82,53 +68,46 @@ export CARDEX_HOME="$HOME/.cardex-demo"
 ./cardex channel set --id my-codex --runner codex --model 'YOUR_AUTHOR_MODEL_ID' --concurrency 1
 ./cardex channel set --id my-claude --runner claude --model 'YOUR_REVIEW_MODEL_ID' --concurrency 1
 ./cardex channel check
-./cardex --json positioning show
 ```
 
-If there is no approved placement table, add your confirmed initial `positioning` to `config.json` in the data directory: model ID, model family, tiers, and capabilities. Review later changes with `positioning proposals` and apply one with `positioning approve ID`. Set quota windows and reserves to match your account, then run `doctor` again. For example, use T1 for fact checks, T2 for routine development, and T3 for design and review. Choose tiers based on capability and provide a different model family for review.
+Add an initial model placement to `$CARDEX_HOME/config.json` (example below), then update it later with `positioning proposals` / `positioning approve`.
+
+```sh
+./cardex objective add --id first-change --project demo --mode manual \
+  --title 'Fix export notes' --origin 'codex:YOUR_THREAD_ID'
+./cardex card add --objective first-change --kind dev --tier T2 \
+  --title 'Add export examples' --body 'Update the export docs, keep behavior, and run the project tests'
+./cardex serve --addr 127.0.0.1:0
+```
+
+`serve` starts the scheduler and a read-only board; open the printed address to follow progress. To check a dispatch, use `card show ID` and `route explain ID`.
+
+> The board has **no authentication**. For remote viewing, bind to localhost or a private address such as Tailscale; do not expose `0.0.0.0` to the internet.
 
 <details>
-<summary>Example starting model placement</summary>
+<summary>Initial model placement example</summary>
 
-Merge this into your `config.json`, preserving other settings. Match the model IDs to their channels. Check the families and tiers when substituting models.
+Merge into `config.json`; model IDs must match the channels. T1 suits fact checks, T2 routine development, T3 design and review.
 
 ```json
 {
   "positioning": [
-    {
-      "id": "starter-dev",
-      "model": "YOUR_AUTHOR_MODEL_ID",
-      "family": "gpt",
-      "tiers": ["T1", "T2"],
-      "capabilities": [],
-      "preference": 1
-    },
-    {
-      "id": "starter-review",
-      "model": "YOUR_REVIEW_MODEL_ID",
-      "family": "claude",
-      "tiers": ["T3"],
-      "capabilities": [],
-      "preference": 1
-    }
+    {"id": "starter-dev", "model": "YOUR_AUTHOR_MODEL_ID", "family": "gpt",
+     "tiers": ["T1", "T2"], "capabilities": [], "preference": 1},
+    {"id": "starter-review", "model": "YOUR_REVIEW_MODEL_ID", "family": "claude",
+     "tiers": ["T3"], "capabilities": [], "preference": 1}
   ]
 }
 ```
 
 </details>
 
-Once configured, start with one change that has a clear acceptance check. Replace `YOUR_THREAD_ID` with the management session’s ID, or use `hermes:PROFILE/SESSION` for Hermes.
+[Guide](docs/v2/guide.md) · [Design](docs/v2/design.md) · [Dispatch skill](skills/cardex-dispatch/SKILL.md) · [Upgrade from V1](docs/v2/upgrade-from-v1.md)
 
-```sh
-./cardex objective add --id first-change --project demo --mode manual \
-  --title 'Clarify export documentation' --origin 'codex:YOUR_THREAD_ID'
-./cardex card add --objective first-change --kind dev --tier T2 \
-  --title 'Add an export example' --body 'Update the docs, preserve behavior, and run the project tests'
-./cardex serve --addr 127.0.0.1:0
-```
+## License
 
-`serve` starts the scheduler and read-only board together, so start it when you are ready to dispatch ready cards. Open the printed address to see objectives, cards, attempts, channels, and decisions. Use `--origin` or `CARDEX_ORIGIN` to associate work with the management session, and [configure notifications](docs/v2/guide.md#配置通知) to receive decisions there. Use `card show ID` and `route explain ID` to inspect a dispatch, and `--json question show ID` to see the available answers.
+[PolyForm Noncommercial 1.0.0](LICENSE): free for personal use, study, research, and nonprofit organizations. Production use inside a company, paid client work, or offering it as part of a product or service needs a license; [open an issue](https://github.com/OttoPrua/Cardex/issues) describing your use. This is not an OSI open-source license; releases before 2026-08-03 (up to `b1ed92b`) remain MIT.
 
-> The board is read-only but has **no authentication**, and it shows objectives, cards, and questions. For remote viewing, bind to localhost or a private network address such as Tailscale; do not expose `0.0.0.0` to the public internet.
+## Thanks
 
-[Design notes](docs/v2/design.md) · [PolyForm Noncommercial 1.0.0](LICENSE)
+Cardex is shared in the [LINUX DO](https://linux.do) community. Thanks for all the feedback.

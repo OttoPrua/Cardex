@@ -667,7 +667,7 @@ func TestReconcileReapsOrphanAfterHardDuration(t *testing.T) {
 		t.Fatal("killing the host killed the executor group")
 	}
 
-	sleeper := exec.Command("/bin/sleep", "30")
+	sleeper := exec.Command(sleepBin(), "30")
 	proc.NewGroup(sleeper)
 	if err := sleeper.Start(); err != nil {
 		t.Fatal(err)

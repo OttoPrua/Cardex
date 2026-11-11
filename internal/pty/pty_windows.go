@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 	"unicode/utf16"
 	"unsafe"
 
@@ -66,7 +68,10 @@ func Start(cmd *exec.Cmd) (*PTY, error) {
 	p := &PTY{Master: m, Cmd: cmd}
 	p.wait = func() error {
 		state, err := proc.Wait()
-		// The output pipe only ends once the console is closed.
+		// conhost renders asynchronously: give it until output goes quiet
+		// before closing, or the child's last output is dropped. The output
+		// pipe only ends once the console is closed.
+		m.waitQuiet(250*time.Millisecond, 3*time.Second)
 		m.closeConsole()
 		if err != nil {
 			return err
@@ -164,10 +169,29 @@ type master struct {
 	hpc       windows.Handle
 	closeOnce sync.Once
 	allOnce   sync.Once
+	last      atomic.Int64 // UnixNano of the last read that returned data
+}
+
+// waitQuiet returns once no output has been read for quiet, or after max.
+func (m *master) waitQuiet(quiet, max time.Duration) {
+	start := time.Now()
+	if m.last.Load() == 0 {
+		m.last.Store(start.UnixNano())
+	}
+	for time.Since(start) < max {
+		idle := time.Since(time.Unix(0, m.last.Load()))
+		if idle >= quiet {
+			return
+		}
+		time.Sleep(quiet - idle)
+	}
 }
 
 func (m *master) Read(b []byte) (int, error) {
 	n, err := m.out.Read(b)
+	if n > 0 {
+		m.last.Store(time.Now().UnixNano())
+	}
 	if err != nil && errors.Is(err, windows.ERROR_BROKEN_PIPE) {
 		return n, os.ErrClosed
 	}

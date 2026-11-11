@@ -21,7 +21,7 @@ func withSystemPath(path, goos string) string {
 	}
 	have := map[string]bool{}
 	var parts []string
-	for _, p := range filepath.SplitList(path) {
+	for _, p := range strings.Split(path, ":") {
 		if p == "" {
 			continue
 		}
@@ -33,7 +33,7 @@ func withSystemPath(path, goos string) string {
 			parts = append(parts, d)
 		}
 	}
-	return strings.Join(parts, string(os.PathListSeparator))
+	return strings.Join(parts, ":")
 }
 
 func ensureSystemPath() {

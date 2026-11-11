@@ -23,8 +23,8 @@ var deviceLiterals = []string{
 
 // Profile is the seatbelt profile for writable paths.
 // Read is allowed by default, network is allowed, and writes are limited to
-// writable, TMPDIR, and the /dev nodes above. Paths are expanded through
-// symlinks so a /var alias and its /private/var target are both covered.
+// writable, TMPDIR, /tmp, and the /dev nodes above. Paths are expanded through
+// symlinks so a /tmp alias and its /private/tmp target are both covered.
 func Profile(writable []string) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
@@ -32,7 +32,7 @@ func Profile(writable []string) string {
 	b.WriteString("(allow file-read*)\n")
 	b.WriteString("(allow network*)\n")
 	b.WriteString("(deny file-write*)\n")
-	for _, p := range expandPaths(append(append([]string{}, writable...), os.TempDir())) {
+	for _, p := range expandPaths(append(append([]string{}, writable...), os.TempDir(), "/tmp")) {
 		fmt.Fprintf(&b, "(allow file-write* (subpath %s))\n", sbString(p))
 	}
 	for _, dev := range deviceLiterals {

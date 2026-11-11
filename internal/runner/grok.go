@@ -77,11 +77,11 @@ func (Grok) Capabilities() []string { return []string{"goal_mode"} }
 func (g Grok) NeedsPTY() bool { return g.GoalMode }
 
 func (Grok) WritablePaths() []string {
-	home := grokHome()
-	if home == "" {
-		return nil
+	var base []string
+	if home := grokHome(); home != "" {
+		base = []string{home}
 	}
-	return []string{home}
+	return appendEnvDirs(base, envParent("GROK_LOG_FILE"), envDir("GROK_LOG_DIR"))
 }
 
 // grokHome is the existing GROK_HOME, or ~/.grok when that variable is unset.
@@ -387,6 +387,32 @@ const (
 	usageSourceCursorResult = "cursor_result"
 	usageSourceAntigravity  = "antigravity_result"
 )
+
+// appendEnvDirs keeps base and adds directories already named by the process.
+// An empty value adds nothing.
+func appendEnvDirs(base []string, dirs ...string) []string {
+	out := append([]string{}, base...)
+	for _, dir := range dirs {
+		dir = strings.TrimSpace(dir)
+		if dir == "" {
+			continue
+		}
+		out = append(out, dir)
+	}
+	return out
+}
+
+func envDir(key string) string {
+	return strings.TrimSpace(os.Getenv(key))
+}
+
+func envParent(key string) string {
+	v := envDir(key)
+	if v == "" {
+		return ""
+	}
+	return filepath.Dir(v)
+}
 
 func userPath(name string) []string {
 	home, err := os.UserHomeDir()

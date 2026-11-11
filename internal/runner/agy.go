@@ -13,15 +13,21 @@ import (
 // AGY adapts the Antigravity CLI. v1's command name is agy.
 // Write-capable runs use --mode accept-edits plus --dangerously-skip-permissions.
 // accept-edits without that flag is the interactive shape v1 marks as needing a person.
-// Empty config effort is the v1 default "high"; a thinking model omits --effort.
+// Empty config effort is the v1 default "high". A thinking model, or a model
+// that already ends in -low, -medium, or -high, omits --effort.
 type AGY struct{}
 
 var _ Runner = AGY{}
 
-func (AGY) Name() string                               { return string(model.RunnerAGY) }
-func (AGY) Capabilities() []string                     { return nil }
-func (AGY) NeedsPTY() bool                             { return false }
-func (AGY) WritablePaths() []string                    { return nil }
+func (AGY) Name() string           { return string(model.RunnerAGY) }
+func (AGY) Capabilities() []string { return nil }
+func (AGY) NeedsPTY() bool         { return false }
+func (AGY) WritablePaths() []string {
+	return appendEnvDirs(
+		nonempty(homePath(".gemini"), cachePath("gemini")),
+		envDir("GEMINI_CLI_HOME"),
+	)
+}
 func (AGY) Drive(context.Context, io.ReadWriter) error { return nil }
 
 func (AGY) Build(spec LaunchSpec) ([]string, []string, error) {
@@ -31,7 +37,7 @@ func (AGY) Build(spec LaunchSpec) ([]string, []string, error) {
 	}
 	mode := "accept-edits"
 	args := []string{"agy", "--output-format", "json", "--mode", mode, "--model", spec.Model}
-	if !strings.Contains(strings.ToLower(spec.Model), "thinking") {
+	if !agyOmitsEffort(spec.Model) {
 		args = append(args, "--effort", "high")
 	}
 	if mode != "plan" {
@@ -59,6 +65,21 @@ func (AGY) Classify(_ int, output []byte) model.ErrorClass {
 		return model.ErrorResultUnparsable
 	}
 	return ""
+}
+
+// agyOmitsEffort skips the default --effort high when the model already names
+// a tier or is a thinking model.
+func agyOmitsEffort(model string) bool {
+	m := strings.ToLower(model)
+	if strings.Contains(m, "thinking") {
+		return true
+	}
+	for _, suffix := range []string{"-low", "-medium", "-high"} {
+		if strings.HasSuffix(m, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func singleJSONDocument(trim []byte) bool {

@@ -20,10 +20,17 @@ type Kimi struct {
 
 var _ Runner = Kimi{}
 
-func (Kimi) Name() string            { return string(model.RunnerKimi) }
-func (Kimi) Capabilities() []string  { return nil }
-func (Kimi) NeedsPTY() bool          { return false }
-func (Kimi) WritablePaths() []string { return userPath(".kimi-code") }
+func (Kimi) Name() string           { return string(model.RunnerKimi) }
+func (Kimi) Capabilities() []string { return nil }
+func (Kimi) NeedsPTY() bool         { return false }
+func (k Kimi) WritablePaths() []string {
+	return appendEnvDirs(
+		userPath(".kimi-code"),
+		envDir("KIMI_CODE_HOME"),
+		envDir("KIMI_CODE_CACHE_DIR"),
+		k.ConfigHome,
+	)
+}
 
 func (Kimi) Drive(context.Context, io.ReadWriter) error { return nil }
 

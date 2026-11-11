@@ -13,10 +13,16 @@ type Cursor struct{}
 
 var _ Runner = Cursor{}
 
-func (Cursor) Name() string            { return string(model.RunnerCursor) }
-func (Cursor) Capabilities() []string  { return nil }
-func (Cursor) NeedsPTY() bool          { return false }
-func (Cursor) WritablePaths() []string { return userPath(".cursor") }
+func (Cursor) Name() string           { return string(model.RunnerCursor) }
+func (Cursor) Capabilities() []string { return nil }
+func (Cursor) NeedsPTY() bool         { return false }
+func (Cursor) WritablePaths() []string {
+	return appendEnvDirs(
+		userPath(".cursor"),
+		envDir("CURSOR_CONFIG_DIR"),
+		envDir("CURSOR_DATA_DIR"),
+	)
+}
 
 func (Cursor) Drive(context.Context, io.ReadWriter) error { return nil }
 

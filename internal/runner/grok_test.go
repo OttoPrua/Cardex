@@ -178,6 +178,8 @@ func TestGrokWritablePathsAbsent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("GROK_HOME", "")
+	t.Setenv("GROK_LOG_FILE", "")
+	t.Setenv("GROK_LOG_DIR", "")
 	got := (runner.Grok{}).WritablePaths()
 	want := filepath.Join(home, ".grok")
 	if !slices.Equal(got, []string{want}) {

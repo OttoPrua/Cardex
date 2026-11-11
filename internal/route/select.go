@@ -21,7 +21,7 @@ func Select(ctx context.Context, req Request) (model.Route, model.RouteReason, e
 		now = time.Now().UTC()
 	}
 	tier := resolveTier(req)
-	if channelID, modelName, pinned := explicitPin(req); pinned {
+	if channelID, modelName, pinned := explicitPin(req); pinned && !objectivePinConflicts(req, channelID, modelName) {
 		ch, chosen, err := matchPinned(req.Channels, channelID, modelName)
 		if err != nil {
 			return model.Route{}, emptyReason(), err
@@ -144,6 +144,96 @@ func explicitPin(req Request) (channelID, modelName string, pinned bool) {
 		return req.Objective.Channel, req.Objective.Model, true
 	}
 	return "", "", false
+}
+
+// objectivePinConflicts is true only for an objective pin: the card names no
+// channel and no model, and either this review card's author family is the
+// pin's family, or the pinned selection does not satisfy Card.Requires.
+// A found pin with no model name has an empty capability set. A pin that
+// cannot be matched is not a conflict by itself.
+func objectivePinConflicts(req Request, channelID, modelName string) bool {
+	if req.Card.Channel != "" || req.Card.Model != "" {
+		return false
+	}
+	ch, chosen, found := findPinTarget(req.Channels, channelID, modelName)
+	// A model-only pin with no healthy provider stays on the pin path.
+	// matchPinned returns ErrPinnedUnavailable instead of the candidate pool.
+	if channelID == "" && found && ch.Health != model.HealthOK {
+		return false
+	}
+	modelToUse := modelName
+	if modelToUse == "" {
+		modelToUse = chosen
+	}
+	family := ""
+	var caps []string
+	knownModel := false
+	if modelToUse != "" {
+		for _, row := range req.Positioning {
+			if row.Model != modelToUse {
+				continue
+			}
+			family = row.Family
+			caps = row.Capabilities
+			knownModel = true
+			break
+		}
+	}
+	if family == "" && found {
+		family = ch.Family
+	}
+	// A found pin is a known selection even when it names no model. No model
+	// name, or a name absent from the positioning table, has an empty
+	// capability set.
+	if !knownModel && found {
+		knownModel = true
+	}
+	if req.Card.Kind == model.KindReview && family != "" && family == authorFamily(req) {
+		return true
+	}
+	if knownModel && !hasCaps(caps, req.Card.Requires) {
+		return true
+	}
+	return false
+}
+
+// findPinTarget locates the channel and model a pin would use. A named
+// channel is returned as listed; matchPinned still applies health. A
+// model-only pin uses the first healthy provider, or the first provider
+// when none are healthy, so family and Requires see the channel matchPinned
+// would return.
+func findPinTarget(channels []model.Channel, channelID, modelName string) (model.Channel, string, bool) {
+	if channelID != "" {
+		for _, ch := range channels {
+			if ch.ID != channelID {
+				continue
+			}
+			chosen := modelName
+			if chosen == "" && len(ch.Models) > 0 {
+				chosen = ch.Models[0]
+			}
+			return ch, chosen, true
+		}
+		return model.Channel{}, modelName, false
+	}
+	var fallback model.Channel
+	found := false
+	for _, ch := range channels {
+		if modelName == "" || !offers(ch, modelName) {
+			continue
+		}
+		if ch.Health == model.HealthOK {
+			return ch, modelName, true
+		}
+		if !found {
+			fallback = ch
+			found = true
+		}
+	}
+	if found {
+		return fallback, modelName, true
+	}
+	return model.Channel{}, modelName, false
 }
 
 func matchPinned(channels []model.Channel, channelID, modelName string) (model.Channel, string, error) {

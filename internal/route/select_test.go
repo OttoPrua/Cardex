@@ -515,6 +515,79 @@ func TestSelectFiltersAndOrder(t *testing.T) {
 	})
 }
 
+func TestObjectivePinYieldsOnReviewFamilyOrRequires(t *testing.T) {
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+
+	t.Run("review author family yields to other family", func(t *testing.T) {
+		led, _, channels, pos := build(t, now, []spec{
+			{id: "codex", modelName: "codex-m", family: "codex", pref: 0, limit: 100, used: 10},
+			{id: "other", modelName: "other-m", family: "anthropic", pref: 5, limit: 100, used: 80},
+		})
+		card := model.Card{Kind: model.KindReview, Tier: model.TierT2, AuthorFamily: "codex"}
+		rt, reason, err := call(t, now, led, channels, pos, card, func(r *Request) {
+			r.Objective = model.Objective{Channel: "codex"}
+		})
+		if err != nil || rt.Channel != "other" || rt.Model != "other-m" {
+			t.Fatalf("route %+v err %v reason %+v", rt, err, reason)
+		}
+	})
+
+	t.Run("no other family is no candidate", func(t *testing.T) {
+		led, _, channels, pos := build(t, now, []spec{
+			{id: "codex", modelName: "codex-m", family: "codex", limit: 100},
+		})
+		card := model.Card{Kind: model.KindReview, Tier: model.TierT2, AuthorFamily: "codex"}
+		rt, _, err := call(t, now, led, channels, pos, card, func(r *Request) {
+			r.Objective = model.Objective{Channel: "codex"}
+		})
+		if !errors.Is(err, ErrNoCandidate) || rt.Channel != "" || rt.Model != "" {
+			t.Fatalf("route %+v err %v", rt, err)
+		}
+	})
+
+	t.Run("different family pin stays ahead of pace", func(t *testing.T) {
+		led, _, channels, pos := build(t, now, []spec{
+			{id: "codex", modelName: "codex-m", family: "codex", pref: 5, caps: []string{"web"}, limit: 100, used: 90},
+			{id: "fast", modelName: "fast-m", family: "gemini", pref: 0, caps: []string{"web"}, limit: 100, used: 1},
+		})
+		card := model.Card{Kind: model.KindReview, Tier: model.TierT2, AuthorFamily: "anthropic", Requires: []string{"web"}}
+		rt, reason, err := call(t, now, led, channels, pos, card, func(r *Request) {
+			r.Objective = model.Objective{Channel: "codex", Model: "codex-m"}
+		})
+		if err != nil || rt.Channel != "codex" || rt.Model != "codex-m" {
+			t.Fatalf("route %+v err %v reason %+v", rt, err, reason)
+		}
+	})
+
+	t.Run("card channel beats objective", func(t *testing.T) {
+		led, _, channels, pos := build(t, now, []spec{
+			{id: "codex", modelName: "codex-m", family: "codex", limit: 100, used: 90},
+			{id: "other", modelName: "other-m", family: "anthropic", pref: 0, limit: 100, used: 1},
+		})
+		card := model.Card{Kind: model.KindReview, Tier: model.TierT2, AuthorFamily: "codex", Channel: "codex"}
+		rt, reason, err := call(t, now, led, channels, pos, card, func(r *Request) {
+			r.Objective = model.Objective{Channel: "other"}
+		})
+		if err != nil || rt.Channel != "codex" || rt.Model != "codex-m" {
+			t.Fatalf("route %+v err %v reason %+v", rt, err, reason)
+		}
+	})
+
+	t.Run("pin without web yields", func(t *testing.T) {
+		led, _, channels, pos := build(t, now, []spec{
+			{id: "codex", modelName: "codex-m", family: "codex", pref: 0, limit: 100, used: 1},
+			{id: "web", modelName: "web-m", family: "anthropic", pref: 5, caps: []string{"web"}, limit: 100, used: 90},
+		})
+		card := model.Card{Kind: model.KindRanking, Tier: model.TierT2, Requires: []string{"web"}}
+		rt, reason, err := call(t, now, led, channels, pos, card, func(r *Request) {
+			r.Objective = model.Objective{Channel: "codex", Model: "codex-m"}
+		})
+		if err != nil || rt.Channel != "web" || rt.Model != "web-m" {
+			t.Fatalf("route %+v err %v reason %+v", rt, err, reason)
+		}
+	})
+}
+
 func TestBorrowOnlyAfterTierIsUnusable(t *testing.T) {
 	now := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
 	type want struct {

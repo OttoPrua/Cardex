@@ -26,12 +26,16 @@ func (OpenCode) Classify(exit int, output []byte) model.ErrorClass {
 
 func (OpenCode) ParseUsage(output []byte) model.Usage { return ParseOutputUsage(output) }
 
-// WritablePaths declares the CLI home and cache. It does not read them.
+// WritablePaths declares the CLI home and cache, plus the parent of a non-empty
+// OPENCODE_DB already named by the current process.
 func (OpenCode) WritablePaths() []string {
-	return nonempty(
-		homePath(".local", "share", "opencode"),
-		homePath(".config", "opencode"),
-		cachePath("opencode"),
+	return appendEnvDirs(
+		nonempty(
+			homePath(".local", "share", "opencode"),
+			homePath(".config", "opencode"),
+			cachePath("opencode"),
+		),
+		envParent("OPENCODE_DB"),
 	)
 }
 

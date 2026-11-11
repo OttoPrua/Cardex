@@ -55,11 +55,20 @@ func TestAGYBuildSnapshot(t *testing.T) {
 		t.Fatalf("thinking argv\n got %q\nwant %q", thinking, wantThinking)
 	}
 	assertNoArg(t, thinking, "--effort")
+	if !argPair(cmd, "--effort", "high") {
+		t.Fatalf("default argv missing --effort high: %q", cmd)
+	}
+	for _, modelName := range []string{"gemini-4-argon-medium", "gemini-4-argon-low", "gemini-4-argon-high"} {
+		got, _, err := (runner.AGY{}).Build(runner.LaunchSpec{Model: modelName, PromptPath: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if argPair(got, "--effort", "high") {
+			t.Fatalf("%s argv contains --effort high: %q", modelName, got)
+		}
+	}
 	if (runner.AGY{}).NeedsPTY() || (runner.AGY{}).Name() != "agy" || len((runner.AGY{}).Capabilities()) != 0 {
 		t.Fatalf("meta pty=%v name=%s caps=%q", (runner.AGY{}).NeedsPTY(), (runner.AGY{}).Name(), (runner.AGY{}).Capabilities())
-	}
-	if (runner.AGY{}).WritablePaths() != nil {
-		t.Fatalf("paths %q", (runner.AGY{}).WritablePaths())
 	}
 	if _, _, err := (runner.AGY{}).Build(runner.LaunchSpec{}); err != nil {
 		t.Fatal(err)
@@ -67,6 +76,15 @@ func TestAGYBuildSnapshot(t *testing.T) {
 	if err := (runner.AGY{}).Drive(t.Context(), nil); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func argPair(args []string, flag, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == flag && args[i+1] == value {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAGYClassifyAndUsage(t *testing.T) {

@@ -43,11 +43,46 @@ func TestKimiBuildSnapshot(t *testing.T) {
 	if (runner.Kimi{}).NeedsPTY() || (runner.Kimi{}).Name() != "kimi" || len((runner.Kimi{}).Capabilities()) != 0 {
 		t.Fatalf("meta pty=%v name=%s caps=%q", (runner.Kimi{}).NeedsPTY(), (runner.Kimi{}).Name(), (runner.Kimi{}).Capabilities())
 	}
-	if _, _, err := (runner.Kimi{}).Build(runner.LaunchSpec{}); err != nil {
+	_, env, err = (runner.Kimi{}).Build(runner.LaunchSpec{})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !slices.Equal(env, []string{"KIMI_CODE_NO_AUTO_UPDATE=1"}) {
+		t.Fatalf("default env %q", env)
 	}
 	if err := (runner.Kimi{}).Drive(t.Context(), nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestKimiBuildInheritsConfigHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("KIMI_CODE_HOME", home)
+	configPath := filepath.Join(home, "config.toml")
+	const config = "default_permission_mode = \"manual\"\n" +
+		"default_plan_mode = true\n\n" +
+		"[models.\"kimi-code/k3.1-pro\"]\n" +
+		"provider = \"kimi-code\"\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, configHome := range []string{"", " \t "} {
+		_, env, err := (runner.Kimi{ConfigHome: configHome}).Build(runner.LaunchSpec{
+			Model: "kimi-code/k3.1-pro",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Equal(env, []string{"KIMI_CODE_NO_AUTO_UPDATE=1"}) {
+			t.Fatalf("ConfigHome %q: env %q", configHome, env)
+		}
+	}
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != config {
+		t.Fatalf("inherited config changed: %q", got)
 	}
 }
 

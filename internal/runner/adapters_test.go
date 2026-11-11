@@ -173,6 +173,13 @@ func TestClassifyV1Samples(t *testing.T) {
 		{"remote_codex_error: 403 Forbidden", model.ErrorPermissionDenied},
 		{"access denied by policy: cannot write to /etc", model.ErrorPermissionDenied},
 		{"operation blocked by organization admin", model.ErrorPermissionDenied},
+		{"operation not permitted by policy", model.ErrorPermissionDenied},
+		{"sandbox initialization failed: Operation not permitted", model.ErrorPermissionDenied},
+		{"SANDBOX INITIALIZATION FAILED: OPERATION NOT PERMITTED", model.ErrorPermissionDenied},
+		{"sandbox-exec: sandbox_apply: Operation not permitted", model.ErrorPermissionDenied},
+		{"error: could not apply the 'workspace' sandbox profile", model.ErrorPermissionDenied},
+		{"Operation not permitted", ""},
+		{"open /work/data.txt: Operation not permitted", ""},
 		{"HTTP 429: usage limit reached", model.ErrorQuotaHit},
 		{"quota exhausted", model.ErrorQuotaHit},
 		{"用量限额", model.ErrorQuotaHit},
@@ -247,6 +254,7 @@ func TestParseUsageShapes(t *testing.T) {
 func TestWritablePathsLeaveDiskAlone(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	clearWritableEnv(t)
 	sets := [][]string{
 		runner.Claude{}.WritablePaths(),
 		runner.Codex{}.WritablePaths(),

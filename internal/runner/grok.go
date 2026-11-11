@@ -139,8 +139,10 @@ func promptArg(path string) (string, error) {
 	return string(b), nil
 }
 
-// Build returns v1's write-capable argv. Headless matches grokBuildProductArgs
-// without --reasoning-effort (LaunchSpec has no effort). Goal mode matches
+// Build returns write-capable argv with isolation supplied by the host.
+// Grok's sandbox stays off to avoid nested macOS sandbox_init failures.
+// Headless matches grokBuildProductArgs without --reasoning-effort
+// (LaunchSpec has no effort). Goal mode matches
 // manualGrokGoalArgs: interactive, --cwd, no --prompt-file.
 func (g Grok) Build(spec LaunchSpec) ([]string, []string, error) {
 	if g.GoalMode {
@@ -151,7 +153,7 @@ func (g Grok) Build(spec LaunchSpec) ([]string, []string, error) {
 		"--no-auto-update",
 		"--model", spec.Model,
 		"--output-format", "streaming-json",
-		"--sandbox", "workspace",
+		"--sandbox", "none",
 		"--permission-mode", "auto",
 		"--no-memory", "--no-subagents", "--disable-web-search", "--verbatim",
 		"--no-plan",
@@ -168,7 +170,7 @@ func (g Grok) buildGoal(spec LaunchSpec) ([]string, []string, error) {
 		"grok",
 		"--no-auto-update",
 		"--model", spec.Model,
-		"--sandbox", "workspace",
+		"--sandbox", "none",
 		"--permission-mode", "auto",
 		"--no-memory", "--no-subagents", "--disable-web-search",
 		"--no-plan",

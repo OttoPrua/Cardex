@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/homeguard"
@@ -36,6 +37,9 @@ func cmdDoctor(home string, args []string, stdout, stderr io.Writer) int {
 
 func collectDoctor(home string) []finding {
 	var out []finding
+	if strings.HasPrefix(buildRevision(), "unknown") {
+		out = append(out, finding{"binary has no commit revision, so the running version cannot be traced", "build from a git checkout, or pass -ldflags \"-X main.revision=$(git rev-parse --short HEAD)\""})
+	}
 	resolved, err := resolveHome(home)
 	if err != nil {
 		suggestion := "pass a writable --home"

@@ -200,7 +200,7 @@ func TestHarvestEvidenceFiles(t *testing.T) {
 		home := t.TempDir()
 		in := harvestInput(dir, head, model.Card{
 			ID: "c", Kind: model.KindDev, Acceptance: []string{"printf hello", "false"},
-		}, 1, []byte("OUTPUT-SECRET"), "")
+		}, 0, []byte("OUTPUT-SECRET"), "")
 		in.Home = home
 		res, err := Harvest(context.Background(), in)
 		if err != nil || res.EvidenceErr != nil {
@@ -234,7 +234,7 @@ func TestHarvestEvidenceFiles(t *testing.T) {
 		home := t.TempDir()
 		in := harvestInput(dir, head, model.Card{
 			ID: "c", Kind: model.KindDev, Acceptance: []string{"printf 'hello\n'", "false"},
-		}, 1, nil, "")
+		}, 0, nil, "")
 		in.Home = home
 		res, err := Harvest(context.Background(), in)
 		if err != nil || res.EvidenceErr != nil {

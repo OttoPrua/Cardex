@@ -800,7 +800,7 @@ func TestDispatchAfterPrimaryAdvances(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	obj.IntegrationBranch = "github.com/OttoPrua/Cardex/n3/main"
+	obj.IntegrationBranch = "cardex/n3/main"
 	if err := db.UpdateObjective(ctx, &obj); err != nil {
 		t.Fatal(err)
 	}
@@ -843,7 +843,7 @@ func TestDispatchAfterPrimaryAdvances(t *testing.T) {
 	if strings.Contains(text, "moved") || strings.Contains(text, "primary branch") || strings.Contains(blob, "moved") || strings.Contains(blob, "primary branch") {
 		t.Fatalf("stderr %q events %s", text, blob)
 	}
-	tip, err := workspace.Git{}.EnsureIntegrationBranch(ctx, repo, "github.com/OttoPrua/Cardex/n3/main")
+	tip, err := workspace.Git{}.EnsureIntegrationBranch(ctx, repo, "cardex/n3/main")
 	if err != nil || tip != h1 {
 		t.Fatalf("second ensure %s %v", tip, err)
 	}

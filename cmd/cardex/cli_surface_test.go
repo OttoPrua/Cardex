@@ -501,7 +501,7 @@ func TestHostSubcommandUsesGit(t *testing.T) {
 	gitCmd("-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "add", "a.txt")
 	gitCmd("-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "base")
 	wt := filepath.Join(home, "wt")
-	cmd := exec.Command("git", "worktree", "add", "-b", "github.com/OttoPrua/Cardex/o/c/c", wt, "main")
+	cmd := exec.Command("git", "worktree", "add", "-b", "cardex/o/c/c", wt, "main")
 	cmd.Dir = repo
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("worktree: %v\n%s", err, out)

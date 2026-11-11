@@ -247,7 +247,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		o.ID = gen
 	}
 	if o.IntegrationBranch == "" {
-		o.IntegrationBranch = "github.com/OttoPrua/Cardex/" + o.ID + "/main"
+		o.IntegrationBranch = "cardex/" + o.ID + "/main"
 	}
 	db, err := openStore(home)
 	if err != nil {

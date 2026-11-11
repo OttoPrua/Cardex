@@ -1875,7 +1875,7 @@ func (f *devFix) attempt(card model.Card, index int, outcome model.Outcome, chan
 		ErrorClass:   model.ErrorClass(outcome),
 		ErrorExcerpt: excerpt,
 		EndedAt:      time.Now().UTC(),
-		Branch:       "github.com/OttoPrua/Cardex/obj/c/" + card.ID,
+		Branch:       "cardex/obj/c/" + card.ID,
 		Usage:        model.Usage{Tokens: tokens},
 	}
 	if err := f.h.DB.CreateAttempt(f.ctx, attempt); err != nil {

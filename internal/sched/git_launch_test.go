@@ -56,7 +56,7 @@ func TestServeLaunchUsesGit(t *testing.T) {
 		t.Fatal(err)
 	}
 	wt := filepath.Join(home, "wt")
-	git(t, repo, "worktree", "add", "-b", "github.com/OttoPrua/Cardex/o/c/c", wt, "main")
+	git(t, repo, "worktree", "add", "-b", "cardex/o/c/c", wt, "main")
 	attempt := model.Attempt{
 		ID: id, Card: "c", Index: 0, Route: model.Route{Channel: "ch", Model: "fake"},
 		Worktree: wt, PromptPath: filepath.Join(dir, "prompt.txt"), StartedAt: time.Now().UTC(),

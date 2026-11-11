@@ -130,7 +130,7 @@ func TestStaleUsesAttemptBaseAgainstIntegrationHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	obj := seedObjective(t, st, proj.ID, model.ModeAuto, model.FreezeSafe)
-	obj.IntegrationBranch = "github.com/OttoPrua/Cardex/test/main"
+	obj.IntegrationBranch = "cardex/test/main"
 	if err := st.UpdateObjective(t.Context(), &obj); err != nil {
 		t.Fatal(err)
 	}

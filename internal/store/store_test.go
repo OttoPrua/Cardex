@@ -158,7 +158,7 @@ func TestRoundTripAndEnums(t *testing.T) {
 		FreezeMode:        model.FreezeFast,
 		Origin:            "codex:thread",
 		Status:            model.ObjectiveActive,
-		IntegrationBranch: "github.com/OttoPrua/Cardex/o1/main",
+		IntegrationBranch: "cardex/o1/main",
 		Channel:           "ch-explicit",
 		Model:             "gpt",
 	}
@@ -233,7 +233,7 @@ func TestRoundTripAndEnums(t *testing.T) {
 			Scores:     []model.RouteScore{{Channel: "ch1", Model: "m1", Score: 0.4}},
 		},
 		Worktree:     "/wt",
-		Branch:       "github.com/OttoPrua/Cardex/o1/c/c1",
+		Branch:       "cardex/o1/c/c1",
 		BaseCommit:   "base",
 		HeadCommit:   "head",
 		PID:          42,

@@ -119,7 +119,7 @@ func (f *fx) attempt(card model.Card, index int, outcome model.Outcome, channel,
 		ErrorClass:   model.ErrorClass(string(outcome)),
 		ErrorExcerpt: excerpt,
 		EndedAt:      time.Now().UTC(),
-		Branch:       "github.com/OttoPrua/Cardex/obj/c/" + card.ID,
+		Branch:       "cardex/obj/c/" + card.ID,
 	}
 	if err := f.db.CreateAttempt(f.ctx, attempt); err != nil {
 		f.t.Fatal(err)
@@ -708,7 +708,7 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		dir := t.TempDir()
 		attempt := f.attempt(card, 0, model.OutcomeViolation, a.ID, "touched forbidden path")
 		attempt.Worktree = dir
-		attempt.Branch = "github.com/OttoPrua/Cardex/obj/c/dev"
+		attempt.Branch = "cardex/obj/c/dev"
 		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
 			t.Fatal(err)
 		}

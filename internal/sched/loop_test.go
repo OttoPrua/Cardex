@@ -733,7 +733,7 @@ func windowWithRemaining(name string, reset time.Time, remaining float64) model.
 
 func branch(t *testing.T, repo, obj, id, file, body string) {
 	t.Helper()
-	name := "github.com/OttoPrua/Cardex/" + obj + "/c/" + id
+	name := "cardex/" + obj + "/c/" + id
 	git(t, repo, "checkout", "-b", name)
 	if err := os.WriteFile(filepath.Join(repo, file), []byte(body), 0o644); err != nil {
 		t.Fatal(err)

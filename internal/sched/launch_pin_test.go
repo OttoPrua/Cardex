@@ -361,7 +361,7 @@ func TestLaunchUnusableChannel(t *testing.T) {
 				}
 			}
 			if tc.branch {
-				tip := rev(t, repo, "github.com/OttoPrua/Cardex/"+obj+"/c/"+cardID)
+				tip := rev(t, repo, "cardex/"+obj+"/c/"+cardID)
 				if opened.BaseCommit != tip {
 					t.Fatalf("base %s, card branch %s", opened.BaseCommit, tip)
 				}

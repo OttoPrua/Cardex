@@ -104,7 +104,7 @@ func TestProjectObjectiveCardRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &oshown); err != nil {
 		t.Fatal(err)
 	}
-	if oshown.Title != "Ship it" || oshown.IntegrationBranch != "github.com/OttoPrua/Cardex/o1/main" {
+	if oshown.Title != "Ship it" || oshown.IntegrationBranch != "cardex/o1/main" {
 		t.Fatalf("show objective %+v", oshown)
 	}
 

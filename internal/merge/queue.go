@@ -319,7 +319,7 @@ func chainCompleted(status model.CardStatus) bool {
 
 // CardBranch is the branch a card's attempts commit to.
 func CardBranch(objectiveID, cardID string) string {
-	return "github.com/OttoPrua/Cardex/" + objectiveID + "/c/" + cardID
+	return "cardex/" + objectiveID + "/c/" + cardID
 }
 
 func mergeArgs(branch string) []string {

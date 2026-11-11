@@ -44,7 +44,7 @@ func TestLaunchResilienceNeitherPrimaryAndSibling(t *testing.T) {
 	}
 	if err := db.CreateObjective(ctx, &model.Objective{
 		ID: "bado", Project: "badp", Title: "bad", Mode: model.ModeManual, FreezeMode: model.FreezeFast,
-		Status: model.ObjectiveActive, IntegrationBranch: "github.com/OttoPrua/Cardex/bado/main",
+		Status: model.ObjectiveActive, IntegrationBranch: "cardex/bado/main",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestLaunchResilienceNeitherPrimaryAndSibling(t *testing.T) {
 	if err != nil || len(attempts) != 0 {
 		t.Fatalf("bad attempts %+v %v", attempts, err)
 	}
-	if branchExists(badRepo, "github.com/OttoPrua/Cardex/bado/c/bad") || branchExists(badRepo, "github.com/OttoPrua/Cardex/bado/main") {
+	if branchExists(badRepo, "cardex/bado/c/bad") || branchExists(badRepo, "cardex/bado/main") {
 		t.Fatal("bad repo kept a cardex ref")
 	}
 	if entries, _ := os.ReadDir(filepath.Join(filepath.Dir(badRepo), "badwt")); len(entries) != 0 {
@@ -273,7 +273,7 @@ func TestLaunchResilienceCommittedBranchKept(t *testing.T) {
 	_, obj := seedRepo(t, db, repo, "true")
 	seedRoutes(t, db)
 	branch(t, repo, obj, "c", "keep.txt", "kept\n")
-	name := "github.com/OttoPrua/Cardex/" + obj + "/c/c"
+	name := "cardex/" + obj + "/c/c"
 	before := rev(t, repo, name)
 	card := model.Card{ID: "c", Objective: obj, Kind: model.KindDev, Title: "c", Tier: model.TierT2, Status: model.CardReady, Channel: "cha", Model: "model-a"}
 	if err := db.CreateCard(ctx, &card); err != nil {
@@ -380,7 +380,7 @@ func TestLaunchResilienceMergeIsolation(t *testing.T) {
 	}
 	if err := db.CreateObjective(ctx, &model.Objective{
 		ID: "bado", Project: "badp", Title: "bad", Mode: model.ModeManual, FreezeMode: model.FreezeFast,
-		Status: model.ObjectiveActive, IntegrationBranch: "github.com/OttoPrua/Cardex/bado/main",
+		Status: model.ObjectiveActive, IntegrationBranch: "cardex/bado/main",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestLaunchResilienceMergeIsolation(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("tick_error count %d %+v", n, events)
 	}
-	if branchExists(badRepo, "github.com/OttoPrua/Cardex/bado/main") {
+	if branchExists(badRepo, "cardex/bado/main") {
 		t.Fatal("merge failure created the integration ref")
 	}
 }
@@ -479,7 +479,7 @@ func TestLaunchResilienceServeStaysUp(t *testing.T) {
 	}
 	if err := db.CreateObjective(ctx, &model.Objective{
 		ID: "bado", Project: "badp", Title: "bad", Mode: model.ModeManual, FreezeMode: model.FreezeFast,
-		Status: model.ObjectiveActive, IntegrationBranch: "github.com/OttoPrua/Cardex/bado/main",
+		Status: model.ObjectiveActive, IntegrationBranch: "cardex/bado/main",
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -1590,7 +1590,7 @@ func quotaReset(home string, a model.Attempt) (time.Time, bool) {
 }
 
 func cardBranchName(objectiveID, cardID string) string {
-	return "github.com/OttoPrua/Cardex/" + objectiveID + "/c/" + cardID
+	return "cardex/" + objectiveID + "/c/" + cardID
 }
 
 func gitRefExists(ctx context.Context, repo, ref string) bool {

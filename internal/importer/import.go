@@ -289,7 +289,7 @@ func writeRow(ctx context.Context, db *store.Store, v1Home, id string, pl placem
 			Mode:              model.ModeManual,
 			FreezeMode:        model.FreezeSafe,
 			Status:            model.ObjectiveActive,
-			IntegrationBranch: "github.com/OttoPrua/Cardex/" + objID + "/main",
+			IntegrationBranch: "cardex/" + objID + "/main",
 		}
 		if err := db.CreateObjective(ctx, &o); err != nil {
 			return err

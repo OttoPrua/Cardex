@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="397" viewBox="0 0 1200 397" role="img" aria-labelledby="title description" xml:lang="zh-CN">
+  <title id="title">从目标到可验收的改动</title>
+  <desc id="description">自动目标的推进路径</desc>
+  <defs>
+    <pattern id="dots" width="15" height="15" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.45" fill="#bcc9e6"/></pattern>
+    <marker id="arrow" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#7387b7"/></marker>
+  </defs>
+  <rect x="1" y="1" width="1198" height="395" rx="25" fill="#f8faff" stroke="#d4def1"/>
+  <rect x="946" y="25" width="209" height="126" rx="10" fill="url(#dots)" opacity=".71"/>
+  <text x="1034" y="86" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="42" font-weight="600" fill="#aebde2">{{  }}</text>
+  <text x="45" y="52" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="17" font-weight="730" fill="#4052ad">OBJECTIVE   /   AUTO</text>
+  <text x="43" y="103" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="42" font-weight="750" fill="#172744">从目标到可验收的改动</text>
+  <text x="45" y="137" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="480" fill="#445775">自动目标的推进路径</text>
+  <text x="483" y="132" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#4052ad">03 / PARALLEL</text>
+  <path d="M222 227 H250" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <path d="M433 227 H458 V183 H477" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <path d="M433 227 H458 V271 H477" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <path d="M676 183 H700 V227 H722" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <path d="M676 271 H700 V227" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M920 227 H949" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="44" y="174" width="178" height="106" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="58" y="199" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#4052ad">01 / DESIGN</text>
+  <text x="58" y="233" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="25" font-weight="720" fill="#172744">方向设计</text>
+  <text x="58" y="260" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="17.5" font-weight="490" fill="#445775">盘点与研究</text>
+  <rect x="255" y="174" width="178" height="106" rx="18" fill="#fff9ed" stroke="#e6d6b6"/>
+  <text x="269" y="199" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#8f5a16">02 / CONFIRM</text>
+  <text x="269" y="233" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="25" font-weight="720" fill="#172744">使用者确认</text>
+  <text x="269" y="260" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="17.5" font-weight="490" fill="#445775">冻结方向后拆卡</text>
+  <rect x="727" y="174" width="193" height="106" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="741" y="199" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#4052ad">04 / VERIFY</text>
+  <text x="741" y="233" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="25" font-weight="720" fill="#172744">逐卡验证</text>
+  <text x="741" y="260" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="17.5" font-weight="490" fill="#445775">复核与测试</text>
+  <rect x="954" y="174" width="202" height="106" rx="18" fill="#effaf7" stroke="#b9ded7"/>
+  <text x="968" y="199" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#18736b">05 / INTEGRATE</text>
+  <text x="968" y="233" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="25" font-weight="720" fill="#172744">合入目标分支</text>
+  <text x="968" y="260" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="17.5" font-weight="490" fill="#445775">测试通过后合入</text>
+  <rect x="482" y="146" width="194" height="74" rx="14" fill="#eef5ff" stroke="#bfcff0"/>
+  <text x="498" y="176" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="23" font-weight="730" fill="#172744">执行卡 A</text>
+  <text x="498" y="201" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="16" font-weight="490" fill="#445775">独立 worktree</text>
+  <rect x="482" y="234" width="194" height="74" rx="14" fill="#eef5ff" stroke="#bfcff0"/>
+  <text x="498" y="264" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="23" font-weight="730" fill="#172744">执行卡 B</text>
+  <text x="498" y="289" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="16" font-weight="490" fill="#445775">独立 worktree</text>
+  <path d="M45 330 H1155" stroke="#d4deef"/>
+  <text x="45" y="366" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="570" fill="#445775">独立卡可并行 · 写入冲突时等待 · 主分支合并另行决定</text>
+</svg>

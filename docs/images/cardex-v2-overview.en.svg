@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="396" viewBox="0 0 1200 396" role="img" aria-labelledby="title description" xml:lang="en">
+  <title id="title">One conversation. Many coding tools.</title>
+  <desc id="description">Coordinate work, models, and progress on your machine.</desc>
+  <defs>
+    <pattern id="dots" width="15" height="15" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.45" fill="#bcc9e6"/></pattern>
+    <marker id="arrow" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#7387b7"/></marker>
+  </defs>
+  <rect x="1" y="1" width="1198" height="394" rx="25" fill="#f8faff" stroke="#d4def1"/>
+  <rect x="946" y="25" width="209" height="126" rx="10" fill="url(#dots)" opacity=".71"/>
+  <text x="1034" y="86" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="42" font-weight="600" fill="#aebde2">{{  }}</text>
+  <text x="45" y="58" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="19" font-weight="750" fill="#4052ad">CARDEX   /   LOCAL</text>
+  <text x="42" y="112" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="45" font-weight="750" fill="#172744">One conversation. Many coding tools.</text>
+  <text x="45" y="151" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="480" fill="#445775">Coordinate work, models, and progress on your machine.</text>
+  <path d="M344 245 H382" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <path d="M755 245 H793" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="44" y="185" width="298" height="122" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="64" y="214" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="15" font-weight="700" fill="#4052ad">01 / MANAGE</text>
+  <text x="64" y="256" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="32" font-weight="740" fill="#172744">Management</text>
+  <text x="64" y="286" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="490" fill="#445775">Codex  /  Hermes</text>
+  <rect x="390" y="185" width="363" height="122" rx="18" fill="#eef5ff" stroke="#bfcff0"/>
+  <text x="410" y="214" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="15" font-weight="700" fill="#4052ad">02 / ORCHESTRATE</text>
+  <text x="410" y="256" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="32" font-weight="740" fill="#172744">Cardex</text>
+  <text x="410" y="286" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="490" fill="#445775">Goals · Routing · Records</text>
+  <rect x="801" y="185" width="355" height="122" rx="18" fill="#effaf7" stroke="#b9ded7"/>
+  <text x="821" y="214" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="15" font-weight="700" fill="#18736b">03 / EXECUTE</text>
+  <text x="821" y="256" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="32" font-weight="740" fill="#172744">Coding tools</text>
+  <text x="821" y="286" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="490" fill="#445775">Claude · Codex · Grok · …</text>
+  <path d="M45 330 H1155" stroke="#d4deef"/>
+  <text x="45" y="365" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="19" font-weight="650" fill="#445775">LOCAL RECORDS  /  SQLite · Git · Logs</text>
+  <text x="809" y="365" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="18" font-weight="550" fill="#18736b">Decisions return to the origin session</text>
+</svg>

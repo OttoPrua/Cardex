@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 func TestOpenQuestionRoundTripLegacyAndQuery(t *testing.T) {

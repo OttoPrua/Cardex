@@ -11,14 +11,14 @@ import (
 	"strconv"
 	"strings"
 
-	"cardex/internal/host"
-	"cardex/internal/importer"
-	"cardex/internal/model"
-	"cardex/internal/positioning"
-	"cardex/internal/question"
-	"cardex/internal/scorecard"
-	"cardex/internal/store"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/importer"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/positioning"
+	"github.com/OttoPrua/Cardex/internal/question"
+	"github.com/OttoPrua/Cardex/internal/scorecard"
+	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 const nodeGroupUsage = `node — read and change design nodes

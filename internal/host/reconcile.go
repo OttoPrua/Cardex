@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func reconcile(ctx context.Context, home string) error {

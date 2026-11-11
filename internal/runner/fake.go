@@ -19,7 +19,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // Fake is a complete runner driven by a JSON script.

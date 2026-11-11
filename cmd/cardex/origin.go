@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 
-	"cardex/internal/model"
-	"cardex/internal/notify"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 // cardView is the card record plus the origin joined from the origin event.

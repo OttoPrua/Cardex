@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"cardex/internal/model"
-	"cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
 )
 
 type v1Subscription struct {

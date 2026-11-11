@@ -1,6 +1,6 @@
 package harvest
 
-import "cardex/internal/model"
+import "github.com/OttoPrua/Cardex/internal/model"
 
 type resultState int
 

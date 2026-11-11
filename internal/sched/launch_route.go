@@ -8,9 +8,9 @@ import (
 	"os"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/route"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/route"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 const (

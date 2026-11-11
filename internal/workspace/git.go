@@ -24,7 +24,7 @@ func (Git) Create(ctx context.Context, req CreateRequest) (Worktree, error) {
 		strings.TrimSpace(req.WorktreeRoot) == "" {
 		return Worktree{}, fmt.Errorf("workspace: incomplete create request")
 	}
-	branch := fmt.Sprintf("cardex/%s/c/%s", req.ObjectiveID, req.CardID)
+	branch := fmt.Sprintf("github.com/OttoPrua/Cardex/%s/c/%s", req.ObjectiveID, req.CardID)
 	path := filepath.Join(req.WorktreeRoot, req.CardID+"-"+req.AttemptID)
 	if err := os.MkdirAll(req.WorktreeRoot, 0o755); err != nil {
 		return Worktree{}, err

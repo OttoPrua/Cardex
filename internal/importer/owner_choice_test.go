@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"cardex/internal/model"
-	"cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
 )
 
 func TestImportOwnerChoiceKeepsOtherPlacements(t *testing.T) {

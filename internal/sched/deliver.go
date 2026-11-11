@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"cardex/internal/model"
-	"cardex/internal/notify"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func (r *Runner) deliveryMessage(ctx context.Context, db *store.Store, q model.Question) (notify.Message, error) {

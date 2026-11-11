@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/harvest"
-	"cardex/internal/model"
-	"cardex/internal/prompt"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/prompt"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestRankingMaterialAndDefaultSchedule(t *testing.T) {

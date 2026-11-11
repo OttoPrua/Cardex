@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/harvest"
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 func TestDisposeAndDevStepShareDecision(t *testing.T) {

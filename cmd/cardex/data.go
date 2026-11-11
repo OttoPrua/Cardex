@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 // objectiveQuestionWrite is nil on the success path. A test may set it so the
@@ -247,7 +247,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		o.ID = gen
 	}
 	if o.IntegrationBranch == "" {
-		o.IntegrationBranch = "cardex/" + o.ID + "/main"
+		o.IntegrationBranch = "github.com/OttoPrua/Cardex/" + o.ID + "/main"
 	}
 	db, err := openStore(home)
 	if err != nil {

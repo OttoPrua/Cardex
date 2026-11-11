@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/host"
-	"cardex/internal/model"
-	"cardex/internal/runner"
-	"cardex/internal/sandbox"
-	"cardex/internal/store"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/runner"
+	"github.com/OttoPrua/Cardex/internal/sandbox"
+	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 func TestMain(m *testing.M) {

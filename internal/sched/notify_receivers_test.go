@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/notify"
 )
 
 func TestHermesProfileAmbiguousSkipsAndInboxes(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 const (

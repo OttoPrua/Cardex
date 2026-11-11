@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 func (s *Store) insertClaim(ctx context.Context, c *model.Claim) error {

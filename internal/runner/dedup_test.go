@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // TestDedupedRunnerHelpers checks the single class patterns and JSON

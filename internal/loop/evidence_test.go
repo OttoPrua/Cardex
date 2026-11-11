@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 func TestReviewRoundsKeepVerdictsAndNote(t *testing.T) {

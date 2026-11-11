@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/quota"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 const resultMarker = "\n\n<!-- cardex-result -->\n"

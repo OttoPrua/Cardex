@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/quota"
-	"cardex/internal/route"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/route"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 type fx struct {
@@ -119,7 +119,7 @@ func (f *fx) attempt(card model.Card, index int, outcome model.Outcome, channel,
 		ErrorClass:   model.ErrorClass(string(outcome)),
 		ErrorExcerpt: excerpt,
 		EndedAt:      time.Now().UTC(),
-		Branch:       "cardex/obj/c/" + card.ID,
+		Branch:       "github.com/OttoPrua/Cardex/obj/c/" + card.ID,
 	}
 	if err := f.db.CreateAttempt(f.ctx, attempt); err != nil {
 		f.t.Fatal(err)
@@ -708,7 +708,7 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		dir := t.TempDir()
 		attempt := f.attempt(card, 0, model.OutcomeViolation, a.ID, "touched forbidden path")
 		attempt.Worktree = dir
-		attempt.Branch = "cardex/obj/c/dev"
+		attempt.Branch = "github.com/OttoPrua/Cardex/obj/c/dev"
 		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
 			t.Fatal(err)
 		}

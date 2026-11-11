@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"cardex/internal/model"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestHarvestReworkEvidence(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"errors"
 )
 
-// ErrNotImplemented is returned until R3-D fills this package in.
+// ErrNotImplemented is returned by this package's Stub, used as a test double and fallback.
 var ErrNotImplemented = errors.New("not implemented")
 
 // Message is one question delivery.

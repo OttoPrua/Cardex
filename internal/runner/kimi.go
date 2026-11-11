@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // Kimi adapts kimi-cli. v1 forbids --auto/--yolo/--plan next to --prompt.

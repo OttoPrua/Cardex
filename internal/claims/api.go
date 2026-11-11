@@ -3,7 +3,7 @@ package claims
 
 import "errors"
 
-// ErrNotImplemented is returned until R2-C fills this package in.
+// ErrNotImplemented is kept for compatibility; nothing in this package returns it now.
 var ErrNotImplemented = errors.New("not implemented")
 
 // Conflict explains which card holds a path or symbol.

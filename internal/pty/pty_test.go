@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/pty"
+	"github.com/OttoPrua/Cardex/internal/pty"
 )
 
 func TestStartReadsChildOutput(t *testing.T) {

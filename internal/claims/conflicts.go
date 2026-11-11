@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // Conflicts reports scheduling conflicts. Review cards do not occupy claims.

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/quota"
 )
 
 // Select follows design §7.1: pin, tier, candidates, filters, pace order, structured reason.

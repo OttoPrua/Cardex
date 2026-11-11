@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // Scope is who a receiver proactively subscribes to.

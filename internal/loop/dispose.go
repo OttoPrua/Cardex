@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"cardex/internal/harvest"
-	"cardex/internal/model"
-	"cardex/internal/notify"
-	"cardex/internal/store"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 type disposeKey int

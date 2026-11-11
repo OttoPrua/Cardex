@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // Patterns are ported from v1 failure_class.go and wait_error_fact.go.

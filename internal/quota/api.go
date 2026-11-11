@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // ErrNotImplemented is returned by Stub. Ledger is the estimator.

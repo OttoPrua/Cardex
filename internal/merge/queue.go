@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/store"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 // Service runs one objective's merge queue. New binds it to an open store.
@@ -319,7 +319,7 @@ func chainCompleted(status model.CardStatus) bool {
 
 // CardBranch is the branch a card's attempts commit to.
 func CardBranch(objectiveID, cardID string) string {
-	return "cardex/" + objectiveID + "/c/" + cardID
+	return "github.com/OttoPrua/Cardex/" + objectiveID + "/c/" + cardID
 }
 
 func mergeArgs(branch string) []string {

@@ -15,8 +15,8 @@ import (
 	"strings"
 	"sync"
 
-	"cardex/internal/homeguard"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/homeguard"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 //go:embed templates/page.html

@@ -7,7 +7,7 @@ import (
 	"io"
 	"strings"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // AGY adapts the Antigravity CLI. v1's command name is agy.

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/sched"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/sched"
 )
 
 const faultSeed int64 = 20261102

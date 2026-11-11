@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 const projectGroupUsage = `project — read and update project records

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/prompt"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/prompt"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 // TestLaunchUnusableChannel drives Tick from sched.New.
@@ -361,7 +361,7 @@ func TestLaunchUnusableChannel(t *testing.T) {
 				}
 			}
 			if tc.branch {
-				tip := rev(t, repo, "cardex/"+obj+"/c/"+cardID)
+				tip := rev(t, repo, "github.com/OttoPrua/Cardex/"+obj+"/c/"+cardID)
 				if opened.BaseCommit != tip {
 					t.Fatalf("base %s, card branch %s", opened.BaseCommit, tip)
 				}

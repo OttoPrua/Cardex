@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
 )
 
 func TestScriptlessResearchIsNotLaunched(t *testing.T) {

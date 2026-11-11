@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // Claude runs the claude CLI non-interactively, including an engines profile.

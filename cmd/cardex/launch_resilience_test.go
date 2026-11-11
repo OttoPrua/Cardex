@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"testing"
 
-	"cardex/internal/host"
-	"cardex/internal/model"
-	"cardex/internal/sched"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/sched"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestCLIFirstDispatchCreatesIntegrationBranch(t *testing.T) {

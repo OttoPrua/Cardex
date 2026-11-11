@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // CreateEvent appends an event. Events cannot be updated or deleted.

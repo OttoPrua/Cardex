@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // ParseSymbols returns top-level functions, methods as Type.Method, and types

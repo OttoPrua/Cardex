@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/harvest"
-	"cardex/internal/host"
-	"cardex/internal/model"
-	"cardex/internal/notify"
-	"cardex/internal/prompt"
-	"cardex/internal/quota"
-	"cardex/internal/route"
+	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/prompt"
+	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/route"
 )
 
 func TestHarvestDeliversBeforeStatusChange(t *testing.T) {
@@ -179,11 +179,11 @@ func TestReviewWorkspaceShowsUnmergedCandidate(t *testing.T) {
 	if err != nil || !strings.Contains(string(body), "candidate-not-on-main") {
 		t.Fatalf("review worktree %q %v", body, err)
 	}
-	if branchExists(repo, "cardex/"+obj+"/c/rv-c1") {
+	if branchExists(repo, "github.com/OttoPrua/Cardex/"+obj+"/c/rv-c1") {
 		t.Fatal("review dispatch created a branch from its own id")
 	}
 	head := rev(t, attempts[0].Worktree, "HEAD")
-	if head != rev(t, repo, "cardex/"+obj+"/c/c1") {
+	if head != rev(t, repo, "github.com/OttoPrua/Cardex/"+obj+"/c/c1") {
 		t.Fatalf("review HEAD %s is not the candidate", head)
 	}
 }
@@ -216,11 +216,11 @@ func TestReviewOfRepairShowsRootCandidate(t *testing.T) {
 	if err != nil || !strings.Contains(string(body), "repair-candidate") {
 		t.Fatalf("review worktree %q %v", body, err)
 	}
-	if branchExists(repo, "cardex/"+obj+"/c/rv-rp-c1") || branchExists(repo, "cardex/"+obj+"/c/rp-c1") {
+	if branchExists(repo, "github.com/OttoPrua/Cardex/"+obj+"/c/rv-rp-c1") || branchExists(repo, "github.com/OttoPrua/Cardex/"+obj+"/c/rp-c1") {
 		t.Fatal("review of a repair created a branch under the review or repair id")
 	}
 	head := rev(t, attempts[0].Worktree, "HEAD")
-	if head != rev(t, repo, "cardex/"+obj+"/c/c1") {
+	if head != rev(t, repo, "github.com/OttoPrua/Cardex/"+obj+"/c/c1") {
 		t.Fatalf("review HEAD %s is not the root candidate", head)
 	}
 }
@@ -1580,7 +1580,7 @@ func TestDispatchChecksAssociationEdgeAndStopState(t *testing.T) {
 			if tc.open {
 				open := model.Attempt{
 					ID: "a-c", Card: "c", PID: 0, Worktree: repo,
-					Branch: "cardex/" + obj + "/c/c", StartedAt: time.Now().UTC(),
+					Branch: "github.com/OttoPrua/Cardex/" + obj + "/c/c", StartedAt: time.Now().UTC(),
 				}
 				if err := db.CreateAttempt(ctx, &open); err != nil {
 					t.Fatal(err)
@@ -1662,7 +1662,7 @@ func TestWorkspaceExistsBeforeAttemptResumes(t *testing.T) {
 		if err != nil || len(first) != 0 {
 			t.Fatalf("attempt stored early %+v %v", first, err)
 		}
-		name := "cardex/" + obj + "/c/c"
+		name := "github.com/OttoPrua/Cardex/" + obj + "/c/c"
 		if branchExists(repo, name) {
 			t.Fatal("uncommitted branch kept")
 		}
@@ -1698,7 +1698,7 @@ func TestWorkspaceExistsBeforeAttemptResumes(t *testing.T) {
 		seedRoutes(t, db)
 		branch(t, repo, obj, "c", "keep.txt", "kept\n")
 		wt := filepath.Join(t.TempDir(), "existing")
-		git(t, repo, "worktree", "add", wt, "cardex/"+obj+"/c/c")
+		git(t, repo, "worktree", "add", wt, "github.com/OttoPrua/Cardex/"+obj+"/c/c")
 		card := model.Card{
 			ID: "c", Objective: obj, Kind: model.KindDev, Title: "c",
 			Tier: model.TierT2, Status: model.CardReady,
@@ -1715,7 +1715,7 @@ func TestWorkspaceExistsBeforeAttemptResumes(t *testing.T) {
 		if err != nil || len(attempts) != 1 || attempts[0].PID != 95 {
 			t.Fatalf("attempts %+v %v", attempts, err)
 		}
-		name := "cardex/" + obj + "/c/c"
+		name := "github.com/OttoPrua/Cardex/" + obj + "/c/c"
 		if attempts[0].Branch != name {
 			t.Fatalf("branch %s", attempts[0].Branch)
 		}

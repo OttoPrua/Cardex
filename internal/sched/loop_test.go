@@ -15,13 +15,13 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/harvest"
-	"cardex/internal/host"
-	"cardex/internal/merge"
-	"cardex/internal/model"
-	"cardex/internal/notify"
-	"cardex/internal/prompt"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/merge"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/prompt"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestTickDispatchClaimsAndSecondTick(t *testing.T) {
@@ -733,7 +733,7 @@ func windowWithRemaining(name string, reset time.Time, remaining float64) model.
 
 func branch(t *testing.T, repo, obj, id, file, body string) {
 	t.Helper()
-	name := "cardex/" + obj + "/c/" + id
+	name := "github.com/OttoPrua/Cardex/" + obj + "/c/" + id
 	git(t, repo, "checkout", "-b", name)
 	if err := os.WriteFile(filepath.Join(repo, file), []byte(body), 0o644); err != nil {
 		t.Fatal(err)

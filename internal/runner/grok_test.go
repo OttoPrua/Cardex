@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/runner"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/runner"
 )
 
 const snapshotPrompt = "ship the card"

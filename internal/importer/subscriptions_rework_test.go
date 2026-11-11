@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/notify"
 )
 
 func TestImportProjectOnlyScopeSelectsStoredProject(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 const (

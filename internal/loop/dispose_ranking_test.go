@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"cardex/internal/harvest"
-	"cardex/internal/model"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestDisposeRanking(t *testing.T) {

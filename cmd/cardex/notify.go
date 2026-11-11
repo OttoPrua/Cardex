@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/notify"
 )
 
 const notifyGroupUsage = `notify — register who receives questions

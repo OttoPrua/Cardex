@@ -1,6 +1,6 @@
 package runner
 
-import "cardex/internal/model"
+import "github.com/OttoPrua/Cardex/internal/model"
 
 // Lookup returns the executor for a channel runner name.
 func Lookup(name string) (Runner, bool) {

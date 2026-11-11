@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"cardex/internal/harvest"
-	"cardex/internal/host"
-	"cardex/internal/loop"
-	"cardex/internal/model"
-	"cardex/internal/notify"
-	"cardex/internal/store"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/loop"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 // productionEngine is sched.New's design phase. It calls loop.New(...).Step

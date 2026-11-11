@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 func TestObjectivePinEmptyModelListChecksRequires(t *testing.T) {

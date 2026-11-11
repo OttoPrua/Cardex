@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"cardex/internal/homeguard"
-	"cardex/internal/model"
-	"cardex/internal/positioning"
-	"cardex/internal/quota"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/homeguard"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/positioning"
+	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 const doctorUsagePurpose = "check the home, database, tools, and channel config, then print only problems and a repair suggestion for each"

@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // ClassifyTimeout is the deadline on the single classifier call.

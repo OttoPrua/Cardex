@@ -3,8 +3,8 @@ package loop
 import (
 	"testing"
 
-	"cardex/internal/model"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 // TestFreezeShortAnswer drives design, plan, and replan absorb, directly and

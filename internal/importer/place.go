@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // importObjectiveTitle is the single manual objective created per v1 project.

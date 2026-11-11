@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/quota"
-	"cardex/internal/route"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/route"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 // routeRequestFrom assembles the facts DevStep uses for an automatic channel

@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"cardex/internal/homeguard"
+	"github.com/OttoPrua/Cardex/internal/homeguard"
 	_ "modernc.org/sqlite"
 )
 

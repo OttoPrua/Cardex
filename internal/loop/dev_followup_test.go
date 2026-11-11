@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/route"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/route"
 )
 
 func (f *fx) stepAt(now time.Time) {

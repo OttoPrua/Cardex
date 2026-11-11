@@ -1,7 +1,7 @@
 // Package prompt builds the executor prompt in a stable order. Design §8.
 package prompt
 
-import "cardex/internal/model"
+import "github.com/OttoPrua/Cardex/internal/model"
 
 // Input is the material Build concatenates.
 type Input struct {

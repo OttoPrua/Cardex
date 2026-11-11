@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestDefaultHomeIsCreatedUnderTempHOME(t *testing.T) {

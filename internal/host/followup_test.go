@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/host"
-	"cardex/internal/runner"
-	"cardex/internal/store"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/runner"
+	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 // observingManager records the context Commit actually receives.

@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/loop"
-	"cardex/internal/model"
-	"cardex/internal/positioning"
-	"cardex/internal/question"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/loop"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/positioning"
+	"github.com/OttoPrua/Cardex/internal/question"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestRankingScheduleTick(t *testing.T) {

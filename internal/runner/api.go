@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // ErrNotImplemented is returned by the stub runner. The fake runner does not return it.

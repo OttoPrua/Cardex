@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"cardex/internal/loop"
-	"cardex/internal/model"
-	"cardex/internal/scorecard"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/loop"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/scorecard"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 // Reviewed kinds each grow a review card from the shipped development step.

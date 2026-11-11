@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // ErrNotImplemented is the stub error kept for callers that still name it.

@@ -4,7 +4,7 @@ import (
 	"embed"
 	"strings"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 //go:embed templates/*.md

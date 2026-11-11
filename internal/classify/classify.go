@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // Cache stores successful model classifications by card-body hash.

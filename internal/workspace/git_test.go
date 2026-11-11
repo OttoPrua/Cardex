@@ -28,7 +28,7 @@ func TestCreateNamesBaseAndExclude(t *testing.T) {
 	if wt.Path != wantPath {
 		t.Fatalf("path %s want %s", wt.Path, wantPath)
 	}
-	if wt.Branch != "cardex/obj/c/card1" {
+	if wt.Branch != "github.com/OttoPrua/Cardex/obj/c/card1" {
 		t.Fatalf("branch %s", wt.Branch)
 	}
 	mainHead := gitOut(t, repo, "rev-parse", "HEAD")
@@ -148,7 +148,7 @@ func TestCreateContinuationUsesCardBranch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next.Branch != "cardex/obj/c/card" {
+	if next.Branch != "github.com/OttoPrua/Cardex/obj/c/card" {
 		t.Fatalf("branch %s", next.Branch)
 	}
 	if next.BaseCommit != cardHead {

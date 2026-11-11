@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"cardex/internal/sandbox"
+	"github.com/OttoPrua/Cardex/internal/sandbox"
 )
 
 func TestProfileAllowsReadNetworkAndWriteList(t *testing.T) {
@@ -36,6 +36,9 @@ func TestProfileAllowsReadNetworkAndWriteList(t *testing.T) {
 }
 
 func TestProfileAllowsTmpNotVarOrHome(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("seatbelt profile paths (/private/tmp) are macOS-only")
+	}
 	dir := t.TempDir()
 	profile := sandbox.Profile([]string{dir})
 	for _, path := range []string{dir, mustReal(t, dir), filepath.Clean(os.TempDir()), mustReal(t, os.TempDir())} {

@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 const historyPageSize = 50

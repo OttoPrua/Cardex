@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 func TestPositioningWriteSoftensNonCanonicalTiers(t *testing.T) {

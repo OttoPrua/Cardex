@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/positioning"
-	"cardex/internal/prompt"
-	"cardex/internal/scorecard"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/positioning"
+	"github.com/OttoPrua/Cardex/internal/prompt"
+	"github.com/OttoPrua/Cardex/internal/scorecard"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 const (

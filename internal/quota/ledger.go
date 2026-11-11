@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // estimatedConfidence is below the default confidence of a measured token total.

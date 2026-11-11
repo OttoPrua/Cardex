@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"cardex/internal/loop"
-	"cardex/internal/model"
-	"cardex/internal/notify"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/loop"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 // quietDeliver is the notify stand-in for design-phase scenarios.

@@ -13,15 +13,15 @@ import (
 
 	"reflect"
 
-	"cardex/internal/host"
-	"cardex/internal/importer"
-	"cardex/internal/model"
-	"cardex/internal/notify"
-	"cardex/internal/positioning"
-	"cardex/internal/question"
-	"cardex/internal/sched"
-	"cardex/internal/scorecard"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/importer"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/positioning"
+	"github.com/OttoPrua/Cardex/internal/question"
+	"github.com/OttoPrua/Cardex/internal/sched"
+	"github.com/OttoPrua/Cardex/internal/scorecard"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func callCLI(t *testing.T, args []string) (int, string, string) {
@@ -501,7 +501,7 @@ func TestHostSubcommandUsesGit(t *testing.T) {
 	gitCmd("-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "add", "a.txt")
 	gitCmd("-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "base")
 	wt := filepath.Join(home, "wt")
-	cmd := exec.Command("git", "worktree", "add", "-b", "cardex/o/c/c", wt, "main")
+	cmd := exec.Command("git", "worktree", "add", "-b", "github.com/OttoPrua/Cardex/o/c/c", wt, "main")
 	cmd.Dir = repo
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("worktree: %v\n%s", err, out)

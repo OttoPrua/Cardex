@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // migrateOpenQuestions rewrites legacy string arrays in the same open_questions column.

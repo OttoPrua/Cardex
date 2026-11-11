@@ -6,7 +6,7 @@ import (
 	"errors"
 )
 
-// ErrNotImplemented is returned until R3-A and R3-B fill this package in.
+// ErrNotImplemented is returned by this package's Stub, used as a test double and fallback.
 var ErrNotImplemented = errors.New("not implemented")
 
 // Engine advances one objective by one idempotent step.
@@ -20,7 +20,7 @@ type Stub struct{}
 // Step is the combined design and development step.
 func (Stub) Step(context.Context, string) error { return ErrNotImplemented }
 
-// DesignStep is the design-phase entry R3-A owns.
+// DesignStep is the design-phase entry point; it is not implemented yet.
 func DesignStep(ctx context.Context, objectiveID string) error { return ErrNotImplemented }
 
 // DevStep is the development-phase entry R3-B owns.

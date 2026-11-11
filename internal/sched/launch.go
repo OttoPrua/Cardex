@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"time"
 
-	"cardex/internal/host"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 func init() {

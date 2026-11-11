@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"cardex/internal/model"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func appendEvent(ctx context.Context, db *store.Store, attemptID, kind string, data any) {

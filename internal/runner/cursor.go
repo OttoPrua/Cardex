@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // Cursor adapts the Cursor Agent CLI. v1's command name is cursor-agent.

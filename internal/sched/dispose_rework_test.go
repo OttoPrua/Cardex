@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/loop"
-	"cardex/internal/model"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/loop"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestDesignFamilyFailureDisposition(t *testing.T) {
@@ -85,7 +85,7 @@ func assertDesignFailure(t *testing.T, kind model.CardKind, accept bool, class m
 	}
 	var branchName string
 	if branch || want == "rework" {
-		branchName = "cardex/" + obj + "/c/c"
+		branchName = "github.com/OttoPrua/Cardex/" + obj + "/c/c"
 		git(t, repo, "checkout", "-b", branchName)
 		git(t, repo, "checkout", "main")
 	}
@@ -460,7 +460,7 @@ func TestDesignFileEntersIntegration(t *testing.T) {
 			card.Node = "n"
 			branch(t, repo, obj, card.ID, rel, "design-body\n")
 			wt := filepath.Join(t.TempDir(), "wt")
-			git(t, repo, "worktree", "add", "--detach", wt, "cardex/"+obj+"/c/"+card.ID)
+			git(t, repo, "worktree", "add", "--detach", wt, "github.com/OttoPrua/Cardex/"+obj+"/c/"+card.ID)
 			text := "## 结论\nship the design\n"
 			if tc.kind == model.KindPlan || tc.kind == model.KindReplan {
 				text = "## 新卡\n```json\n[]\n```\n## 结论\nship the design\n"

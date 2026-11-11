@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"cardex/internal/model"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 type seedCard struct {

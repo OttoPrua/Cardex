@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strconv"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 var fakeUsagePattern = regexp.MustCompile(`tokens=(\d+)`)

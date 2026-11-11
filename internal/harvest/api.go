@@ -4,10 +4,10 @@ package harvest
 import (
 	"errors"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
-// ErrNotImplemented is returned until R2-C fills this package in.
+// ErrNotImplemented is kept for compatibility; nothing in this package returns it now.
 var ErrNotImplemented = errors.New("not implemented")
 
 // Input is everything the harvester may look at. Event streams are best-effort.

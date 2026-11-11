@@ -19,21 +19,21 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/board"
-	"cardex/internal/classify"
-	"cardex/internal/harvest"
-	"cardex/internal/host"
-	"cardex/internal/importer"
-	"cardex/internal/loop"
-	"cardex/internal/merge"
-	"cardex/internal/model"
-	"cardex/internal/question"
-	"cardex/internal/quota"
-	"cardex/internal/route"
-	"cardex/internal/sandbox"
-	"cardex/internal/sched"
-	"cardex/internal/store"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/board"
+	"github.com/OttoPrua/Cardex/internal/classify"
+	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/importer"
+	"github.com/OttoPrua/Cardex/internal/loop"
+	"github.com/OttoPrua/Cardex/internal/merge"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/question"
+	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/route"
+	"github.com/OttoPrua/Cardex/internal/sandbox"
+	"github.com/OttoPrua/Cardex/internal/sched"
+	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 func TestS01(t *testing.T) {
@@ -1352,6 +1352,10 @@ func TestS23(t *testing.T) {
 	stopLater(t, h)
 	ctx := context.Background()
 	obj, oldCh, oldModel, newModel := seedRankingWorld(t, h, true)
+	// Plant the executor script before the first tick: the tick that enqueues
+	// the ranking card can also dispatch it, and an unplanted attempt ends
+	// result_unparsable. The id is deterministic for the current week.
+	plantRankingExecutor(t, h, loop.DefaultRankingCardID(time.Now()), newModel)
 	mustTick(t, h, func() bool {
 		_, ok := findRankingCard(t, h, obj)
 		return ok
@@ -1447,14 +1451,25 @@ func TestS23(t *testing.T) {
 	t.Logf("approved model %s on the new card route", got.Route.Model)
 	t.Logf("previously stored route unchanged channel=%s model=%s", keptRoute.Channel, keptRoute.Model)
 	propN := len(rankingProposalBodies(t, h.Home))
-	questionN := len(questionsOf(t, h, obj))
+	// Count only the ranking card's questions. c-next may be harvested on this
+	// tick and open its own question, which is not what this check is about.
+	rankQuestions := func() int {
+		n := 0
+		for _, q := range questionsOf(t, h, obj) {
+			if q.Scope == rank.ID {
+				n++
+			}
+		}
+		return n
+	}
+	questionN := rankQuestions()
 	if err := h.Sched.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if again := len(rankingProposalBodies(t, h.Home)); again != propN {
 		t.Fatalf("another tick proposals %d", again)
 	}
-	if again := len(questionsOf(t, h, obj)); again != questionN {
+	if again := rankQuestions(); again != questionN {
 		t.Fatalf("another tick questions %d", again)
 	}
 	t.Log("another tick left proposal and question counts unchanged")
@@ -1860,7 +1875,7 @@ func (f *devFix) attempt(card model.Card, index int, outcome model.Outcome, chan
 		ErrorClass:   model.ErrorClass(outcome),
 		ErrorExcerpt: excerpt,
 		EndedAt:      time.Now().UTC(),
-		Branch:       "cardex/obj/c/" + card.ID,
+		Branch:       "github.com/OttoPrua/Cardex/obj/c/" + card.ID,
 		Usage:        model.Usage{Tokens: tokens},
 	}
 	if err := f.h.DB.CreateAttempt(f.ctx, attempt); err != nil {

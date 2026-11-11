@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/board"
-	"cardex/internal/model"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/board"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestCardShowJSONMatchesBoard(t *testing.T) {

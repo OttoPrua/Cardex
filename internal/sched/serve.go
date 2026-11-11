@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"cardex/internal/board"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/board"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 type serveLogKey struct{}
@@ -57,7 +57,15 @@ func Serve(ctx context.Context, home, addr string) error {
 		ln.Close()
 		return err
 	}
-	srv := &http.Server{Handler: board.Handler()}
+	// The board is read-only and unauthenticated; bounded timeouts keep a slow
+	// or idle client from pinning connections when it is exposed beyond loopback.
+	srv := &http.Server{
+		Handler:           board.Handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	go func() { _ = srv.Serve(ln) }()
 	defer func() {
 		shut, cancel := context.WithTimeout(context.Background(), time.Second)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 func (s *Store) CreateProject(ctx context.Context, p *model.Project) error {

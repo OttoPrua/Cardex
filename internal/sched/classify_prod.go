@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"cardex/internal/host"
-	"cardex/internal/model"
-	"cardex/internal/runner"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/runner"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 type classifyCardKey struct{}

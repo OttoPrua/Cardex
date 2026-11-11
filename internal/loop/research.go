@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"cardex/internal/model"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 // commitDiff is the two-commit comparison workspace.Manager does not provide yet.

@@ -1,4 +1,4 @@
-module cardex
+module github.com/OttoPrua/Cardex
 
 go 1.24
 

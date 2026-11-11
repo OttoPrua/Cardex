@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/host"
-	"cardex/internal/model"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestDesignPhaseErrorStoresEventAndDisposes(t *testing.T) {

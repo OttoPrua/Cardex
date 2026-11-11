@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/prompt"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/prompt"
 )
 
 func TestDispatchBackoffRelease(t *testing.T) {

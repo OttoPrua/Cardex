@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"cardex/internal/model"
-	"cardex/internal/runner"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/runner"
 )
 
 func TestCodexBuildMatchesTurnCompletedUsage(t *testing.T) {

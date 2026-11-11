@@ -14,9 +14,9 @@ import (
 	"strings"
 	"syscall"
 
-	"cardex/internal/homeguard"
-	"cardex/internal/sched"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/homeguard"
+	"github.com/OttoPrua/Cardex/internal/sched"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 const usage = `cardex — v2 command surface

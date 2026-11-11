@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/sched"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/sched"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 // Harness builds a temp git repo, a temp CARDEX_HOME, and drives sched.Loop.Tick.

@@ -3,7 +3,7 @@ package loop
 import (
 	"testing"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 func TestLegacyOwnerTagParsesAsOwner(t *testing.T) {

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/quota"
-	"cardex/internal/route"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/route"
 )
 
 func TestPassedCardsEnterReview(t *testing.T) {

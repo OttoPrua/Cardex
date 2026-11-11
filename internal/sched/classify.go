@@ -4,9 +4,9 @@ import (
 	"context"
 	"strings"
 
-	"cardex/internal/classify"
-	"cardex/internal/model"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/classify"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 // classifierChannelID is the design §7.4 channel name.

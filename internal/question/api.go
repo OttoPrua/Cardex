@@ -5,10 +5,10 @@ import (
 	"context"
 	"errors"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
-// ErrNotImplemented is returned until R3-A fills this package in.
+// ErrNotImplemented is returned by this package's Stub, used as a test double and fallback.
 var ErrNotImplemented = errors.New("not implemented")
 
 // Service creates, answers, and queries blocking questions.

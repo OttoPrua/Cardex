@@ -17,7 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // Grok adapts the grok-build CLI. GoalMode selects the PTY /goal driver;

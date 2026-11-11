@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/quota"
 )
 
 // Snapshot records are ordinary ledger events, and an event is counted by every

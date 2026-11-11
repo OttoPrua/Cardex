@@ -15,20 +15,20 @@ import (
 	"sync"
 	"time"
 
-	"cardex/internal/claims"
-	"cardex/internal/classify"
-	"cardex/internal/harvest"
-	"cardex/internal/host"
-	"cardex/internal/loop"
-	"cardex/internal/merge"
-	"cardex/internal/model"
-	"cardex/internal/notify"
-	"cardex/internal/prompt"
-	"cardex/internal/question"
-	"cardex/internal/quota"
-	"cardex/internal/route"
-	"cardex/internal/store"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/claims"
+	"github.com/OttoPrua/Cardex/internal/classify"
+	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/loop"
+	"github.com/OttoPrua/Cardex/internal/merge"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/prompt"
+	"github.com/OttoPrua/Cardex/internal/question"
+	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/route"
+	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 const (
@@ -1590,7 +1590,7 @@ func quotaReset(home string, a model.Attempt) (time.Time, bool) {
 }
 
 func cardBranchName(objectiveID, cardID string) string {
-	return "cardex/" + objectiveID + "/c/" + cardID
+	return "github.com/OttoPrua/Cardex/" + objectiveID + "/c/" + cardID
 }
 
 func gitRefExists(ctx context.Context, repo, ref string) bool {

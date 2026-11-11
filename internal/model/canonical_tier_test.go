@@ -3,7 +3,7 @@ package model_test
 import (
 	"testing"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 func TestCanonicalTier(t *testing.T) {

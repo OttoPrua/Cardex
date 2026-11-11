@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"testing"
 
-	"cardex/internal/runner"
+	"github.com/OttoPrua/Cardex/internal/runner"
 )
 
 func TestWritablePathsFollowProcessEnv(t *testing.T) {

@@ -13,9 +13,9 @@ import (
 	"syscall"
 	"time"
 
-	"cardex/internal/claims"
-	"cardex/internal/host"
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/claims"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 const defaultAcceptanceTimeout = 2 * time.Minute

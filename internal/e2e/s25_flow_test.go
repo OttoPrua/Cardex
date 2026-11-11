@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/loop"
-	"cardex/internal/model"
-	"cardex/internal/question"
-	"cardex/internal/sched"
-	"cardex/internal/store"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/loop"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/question"
+	"github.com/OttoPrua/Cardex/internal/sched"
+	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 // TestS25 drives one auto objective through the real scheduler.

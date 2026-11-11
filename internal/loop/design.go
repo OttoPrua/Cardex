@@ -7,11 +7,11 @@ import (
 	"errors"
 	"strings"
 
-	"cardex/internal/model"
-	"cardex/internal/notify"
-	"cardex/internal/question"
-	"cardex/internal/store"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/question"
+	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 // Deps is the design-phase edge: store, workspace, and notify.

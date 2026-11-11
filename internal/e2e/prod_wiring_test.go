@@ -14,12 +14,12 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/host"
-	"cardex/internal/model"
-	"cardex/internal/question"
-	"cardex/internal/runner"
-	"cardex/internal/sched"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/question"
+	"github.com/OttoPrua/Cardex/internal/runner"
+	"github.com/OttoPrua/Cardex/internal/sched"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 // TestProdWiring drives one auto objective through sched.Serve.

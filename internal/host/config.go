@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"cardex/internal/runner"
+	"github.com/OttoPrua/Cardex/internal/runner"
 )
 
 type fileConfig struct {

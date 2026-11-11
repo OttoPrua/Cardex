@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/prompt"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/prompt"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 // TestLaunchClassifiesEmptyTier drives Tick, the real dispatch and backlog-fill path.

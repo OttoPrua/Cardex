@@ -5,7 +5,7 @@ import (
 	"io"
 	"os"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // OpenCode runs opencode run in non-interactive auto-allow mode.

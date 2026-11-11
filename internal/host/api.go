@@ -5,8 +5,8 @@ import (
 	"context"
 	"errors"
 
-	"cardex/internal/model"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 // ErrNotImplemented is retained for callers that still probe the old stub.

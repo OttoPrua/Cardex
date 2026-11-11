@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 	_ "modernc.org/sqlite"
 )
 

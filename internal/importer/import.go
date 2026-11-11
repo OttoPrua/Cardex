@@ -13,9 +13,9 @@ import (
 	"sort"
 	"strings"
 
-	"cardex/internal/model"
-	"cardex/internal/notify"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 const legacySourceEvent = "legacy_source"
@@ -289,7 +289,7 @@ func writeRow(ctx context.Context, db *store.Store, v1Home, id string, pl placem
 			Mode:              model.ModeManual,
 			FreezeMode:        model.FreezeSafe,
 			Status:            model.ObjectiveActive,
-			IntegrationBranch: "cardex/" + objID + "/main",
+			IntegrationBranch: "github.com/OttoPrua/Cardex/" + objID + "/main",
 		}
 		if err := db.CreateObjective(ctx, &o); err != nil {
 			return err

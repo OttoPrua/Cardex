@@ -15,11 +15,11 @@ import (
 	"syscall"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/pty"
-	"cardex/internal/runner"
-	"cardex/internal/sandbox"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/pty"
+	"github.com/OttoPrua/Cardex/internal/runner"
+	"github.com/OttoPrua/Cardex/internal/sandbox"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 type ptyChooser interface {

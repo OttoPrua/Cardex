@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // Codex runs codex exec. A normal write run uses --sandbox workspace-write.

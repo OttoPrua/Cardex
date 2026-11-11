@@ -5,7 +5,7 @@ import (
 	"context"
 	"errors"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // ErrNotImplemented is returned by Stub. Home is the positioning store.

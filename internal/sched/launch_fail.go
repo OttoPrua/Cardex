@@ -9,10 +9,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"cardex/internal/loop"
-	"cardex/internal/model"
-	"cardex/internal/store"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/loop"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 const (

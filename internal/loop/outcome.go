@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unicode"
 
-	"cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // Action is how one harvested attempt is disposed.

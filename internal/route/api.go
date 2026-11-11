@@ -6,8 +6,8 @@ import (
 	"errors"
 	"time"
 
-	"cardex/internal/model"
-	"cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/quota"
 )
 
 const (

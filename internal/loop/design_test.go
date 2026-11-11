@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"cardex/internal/model"
-	"cardex/internal/question"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/question"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func openLoop(t *testing.T) *store.Store {

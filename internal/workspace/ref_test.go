@@ -15,7 +15,7 @@ func TestEnsureIntegrationBranchFromMain(t *testing.T) {
 	repo := initRepo(t)
 	mainSHA := gitOut(t, repo, "rev-parse", "refs/heads/main")
 	var g Git
-	got, err := g.EnsureIntegrationBranch(ctx, repo, "cardex/obj/main")
+	got, err := g.EnsureIntegrationBranch(ctx, repo, "github.com/OttoPrua/Cardex/obj/main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestEnsureIntegrationBranchFromMain(t *testing.T) {
 	if gitOut(t, repo, "rev-parse", "refs/heads/main") != mainSHA {
 		t.Fatal("main moved")
 	}
-	again, err := g.EnsureIntegrationBranch(ctx, repo, "cardex/obj/main")
+	again, err := g.EnsureIntegrationBranch(ctx, repo, "github.com/OttoPrua/Cardex/obj/main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestEnsureIntegrationBranchOverlap(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sha, err := g.EnsureIntegrationBranch(ctx, repo, "cardex/overlap/main")
+			sha, err := g.EnsureIntegrationBranch(ctx, repo, "github.com/OttoPrua/Cardex/overlap/main")
 			if err != nil {
 				errCh <- err
 				return
@@ -84,7 +84,7 @@ func TestEnsureIntegrationBranchFromMaster(t *testing.T) {
 	repo := initNamedRepo(t, "master")
 	masterSHA := gitOut(t, repo, "rev-parse", "refs/heads/master")
 	var g Git
-	got, err := g.EnsureIntegrationBranch(ctx, repo, "cardex/obj/main")
+	got, err := g.EnsureIntegrationBranch(ctx, repo, "github.com/OttoPrua/Cardex/obj/main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestEnsureIntegrationBranchIgnoresMainTag(t *testing.T) {
 	gitRun(t, repo, "tag", "main", "HEAD")
 	masterSHA := gitOut(t, repo, "rev-parse", "refs/heads/master")
 	var g Git
-	got, err := g.EnsureIntegrationBranch(ctx, repo, "cardex/obj/main")
+	got, err := g.EnsureIntegrationBranch(ctx, repo, "github.com/OttoPrua/Cardex/obj/main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,11 +115,11 @@ func TestEnsureIntegrationBranchNeitherPrimary(t *testing.T) {
 	ctx := context.Background()
 	repo := initNamedRepo(t, "side")
 	var g Git
-	_, err := g.EnsureIntegrationBranch(ctx, repo, "cardex/obj/main")
+	_, err := g.EnsureIntegrationBranch(ctx, repo, "github.com/OttoPrua/Cardex/obj/main")
 	if err == nil || !strings.Contains(err.Error(), "workspace: no main or master branch") {
 		t.Fatalf("err %v", err)
 	}
-	if ok, exErr := g.RefExists(ctx, repo, "cardex/obj/main"); exErr != nil || ok {
+	if ok, exErr := g.RefExists(ctx, repo, "github.com/OttoPrua/Cardex/obj/main"); exErr != nil || ok {
 		t.Fatalf("ref exists %v %v", ok, exErr)
 	}
 }
@@ -131,7 +131,7 @@ func TestEnsureIntegrationBranchIgnoresPrimaryAdvance(t *testing.T) {
 	h2 := gitOut(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "commit-tree", "HEAD^{tree}", "-p", h1, "-m", "advance")
 	installPrimaryAdvanceHook(t, repo, h2)
 	var g Git
-	got, err := g.EnsureIntegrationBranch(ctx, repo, "cardex/obj/main")
+	got, err := g.EnsureIntegrationBranch(ctx, repo, "github.com/OttoPrua/Cardex/obj/main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestEnsureIntegrationBranchIgnoresPrimaryAdvance(t *testing.T) {
 	if main := gitOut(t, repo, "rev-parse", "refs/heads/main"); main != h2 {
 		t.Fatalf("main %s want %s (hook did not advance primary)", main, h2)
 	}
-	again, err := g.EnsureIntegrationBranch(ctx, repo, "cardex/obj/main")
+	again, err := g.EnsureIntegrationBranch(ctx, repo, "github.com/OttoPrua/Cardex/obj/main")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,13 +187,13 @@ func TestDropLaunchKeepsCommittedBranch(t *testing.T) {
 	ctx := context.Background()
 	repo := initRepo(t)
 	var g Git
-	if _, err := g.EnsureIntegrationBranch(ctx, repo, "cardex/obj/main"); err != nil {
+	if _, err := g.EnsureIntegrationBranch(ctx, repo, "github.com/OttoPrua/Cardex/obj/main"); err != nil {
 		t.Fatal(err)
 	}
 	mainSHA := gitOut(t, repo, "rev-parse", "refs/heads/main")
 	wt, err := g.Create(ctx, CreateRequest{
 		CardID: "c", AttemptID: "a1", ObjectiveID: "obj", RepoPath: repo,
-		WorktreeRoot: filepath.Join(t.TempDir(), "wt"), IntegrationBranch: "cardex/obj/main",
+		WorktreeRoot: filepath.Join(t.TempDir(), "wt"), IntegrationBranch: "github.com/OttoPrua/Cardex/obj/main",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -214,7 +214,7 @@ func TestDropLaunchKeepsCommittedBranch(t *testing.T) {
 
 	wt, err = g.Create(ctx, CreateRequest{
 		CardID: "c", AttemptID: "a2", ObjectiveID: "obj", RepoPath: repo,
-		WorktreeRoot: filepath.Join(t.TempDir(), "wt"), IntegrationBranch: "cardex/obj/main",
+		WorktreeRoot: filepath.Join(t.TempDir(), "wt"), IntegrationBranch: "github.com/OttoPrua/Cardex/obj/main",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +235,7 @@ func TestDropLaunchKeepsCommittedBranch(t *testing.T) {
 
 	fresh, err := g.Create(ctx, CreateRequest{
 		CardID: "d", AttemptID: "a3", ObjectiveID: "obj", RepoPath: repo,
-		WorktreeRoot: filepath.Join(t.TempDir(), "wt"), IntegrationBranch: "cardex/obj/main",
+		WorktreeRoot: filepath.Join(t.TempDir(), "wt"), IntegrationBranch: "github.com/OttoPrua/Cardex/obj/main",
 	})
 	if err != nil {
 		t.Fatal(err)

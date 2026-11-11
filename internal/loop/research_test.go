@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"cardex/internal/model"
-	"cardex/internal/store"
-	"cardex/internal/workspace"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 func TestResearchGroupsFiveAndWeb(t *testing.T) {
@@ -130,7 +130,7 @@ func TestStaleUsesAttemptBaseAgainstIntegrationHead(t *testing.T) {
 		t.Fatal(err)
 	}
 	obj := seedObjective(t, st, proj.ID, model.ModeAuto, model.FreezeSafe)
-	obj.IntegrationBranch = "cardex/test/main"
+	obj.IntegrationBranch = "github.com/OttoPrua/Cardex/test/main"
 	if err := st.UpdateObjective(t.Context(), &obj); err != nil {
 		t.Fatal(err)
 	}

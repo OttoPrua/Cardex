@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"cardex/internal/harvest"
-	"cardex/internal/model"
-	"cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestDefaultHarvestDisposition(t *testing.T) {
@@ -388,14 +388,14 @@ func TestDefaultHarvestDisposition(t *testing.T) {
 			card := devCard(obj, "c")
 			finishHarvest(t, db, home, repo, card, model.Attempt{
 				ErrorClass: model.ErrorViolation,
-				Branch:     "cardex/" + obj + "/c/c",
+				Branch:     "github.com/OttoPrua/Cardex/" + obj + "/c/c",
 			}, "", "touched a forbidden path", false, nil)
 			tickDefault(t, home)
 			got := mustCard(t, db, "c")
 			if got.Status != model.CardNeedsInput {
 				t.Fatalf("status %s", got.Status)
 			}
-			if !branchExists(repo, "cardex/"+obj+"/c/c") {
+			if !branchExists(repo, "github.com/OttoPrua/Cardex/"+obj+"/c/c") {
 				t.Fatal("violation deleted the branch")
 			}
 			if !eventsOf(t, db, "a-c", "attempt_voided") {
@@ -639,7 +639,7 @@ func TestClaimedRunningCardResumes(t *testing.T) {
 	}
 	open := model.Attempt{
 		ID: "a-c", Card: "c", PID: 0, Worktree: repo,
-		Branch: "cardex/" + obj + "/c/c", Route: model.Route{Channel: "cha"},
+		Branch: "github.com/OttoPrua/Cardex/" + obj + "/c/c", Route: model.Route{Channel: "cha"},
 		StartedAt: time.Now().UTC(),
 	}
 	if err := db.CreateAttempt(ctx, &open); err != nil {

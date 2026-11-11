@@ -71,3 +71,29 @@ func Detach(cmd *exec.Cmd) {
 	NewGroup(cmd)
 	cmd.SysProcAttr.CreationFlags |= createNoWindow
 }
+
+func scriptCmd(cmd *exec.Cmd) {
+	// exec.Command already failed LookPath on an extensionless script; the
+	// original name is still in Args[0].
+	if cmd.Err != nil && len(cmd.Args) > 0 {
+		cmd.Path = cmd.Args[0]
+	}
+	switch strings.ToLower(filepath.Ext(cmd.Path)) {
+	case ".exe", ".com", ".bat", ".cmd":
+		return
+	}
+	if !hasShebang(cmd.Path) {
+		return
+	}
+	sh := gitSh()
+	if sh == "" {
+		return
+	}
+	args := []string{sh, filepath.ToSlash(cmd.Path)}
+	if len(cmd.Args) > 1 {
+		args = append(args, cmd.Args[1:]...)
+	}
+	cmd.Path = sh
+	cmd.Args = args
+	cmd.Err = nil
+}

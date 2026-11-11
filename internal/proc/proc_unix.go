@@ -20,3 +20,5 @@ func NewGroup(cmd *exec.Cmd) {
 
 // Detach is NewGroup on Unix.
 func Detach(cmd *exec.Cmd) { NewGroup(cmd) }
+
+func scriptCmd(cmd *exec.Cmd) {}

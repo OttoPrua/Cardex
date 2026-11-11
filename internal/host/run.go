@@ -352,6 +352,7 @@ func commandFor(argv, extra []string) (*exec.Cmd, error) {
 		}
 		cmd.Path = path
 		cmd.Args = append([]string{}, argv...)
+		proc.Script(cmd)
 	}
 	cmd.Env = env
 	return cmd, nil

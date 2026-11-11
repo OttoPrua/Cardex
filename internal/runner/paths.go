@@ -1,14 +1,15 @@
 package runner
 
 import (
-	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 // homePath joins the user home with elem. It does not create or read the path.
 func homePath(elem ...string) string {
-	home, err := os.UserHomeDir()
+	home, err := proc.UserHome()
 	if err != nil || home == "" {
 		return ""
 	}

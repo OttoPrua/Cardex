@@ -16,6 +16,7 @@ import (
 	"sync"
 
 	"github.com/OttoPrua/Cardex/internal/homeguard"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
@@ -289,7 +290,7 @@ func resolveHome() (string, error) {
 		home = os.Getenv("CARDEX_HOME")
 	}
 	if home == "" {
-		user, err := os.UserHomeDir()
+		user, err := proc.UserHome()
 		if err != nil {
 			return "", err
 		}

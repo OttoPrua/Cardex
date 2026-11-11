@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 // Grok adapts the grok-build CLI. GoalMode selects the PTY /goal driver;
@@ -415,7 +416,7 @@ func envParent(key string) string {
 }
 
 func userPath(name string) []string {
-	home, err := os.UserHomeDir()
+	home, err := proc.UserHome()
 	if err != nil {
 		return nil
 	}

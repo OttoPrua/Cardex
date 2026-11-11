@@ -36,6 +36,7 @@ commands:
   import-legacy [--dry-run] <v1-home>
   notify add|list|remove|test
   doctor
+  version
   host <attempt-id>
 `
 
@@ -88,6 +89,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return cmdNotify(home, asJSON, rest[1:], stdout, stderr)
 	case "doctor":
 		return cmdDoctor(home, rest[1:], stdout, stderr)
+	case "version":
+		return cmdVersion(stdout)
 	case "host":
 		return cmdHost(home, rest[1:], stdout, stderr)
 	default:

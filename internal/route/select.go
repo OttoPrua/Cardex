@@ -339,7 +339,7 @@ func rejectReason(c cand, req Request, now time.Time) string {
 	if req.InUse != nil {
 		inUse = req.InUse[c.ch.ID]
 	}
-	if inUse >= c.ch.Concurrency {
+	if c.ch.Concurrency > 0 && inUse >= c.ch.Concurrency {
 		return ReasonConcurrency
 	}
 	if c.known && belowRedline(c.est, c.ch.Redline) {

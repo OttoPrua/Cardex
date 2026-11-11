@@ -85,7 +85,7 @@ func (r *Runner) reuseSavedRoute(ctx context.Context, db *store.Store, card mode
 	if inUse != nil {
 		used = inUse[saved.Channel]
 	}
-	if used >= ch.Concurrency {
+	if ch.Concurrency > 0 && used >= ch.Concurrency {
 		return model.Route{}, model.RouteReason{}, pinRelease{}, false, route.ErrPinnedUnavailable
 	}
 	modelName := saved.Model

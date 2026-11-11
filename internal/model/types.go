@@ -197,7 +197,7 @@ type Channel struct {
 	Family        string        `json:"family"`         // 模型族，复核卡要求与作者不同。
 	Tier          Tier          `json:"tier"`           // 注册时声明的等级，供调度和测试使用。
 	Models        []string      `json:"models"`         // 可用模型。
-	Concurrency   int           `json:"concurrency"`    // 并发上限。
+	Concurrency   int           `json:"concurrency"`    // 本地并发上限；0 表示不设本地上限，由渠道自身的限流决定。
 	QuotaWindows  []QuotaWindow `json:"quota_windows"`  // 额度窗口。
 	Redline       float64       `json:"redline"`        // 保留比例，剩余比例小于等于它则不参与自动选择。
 	Health        Health        `json:"health"`         // ok、auth_failed 或 degraded。

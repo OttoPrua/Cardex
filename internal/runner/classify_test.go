@@ -31,3 +31,18 @@ func TestClassifyOutputPeerCertificate(t *testing.T) {
 		t.Fatalf("class=%q", got)
 	}
 }
+
+func TestClassifyRateLimitRetriesNotQuota(t *testing.T) {
+	cases := map[string]model.ErrorClass{
+		"HTTP 429 Too Many Requests":                         model.ErrorTransport,
+		"error: rate limit reached for requests":             model.ErrorTransport,
+		"concurrency limit exceeded, retry later":            model.ErrorTransport,
+		"You've hit your usage limit. Your limit will reset": model.ErrorQuotaHit,
+		"429: usage limit reached, resets at 5pm":            model.ErrorQuotaHit,
+	}
+	for text, want := range cases {
+		if got := ClassifyOutput(text); got != want {
+			t.Errorf("ClassifyOutput(%q)=%q want %q", text, got, want)
+		}
+	}
+}

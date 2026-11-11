@@ -254,6 +254,7 @@ func TestParseUsageShapes(t *testing.T) {
 func TestWritablePathsLeaveDiskAlone(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	clearWritableEnv(t)
 	sets := [][]string{
 		runner.Claude{}.WritablePaths(),
 		runner.Codex{}.WritablePaths(),

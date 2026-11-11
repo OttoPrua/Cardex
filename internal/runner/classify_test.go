@@ -24,3 +24,10 @@ func TestClassifyAttemptReconnectThenSuccessIsUnclassified(t *testing.T) {
 		t.Fatalf("class=%q want empty", got)
 	}
 }
+
+func TestClassifyOutputPeerCertificate(t *testing.T) {
+	msg := `failed to connect to websocket: IO error: invalid peer certificate: certificate not valid for name "chatgpt.com"`
+	if got := ClassifyOutput(msg); got != model.ErrorTransport {
+		t.Fatalf("class=%q", got)
+	}
+}

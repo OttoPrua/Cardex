@@ -18,7 +18,7 @@ var (
 	permissionClassRe = regexp.MustCompile(`(?i)403 forbidden|permission denied|access denied by (?:policy|admin|organization)|not authorized to (?:perform|access)|operation not permitted by (?:policy|admin)|(?:sandbox initialization failed|sandbox-exec: sandbox_apply):\s*operation not permitted\b|could not apply the 'workspace' sandbox profile|blocked by (?:policy|admin|organization)`)
 	timeoutClassRe    = regexp.MustCompile(`(?i)步骤超时[（(]|远程步骤超时[（(]|远端步骤超时[（(]|context deadline exceeded|deadline exceeded \(`)
 	quotaClassRe      = regexp.MustCompile(`(?i)usage limit|limit reached|out of extra usage|hit your (?:\w+ )?limit|limit will reset|out of usage credits|out of credits|/usage-credits|session limit|quota hit|quota exceeded|quota exhausted|用量限额|额度红线|账号限额`)
-	transportClassRe  = regexp.MustCompile(`(?i)proxyconnect|proxy unreachable|i/o timeout|dial tcp|no such host|connection reset|connection refused|enotfound|provider unavailable|model unavailable|transport_failed|tls handshake|stream disconnected before completion|failed to connect to websocket|x509:|certificate (?:verify failed|is not valid|signed by unknown)|unexpected eof`)
+	transportClassRe  = regexp.MustCompile(`(?i)proxyconnect|proxy unreachable|i/o timeout|dial tcp|no such host|connection reset|connection refused|enotfound|provider unavailable|model unavailable|transport_failed|tls handshake|stream disconnected before completion|failed to connect to websocket|x509:|invalid peer certificate|certificate (?:verify failed|is not valid|not valid for name|signed by unknown)|unexpected eof`)
 )
 
 // ClassifyOutput maps one explicit diagnostic string onto the v2 error classes.

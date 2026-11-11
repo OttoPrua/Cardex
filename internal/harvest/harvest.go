@@ -59,6 +59,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 		Acceptance:   acc,
 		Result:       result,
 		Class:        in.ErrorClass,
+		Exit:         in.Exit,
 	})
 	res := Result{
 		Outcome:    outcome,

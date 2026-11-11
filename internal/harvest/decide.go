@@ -24,6 +24,7 @@ type facts struct {
 	Acceptance   acceptState
 	Result       resultState
 	Class        model.ErrorClass
+	Exit         int
 }
 
 // decide applies design §5. Violation wins. An acceptance timeout is timeout.
@@ -42,6 +43,14 @@ func decide(f facts) model.Outcome {
 	}
 	if f.Result == resultUnparsable {
 		return model.OutcomeResultUnparsable
+	}
+	// An executor that crashed before changing anything never got to act, so
+	// a failing acceptance says nothing about its work. Do not spend rework.
+	if f.Acceptance == acceptFailed && f.ProducesCode && !f.HasChanges && f.Exit != 0 {
+		if outcome, ok := runnerOutcome(f.Class); ok {
+			return outcome
+		}
+		return model.OutcomeNoOutput
 	}
 	if f.Acceptance == acceptFailed {
 		if outcome, ok := runnerOutcome(f.Class); ok {

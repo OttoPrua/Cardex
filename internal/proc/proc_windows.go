@@ -16,7 +16,26 @@ const createNoWindow = 0x08000000
 var (
 	shMu   sync.Mutex
 	shPath string
+	// startPath is PATH as cardex started, so sh.exe is still found after a
+	// caller (or a test) narrows PATH for a child.
+	startPath = os.Getenv("PATH")
 )
+
+// lookIn is exec.LookPath against a given PATH list.
+func lookIn(list, name string) string {
+	for _, dir := range filepath.SplitList(list) {
+		if dir == "" {
+			continue
+		}
+		for _, ext := range []string{".exe", ""} {
+			p := filepath.Join(dir, name+ext)
+			if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
+				return p
+			}
+		}
+	}
+	return ""
+}
 
 // gitSh finds sh.exe: CARDEX_SH, then PATH, then next to git.exe (Git for
 // Windows keeps it in usr\bin, which is not on PATH by default), then the
@@ -39,8 +58,17 @@ func findSh() string {
 	if p, err := exec.LookPath("sh"); err == nil {
 		return p
 	}
+	if p := lookIn(startPath, "sh"); p != "" {
+		return p
+	}
 	var cands []string
-	if git, err := exec.LookPath("git"); err == nil {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		if p := lookIn(startPath, "git"); p != "" {
+			git, err = p, nil
+		}
+	}
+	if err == nil {
 		root := filepath.Dir(filepath.Dir(git)) // …\Git\cmd\git.exe -> …\Git
 		cands = append(cands,
 			filepath.Join(root, "usr", "bin", "sh.exe"),

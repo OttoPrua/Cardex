@@ -14,39 +14,56 @@ import (
 const createNoWindow = 0x08000000
 
 var (
-	shOnce sync.Once
+	shMu   sync.Mutex
 	shPath string
 )
 
-// gitSh finds sh.exe: CARDEX_SH, then PATH, then next to git.exe
-// (Git for Windows keeps it in usr\bin, which is not on PATH by default).
+// gitSh finds sh.exe: CARDEX_SH, then PATH, then next to git.exe (Git for
+// Windows keeps it in usr\bin, which is not on PATH by default), then the
+// default Git for Windows install dirs. A hit is cached; a miss is retried,
+// since PATH can change during the process.
 func gitSh() string {
-	shOnce.Do(func() {
-		if p := strings.TrimSpace(os.Getenv("CARDEX_SH")); p != "" {
-			shPath = p
-			return
-		}
-		if p, err := exec.LookPath("sh"); err == nil {
-			shPath = p
-			return
-		}
-		git, err := exec.LookPath("git")
-		if err != nil {
-			return
-		}
+	shMu.Lock()
+	defer shMu.Unlock()
+	if shPath != "" {
+		return shPath
+	}
+	shPath = findSh()
+	return shPath
+}
+
+func findSh() string {
+	if p := strings.TrimSpace(os.Getenv("CARDEX_SH")); p != "" {
+		return p
+	}
+	if p, err := exec.LookPath("sh"); err == nil {
+		return p
+	}
+	var cands []string
+	if git, err := exec.LookPath("git"); err == nil {
 		root := filepath.Dir(filepath.Dir(git)) // …\Git\cmd\git.exe -> …\Git
-		for _, c := range []string{
+		cands = append(cands,
 			filepath.Join(root, "usr", "bin", "sh.exe"),
 			filepath.Join(root, "bin", "sh.exe"),
 			filepath.Join(filepath.Dir(root), "usr", "bin", "sh.exe"), // …\mingw64\bin\git.exe
-		} {
-			if _, err := os.Stat(c); err == nil {
-				shPath = c
-				return
-			}
+		)
+	}
+	for _, env := range []string{"ProgramFiles", "ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"} {
+		base := os.Getenv(env)
+		if base == "" {
+			continue
 		}
-	})
-	return shPath
+		if env == "LOCALAPPDATA" {
+			base = filepath.Join(base, "Programs")
+		}
+		cands = append(cands, filepath.Join(base, "Git", "usr", "bin", "sh.exe"), filepath.Join(base, "Git", "bin", "sh.exe"))
+	}
+	for _, c := range cands {
+		if _, err := os.Stat(c); err == nil {
+			return c
+		}
+	}
+	return ""
 }
 
 func shellArgv(line string) (string, []string) {
@@ -78,6 +95,12 @@ func scriptCmd(cmd *exec.Cmd) {
 	if cmd.Err != nil && len(cmd.Args) > 0 {
 		cmd.Path = cmd.Args[0]
 	}
+	if !strings.ContainsAny(cmd.Path, `/\:`) {
+		// A bare name LookPath could not resolve: an extensionless script on PATH.
+		if p := findScript(cmd.Path, cmd.Env); p != "" {
+			cmd.Path = p
+		}
+	}
 	switch strings.ToLower(filepath.Ext(cmd.Path)) {
 	case ".exe", ".com", ".bat", ".cmd":
 		return
@@ -96,4 +119,25 @@ func scriptCmd(cmd *exec.Cmd) {
 	cmd.Path = sh
 	cmd.Args = args
 	cmd.Err = nil
+}
+
+// findScript looks for an extensionless "#!" file called name on PATH (from env
+// when it sets PATH, else the process PATH).
+func findScript(name string, env []string) string {
+	path := os.Getenv("PATH")
+	for _, kv := range env {
+		if len(kv) > 5 && strings.EqualFold(kv[:5], "PATH=") {
+			path = kv[5:]
+		}
+	}
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			continue
+		}
+		p := filepath.Join(dir, name)
+		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() && hasShebang(p) {
+			return p
+		}
+	}
+	return ""
 }

@@ -217,7 +217,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		pid = session.Cmd.Process.Pid
 		if err := persistExecutorGroup(attemptDir, pid); err != nil {
 			killGroup(pid)
-			_ = session.Cmd.Wait()
+			_ = session.Wait()
 			_ = session.Master.Close()
 			return failStart(ctx, db, &attempt, err)
 		}
@@ -275,7 +275,7 @@ func run(ctx context.Context, home, attemptID string) error {
 				_ = SignalGroup(pid, syscall.SIGTERM)
 			}
 		}
-		waitErr = session.Cmd.Wait()
+		waitErr = session.Wait()
 		waitCopy(copied, stop, killed, pid)
 		_ = session.Master.Close()
 	} else {

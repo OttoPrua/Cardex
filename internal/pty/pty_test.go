@@ -3,6 +3,7 @@ package pty_test
 import (
 	"io"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,9 @@ import (
 
 func TestStartReadsChildOutput(t *testing.T) {
 	cmd := exec.Command("/bin/sh", "-c", "echo pty-marker")
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd", "/C", "echo pty-marker")
+	}
 	session, err := pty.Start(cmd)
 	if err != nil {
 		t.Fatal(err)
@@ -25,7 +29,7 @@ func TestStartReadsChildOutput(t *testing.T) {
 		buf, readErr = io.ReadAll(session.Master)
 		close(readDone)
 	}()
-	waitErr := cmd.Wait()
+	waitErr := session.Wait()
 	select {
 	case <-readDone:
 	case <-time.After(5 * time.Second):

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/pty"
 	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/sandbox"
@@ -190,10 +191,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		appendEvent(ctx, db, attempt.ID, ev.Type, payload)
 	}
 	if !needPTY {
-		if wrapped.SysProcAttr == nil {
-			wrapped.SysProcAttr = &syscall.SysProcAttr{}
-		}
-		wrapped.SysProcAttr.Setpgid = true
+		proc.NewGroup(wrapped)
 	}
 
 	appendEvent(ctx, db, attempt.ID, "host_start", map[string]any{

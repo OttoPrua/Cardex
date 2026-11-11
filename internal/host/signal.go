@@ -8,7 +8,8 @@ import (
 )
 
 // signalKill is the only process-signal syscall. Tests replace it.
-var signalKill = syscall.Kill
+// A negative pid targets the process group (Unix) or process tree (Windows).
+var signalKill = osSignal
 
 // ErrRefused means the target was not signaled.
 var ErrRefused = errors.New("signal refused")
@@ -38,16 +39,8 @@ func refuseTarget(id int) error {
 	if id == os.Getpid() {
 		return fmt.Errorf("%w: this process %d", ErrRefused, id)
 	}
-	if id == syscall.Getpgrp() || inOurGroup(id) {
+	if id == ownGroup() || inOurGroup(id) {
 		return fmt.Errorf("%w: this process group %d", ErrRefused, id)
 	}
 	return nil
-}
-
-func inOurGroup(id int) bool {
-	pgid, err := syscall.Getpgid(id)
-	if err != nil {
-		return false
-	}
-	return pgid == syscall.Getpgrp()
 }

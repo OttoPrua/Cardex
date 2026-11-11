@@ -20,6 +20,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/merge"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/prompt"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
@@ -507,7 +508,7 @@ func TestTickAndServeTakeOverHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command("sleep", "30")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proc.NewGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

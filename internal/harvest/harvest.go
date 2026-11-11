@@ -16,6 +16,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/claims"
 	"github.com/OttoPrua/Cardex/internal/host"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 const defaultAcceptanceTimeout = 2 * time.Minute
@@ -136,10 +137,10 @@ func runAcceptance(ctx context.Context, dir string, commands []string) (acceptSt
 	var all strings.Builder
 	var log bytes.Buffer
 	for _, command := range cmds {
-		cmd := exec.CommandContext(actx, "/bin/sh", "-c", command)
+		cmd := proc.Shell(actx, command)
 		cmd.Dir = dir
 		cmd.Env = os.Environ()
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		proc.NewGroup(cmd)
 		cmd.WaitDelay = time.Second
 		cmd.Cancel = func() error {
 			if cmd.Process == nil {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/host"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
@@ -357,7 +358,7 @@ func seedInventoryFailure(t *testing.T, db *store.Store) {
 func startSleepHost(t *testing.T) int {
 	t.Helper()
 	cmd := exec.Command("/bin/sleep", "180")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proc.NewGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

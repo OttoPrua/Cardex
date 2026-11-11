@@ -16,6 +16,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/host"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
@@ -615,7 +616,7 @@ func TestReconcileReapsOrphanAfterHardDuration(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(exe)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proc.NewGroup(cmd)
 	cmd.Env = append(os.Environ(),
 		"CARDEX_HOST_REEXEC=1",
 		"CARDEX_REEXEC_HOME="+home,
@@ -667,7 +668,7 @@ func TestReconcileReapsOrphanAfterHardDuration(t *testing.T) {
 	}
 
 	sleeper := exec.Command("/bin/sleep", "30")
-	sleeper.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proc.NewGroup(sleeper)
 	if err := sleeper.Start(); err != nil {
 		t.Fatal(err)
 	}

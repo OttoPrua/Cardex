@@ -27,6 +27,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/loop"
 	"github.com/OttoPrua/Cardex/internal/merge"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/question"
 	"github.com/OttoPrua/Cardex/internal/quota"
 	"github.com/OttoPrua/Cardex/internal/route"
@@ -2419,7 +2420,7 @@ func startE2EHost(home, attemptID string) (int, error) {
 		"CARDEX_SCHED_HOST=1",
 		"CARDEX_SCHED_ATTEMPT="+attemptID,
 	)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proc.NewGroup(cmd)
 	dir := filepath.Join(home, "attempts", attemptID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, err

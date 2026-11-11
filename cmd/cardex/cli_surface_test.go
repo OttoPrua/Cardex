@@ -18,6 +18,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/notify"
 	"github.com/OttoPrua/Cardex/internal/positioning"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/question"
 	"github.com/OttoPrua/Cardex/internal/sched"
 	"github.com/OttoPrua/Cardex/internal/scorecard"
@@ -1696,7 +1697,7 @@ func TestServeMainStops(t *testing.T) {
 	home := t.TempDir()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestServeMainStops$")
 	cmd.Env = append(os.Environ(), "CARDEX_SERVE_CHILD=1", "CARDEX_SERVE_HOME="+home)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proc.NewGroup(cmd)
 	var buf lockBuf
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf

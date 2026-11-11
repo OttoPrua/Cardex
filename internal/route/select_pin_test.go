@@ -9,6 +9,96 @@ import (
 	"cardex/internal/model"
 )
 
+func TestObjectivePinEmptyModelListChecksRequires(t *testing.T) {
+	now := time.Date(2026, 11, 11, 15, 0, 0, 0, time.UTC)
+	// channel set without --model leaves Models nil. A one-element list of ""
+	// would still be a named model and is not this case.
+	codex := model.Channel{
+		ID: "codex", Runner: model.RunnerCodex, Family: "openai",
+		Concurrency: 1, Health: model.HealthOK,
+	}
+	if len(codex.Models) != 0 {
+		t.Fatalf("pin models = %#v, want length 0", codex.Models)
+	}
+	web := model.Channel{
+		ID: "webby", Runner: model.RunnerGrok, Family: "gemini",
+		Models: []string{"web-m"}, Concurrency: 1, Health: model.HealthOK,
+	}
+	pos := []model.Positioning{{
+		Model: "web-m", Family: "gemini", Tiers: []model.Tier{model.TierT2},
+		Capabilities: []string{"web"},
+	}}
+	// KindRanking is not review, and the pin family is not the author family,
+	// so only the capability check can leave the pin.
+	needsWeb := model.Card{
+		Kind: model.KindRanking, Tier: model.TierT2,
+		AuthorFamily: "anthropic", Requires: []string{"web"},
+	}
+	objective := model.Objective{Channel: "codex"}
+
+	cases := []struct {
+		name      string
+		channels  []model.Channel
+		card      model.Card
+		channel   string
+		modelName string
+		err       error
+	}{
+		{
+			name:      "yields to a same-tier channel that has web",
+			channels:  []model.Channel{codex, web},
+			card:      needsWeb,
+			channel:   "webby",
+			modelName: "web-m",
+		},
+		{
+			name:     "no capable candidate",
+			channels: []model.Channel{codex},
+			card:     needsWeb,
+			err:      ErrNoCandidate,
+		},
+		{
+			name:     "card channel keeps the empty-model pin",
+			channels: []model.Channel{codex, web},
+			card: model.Card{
+				Kind: model.KindRanking, Tier: model.TierT2,
+				AuthorFamily: "anthropic", Requires: []string{"web"},
+				Channel: "codex",
+			},
+			channel: "codex",
+		},
+		{
+			name:     "empty requires keeps the pinned channel",
+			channels: []model.Channel{codex, web},
+			card: model.Card{
+				Kind: model.KindRanking, Tier: model.TierT2,
+				AuthorFamily: "anthropic",
+			},
+			channel: "codex",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt, _, err := Select(context.Background(), Request{
+				Card:        tc.card,
+				Objective:   objective,
+				Channels:    tc.channels,
+				Positioning: pos,
+				Now:         now,
+			})
+			if tc.err != nil {
+				if !errors.Is(err, tc.err) || rt.Channel != "" || rt.Model != "" {
+					t.Fatalf("route %+v err %v", rt, err)
+				}
+				return
+			}
+			if err != nil || rt.Channel != tc.channel || rt.Model != tc.modelName {
+				t.Fatalf("route %+v err %v", rt, err)
+			}
+		})
+	}
+}
+
 func TestModelOnlyObjectivePinUsesSelectedChannel(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	const (

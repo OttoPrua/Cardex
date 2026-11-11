@@ -148,8 +148,9 @@ func explicitPin(req Request) (channelID, modelName string, pinned bool) {
 
 // objectivePinConflicts is true only for an objective pin: the card names no
 // channel and no model, and either this review card's author family is the
-// pin's family, or the pinned model does not satisfy Card.Requires.
-// A pin that cannot be matched is not a conflict by itself.
+// pin's family, or the pinned selection does not satisfy Card.Requires.
+// A found pin with no model name has an empty capability set. A pin that
+// cannot be matched is not a conflict by itself.
 func objectivePinConflicts(req Request, channelID, modelName string) bool {
 	if req.Card.Channel != "" || req.Card.Model != "" {
 		return false
@@ -181,7 +182,10 @@ func objectivePinConflicts(req Request, channelID, modelName string) bool {
 	if family == "" && found {
 		family = ch.Family
 	}
-	if !knownModel && found && modelToUse != "" {
+	// A found pin is a known selection even when it names no model. No model
+	// name, or a name absent from the positioning table, has an empty
+	// capability set.
+	if !knownModel && found {
 		knownModel = true
 	}
 	if req.Card.Kind == model.KindReview && family != "" && family == authorFamily(req) {

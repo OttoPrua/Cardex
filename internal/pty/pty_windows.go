@@ -98,6 +98,10 @@ func create(cmd *exec.Cmd, hpc windows.Handle) (*windows.ProcessInformation, err
 	}
 	si := &windows.StartupInfoEx{ProcThreadAttributeList: attrs.List()}
 	si.Cb = uint32(unsafe.Sizeof(*si))
+	// Without this a console child also picks up the parent's redirected std
+	// handles (pipes under ssh or serve), and writes there instead of the
+	// pseudo console. Zero handles make it use the pseudo console.
+	si.Flags |= windows.STARTF_USESTDHANDLES
 
 	app, err := windows.UTF16PtrFromString(cmd.Path)
 	if err != nil {

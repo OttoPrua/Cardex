@@ -89,7 +89,7 @@ func TestGrokBuildSnapshot(t *testing.T) {
 		"--no-auto-update",
 		"--model", "grok-4.6",
 		"--output-format", "streaming-json",
-		"--sandbox", "workspace",
+		"--sandbox", "none",
 		"--permission-mode", "auto",
 		"--no-memory", "--no-subagents", "--disable-web-search", "--verbatim",
 		"--no-plan",
@@ -143,7 +143,7 @@ func TestGrokGoalBuildAndNeedsPTY(t *testing.T) {
 		"grok",
 		"--no-auto-update",
 		"--model", "grok-4.6",
-		"--sandbox", "workspace",
+		"--sandbox", "none",
 		"--permission-mode", "auto",
 		"--no-memory", "--no-subagents", "--disable-web-search",
 		"--no-plan",
@@ -224,6 +224,38 @@ func TestGrokClassifyAndUsage(t *testing.T) {
 	}
 	if u := g.ParseUsage(readFixture(t, "grok_limit_like.txt")); u != (model.Usage{}) {
 		t.Fatalf("soft usage %+v", u)
+	}
+}
+
+func TestGrokSandboxPermissionDenied(t *testing.T) {
+	const initDiagnostic = "sandbox initialization failed: Operation not permitted"
+	const profileDiagnostic = "error: could not apply the 'workspace' sandbox profile"
+	cases := []struct {
+		name   string
+		output string
+		want   model.ErrorClass
+	}{
+		{"initialization", initDiagnostic, model.ErrorPermissionDenied},
+		{"profile", profileDiagnostic, model.ErrorPermissionDenied},
+		{"host", "sandbox-exec: sandbox_apply: Operation not permitted", model.ErrorPermissionDenied},
+		{"combined", initDiagnostic + "\n" + profileDiagnostic, model.ErrorPermissionDenied},
+		{"structured", `{"type":"error","message":"sandbox initialization failed: Operation not permitted"}`, model.ErrorPermissionDenied},
+		{"bare_eperm", "error: Operation not permitted", ""},
+		{"file_eperm", "error: open /work/data.txt: Operation not permitted", ""},
+		{"structured_file_eperm", `{"type":"error","message":"open /work/data.txt: Operation not permitted"}`, ""},
+		{"prose", "The log contains " + initDiagnostic, ""},
+		{"assistant", `{"type":"assistant","message":"sandbox initialization failed: Operation not permitted"}`, ""},
+		{"echo", "/goal " + initDiagnostic + "\n" + profileDiagnostic + "\n", ""},
+	}
+	for _, goalMode := range []bool{false, true} {
+		g := runner.Grok{GoalMode: goalMode, Prompt: initDiagnostic + "\n" + profileDiagnostic}
+		for _, tc := range cases {
+			t.Run(tc.name+"/goal="+strconv.FormatBool(goalMode), func(t *testing.T) {
+				if got := g.Classify(1, []byte(tc.output)); got != tc.want {
+					t.Fatalf("class %q want %q for %q", got, tc.want, tc.output)
+				}
+			})
+		}
 	}
 }
 

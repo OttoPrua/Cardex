@@ -25,7 +25,15 @@ func TestRunStopsWhenCardCanceled(t *testing.T) {
 	home, id, _ := seedPrepared(t, t.TempDir(), model.RunnerClaude, "kimi", 1, nil)
 
 	go func() {
-		time.Sleep(300 * time.Millisecond)
+		// Cancel only once the executor has started; a fixed delay raced the
+		// seatbelt startup on a loaded Mac.
+		logPath := filepath.Join(home, "attempts", id, "output.log")
+		for i := 0; i < 200; i++ {
+			if b, _ := os.ReadFile(logPath); strings.Contains(string(b), "started") {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 		db, err := store.Open(filepath.Join(home, "cardex.db"))
 		if err != nil {
 			return

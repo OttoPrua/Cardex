@@ -633,6 +633,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		RepoPath:          project.RepoPath,
 		WorktreeRoot:      root,
 		IntegrationBranch: obj.IntegrationBranch,
+		StartPoint:        card.Base,
 		Continue:          cont,
 	})
 	scratch := launchScratch{

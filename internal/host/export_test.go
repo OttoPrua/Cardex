@@ -9,3 +9,9 @@ func SetResultPersistTimeoutForTest(d time.Duration) func() {
 	resultPersistTimeout = d
 	return func() { resultPersistTimeout = prev }
 }
+
+func SetCancelPollForTest(d time.Duration) func() {
+	old := cancelPoll
+	cancelPoll = d
+	return func() { cancelPoll = old }
+}

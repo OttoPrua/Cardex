@@ -16,8 +16,8 @@ type Git struct{}
 var _ Manager = Git{}
 
 // Create runs git worktree add -b for a new card, or checks out the existing
-// card branch for a continuation. The new card starts at the integration
-// branch HEAD; a continuation starts at the card branch HEAD.
+// card branch for a continuation. The new card starts at its StartPoint
+// (card add --base) or else the integration branch HEAD; a continuation starts at the card branch HEAD.
 func (Git) Create(ctx context.Context, req CreateRequest) (Worktree, error) {
 	if strings.TrimSpace(req.CardID) == "" || strings.TrimSpace(req.AttemptID) == "" ||
 		strings.TrimSpace(req.ObjectiveID) == "" || strings.TrimSpace(req.RepoPath) == "" ||
@@ -42,7 +42,16 @@ func (Git) Create(ctx context.Context, req CreateRequest) (Worktree, error) {
 		if strings.TrimSpace(req.IntegrationBranch) == "" {
 			return Worktree{}, fmt.Errorf("workspace: integration branch required")
 		}
-		if _, err := runGit(ctx, req.RepoPath, "worktree", "add", "-b", branch, path, req.IntegrationBranch); err != nil {
+		start := req.IntegrationBranch
+		if sp := strings.TrimSpace(req.StartPoint); sp != "" {
+			// An explicit base that does not resolve fails the launch instead of
+			// quietly starting at the integration branch.
+			if _, err := runGit(ctx, req.RepoPath, "rev-parse", "--verify", "--quiet", sp+"^{commit}"); err != nil {
+				return Worktree{}, fmt.Errorf("workspace: card base %q not found in %s", sp, req.RepoPath)
+			}
+			start = sp
+		}
+		if _, err := runGit(ctx, req.RepoPath, "worktree", "add", "-b", branch, path, start); err != nil {
 			return Worktree{}, err
 		}
 	}

@@ -22,7 +22,9 @@ import (
 // a Node/Playwright script runs inside the same Cardex seatbelt an executor
 // gets, connects over CDP to the Chrome the host launched outside it, opens a
 // local page and submits a form. For contrast the same script then tries to
-// launch Chrome itself inside the seatbelt, which is what crashed before.
+// launch Chrome itself inside the seatbelt with Chrome's own sandbox on
+// (Playwright adds --no-sandbox unless chromiumSandbox is true), which is what
+// crashed before.
 //
 // Run on macOS with CARDEX_BROWSER_SMOKE_DIR pointing at a directory that has
 // node_modules/playwright-core installed.
@@ -75,7 +77,7 @@ try {
   if (mode === 'cdp') {
     browser = await chromium.connectOverCDP(process.env.CARDEX_BROWSER_CDP);
   } else {
-    browser = await chromium.launch({ executablePath: process.env.SMOKE_CHROME, headless: true, timeout: 20000 });
+    browser = await chromium.launch({ executablePath: process.env.SMOKE_CHROME, headless: true, chromiumSandbox: true, timeout: 20000 });
   }
   const ctx = browser.contexts()[0] ?? await browser.newContext();
   const page = await ctx.newPage();
@@ -146,7 +148,7 @@ try {
 
 	// Contrast: launching Chrome inside the seatbelt (the old way).
 	old := runSandboxed("launch")
-	t.Logf("in-sandbox launch succeeded=%v", strings.Contains(old, "SMOKE_OK launch"))
+	t.Logf("in-sandbox launch with Chrome's sandbox on succeeded=%v", strings.Contains(old, "SMOKE_OK launch"))
 
 	b.Stop()
 	if processGroupAlive(pgid) {

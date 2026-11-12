@@ -215,7 +215,7 @@ func TestReconcileReapsLostBrowser(t *testing.T) {
 	if err := os.MkdirAll(profile, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("sh", "-c", "sleep 300", "chrome", "--user-data-dir="+profile)
+	cmd := exec.Command("sh", "-c", "sleep 300; :", "chrome", "--user-data-dir="+profile)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

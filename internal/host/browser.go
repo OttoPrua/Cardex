@@ -349,8 +349,8 @@ func groupUsesProfile(pgid int, profile string) bool {
 		return false
 	}
 	// `ps -g` means different things on macOS and Linux, so list every
-	// process with its pgid and filter here.
-	out, err := exec.Command("ps", "-A", "-o", "pgid=,args=").Output()
+	// process with its pgid and filter here; -ww keeps long Chrome args whole.
+	out, err := exec.Command("ps", "-A", "-ww", "-o", "pgid=,args=").Output()
 	if err != nil {
 		return false
 	}

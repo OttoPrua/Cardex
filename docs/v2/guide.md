@@ -28,6 +28,8 @@ cardex channel set --id ch1 --runner grok --redline 0.25 --model lumen-model --w
 
 定位表决定哪个模型能做哪个等级。`positioning show` 看当前表，`positioning proposals` 列出提案，`positioning approve <id>` 让一份提案成为当前表。`positioning reject <id>` 目前返回错误，不改当前表。派发之后用 `route explain <card>` 看这次选了谁、候选等级和被过滤的原因。
 
+接入一个新的 CLI 渠道，或者检查已有渠道时，按 [channel-setup.md](channel-setup.md) 一步步做。
+
 ## 创建目标
 
 `objective add` 至少要 `--project`。常用的还有 `--title`、`--mode`、`--freeze-mode`、`--origin`。`--mode` 默认 `auto`，`--freeze-mode` 默认 `safe`。标题空着时目标会暂停。

@@ -194,6 +194,13 @@ func (r *Runner) handoffDelivery(ctx context.Context, db *store.Store, msg notif
 	if cause == nil || errors.Is(cause, notify.ErrNotImplemented) {
 		return cause
 	}
+	var unknown *notify.UnknownAdapterError
+	if errors.As(cause, &unknown) {
+		// Warn once per adapter kind; the home inbox already has the message.
+		if err := r.noteReceiverWarning(ctx, db, "unknown notify adapter "+unknown.Kind+"; delivering to the home inbox only"); err != nil {
+			return err
+		}
+	}
 	skip, failed := deliveryErrorParts(cause)
 	if skip {
 		if err := r.noteDeliverySkip(ctx, db, msg.QuestionID, cause); err != nil {
@@ -218,7 +225,7 @@ func deliveryErrorParts(cause error) (skip, failed bool) {
 		if part == "" {
 			continue
 		}
-		if part != "invalid_subscription_id" {
+		if part != "invalid_subscription_id" && !strings.HasPrefix(part, "unknown_adapter:") {
 			failed = true
 		}
 	}

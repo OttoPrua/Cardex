@@ -30,6 +30,18 @@ type SkipError struct {
 
 func (e *SkipError) Error() string { return "invalid_subscription_id" }
 
+// UnknownAdapterError marks an origin or fallback whose adapter this build
+// cannot deliver to (for example cursor:, cutover: or grokbot:). The home inbox
+// hop is still written, so callers treat it as a warning, not a failed delivery.
+type UnknownAdapterError struct {
+	Key  string // origin or fallback
+	Kind string
+}
+
+func (e *UnknownAdapterError) Error() string {
+	return "unknown_adapter:" + e.Kind + " (" + e.Key + "; delivered to the home inbox only)"
+}
+
 // SkipReason collects skip reasons from err. An empty result means the caller
 // should use SkipNoSubscription when the error is still a subscription skip.
 func SkipReason(err error) string {
@@ -155,7 +167,7 @@ func originHop(key, kind, id string, msg Message) (Hop, string, error) {
 		return hop, "", nil
 	}
 	if !knownAdapter(kind) {
-		return Hop{}, "", fmt.Errorf("notify: adapter %q", kind)
+		return Hop{}, "", &UnknownAdapterError{Key: key, Kind: kind}
 	}
 	// A file origin or fallback writes the home inbox, not id as a path.
 	// file:<id> would match a receiver target this hop never writes.

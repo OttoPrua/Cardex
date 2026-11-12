@@ -92,3 +92,22 @@ cardex route explain <card>   # 第一张真实卡派出去之后
 ## 6. 模型会更新
 
 渠道的模型列表和定位表都是静态的，CLI 出了新模型也不会被自动选上。建议隔一段时间重新跑一遍第 1 步，和 `channel list --json` 以及 `positioning show` 对比一下。有差别时，提一份新的定位提案，再请 Otto 批准。
+
+## 7. 网络代理（统一入口）
+
+所有出网都走 `~/.cardex/config.json` 里的同一个 `proxy` 段，包括 serve 自己的 git 和通知，以及每个渠道的 CLI 子进程：
+
+```json
+"proxy": {
+  "url": "http://127.0.0.1:6152",
+  "socks": "socks5://127.0.0.1:6153",
+  "no_proxy": ["127.0.0.1", "localhost", "::1", "100.64.0.0/10", ".ts.net", ".local"],
+  "channels": { "kimi": "direct", "agy": "http://127.0.0.1:7890" }
+}
+```
+
+- cardex 每次运行都会把 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 设好，大小写两种写法都设；启动 attempt 时再按渠道覆盖一次。
+- `channels` 里写 `direct` 表示这个渠道直连，会清空继承来的代理变量；写一个 URL 表示这个渠道单独走它。
+- `no_proxy` 不写时，默认绕开本机、Tailscale 网段、`.ts.net` 和 `.local`。
+- 没有 `proxy` 段时行为不变。地址写错时 cardex 会报 warning，不会悄悄改成直连。
+- 渠道子进程每次启动 attempt 都会重读配置，改完立刻生效；serve 自己的 git 和通知要重启 serve 才换出口。用 `cardex proxy show` 查看每个渠道最终用哪个出口，用 `cardex proxy check` 测代理端口通不通。

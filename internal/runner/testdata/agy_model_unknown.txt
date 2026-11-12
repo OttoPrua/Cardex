@@ -1,0 +1,6 @@
+error: invalid model selection (--model "gemini-3.7-flash-high" --effort ""): model gemini-3.7-flash-high is not recognized as a known model or custom model in settings
+Available models:
+  Gemini 4 Argon (Medium)
+  Gemini 4 Argon (High)
+  Gemini 3.8 Flash (High)
+{"conversation_id":"","status":"ERROR","response":"","error":"invalid model selection (--model \"gemini-3.7-flash-high\" --effort \"\"): model gemini-3.7-flash-high is not recognized as a known model or custom model in settings\nAvailable models:\n  Gemini 4 Argon (Medium)\n  Gemini 4 Argon (High)\n  Gemini 3.8 Flash (High)","duration_seconds":0,"num_turns":0,"usage":{"input_tokens":0,"output_tokens":0,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":0},"finished_reason":"error"}

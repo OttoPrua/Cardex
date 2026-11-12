@@ -633,6 +633,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		RepoPath:          project.RepoPath,
 		WorktreeRoot:      root,
 		IntegrationBranch: obj.IntegrationBranch,
+		StartPoint:        card.Base,
 		Continue:          cont,
 	})
 	scratch := launchScratch{
@@ -1184,6 +1185,28 @@ func safeName(s string) string {
 	return b.String()
 }
 
+// cardFinished reports a card-scoped question that no longer needs a reminder:
+// its card was canceled, or the card finished (done or merged) after a
+// "no output" question about an earlier failed attempt. The question stays
+// unanswered; it is only not resent. Other questions on finished cards, such
+// as a done card asking for a decision, are still delivered.
+func cardFinished(ctx context.Context, db *store.Store, q model.Question) bool {
+	if q.ScopeKind != "card" || q.Scope == "" {
+		return false
+	}
+	card, err := db.GetCard(ctx, q.Scope)
+	if err != nil {
+		return false
+	}
+	switch card.Status {
+	case model.CardCanceled:
+		return true
+	case model.CardDone, model.CardMerged:
+		return strings.HasPrefix(q.Text, "no output after switching channel")
+	}
+	return false
+}
+
 func (r *Runner) notify(ctx context.Context, db *store.Store) error {
 	questions, err := db.ListQuestions(ctx, "")
 	if err != nil {
@@ -1191,7 +1214,7 @@ func (r *Runner) notify(ctx context.Context, db *store.Store) error {
 	}
 	for i := range questions {
 		q := questions[i]
-		if q.Answer != "" {
+		if q.Answer != "" || cardFinished(ctx, db, q) {
 			continue
 		}
 		msg, err := r.deliveryMessage(ctx, db, q)

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proxy"
 	"github.com/OttoPrua/Cardex/internal/pty"
 	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/sandbox"
@@ -137,6 +138,13 @@ func run(ctx context.Context, home, attemptID string) error {
 		return err
 	}
 
+	// The channel's proxy route goes last so it wins over the inherited
+	// default, including for engine profiles that replace the whole env.
+	if pe, err := proxy.ChildEnv(home, channel.ID); err != nil {
+		appendEvent(ctx, db, attempt.ID, "host_config", map[string]string{"message": err.Error()})
+	} else if pe != nil {
+		env = append(env, pe...)
+	}
 	cmd, err := commandFor(argv, env)
 	if err != nil {
 		return failStart(ctx, db, &attempt, err)
@@ -211,6 +219,11 @@ func run(ctx context.Context, home, attemptID string) error {
 		goalStatus string
 		fired      interface{ Load() bool }
 	)
+	// Canceling the card stops this executor the same way the deadline does,
+	// so a canceled card does not keep holding files and its worktree.
+	execCtx, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	go watchCardCanceled(execCtx, db, card.ID, attempt.ID, stopWatch)
 	if needPTY {
 		session, err := pty.Start(wrapped)
 		if err != nil {
@@ -258,7 +271,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		}
 		var stop func()
 		var killed <-chan struct{}
-		stop, killed, fired = armGroup(ctx, pid, limit, release)
+		stop, killed, fired = armGroup(execCtx, pid, limit, release)
 		driveErr = r.Drive(ctx, struct {
 			io.Reader
 			io.Writer
@@ -304,7 +317,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		}
 		var stop func()
 		var killed <-chan struct{}
-		stop, killed, fired = armGroup(ctx, pid, limit, release)
+		stop, killed, fired = armGroup(execCtx, pid, limit, release)
 		waitErr = wrapped.Wait()
 		waitCopy(copied, stop, killed, pid)
 		if logRead != nil {
@@ -702,5 +715,27 @@ func openPrompt(ctx context.Context, path string) (*os.File, error) {
 		return nil, ctx.Err()
 	case r := <-ch:
 		return r.f, r.err
+	}
+}
+
+// cancelPoll is how often a running host rereads its card's status.
+var cancelPoll = 3 * time.Second
+
+func watchCardCanceled(ctx context.Context, db *store.Store, cardID, attemptID string, stop context.CancelFunc) {
+	t := time.NewTicker(cancelPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		c, err := db.GetCard(ctx, cardID)
+		if err != nil || c.Status != model.CardCanceled {
+			continue
+		}
+		appendEvent(context.Background(), db, attemptID, "card_canceled", map[string]string{"message": "card canceled; executor stopped"})
+		stop()
+		return
 	}
 }

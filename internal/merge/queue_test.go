@@ -775,3 +775,45 @@ func branchExists(t *testing.T, repo, branch string) bool {
 	cmd.Dir = repo
 	return cmd.Run() == nil
 }
+
+func TestMergeSkipsOrphanedWorktree(t *testing.T) {
+	ctx := context.Background()
+	db, repo := openFixture(t)
+	proj := seedProject(t, db, repo, "p", "true")
+	obj := seedObjective(t, db, repo, proj, "o", "main")
+	c := commitCard(t, db, repo, obj, "main", "c", "a.txt", "shipped\n")
+	// Leave the worktree as a failed removal does: admin dir gone, files kept.
+	if err := os.RemoveAll(filepath.Join(repo, ".git", "worktrees", filepath.Base(c.Worktree))); err != nil {
+		t.Fatal(err)
+	}
+	q := New(db)
+	if err := q.Enqueue(ctx, c.Card.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Step(ctx, obj); err != nil {
+		t.Fatalf("orphan blocked the merge: %v", err)
+	}
+	got, err := db.GetCard(ctx, c.Card.ID)
+	if err != nil || got.Status != model.CardMerged {
+		t.Fatalf("card %+v %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(c.Worktree, "a.txt")); err != nil {
+		t.Fatalf("orphan must not be deleted: %v", err)
+	}
+	events, err := db.ListEvents(ctx, "card:"+c.Card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range events {
+		if e.Type == "worktree_orphaned" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("worktree_orphaned events %d, want 1", n)
+	}
+	if err := q.Step(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+}

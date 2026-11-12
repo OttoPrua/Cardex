@@ -98,6 +98,9 @@ func TestAGYClassifyAndUsage(t *testing.T) {
 		{"agy_permission.txt", model.ErrorPermissionDenied},
 		{"agy_usage.json", model.ErrorPermissionDenied},
 		{"agy_truncated.json", model.ErrorResultUnparsable},
+		// Real B1103 captures (2026-11-12): a retired model id and a region refusal.
+		{"agy_model_unknown.txt", model.ErrorUnavailable},
+		{"agy_region.txt", model.ErrorUnavailable},
 		{"grok_limit_like.txt", ""},
 		{"input_too_long.txt", ""},
 	}

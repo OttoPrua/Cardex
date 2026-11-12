@@ -66,7 +66,7 @@ func TestBuildSnapshots(t *testing.T) {
 		t.Fatal(err)
 	}
 	codexLine := strings.Join(codex, " ")
-	for _, needle := range []string{"codex exec", "--sandbox workspace-write", "--json", "-C /work", "-m gpt"} {
+	for _, needle := range []string{"codex exec", "--sandbox danger-full-access", "--json", "-C /work", "-m gpt"} {
 		if !strings.Contains(codexLine, needle) {
 			t.Fatalf("codex argv %q missing %s", codexLine, needle)
 		}

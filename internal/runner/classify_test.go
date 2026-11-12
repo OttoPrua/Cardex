@@ -46,3 +46,19 @@ func TestClassifyRateLimitRetriesNotQuota(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyOutputUnavailable(t *testing.T) {
+	for _, text := range []string{
+		`invalid model selection (--model "gemini-3.7-flash-high" --effort ""): model gemini-3.7-flash-high is not recognized as a known model or custom model in settings`,
+		`FAILED_PRECONDITION (code 400): User location is not supported for the API use.`,
+		`This model is not available in your country`,
+	} {
+		if got := ClassifyOutput(text); got != model.ErrorUnavailable {
+			t.Errorf("%q: got %q", text, got)
+		}
+	}
+	// A transient provider outage stays transport and keeps retrying.
+	if got := ClassifyOutput("provider unavailable, model unavailable"); got != model.ErrorTransport {
+		t.Errorf("outage classified %q", got)
+	}
+}

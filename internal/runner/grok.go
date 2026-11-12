@@ -440,6 +440,8 @@ func classifyScanned(output []byte, prompt string, quota *regexp.Regexp, before 
 		return model.ErrorQuotaHit
 	case authClassRe.MatchString(text):
 		return model.ErrorAuthFailed
+	case unavailableClassRe.MatchString(text):
+		return model.ErrorUnavailable
 	case permissionClassRe.MatchString(text):
 		return model.ErrorPermissionDenied
 	case timeoutClassRe.MatchString(text):

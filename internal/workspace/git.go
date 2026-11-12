@@ -186,10 +186,18 @@ func (Git) Remove(ctx context.Context, worktree string) error {
 	if err != nil {
 		return err
 	}
+	if gitdir, stale := StaleGitdir(abs); stale {
+		return &StaleWorktreeError{Path: abs, Gitdir: gitdir}
+	}
 	common, err := gitCommonDir(ctx, abs)
 	if err != nil {
 		return err
 	}
+	// Executors leave read-only trees behind (the Go module cache is 0444
+	// files in 0555 directories). git worktree remove then deletes half the
+	// tree, drops the admin directory, and fails, leaving an orphan. Make
+	// this worktree's own files writable first.
+	makeWritable(abs)
 	cmd := exec.CommandContext(ctx, "git", "--git-dir", common, "worktree", "remove", "--force", abs)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -337,6 +345,60 @@ func excludeResultFile(ctx context.Context, worktree string) error {
 		return err
 	}
 	return nil
+}
+
+// StaleWorktreeError reports a worktree whose .git file points at an admin
+// directory that no longer exists. git cannot remove it; it is left on disk
+// for a person to inspect.
+type StaleWorktreeError struct {
+	Path   string
+	Gitdir string
+}
+
+func (e *StaleWorktreeError) Error() string {
+	return fmt.Sprintf("workspace: orphaned worktree %s (gitdir %s is gone)", e.Path, e.Gitdir)
+}
+
+// StaleGitdir reports whether dir is a linked worktree whose .git file names
+// a gitdir that does not exist, and returns that gitdir.
+func StaleGitdir(dir string) (string, bool) {
+	body, err := os.ReadFile(filepath.Join(dir, ".git"))
+	if err != nil {
+		return "", false
+	}
+	line := strings.TrimSpace(string(body))
+	if !strings.HasPrefix(line, "gitdir:") {
+		return "", false
+	}
+	gitdir := strings.TrimSpace(strings.TrimPrefix(line, "gitdir:"))
+	if gitdir == "" {
+		return "", false
+	}
+	if !filepath.IsAbs(gitdir) {
+		gitdir = filepath.Join(dir, gitdir)
+	}
+	if _, err := os.Stat(gitdir); err == nil || !os.IsNotExist(err) {
+		return gitdir, false
+	}
+	return gitdir, true
+}
+
+// makeWritable adds owner write permission to every directory and file under
+// root. Errors are ignored; git reports anything it still cannot delete.
+func makeWritable(root string) {
+	_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return nil
+		}
+		if mode := info.Mode().Perm(); mode&0o200 == 0 {
+			_ = os.Chmod(path, mode|0o200)
+		}
+		return nil
+	})
 }
 
 func gitCommonDir(ctx context.Context, worktree string) (string, error) {

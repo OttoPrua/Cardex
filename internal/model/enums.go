@@ -48,6 +48,7 @@ const (
 	OutcomeBudgetLimited    Outcome = "budget_limited"    // 单卡预算用尽。
 	OutcomeViolation        Outcome = "violation"         // 触碰硬底线。
 	OutcomeLaunchFailed     Outcome = "launch_failed"     // 建 worktree、拼 prompt 或启动宿主失败。
+	OutcomeUnavailable      Outcome = "unavailable"       // 渠道不可用：型号不存在/已下线，或所在地区不被支持。
 )
 
 // ErrorClass is the runner classification. Values are the design §5 table.
@@ -68,6 +69,7 @@ const (
 	ErrorBudgetLimited    ErrorClass = "budget_limited"    // 预算用尽。
 	ErrorViolation        ErrorClass = "violation"         // 触碰硬底线。
 	ErrorLaunchFailed     ErrorClass = "launch_failed"     // 启动失败，与 OutcomeLaunchFailed 同一取值。
+	ErrorUnavailable      ErrorClass = "unavailable"       // 型号不被识别或地区不被支持；重试无用，需要改配置。
 )
 
 // FreezeMode decides who confirms a freeze. Design §6.2.
@@ -238,7 +240,7 @@ func AllOutcomes() []Outcome {
 		OutcomePassed, OutcomeTestsFailed, OutcomeNoOutput, OutcomeResultUnparsable,
 		OutcomeQuotaHit, OutcomeAuthFailed, OutcomeTransport, OutcomeTimeout,
 		OutcomePermissionDenied, OutcomeRefusal, OutcomeBudgetLimited, OutcomeViolation,
-		OutcomeLaunchFailed,
+		OutcomeLaunchFailed, OutcomeUnavailable,
 	}
 }
 
@@ -248,7 +250,7 @@ func AllErrorClasses() []ErrorClass {
 		ErrorPassed, ErrorTestsFailed, ErrorNoOutput, ErrorResultUnparsable,
 		ErrorQuotaHit, ErrorAuthFailed, ErrorTransport, ErrorTimeout,
 		ErrorPermissionDenied, ErrorRefusal, ErrorBudgetLimited, ErrorViolation,
-		ErrorLaunchFailed,
+		ErrorLaunchFailed, ErrorUnavailable,
 	}
 }
 

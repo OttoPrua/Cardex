@@ -16,13 +16,17 @@ import (
 var (
 	authClassRe       = regexp.MustCompile(`(?i)(?:\bhttp(?:/\d(?:\.\d)?)?\s+(?:status\s+)?401\b|\bhttp\s+status\s*[:=]\s*401\b|\bstatus(?:\s+code)?\s*[:=]\s*401\b|\b401\s*(?::|-)?\s*unauthorized\b|\bunauthorized\s*\(\s*401\s*\))|invalid api key|invalid or expired credentials|authentication failed|oauth token (?:has )?(?:expired|invalid|revoked)|please (?:re-?)?login|please log in again|reason\s*=\s*no auth context|请重新登录|token expired`)
 	permissionClassRe = regexp.MustCompile(`(?i)403 forbidden|permission denied|access denied by (?:policy|admin|organization)|not authorized to (?:perform|access)|operation not permitted by (?:policy|admin)|(?:sandbox initialization failed|sandbox-exec: sandbox_apply):\s*operation not permitted\b|could not apply the 'workspace' sandbox profile|blocked by (?:policy|admin|organization)`)
-	timeoutClassRe    = regexp.MustCompile(`(?i)步骤超时[（(]|远程步骤超时[（(]|远端步骤超时[（(]|context deadline exceeded|deadline exceeded \(`)
-	quotaClassRe      = regexp.MustCompile(`(?i)usage limit|limit reached|out of extra usage|hit your (?:\w+ )?limit|limit will reset|out of usage credits|out of credits|/usage-credits|session limit|quota hit|quota exceeded|quota exhausted|用量限额|额度红线|账号限额`)
+	// unavailableClassRe is a channel that cannot serve this model at all: the
+	// CLI does not know the model id, or the provider refuses the region.
+	// Retrying or reworking cannot fix it; the channel config must change.
+	unavailableClassRe = regexp.MustCompile(`(?i)invalid model selection|is not recognized as a known model|\bunknown model\b|model (?:\S+ )?(?:not found|does not exist|is not supported)|user location is not supported|not available in your (?:country|region|location)|unsupported (?:country|region|location)`)
+	timeoutClassRe     = regexp.MustCompile(`(?i)步骤超时[（(]|远程步骤超时[（(]|远端步骤超时[（(]|context deadline exceeded|deadline exceeded \(`)
+	quotaClassRe       = regexp.MustCompile(`(?i)usage limit|limit reached|out of extra usage|hit your (?:\w+ )?limit|limit will reset|out of usage credits|out of credits|/usage-credits|session limit|quota hit|quota exceeded|quota exhausted|用量限额|额度红线|账号限额`)
 	// rateClassRe is a short-lived throttle (429, per-account concurrency). It
 	// retries on the same channel like transport, instead of blocking the
 	// channel until a quota reset.
-	rateClassRe       = regexp.MustCompile(`(?i)\b429\b|too many requests|rate[ _-]?limit(?:ed)?(?: (?:reached|exceeded))?|concurren(?:cy|t)[ _-]?(?:limit|requests?)`)
-	transportClassRe  = regexp.MustCompile(`(?i)proxyconnect|proxy unreachable|i/o timeout|dial tcp|no such host|connection reset|connection refused|enotfound|provider unavailable|model unavailable|transport_failed|tls handshake|stream disconnected before completion|failed to connect to websocket|x509:|invalid peer certificate|certificate (?:verify failed|is not valid|not valid for name|signed by unknown)|unexpected eof`)
+	rateClassRe      = regexp.MustCompile(`(?i)\b429\b|too many requests|rate[ _-]?limit(?:ed)?(?: (?:reached|exceeded))?|concurren(?:cy|t)[ _-]?(?:limit|requests?)`)
+	transportClassRe = regexp.MustCompile(`(?i)proxyconnect|proxy unreachable|i/o timeout|dial tcp|no such host|connection reset|connection refused|enotfound|provider unavailable|model unavailable|transport_failed|tls handshake|stream disconnected before completion|failed to connect to websocket|x509:|invalid peer certificate|certificate (?:verify failed|is not valid|not valid for name|signed by unknown)|unexpected eof`)
 )
 
 // ClassifyOutput maps one explicit diagnostic string onto the v2 error classes.
@@ -33,6 +37,8 @@ func ClassifyOutput(text string) model.ErrorClass {
 	switch {
 	case authClassRe.MatchString(text):
 		return model.ErrorAuthFailed
+	case unavailableClassRe.MatchString(text):
+		return model.ErrorUnavailable
 	case permissionClassRe.MatchString(text):
 		return model.ErrorPermissionDenied
 	case quotaClassRe.MatchString(rateClassRe.ReplaceAllString(text, " ")):

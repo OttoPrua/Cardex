@@ -521,6 +521,34 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		}
 	})
 
+	t.Run("unavailable degrades the channel, moves without rework, notifies once", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		a := f.channel("ch-a", "a")
+		b := f.channel("ch-b", "b")
+		f.position("fake", "a", model.TierT2)
+		card := f.card(model.Card{ID: "dev", Channel: a.ID})
+		attempt := f.attempt(card, 0, model.OutcomeUnavailable, a.ID, "model fake is not recognized as a known model")
+		f.step()
+		ch, err := f.db.GetChannel(f.ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ch.Health != model.HealthDegraded || !strings.Contains(ch.LastError, "unavailable: model fake") {
+			t.Fatalf("channel %+v", ch)
+		}
+		got := f.mustCard("dev")
+		if got.Channel != b.ID || got.Status != model.CardReady || got.ReworkCount != 0 || got.Base != attempt.Branch {
+			t.Fatalf("card %+v", got)
+		}
+		if len(f.questions()) != 0 || len(f.events("notify")) != 1 {
+			t.Fatalf("questions %d notify %d", len(f.questions()), len(f.events("notify")))
+		}
+		f.step()
+		if len(f.events("notify")) != 1 {
+			t.Fatalf("second step notified again: %d", len(f.events("notify")))
+		}
+	})
+
 	t.Run("auth_failed notifies once and switches channel", func(t *testing.T) {
 		f := newFx(t, model.ModeManual)
 		dir := t.TempDir()

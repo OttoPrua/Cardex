@@ -98,6 +98,9 @@ func (st *step) apply(card model.Card, attempt model.Attempt) error {
 		return st.dispose(attempt)
 	}
 	dec := Decide(card, attempt.Outcome, attempt.ErrorExcerpt, st.cfg.ReworkLimit, st.cfg.TransportRetries, st.budgetLeft(), historyBefore(st.snap.attempts[card.ID], attempt))
+	if dec.QuestionText == noOutputQuestion {
+		dec.QuestionText = noOutputDetail(st.snap.attempts[card.ID], attempt)
+	}
 	switch dec.Action {
 	case ActionReview:
 		if err := st.ensureReview(card, attempt); err != nil {
@@ -158,6 +161,17 @@ func (st *step) apply(card model.Card, attempt model.Attempt) error {
 			return fmt.Errorf("auth_failed channel %s missing", attempt.Route.Channel)
 		}
 		if err := st.markAuth(ch, attempt.ErrorExcerpt, attempt.ID); err != nil {
+			return err
+		}
+		if err := st.reschedule(card, attempt, dec); err != nil {
+			return err
+		}
+	case ActionUnavailableMove:
+		ch, ok := st.snap.channel(attempt.Route.Channel)
+		if !ok {
+			return fmt.Errorf("unavailable channel %s missing", attempt.Route.Channel)
+		}
+		if err := st.markUnavailable(ch, attempt); err != nil {
 			return err
 		}
 		if err := st.reschedule(card, attempt, dec); err != nil {
@@ -534,6 +548,32 @@ func (st *step) markAuth(ch model.Channel, excerpt, attemptID string) error {
 	return st.event("channel:"+ch.ID, "notify", map[string]string{
 		"kind":    "auth_failed",
 		"channel": ch.ID,
+	})
+}
+
+// markUnavailable takes the channel out of automatic routing. Health
+// degraded is the existing "do not auto-select" state; LastError keeps the
+// model and the CLI's own words so doctor and the notice show the cause.
+func (st *step) markUnavailable(ch model.Channel, attempt model.Attempt) error {
+	excerpt := strings.TrimSpace(attempt.ErrorExcerpt)
+	ch.Health = model.HealthDegraded
+	ch.LastError = "unavailable: model " + attempt.Route.Model
+	if excerpt != "" {
+		ch.LastError += ": " + excerpt
+	}
+	if err := st.db.UpdateChannel(st.ctx, &ch); err != nil {
+		return err
+	}
+	st.snap.putChannel(ch)
+	text := fmt.Sprintf("channel %s unavailable (attempt %s): %s", ch.ID, attempt.ID, ch.LastError)
+	if err := st.noticeEpisode("unavailable-"+ch.ID, "channel_unavailable", text, attempt.ID); err != nil {
+		return err
+	}
+	return st.event("channel:"+ch.ID, "notify", map[string]string{
+		"kind":    "channel_unavailable",
+		"channel": ch.ID,
+		"model":   attempt.Route.Model,
+		"attempt": attempt.ID,
 	})
 }
 
@@ -1844,4 +1884,41 @@ func gitEnv() []string {
 		out = append(out, env)
 	}
 	return append(out, "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "GIT_PAGER=cat")
+}
+
+// noOutputDetail names each no-output attempt on the card, with its channel,
+// model, error class and excerpt, so the question shows the cause instead of
+// one generic line.
+func noOutputDetail(attempts []model.Attempt, cur model.Attempt) string {
+	var b strings.Builder
+	b.WriteString(noOutputQuestion)
+	seen := map[string]bool{}
+	list := append([]model.Attempt{}, attempts...)
+	list = append(list, cur)
+	for _, a := range list {
+		if seen[a.ID] || (a.ID != cur.ID && a.Outcome != model.OutcomeNoOutput) {
+			continue
+		}
+		if a.Index > cur.Index {
+			continue
+		}
+		seen[a.ID] = true
+		class := string(a.ErrorClass)
+		if class == "" {
+			class = "unclassified"
+		}
+		fmt.Fprintf(&b, "\n- attempt %s on %s/%s: %s", a.ID, a.Route.Channel, a.Route.Model, class)
+		if ex := oneLine(a.ErrorExcerpt, 200); ex != "" {
+			b.WriteString(": " + ex)
+		}
+	}
+	return b.String()
+}
+
+func oneLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > max {
+		s = string(r[:max]) + "…"
+	}
+	return s
 }

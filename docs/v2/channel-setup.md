@@ -26,7 +26,7 @@ if [ -z "${ANTHROPIC_AUTH_TOKEN:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   export ANTHROPIC_AUTH_TOKEN
 fi
 export ANTHROPIC_BASE_URL
-exec /Users/ottoprua/.local/bin/claude-external "$@"
+exec "$HOME/.local/bin/claude-external" "$@"
 ```
 
 改之前先备份原来的文件或软链接，比如 `readlink` 的结果存一份。脚本里不要写死令牌。

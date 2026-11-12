@@ -68,6 +68,11 @@ func seedAttempt(t *testing.T, hardTokens int64, build func(work string) any) (h
 
 func seedPrepared(t *testing.T, home string, rn model.RunnerName, profile string, hardTokens int64, build func(work string) any) (string, string, string) {
 	t.Helper()
+	return seedPreparedCard(t, home, rn, profile, hardTokens, nil, build)
+}
+
+func seedPreparedCard(t *testing.T, home string, rn model.RunnerName, profile string, hardTokens int64, edit func(*model.Card), build func(work string) any) (string, string, string) {
+	t.Helper()
 	id := "a1"
 	work := filepath.Join(home, "work")
 	if err := os.MkdirAll(work, 0o755); err != nil {
@@ -88,6 +93,9 @@ func seedPrepared(t *testing.T, home string, rn model.RunnerName, profile string
 	card := model.Card{
 		ID: "c1", Kind: model.KindDev, Status: model.CardReady, Title: "t",
 		Objective: "o", Node: "n", Budget: model.Budget{SoftTokens: 1, HardTokens: hardTokens},
+	}
+	if edit != nil {
+		edit(&card)
 	}
 	if err := db.CreateCard(ctx, &card); err != nil {
 		t.Fatal(err)

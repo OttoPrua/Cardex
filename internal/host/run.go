@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proxy"
 	"github.com/OttoPrua/Cardex/internal/pty"
 	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/sandbox"
@@ -137,6 +138,13 @@ func run(ctx context.Context, home, attemptID string) error {
 		return err
 	}
 
+	// The channel's proxy route goes last so it wins over the inherited
+	// default, including for engine profiles that replace the whole env.
+	if pe, err := proxy.ChildEnv(home, channel.ID); err != nil {
+		appendEvent(ctx, db, attempt.ID, "host_config", map[string]string{"message": err.Error()})
+	} else if pe != nil {
+		env = append(env, pe...)
+	}
 	cmd, err := commandFor(argv, env)
 	if err != nil {
 		return failStart(ctx, db, &attempt, err)

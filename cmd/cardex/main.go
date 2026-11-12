@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"github.com/OttoPrua/Cardex/internal/homeguard"
+	"github.com/OttoPrua/Cardex/internal/proxy"
 	"github.com/OttoPrua/Cardex/internal/sched"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
@@ -35,6 +36,7 @@ commands:
   scorecard
   import-legacy [--dry-run] <v1-home>
   notify add|list|remove|test
+  proxy show|check
   doctor
   version
   host <attempt-id>
@@ -60,7 +62,16 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
+	if dir, err := resolveHome(home); err == nil {
+		// One proxy entry for the serve, its git and notify calls, and every
+		// executor it starts. No "proxy" section in config.json changes nothing.
+		if err := proxy.ApplyProcess(dir); err != nil {
+			fmt.Fprintln(stderr, "warning:", err)
+		}
+	}
 	switch rest[0] {
+	case "proxy":
+		return cmdProxy(home, asJSON, rest[1:], stdout, stderr)
 	case "serve":
 		return cmdServe(home, rest[1:], stdout, stderr)
 	case "project":

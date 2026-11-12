@@ -90,6 +90,11 @@ func (st *step) decideHarvest(card model.Card, attempt model.Attempt) error {
 }
 
 func (st *step) apply(card model.Card, attempt model.Attempt) error {
+	// A canceled card stays canceled: dispose the attempt and stop here, so a
+	// late harvest never reroutes, retries, reworks, or opens a review for it.
+	if card.Status == model.CardCanceled {
+		return st.dispose(attempt)
+	}
 	// A violation voids the normalize attempt and leaves the original waiting.
 	if card.Kind == model.KindNormalize && attempt.Outcome != "" && attempt.Outcome != model.OutcomePassed && attempt.Outcome != model.OutcomeViolation {
 		if err := st.failNormalize(card); err != nil {
@@ -917,6 +922,14 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 	parent, ok := st.snap.card(card.Deps[0])
 	if !ok {
 		return fmt.Errorf("review %s missing card %s", card.ID, card.Deps[0])
+	}
+	if parent.Status == model.CardCanceled {
+		// Keep the verdict on record but leave the canceled card alone.
+		if err := st.noteReviewVerdict(parent, card, attempt, verdict, stored, false); err != nil {
+			return err
+		}
+		card.Status = model.CardDone
+		return st.saveCard(card)
 	}
 	if verdict == "pass" {
 		parent.Status = model.CardMergeQueued

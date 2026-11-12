@@ -7,7 +7,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 )
 
-// Codex runs codex exec. A normal write run uses --sandbox workspace-write.
+// Codex runs codex exec inside the Cardex seatbelt with its own sandbox off.
 type Codex struct{}
 
 func (Codex) Name() string { return string(model.RunnerCodex) }
@@ -30,9 +30,16 @@ func (Codex) WritablePaths() []string {
 	return nonempty(homePath(".codex"), cachePath("codex"))
 }
 
-// Build returns the v1 non-interactive codex exec argv for a write run.
+// Build returns the non-interactive codex exec argv for a write run.
+//
+// Cardex already runs every executor inside its own seatbelt profile (writes
+// limited to the worktree, CLI home, and temp dirs). macOS refuses to apply a
+// second seatbelt inside a restricted one (sandbox_apply: Operation not
+// permitted), so codex's own workspace-write sandbox fails every command.
+// codex therefore runs with its sandbox off and Cardex's profile as the one
+// boundary, the same as claude, agy, and grok (--sandbox none).
 func (Codex) Build(spec LaunchSpec) ([]string, []string, error) {
-	args := []string{"codex", "exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--color", "never", "--json"}
+	args := []string{"codex", "exec", "--sandbox", "danger-full-access", "--skip-git-repo-check", "--color", "never", "--json"}
 	if spec.WorkDir != "" {
 		args = append(args, "-C", spec.WorkDir)
 	}

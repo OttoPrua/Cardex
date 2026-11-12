@@ -1184,6 +1184,23 @@ func safeName(s string) string {
 	return b.String()
 }
 
+// cardFinished reports a card-scoped question whose card is already done,
+// merged or canceled. Its question stays unanswered but is no longer resent.
+func cardFinished(ctx context.Context, db *store.Store, q model.Question) bool {
+	if q.ScopeKind != "card" || q.Scope == "" {
+		return false
+	}
+	card, err := db.GetCard(ctx, q.Scope)
+	if err != nil {
+		return false
+	}
+	switch card.Status {
+	case model.CardDone, model.CardMerged, model.CardCanceled:
+		return true
+	}
+	return false
+}
+
 func (r *Runner) notify(ctx context.Context, db *store.Store) error {
 	questions, err := db.ListQuestions(ctx, "")
 	if err != nil {
@@ -1191,7 +1208,7 @@ func (r *Runner) notify(ctx context.Context, db *store.Store) error {
 	}
 	for i := range questions {
 		q := questions[i]
-		if q.Answer != "" {
+		if q.Answer != "" || cardFinished(ctx, db, q) {
 			continue
 		}
 		msg, err := r.deliveryMessage(ctx, db, q)

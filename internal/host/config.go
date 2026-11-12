@@ -13,6 +13,10 @@ import (
 
 type fileConfig struct {
 	Engines map[string]json.RawMessage `json:"engines"`
+	// Browser configures the Chrome that browser cards get (see browser.go).
+	Browser struct {
+		Chrome string `json:"chrome"`
+	} `json:"browser"`
 	invalid bool
 	loaded  bool
 }

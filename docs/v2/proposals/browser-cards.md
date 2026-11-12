@@ -115,3 +115,17 @@ Linux 上的 Chrome 沙箱靠的是 user namespace 加 seccomp。普通 Docker �
 1. 选第 3 节的方案（推荐），还是先用做法 A（`--sandbox off`）过渡。
 2. 选了第 3 节的话，第一版用 CDP 端口，还是直接上 `launchServer`。
 3. NAS 容器那边要不要交给基础设施处理。
+
+## 实现状态（2026-11-13）
+
+Otto 已批准方案 1（host 在沙箱外启动 Chrome，执行器 connectOverCDP）和第一版用 CDP 端口。实现在分支 `feat/browser-card-cdp`：
+
+- `internal/host/browser.go`：找 Chrome、启动、读 `DevToolsActivePort`、注入 `CARDEX_BROWSER_CDP` / `CARDEX_BROWSER_CDP_WS`、写 `browser.pgid`、结束时杀进程组并删临时目录。
+- `internal/host/run.go`：`--require browser` 的卡在执行器启动前拉起 Chrome，`defer` 收尾。
+- `internal/host/reconcile.go`：host 挂掉后，reconcile 连带清理这次执行的 Chrome。
+- `internal/route/select.go`：`browser` 是 host 提供的能力，不参与模型能力过滤，所以不用改定位表。
+
+**升级到 launchServer 的位置**：`browser.go` 顶部注释写明了。只需要替换 `launchBrowser` 的启动命令和端点发现，改为注入 `CARDEX_BROWSER_WS`；环境变量注入、`browser.pgid` 和清理逻辑不变。
+
+NAS 容器里的 Chromium 问题按 Otto 的决定先不处理。
+

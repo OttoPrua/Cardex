@@ -145,6 +145,21 @@ func run(ctx context.Context, home, attemptID string) error {
 	} else if pe != nil {
 		env = append(env, pe...)
 	}
+	// A browser card gets its own Chrome, started here outside the seatbelt
+	// so Chrome keeps its own sandbox. It is stopped when this run returns.
+	if requiresBrowser(card) {
+		b, err := launchBrowser(ctx, cfg, attemptDir)
+		if err != nil {
+			appendEvent(ctx, db, attempt.ID, "browser_start", map[string]any{"error": err.Error()})
+			return failStart(ctx, db, &attempt, err)
+		}
+		defer func() {
+			b.Stop()
+			appendEvent(context.Background(), db, attempt.ID, "browser_stop", map[string]any{"pgid": b.pgid})
+		}()
+		appendEvent(ctx, db, attempt.ID, "browser_start", map[string]any{"pgid": b.pgid, "cdp": b.httpURL})
+		env = append(env, b.Env(env)...)
+	}
 	cmd, err := commandFor(argv, env)
 	if err != nil {
 		return failStart(ctx, db, &attempt, err)

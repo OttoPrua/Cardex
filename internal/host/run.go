@@ -147,6 +147,9 @@ func run(ctx context.Context, home, attemptID string) error {
 	}
 	// A browser card gets its own Chrome, started here outside the seatbelt
 	// so Chrome keeps its own sandbox. It is stopped when this run returns.
+	// A browser_start event with an error is terminal: no browser_stop follows.
+	// Card cancel is watched only once the executor starts; Chrome startup is
+	// bounded by browserStartTimeout.
 	if requiresBrowser(card) {
 		b, err := launchBrowser(ctx, cfg, attemptDir)
 		if err != nil {

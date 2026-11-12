@@ -38,7 +38,8 @@ import (
 // host that died.
 //
 // Upgrade point (launchServer): v1 exposes a raw CDP port, so any local
-// process that finds the port can drive this Chrome while the card runs. To
+// process that finds the port (another card's executor included) can drive
+// this Chrome while the card runs. To
 // move to a Playwright browser server (launchServer, ws endpoint with a
 // random path), replace launchBrowser's command and endpoint discovery and
 // set CARDEX_BROWSER_WS instead; the env injection, browser.pgid and cleanup
@@ -148,6 +149,31 @@ func chromePath(cfg fileConfig) (string, error) {
 	return "", errors.New("browser: no Chrome found (set CARDEX_CHROME or browser.chrome in config.json)")
 }
 
+// browserEnv is the environment Chrome gets: only what a browser needs, never
+// the host's engine keys or tokens. Chrome runs outside the seatbelt and is
+// driven by the executor, so it must not carry the host's secrets.
+func browserEnv(host []string) []string {
+	keep := map[string]bool{
+		"PATH": true, "HOME": true, "USER": true, "LOGNAME": true, "SHELL": true,
+		"TMPDIR": true, "TMP": true, "TEMP": true, "LANG": true, "TZ": true,
+		"HTTP_PROXY": true, "HTTPS_PROXY": true, "ALL_PROXY": true, "NO_PROXY": true,
+		"http_proxy": true, "https_proxy": true, "all_proxy": true, "no_proxy": true,
+		"DISPLAY": true, "WAYLAND_DISPLAY": true, "XDG_RUNTIME_DIR": true,
+		"DBUS_SESSION_BUS_ADDRESS": true, "FONTCONFIG_PATH": true,
+	}
+	var out []string
+	for _, kv := range host {
+		k, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if keep[k] || strings.HasPrefix(k, "LC_") {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 // browserArgs is the fixed v1 command line. No --no-sandbox, ever.
 func browserArgs(profile string) []string {
 	return []string{
@@ -186,6 +212,7 @@ func launchBrowser(ctx context.Context, cfg fileConfig, attemptDir string) (*bro
 	}
 	args := browserArgs(profile)
 	cmd := exec.Command(bin, args...)
+	cmd.Env = browserEnv(os.Environ())
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	cmd.Dir = dir
@@ -195,15 +222,19 @@ func launchBrowser(ctx context.Context, cfg fileConfig, attemptDir string) (*bro
 		_ = os.RemoveAll(profile)
 		return nil, fmt.Errorf("browser: start %s: %w", bin, err)
 	}
+	// Record the group right away so reconcile can reap it if this host dies.
+	// Known gap: a host killed between Start and this write leaves a Chrome
+	// no one records; reconcile then only removes the profile.
+	perr := persistGroupFile(filepath.Join(attemptDir, browserGroupName), cmd.Process.Pid)
 	_ = logf.Close()
 	b := &browserSession{cmd: cmd, pgid: cmd.Process.Pid, dir: dir, profile: profile, done: make(chan struct{})}
 	go func() {
 		_ = cmd.Wait()
 		close(b.done)
 	}()
-	if err := persistGroupFile(filepath.Join(attemptDir, browserGroupName), b.pgid); err != nil {
+	if perr != nil {
 		b.Stop()
-		return nil, err
+		return nil, perr
 	}
 	port, wsPath, err := waitDevToolsPort(ctx, profile, b.done)
 	if err != nil {
@@ -291,12 +322,44 @@ func reapBrowser(pgid int, profile string) {
 
 // reapLostBrowser cleans up after a host that died: it kills the attempt's
 // recorded Chrome group and removes its profile.
+// The group is signalled only when one of its processes still names this
+// attempt's profile, so a recycled pgid is never killed.
 func reapLostBrowser(home, attemptID string) {
 	attemptDir := filepath.Join(home, "attempts", attemptID)
-	pgid := readGroupFile(filepath.Join(attemptDir, browserGroupName))
-	if pgid <= 1 {
+	profile := filepath.Join(attemptDir, browserDirName, "profile")
+	pgidPath := filepath.Join(attemptDir, browserGroupName)
+	if _, err := os.Stat(pgidPath); err != nil {
+		if _, err := os.Stat(profile); err == nil {
+			_ = os.RemoveAll(profile)
+		}
 		return
 	}
-	reapBrowser(pgid, filepath.Join(attemptDir, browserDirName, "profile"))
-	_ = os.Remove(filepath.Join(attemptDir, browserGroupName))
+	pgid := readGroupFile(pgidPath)
+	if pgid > 1 && groupUsesProfile(pgid, profile) {
+		reapBrowser(pgid, profile)
+	}
+	_ = os.RemoveAll(profile)
+	_ = os.Remove(pgidPath)
+}
+
+// groupUsesProfile reports whether a process in group pgid was started with
+// --user-data-dir=profile.
+func groupUsesProfile(pgid int, profile string) bool {
+	if !processGroupAlive(pgid) {
+		return false
+	}
+	// `ps -g` means different things on macOS and Linux, so list every
+	// process with its pgid and filter here.
+	out, err := exec.Command("ps", "-A", "-o", "pgid=,args=").Output()
+	if err != nil {
+		return false
+	}
+	want := strconv.Itoa(pgid)
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) > 1 && f[0] == want && strings.Contains(line, "--user-data-dir="+profile) {
+			return true
+		}
+	}
+	return false
 }

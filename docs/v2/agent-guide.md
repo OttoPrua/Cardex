@@ -123,7 +123,12 @@ const context = browser.contexts()[0] ?? await browser.newContext();
 
 Chrome 的位置按顺序找：环境变量 `CARDEX_CHROME`、`config.json` 里的 `browser.chrome`、系统默认安装位置。找不到或者 30 秒内没起来，这次执行直接失败（事件 `browser_start` 里有原因），执行器不会启动。
 
-注意：Cardex 自动派出的复核、修复、变基卡不继承 `browser`。
+注意：
+
+- Cardex 自动派出的复核、修复、变基卡不继承 `browser`。
+- 第一版是裸 CDP 端口：卡运行期间，本机任何进程（包括并发的其他卡）找到这个端口都能操控这个 Chrome。不要在浏览器卡里登录真实账号或放敏感数据。以后会升级成带随机路径的 launchServer。
+- Chrome 只拿到基本环境变量（`PATH`、`HOME`、语言、代理等），拿不到各渠道的 key。
+- 事件 `browser_start` 带 `error` 表示没起来，这次执行到此结束，不会再有 `browser_stop`。
 
 ## 七、哪些事必须交给 使用者（owner）
 

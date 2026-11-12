@@ -100,6 +100,7 @@ try {
 	if err := os.WriteFile(filepath.Join(dir, "smoke.mjs"), []byte(script), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = os.Remove(filepath.Join(dir, "smoke.mjs")) })
 	attemptDir := t.TempDir()
 	b, err := launchBrowser(context.Background(), fileConfig{}, attemptDir)
 	if err != nil {

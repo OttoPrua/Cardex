@@ -28,6 +28,7 @@ func fakeChrome(t *testing.T) string {
 	script := `#!/bin/sh
 for a in "$@"; do case "$a" in --user-data-dir=*) dir="${a#--user-data-dir=}";; esac; done
 printf '%s\n' "$@" > "$dir/../args"
+env > "$dir/../env"
 sleep 301 &
 echo $! > "$dir/../child.pid"
 echo $$ > "$dir/../chrome.pid"
@@ -76,6 +77,7 @@ func browserCard(c *model.Card) { c.Requires = []string{"browser"} }
 func TestBrowserCardInjectsCDPAndCleansUp(t *testing.T) {
 	t.Setenv("CARDEX_CHROME", fakeChrome(t))
 	t.Setenv("NO_PROXY", "example.internal")
+	t.Setenv("CARDEX_SECRET_FOR_TEST", "sk-should-not-reach-chrome")
 	home := t.TempDir()
 	_, id, _ := seedPreparedCard(t, home, model.RunnerFake, "", 1, browserCard, func(string) any {
 		return map[string]any{"attempts": map[string]any{"0": map[string]any{
@@ -111,6 +113,13 @@ func TestBrowserCardInjectsCDPAndCleansUp(t *testing.T) {
 	}
 	if strings.Contains(string(args), "--no-sandbox") {
 		t.Fatalf("chrome was given --no-sandbox:\n%s", args)
+	}
+	envb, err := os.ReadFile(filepath.Join(dir, "browser", "env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(envb), "CARDEX_SECRET_FOR_TEST") || !strings.Contains(string(envb), "PATH=") {
+		t.Fatalf("chrome env not filtered:\n%s", envb)
 	}
 	if !gone(readPID(t, filepath.Join(dir, "browser", "chrome.pid"))) || !gone(readPID(t, filepath.Join(dir, "browser", "child.pid"))) {
 		t.Fatal("chrome process group still running after the attempt")
@@ -206,7 +215,7 @@ func TestReconcileReapsLostBrowser(t *testing.T) {
 	if err := os.MkdirAll(profile, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("sleep", "300")
+	cmd := exec.Command("sh", "-c", "sleep 300", "chrome", "--user-data-dir="+profile)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
@@ -282,10 +291,107 @@ func TestBrowserCardRealChrome(t *testing.T) {
 	if !strings.Contains(string(body), "webSocketDebuggerUrl") {
 		t.Fatalf("/json/version: %s", body)
 	}
+	if lsof, err := exec.LookPath("lsof"); err == nil {
+		port := endpoint[strings.LastIndex(endpoint, ":")+1:]
+		out, _ := exec.Command(lsof, "-nP", "-iTCP:"+port, "-sTCP:LISTEN").CombinedOutput()
+		if !strings.Contains(string(out), "127.0.0.1:"+port) || strings.Contains(string(out), "*:"+port) {
+			t.Fatalf("CDP port not bound to 127.0.0.1 only:\n%s", out)
+		}
+	}
 	if err := <-errc; err != nil {
 		t.Fatal(err)
 	}
 	if _, err := http.Get(endpoint + "/json/version"); err == nil {
 		t.Fatal("chrome still answering after the attempt")
+	}
+}
+
+// A recorded pgid that no longer belongs to this attempt's Chrome is not
+// signalled; the profile is still removed.
+func TestReconcileSkipsRecycledBrowserGroup(t *testing.T) {
+	home := t.TempDir()
+	db, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	deadPID := 0
+	for pid := 1_000_000; pid < 1_000_400; pid++ {
+		if host.SignalProcess(pid, 0) == syscall.ESRCH {
+			deadPID = pid
+			break
+		}
+	}
+	a := model.Attempt{ID: "lost", Card: "c1", Route: model.Route{Channel: "ch1", Model: "fake"}, PID: deadPID, Worktree: filepath.Join(home, "work")}
+	if err := db.CreateAttempt(ctx, &a); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "attempts", "lost")
+	profile := filepath.Join(dir, "browser", "profile")
+	if err := os.MkdirAll(profile, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "300")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = host.SignalGroup(cmd.Process.Pid, syscall.SIGKILL); _ = cmd.Wait() }()
+	if err := os.WriteFile(filepath.Join(dir, "browser.pgid"), []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Reconcile(ctx, home); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.SignalProcess(cmd.Process.Pid, 0); err != nil {
+		t.Fatalf("unrelated group was signalled: %v", err)
+	}
+	if _, err := os.Stat(profile); !os.IsNotExist(err) {
+		t.Fatalf("profile not removed: %v", err)
+	}
+}
+
+// Canceling a browser card stops the executor and the host's Chrome.
+func TestBrowserCardCanceledReapsChrome(t *testing.T) {
+	defer host.SetCancelPollForTest(50 * time.Millisecond)()
+	t.Setenv("CARDEX_CHROME", fakeChrome(t))
+	home := t.TempDir()
+	_, id, _ := seedPreparedCard(t, home, model.RunnerFake, "", 1, browserCard, func(string) any {
+		return map[string]any{"attempts": map[string]any{"0": map[string]any{
+			"output": "started\n",
+			"hold":   "30s",
+		}}}
+	})
+	dir := filepath.Join(home, "attempts", id)
+	go func() {
+		for i := 0; i < 200; i++ {
+			if b, _ := os.ReadFile(filepath.Join(dir, "output.log")); strings.Contains(string(b), "started") {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+		db, err := store.Open(filepath.Join(home, "cardex.db"))
+		if err != nil {
+			return
+		}
+		defer db.Close()
+		c, err := db.GetCard(context.Background(), "c1")
+		if err != nil {
+			return
+		}
+		c.Status = model.CardCanceled
+		_ = db.UpdateCard(context.Background(), &c)
+	}()
+	start := time.Now()
+	_ = host.Run(context.Background(), home, id)
+	if took := time.Since(start); took > 15*time.Second {
+		t.Fatalf("browser card kept running after cancel: %s", took)
+	}
+	if !gone(readPID(t, filepath.Join(dir, "browser", "chrome.pid"))) || !gone(readPID(t, filepath.Join(dir, "browser", "child.pid"))) {
+		t.Fatal("chrome still running after cancel")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "browser", "profile")); !os.IsNotExist(err) {
+		t.Fatalf("profile not removed after cancel: %v", err)
 	}
 }

@@ -108,6 +108,7 @@ type Card struct {
 	ReworkNote   string     `json:"rework_note"`   // 复核意见，附进下一次尝试的 prompt。
 	AuthorFamily string     `json:"author_family"` // 作者模型族；复核卡必须换族。
 	Budget       Budget     `json:"budget"`        // 单卡预算。
+	Sandbox      string     `json:"sandbox"`       // 空表示在 Cardex 沙箱内跑；"off" 表示整张卡在沙箱外跑，只能在 card add 时设定。
 }
 
 // Route is the channel and model chosen before an attempt starts.

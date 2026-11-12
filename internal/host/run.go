@@ -182,7 +182,11 @@ func run(ctx context.Context, home, attemptID string) error {
 	}
 
 	writable := append([]string{attempt.Worktree}, r.WritablePaths()...)
-	wrapped, err := sandbox.Wrap(cmd, writable)
+	wrap := sandbox.Wrap
+	if card.Sandbox == "off" {
+		wrap = func(c *exec.Cmd, _ []string) (*exec.Cmd, error) { return sandbox.Off(c) }
+	}
+	wrapped, err := wrap(cmd, writable)
 	if err != nil {
 		closePipe(logWrite, logRead)
 		if copied != nil {

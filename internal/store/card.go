@@ -25,6 +25,13 @@ func prepareCard(c *model.Card) error {
 	if !c.Status.Valid() {
 		return invalid("card status", c.Status)
 	}
+	switch c.Sandbox {
+	case "", "on":
+		c.Sandbox = ""
+	case "off":
+	default:
+		return invalid("card sandbox", c.Sandbox)
+	}
 	c.Requires = normStrings(c.Requires)
 	c.Deps = normStrings(c.Deps)
 	c.Acceptance = normStrings(c.Acceptance)
@@ -79,8 +86,8 @@ func (s *Store) insertCard(ctx context.Context, c *model.Card) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO cards(id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		c.ID, c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens)
+	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO cards(id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens, sandbox) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		c.ID, c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Sandbox)
 	return err
 }
 
@@ -149,7 +156,7 @@ func (s *Store) DeleteCard(ctx context.Context, id string) error {
 	})
 }
 
-const cardSelect = `SELECT id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens FROM cards`
+const cardSelect = `SELECT id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens, sandbox FROM cards`
 
 func (s *Store) ListCards(ctx context.Context, objectiveID string) ([]model.Card, error) {
 	q := cardSelect
@@ -191,7 +198,7 @@ func (s *Store) ListCards(ctx context.Context, objectiveID string) ([]model.Card
 func scanCard(sc scanner) (model.Card, error) {
 	var c model.Card
 	var kind, tier, requires, deps, acceptance, status, legacy string
-	if err := sc.Scan(&c.ID, &c.Objective, &c.Node, &kind, &c.Title, &c.Body, &tier, &requires, &deps, &acceptance, &c.Base, &status, &c.WaitReason, &c.ReworkCount, &legacy, &c.Channel, &c.Model, &c.ReworkNote, &c.AuthorFamily, &c.Budget.SoftTokens, &c.Budget.HardTokens); err != nil {
+	if err := sc.Scan(&c.ID, &c.Objective, &c.Node, &kind, &c.Title, &c.Body, &tier, &requires, &deps, &acceptance, &c.Base, &status, &c.WaitReason, &c.ReworkCount, &legacy, &c.Channel, &c.Model, &c.ReworkNote, &c.AuthorFamily, &c.Budget.SoftTokens, &c.Budget.HardTokens, &c.Sandbox); err != nil {
 		return c, err
 	}
 	c.Kind = model.CardKind(kind)

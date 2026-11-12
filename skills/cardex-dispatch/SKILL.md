@@ -7,6 +7,8 @@ description: Operate Cardex v2 from a Hermes or Codex management session. Use wh
 
 This skill covers `--origin`, answering a question, approving a positioning proposal, and handing a decision to 使用者（owner）. Use it from a Hermes or Codex management session. Point every command at the data directory with `--home` or `CARDEX_HOME`.
 
+Read [docs/v2/agent-guide.md](../../docs/v2/agent-guide.md) first: it lists every card field and Cardex feature, why each exists, and when to run a card with `--sandbox off`.
+
 ## Create with --origin
 
 `objective add` and `card add` record an origin of the form `kind:id`. Pass `--origin` on the command. A non-empty `--origin` wins over `CARDEX_ORIGIN`. Both sides of the colon must be non-empty; the id is everything after the first colon.

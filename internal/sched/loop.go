@@ -1184,8 +1184,11 @@ func safeName(s string) string {
 	return b.String()
 }
 
-// cardFinished reports a card-scoped question whose card is already done,
-// merged or canceled. Its question stays unanswered but is no longer resent.
+// cardFinished reports a card-scoped question that no longer needs a reminder:
+// its card was canceled, or the card finished (done or merged) after a
+// "no output" question about an earlier failed attempt. The question stays
+// unanswered; it is only not resent. Other questions on finished cards, such
+// as a done card asking for a decision, are still delivered.
 func cardFinished(ctx context.Context, db *store.Store, q model.Question) bool {
 	if q.ScopeKind != "card" || q.Scope == "" {
 		return false
@@ -1195,8 +1198,10 @@ func cardFinished(ctx context.Context, db *store.Store, q model.Question) bool {
 		return false
 	}
 	switch card.Status {
-	case model.CardDone, model.CardMerged, model.CardCanceled:
+	case model.CardCanceled:
 		return true
+	case model.CardDone, model.CardMerged:
+		return strings.HasPrefix(q.Text, "no output after switching channel")
 	}
 	return false
 }

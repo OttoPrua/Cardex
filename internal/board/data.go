@@ -28,13 +28,15 @@ type pageData struct {
 }
 
 type currentView struct {
-	Objectives       []objectiveView  `json:"objectives"`
-	Cards            []cardBrief      `json:"cards"`
-	StatusCounts     []statusCount    `json:"status_counts"`
-	Waiting          []waitingCard    `json:"waiting"`
-	RunningAttempts  []runningAttempt `json:"running_attempts"`
-	MergeQueue       []cardBrief      `json:"merge_queue"`
-	PendingQuestions []questionBrief  `json:"pending_questions"`
+	Objectives       []objectiveView   `json:"objectives"`
+	Cards            []cardBrief       `json:"cards"`
+	StatusCounts     []statusCount     `json:"status_counts"`
+	Waiting          []waitingCard     `json:"waiting"`
+	RunningAttempts  []runningAttempt  `json:"running_attempts"`
+	MergeQueue       []cardBrief       `json:"merge_queue"`
+	PendingQuestions []questionBrief   `json:"pending_questions"`
+	Progress         []projectProgress `json:"progress"`
+	Lanes            []runningLane     `json:"lanes"`
 }
 
 type objectiveView struct {
@@ -202,6 +204,13 @@ func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 		PendingQuestions: []questionBrief{},
 	}
 	counts := map[model.CardStatus]int{}
+	var inputs []progressInput
+	openQ := map[string]int{}
+	for _, q := range questions {
+		if q.Answer == "" {
+			openQ[q.Objective]++
+		}
+	}
 	objStatus := map[string]model.ObjectiveStatus{}
 	cardsByID := map[string]model.Card{}
 	for _, o := range objectives {
@@ -229,6 +238,7 @@ func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 		if err != nil {
 			return nil, err
 		}
+		inputs = append(inputs, progressInput{objective: o, cards: cards, nodes: nodes, questions: openQ[o.ID]})
 		for _, c := range cards {
 			if !currentCard(c) {
 				continue
@@ -267,6 +277,7 @@ func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 		}
 		view.PendingQuestions = append(view.PendingQuestions, questionBrief{ID: q.ID, Objective: q.Objective, Text: q.Text})
 	}
+	view.Progress, view.Lanes = buildProgress(inputs, attempts, time.Now())
 	return view, nil
 }
 

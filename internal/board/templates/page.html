@@ -130,6 +130,29 @@ form.search input{font:inherit;color:var(--foreground);background:var(--card);bo
 form.search input[type=search]{flex:1 1 260px}
 form.search input:focus{outline:2px solid color-mix(in oklab,var(--foreground) 30%,transparent);outline-offset:1px}
 .pager{display:flex;align-items:center;gap:10px;justify-content:flex-end;margin-top:12px;color:var(--muted-foreground);font-size:12px}
+.section{font-size:13px;font-weight:600;color:var(--muted-foreground);margin:22px 0 10px}
+.lanes,.project{margin-bottom:14px}
+.lane-top,.obj-top,.proj-head{display:flex;align-items:center;gap:10px;min-width:0}
+.lane-time{margin-left:auto;font-size:12px;color:var(--muted-foreground);white-space:nowrap}
+.lane-time.over{color:var(--warn)}
+.bar.thin{height:4px}
+.proj-name{font-size:16px;font-weight:650;letter-spacing:-.01em}
+.big{font:650 22px var(--font);letter-spacing:-.02em}
+.big.sm{font-size:15px}
+.obj-list{margin-top:8px}
+.now{font-size:13px;color:var(--muted-foreground);margin:4px 0 8px;overflow-wrap:anywhere}
+.segbar{display:flex;height:10px;border-radius:99px;background:var(--muted);overflow:hidden;gap:1px}
+.segbar i{display:block;height:100%}
+.s-done{background:var(--ok)}.s-active{background:var(--live)}.s-merge{background:color-mix(in oklab,var(--live) 55%,var(--ok))}
+.s-input{background:var(--warn)}.s-wait{background:color-mix(in oklab,var(--warn) 45%,var(--muted))}.s-ready{background:var(--border)}.s-fail{background:var(--err)}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:8px;font-size:12px;color:var(--muted-foreground);align-items:center}
+.legend b{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:0}
+.eta{color:var(--foreground);font-weight:500}
+ul.mini{list-style:none;margin:6px 0 0;padding:0;display:grid;gap:4px}
+ul.mini li{display:flex;gap:10px;justify-content:space-between;font-size:13px}
+ul.mini .title{font-weight:500}
+.wrap{margin-top:10px}
+.basis{text-align:right;font-size:11px;color:var(--muted-foreground);margin-top:2px}
 footer{max-width:1240px;margin:0 auto;padding:0 clamp(16px,2.5vw,40px) 32px;color:var(--muted-foreground);font-size:12px}
 @media (max-width:640px){.top{flex-wrap:wrap}.live{display:none}}
 </style>
@@ -161,6 +184,8 @@ footer{max-width:1240px;margin:0 auto;padding:0 clamp(16px,2.5vw,40px) 32px;colo
 <section id="current-work">
 <h1>当前工作</h1>
 <p class="sub">进行中的目标、正在跑的尝试，以及需要你拍板的事。</p>
+{{template "overview" .}}
+<h2 class="section">卡片状态</h2>
 <div class="stats">
 {{range .StatusCounts}}<div class="stat t-{{tone .Status}}{{if eq .Count 0}} zero{{end}}"><b>{{.Count}}</b><span>{{label .Status}}</span><span class="k">status {{.Status}} count {{.Count}}</span></div>
 {{end}}
@@ -211,6 +236,46 @@ footer{max-width:1240px;margin:0 auto;padding:0 clamp(16px,2.5vw,40px) 32px;colo
 </div>
 </section>
 {{end}}
+
+{{define "overview"}}
+<div class="panel lanes">
+<h2>正在并行<span class="n">{{len .Lanes}}</span></h2>
+{{if .Lanes}}<ul class="rows">
+{{range .Lanes}}<li><span class="pill t-live">{{.Channel}}</span><div class="grow">
+<div class="lane-top"><a class="title" href="/cards/{{.Card}}">{{.CardTitle}}</a><span class="lane-time{{if .Over}} over{{end}}">已跑 {{.Elapsed}}{{if .Typical}} · 通常 {{.Typical}}{{end}}</span></div>
+<div class="meta"><span>{{.Project}}</span><span>{{.Objective}}</span><span>{{label .Status}}</span>{{if .Model}}<span class="chip">{{.Model}}</span>{{end}}</div>
+<div class="bar thin{{if not .Fraction}} unknown{{end}}{{if .Over}} t-warn{{end}}"><i style="width:{{pct .Fraction}}"></i></div>
+</div></li>
+{{end}}</ul>{{else}}<div class="empty">现在没有任务在跑。</div>{{end}}
+</div>
+{{range .Progress}}{{if .Objectives}}<div class="panel project">
+<div class="proj-head"><span class="proj-name">{{.Project}}</span><span class="meta"><span>{{len .Objectives}} 个目标</span><span>{{.Running}} 个在跑</span><span>卡完成 {{.Done}} / {{.Total}}</span></span><span class="spacer"></span><span class="big">{{.Percent}}%</span></div>
+<div class="bar"><i style="width:{{.Percent}}%;background:var(--ok)"></i></div>
+<ul class="rows obj-list">
+{{range .Objectives}}<li><div class="grow">
+<div class="obj-top"><span class="pill t-{{.StageTone}}">{{.Stage}}</span><span class="title">{{.Title}}</span><span class="spacer"></span><span class="big sm">{{.Percent}}%</span></div>
+<div class="now">{{.Now}}</div>
+<div class="segbar" title="已完成 {{.Done}}，执行中 {{.Active}}，合并中 {{.Merging}}，待拍板 {{.NeedsInput}}，等待 {{.Waiting}}，排队 {{.Ready}}，失败 {{.Failed}}">
+<i class="s-done" style="width:{{.Seg .Done}}"></i><i class="s-active" style="width:{{.Seg .Active}}"></i><i class="s-merge" style="width:{{.Seg .Merging}}"></i><i class="s-input" style="width:{{.Seg .NeedsInput}}"></i><i class="s-wait" style="width:{{.Seg .Waiting}}"></i><i class="s-ready" style="width:{{.Seg .Ready}}"></i><i class="s-fail" style="width:{{.Seg .Failed}}"></i></div>
+<div class="legend">
+<span><b class="s-done"></b>完成 {{.Done}}/{{.Total}}</span>{{if .Active}}<span><b class="s-active"></b>执行 {{.Active}}</span>{{end}}{{if .Merging}}<span><b class="s-merge"></b>合并 {{.Merging}}</span>{{end}}{{if .NeedsInput}}<span><b class="s-input"></b>待拍板 {{.NeedsInput}}</span>{{end}}{{if .Waiting}}<span><b class="s-wait"></b>等待 {{.Waiting}}</span>{{end}}{{if .Ready}}<span><b class="s-ready"></b>排队 {{.Ready}}</span>{{end}}{{if .Failed}}<span><b class="s-fail"></b>失败 {{.Failed}}</span>{{end}}{{if .Questions}}<span>问题 {{.Questions}}</span>{{end}}
+<span class="spacer"></span><span class="eta">{{if .ETABasis}}预计还要 {{end}}{{.ETA}}</span></div>
+{{if .ETABasis}}<div class="basis">{{.ETABasis}}</div>{{end}}
+</div></li>
+{{end}}</ul>
+{{if .Wrapping}}{{template "wrapping" .Wrapping}}{{end}}
+</div>
+{{end}}{{end}}
+{{$w := 0}}{{range .Progress}}{{if not .Objectives}}{{$w = inc $w}}{{end}}{{end}}
+{{if $w}}<div class="panel project">
+<div class="proj-head"><span class="proj-name">只差验收</span><span class="meta"><span>{{$w}} 个项目的卡已全部完成</span></span></div>
+<ul class="rows obj-list">
+{{range .Progress}}{{if not .Objectives}}<li><div class="grow"><div class="obj-top"><span class="pill t-ok">收尾</span><span class="title">{{.Project}}</span><span class="spacer"></span><span class="meta"><span>{{len .Wrapping}} 个目标</span><span>卡 {{.Done}} / {{.Total}}</span></span></div>{{template "wrapping" .Wrapping}}</div></li>
+{{end}}{{end}}</ul>
+</div>{{end}}
+{{end}}
+
+{{define "wrapping"}}<details class="wrap"><summary>{{len .}} 个目标卡已做完，等验收</summary><ul class="mini">{{range .}}<li><span class="title">{{.Title}}</span><span class="meta"><span>卡 {{.Done}}/{{.Total}}</span></span></li>{{end}}</ul></details>{{end}}
 
 {{define "channels"}}
 <section id="channels">

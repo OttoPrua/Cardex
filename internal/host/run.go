@@ -300,7 +300,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		if goalMode {
 			goalStatus = goalTerminalStatus(driveErr)
 		}
-		if goalStatus != "" {
+		if goalStatus != "" || (goalMode && errors.Is(driveErr, runner.ErrGoalStartFailed)) {
 			// A delivered SIGTERM is not the group exiting. The deadline stays
 			// armed and killGroup is what reaps a group that ignores it.
 			if pid > 1 {

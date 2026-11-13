@@ -40,4 +40,7 @@ var (
 	// ErrGoalPaused means the CLI paused the goal (runtime or provider error).
 	// Nobody is attached to resume it, so the run ends.
 	ErrGoalPaused = errors.New("goal paused")
+	// ErrGoalStartFailed is a CLI that reported it could not start the goal
+	// session (bad model, login). The host closes the process at once.
+	ErrGoalStartFailed = errors.New("goal start failed")
 )

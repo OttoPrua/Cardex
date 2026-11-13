@@ -39,6 +39,17 @@ func TestKimiGoalRealSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	card.Requires = []string{"goal_mode"}
+	att, err := db.GetAttempt(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	att.Route.Model = os.Getenv("CARDEX_SMOKE_MODEL")
+	if att.Route.Model == "" {
+		att.Route.Model = "kimi-code/kimi-for-coding"
+	}
+	if err := db.UpdateAttempt(ctx, &att); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.UpdateCard(ctx, &card); err != nil {
 		t.Fatal(err)
 	}

@@ -240,3 +240,21 @@ func TestKimiDriveBudgetAndEOF(t *testing.T) {
 		t.Fatal("EOF without a terminal was completion")
 	}
 }
+
+func TestKimiDriveStartFailureFailsFast(t *testing.T) {
+	home, work := t.TempDir(), t.TempDir()
+	tty := &fakeKimiTTY{out: make(chan []byte, 8)}
+	tty.onWrite = func(all string) {
+		if strings.HasSuffix(all, "\r") {
+			tty.out <- []byte("\x1b[31m Error: Failed to start a session: Model \"fake\" is not configured in \r\n config.toml. \x1b[0m\r\n\r\n")
+		}
+	}
+	tty.out <- []byte("context: 0%")
+	k := Kimi{ConfigHome: home}.ForGoal(GoalLaunch{Prompt: "p", WorkDir: work}).(Kimi)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := k.Drive(ctx, tty)
+	if !errors.Is(err, ErrGoalStartFailed) || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("drive %v", err)
+	}
+}

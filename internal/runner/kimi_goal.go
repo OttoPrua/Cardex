@@ -148,6 +148,7 @@ func (k Kimi) Drive(ctx context.Context, rw io.ReadWriter) error {
 	if _, err := io.WriteString(rw, "\r"); err != nil {
 		return err
 	}
+	screen = screen[:0]
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -155,9 +156,18 @@ func (k Kimi) Drive(ctx context.Context, rw io.ReadWriter) error {
 		if term, ok := ReadKimiGoalSession(home, work); ok {
 			return term
 		}
-		_, err, term, termOK := readKimiChunk(ctx, rw, tmp, home, work)
+		n, err, term, termOK := readKimiChunk(ctx, rw, tmp, home, work)
 		if termOK {
 			return term
+		}
+		if n > 0 {
+			screen = append(screen, tmp[:n]...)
+			if len(screen) > 256*1024 {
+				screen = screen[len(screen)-128*1024:]
+			}
+			if msg, failed := kimiStartFailure(kimiPlain(screen)); failed {
+				return fmt.Errorf("kimi %w: %s", ErrGoalStartFailed, msg)
+			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -337,4 +347,22 @@ func kimiReasonErr(base error, reason string) error {
 		return fmt.Errorf("kimi %w", base)
 	}
 	return fmt.Errorf("kimi %w: %s", base, reason)
+}
+
+// kimiStartFailure finds the TUI's "Failed to start a session" error, shown
+// when the first message cannot open a session (unknown model, logged out).
+func kimiStartFailure(text string) (string, bool) {
+	i := strings.Index(text, "Failed to start a session")
+	if i < 0 {
+		return "", false
+	}
+	msg := text[i:]
+	if j := strings.Index(msg, "\n\n"); j >= 0 {
+		msg = msg[:j]
+	}
+	msg = strings.Join(strings.Fields(msg), " ")
+	if len(msg) > 200 {
+		msg = msg[:200]
+	}
+	return msg, true
 }

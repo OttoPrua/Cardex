@@ -258,6 +258,7 @@ func launchBrowser(ctx context.Context, cfg fileConfig, attemptDir string) (*bro
 	// Record the group right away so reconcile can reap it if this host dies.
 	// Known gap: a host killed between Start and this write leaves a Chrome
 	// no one records; reconcile then only removes the profile.
+	_ = joinGroup(cmd.Process.Pid)
 	perr := persistGroupFile(filepath.Join(attemptDir, browserGroupName), cmd.Process.Pid)
 	_ = logf.Close()
 	b := &browserSession{cmd: cmd, pgid: cmd.Process.Pid, dir: dir, profile: profile, done: make(chan struct{})}

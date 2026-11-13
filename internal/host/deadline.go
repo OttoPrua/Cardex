@@ -41,7 +41,10 @@ func attemptDeadline(attemptDir string) (time.Duration, string) {
 }
 
 func persistExecutorGroup(attemptDir string, pgid int) error {
-	path := filepath.Join(attemptDir, executorGroupName)
+	return persistGroupFile(filepath.Join(attemptDir, executorGroupName), pgid)
+}
+
+func persistGroupFile(path string, pgid int) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
@@ -59,7 +62,11 @@ func persistExecutorGroup(attemptDir string, pgid int) error {
 }
 
 func readExecutorGroup(home, attemptID string) int {
-	data, err := os.ReadFile(filepath.Join(home, "attempts", attemptID, executorGroupName))
+	return readGroupFile(filepath.Join(home, "attempts", attemptID, executorGroupName))
+}
+
+func readGroupFile(path string) int {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return 0
 	}

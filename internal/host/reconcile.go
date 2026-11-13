@@ -42,6 +42,8 @@ func reconcile(ctx context.Context, home string) error {
 				continue
 			}
 		}
+		// The executor group is gone, so its browser is an orphan.
+		reapLostBrowser(home, a.ID)
 		a.EndedAt = now
 		if a.ErrorExcerpt == "" {
 			a.ErrorExcerpt = "host process exited before recording a result"

@@ -379,6 +379,11 @@ func tierListed(tiers []model.Tier, want model.Tier) bool {
 	return false
 }
 
+// hostProvided are card requirements the host meets itself, for any model:
+// "browser" means the host starts a Chrome for the attempt. They are not
+// model capabilities and do not narrow routing.
+var hostProvided = map[string]struct{}{"browser": {}}
+
 func hasCaps(have, need []string) bool {
 	if len(need) == 0 {
 		return true
@@ -388,6 +393,9 @@ func hasCaps(have, need []string) bool {
 		set[item] = struct{}{}
 	}
 	for _, item := range need {
+		if _, host := hostProvided[item]; host {
+			continue
+		}
 		if _, ok := set[item]; !ok {
 			return false
 		}

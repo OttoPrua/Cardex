@@ -52,6 +52,7 @@ type scriptAttempt struct {
 	Tail             string            `json:"tail"`
 	Hold             string            `json:"hold"`
 	Env              map[string]string `json:"env"`
+	EchoEnv          []string          `json:"echo_env"`
 }
 
 type scriptFile struct {
@@ -350,6 +351,10 @@ func (f Fake) run(ctx context.Context, spec LaunchSpec, child bool) (RunResult, 
 	}
 	if step.Output != "" {
 		out.WriteString(step.Output)
+	}
+	// echo_env lets host tests see what the executor was given.
+	for _, name := range step.EchoEnv {
+		out.WriteString(name + "=" + os.Getenv(name) + "\n")
 	}
 	if step.Stderr != "" {
 		if child {

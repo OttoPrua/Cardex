@@ -58,7 +58,7 @@ cardex --home ~/.cardex card add --objective <目标> --kind dev --tier T2 \
 | `--claim` | 声明要改的文件，或者 `文件=符号` | 写域只锁这些符号，同一个文件里互不相干的改动可以并行。声明之外的顺带改动会在合并队列里检测冲突，有冲突时自动派变基卡，不会事先拒绝派发 |
 | `--acceptance` | 验收命令，可以写多条 | 按结果验收；不写时用项目的 `--test-cmd` |
 | `--dep` | 依赖的卡 | 依赖关系构成 DAG，前置卡完成后这张卡才派 |
-| `--require` | 能力要求，例如 `web`（要能联网搜索）、`goal_mode`（走 Grok 原生 `/goal`） | 路由只选具备这些能力的模型 |
+| `--require` | 能力要求，例如 `web`（要能联网搜索）、`goal_mode`（走 Grok 原生 `/goal`）、`browser`（要跑浏览器测试，见第六节） | 路由只选具备这些能力的模型；`browser` 由 host 提供，不影响路由 |
 | `--base` | 起点 commit；默认是集成分支的 HEAD | 需要基于某个特定版本做的时候才填；填了不存在的 commit 会直接失败，不会静默改用别的起点 |
 | `--sandbox` | `on`（默认）或 `off`，见第六节 | 正式收尾任务需要在沙箱外跑 |
 | `--origin` | 派卡会话，形式是 `kind:id` | 需要拍板的问题和熔断通知会推回这个会话 |
@@ -97,6 +97,38 @@ cardex --home ~/.cardex card add --objective <目标> --kind dev --tier T2 \
 3. 这个开关只能在 `card add` 时设定，之后不能修改。Cardex 自动派出的复核、修复、变基卡一律在沙箱内运行。所以要在沙箱外跑，必须由你显式新建一张卡。
 4. 在沙箱外跑的每次执行，都会在事件里记一条 `sandbox_skipped`（内容是 `sandbox off`），用 `card show` 能查到。
 5. 写这种卡时，正文要比平时更具体：写清楚会动到哪些路径和资源，以及哪些操作不能做，例如“不推远端、不删目录”。
+
+### 浏览器卡（`--require browser`）
+
+macOS 的 seatbelt 不能套两层，所以 Chrome 在卡的沙箱里起不来自己的沙箱，会直接崩（`target_crashed`）。要在卡里跑浏览器测试，就给卡加 `--require browser`，**不要**为此把沙箱关掉，也不要给 Chrome 加 `--no-sandbox`。
+
+带这个标记的卡，每次执行前 host 会在沙箱外替它启动一个无头 Chrome，Chrome 自己的沙箱照开：
+
+- 只监听 `127.0.0.1`，端口每次随机；
+- 用这次执行自己的临时用户目录 `attempts/<id>/browser/profile`；
+- 执行结束（正常结束、取消、超时，或者 host 挂掉后由 reconcile 清理）时，Chrome 的整个进程组被杀掉，临时目录删除。`attempts/<id>/browser/chrome.log` 保留，排查用。
+
+执行器拿到两个环境变量，测试里连过去，不要自己启动浏览器：
+
+```js
+// Playwright
+const browser = await chromium.connectOverCDP(process.env.CARDEX_BROWSER_CDP);
+const context = browser.contexts()[0] ?? await browser.newContext();
+// Puppeteer: puppeteer.connect({ browserURL: process.env.CARDEX_BROWSER_CDP })
+```
+
+- `CARDEX_BROWSER_CDP`：`http://127.0.0.1:<port>`
+- `CARDEX_BROWSER_CDP_WS`：浏览器级的 `ws://` 地址
+- `NO_PROXY` 里会自动加上 `127.0.0.1,localhost`，渠道代理不会拦住这条连接。
+
+Chrome 的位置按顺序找：环境变量 `CARDEX_CHROME`、`config.json` 里的 `browser.chrome`、系统默认安装位置。找不到或者 30 秒内没起来，这次执行直接失败（事件 `browser_start` 里有原因），执行器不会启动。
+
+注意：
+
+- Cardex 自动派出的复核、修复、变基卡不继承 `browser`。
+- 第一版是裸 CDP 端口：卡运行期间，本机任何进程（包括并发的其他卡）找到这个端口都能操控这个 Chrome。不要在浏览器卡里登录真实账号或放敏感数据。以后会升级成带随机路径的 launchServer。
+- Chrome 只拿到基本环境变量（`PATH`、`HOME`、语言、代理等），拿不到各渠道的 key。
+- 事件 `browser_start` 带 `error` 表示没起来，这次执行到此结束，不会再有 `browser_stop`。
 
 ## 七、哪些事必须交给 使用者（owner）
 

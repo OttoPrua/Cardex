@@ -375,6 +375,18 @@ func TestSelectFiltersAndOrder(t *testing.T) {
 		if err != nil || rt.Channel != "web" {
 			t.Fatalf("requires %+v err %v filtered %+v", rt, err, reason.Filtered)
 		}
+
+		// browser is met by the host for any model, so it never narrows routing.
+		browser := model.Card{Kind: model.KindDev, Tier: model.TierT2, Requires: []string{"browser"}}
+		rt, reason, err = call(t, now, led, channels, pos, browser, nil)
+		if err != nil || !containsChannel(reason, "plain") {
+			t.Fatalf("browser card filtered by capabilities %+v err %v reason %+v", rt, err, reason)
+		}
+		browser.Requires = []string{"browser", "web"}
+		rt, reason, err = call(t, now, led, channels, pos, browser, nil)
+		if err != nil || rt.Channel != "web" || containsChannel(reason, "plain") {
+			t.Fatalf("browser+web %+v err %v reason %+v", rt, err, reason)
+		}
 		if containsChannel(reason, "plain") || containsChannel(reason, "high") {
 			t.Fatalf("plain or high included %+v", reason)
 		}

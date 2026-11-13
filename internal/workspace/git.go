@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 // Git implements Manager with git worktrees. The zero value is ready to use.
@@ -261,7 +263,7 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 	if _, err := runGit(ctx, worktree, "config", "--worktree", "--add", "url."+blockedPushURL+"/.pushInsteadOf", ""); err != nil {
 		return err
 	}
-	reject, err := exec.LookPath("false")
+	reject, err := proc.Tool("false")
 	if err != nil {
 		return fmt.Errorf("workspace: push reject command: %w", err)
 	}

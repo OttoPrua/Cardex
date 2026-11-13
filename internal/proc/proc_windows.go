@@ -169,3 +169,18 @@ func findScript(name string, env []string) string {
 	}
 	return ""
 }
+
+// Tool finds a POSIX tool such as false or sleep: PATH first, then the Git for
+// Windows usr\bin directory that holds sh.exe.
+func Tool(name string) (string, error) {
+	if p, err := exec.LookPath(name); err == nil {
+		return p, nil
+	}
+	if sh := gitSh(); sh != "" {
+		p := filepath.Join(filepath.Dir(sh), name+".exe")
+		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
+			return p, nil
+		}
+	}
+	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+}

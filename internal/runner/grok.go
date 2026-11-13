@@ -111,7 +111,10 @@ func GrokGoalSessionDir(cwd, sessionID string) string {
 }
 
 func grokEncodeCwd(cwd string) string {
-	enc := url.PathEscape(cwd)
+	// grok percent-encodes ':' as well (a Windows cwd is stored as
+	// "C%3A%5C..."); url.PathEscape leaves it, and ':' cannot appear in a
+	// Windows file name.
+	enc := strings.ReplaceAll(url.PathEscape(cwd), ":", "%3A")
 	if len(enc) <= 255 {
 		return enc
 	}

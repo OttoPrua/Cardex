@@ -284,6 +284,18 @@ func openDB() (*store.Store, string, error) {
 	return db, home, nil
 }
 
+// CloseDB closes the cached connection, if any. serve calls it on the way out;
+// on Windows an open database file cannot be removed or replaced.
+func CloseDB() {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	if cachedDB != nil {
+		_ = cachedDB.Close()
+	}
+	cachedDB = nil
+	cachedHome = ""
+}
+
 func resolveHome() (string, error) {
 	home := homeFromArgs(os.Args[1:])
 	if home == "" {

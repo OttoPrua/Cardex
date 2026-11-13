@@ -22,3 +22,6 @@ func NewGroup(cmd *exec.Cmd) {
 func Detach(cmd *exec.Cmd) { NewGroup(cmd) }
 
 func scriptCmd(cmd *exec.Cmd) {}
+
+// Tool finds a POSIX tool such as false or sleep on PATH.
+func Tool(name string) (string, error) { return exec.LookPath(name) }

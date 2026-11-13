@@ -71,6 +71,7 @@ func Serve(ctx context.Context, home, addr string) error {
 		shut, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shut)
+		board.CloseDB()
 	}()
 	if w := serveWriter(ctx); w != nil {
 		fmt.Fprintf(w, "serve listening %s\n", ln.Addr())

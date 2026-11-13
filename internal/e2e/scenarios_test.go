@@ -1320,6 +1320,7 @@ func TestS22(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(board.CloseDB)
 	h := board.Handler()
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		for _, path := range []string{"/", "/api/work"} {

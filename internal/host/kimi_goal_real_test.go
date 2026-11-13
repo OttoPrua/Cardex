@@ -26,7 +26,7 @@ func TestKimiGoalRealSmoke(t *testing.T) {
 		t.Skip("kimi not on PATH")
 	}
 	home, id, work := seedPrepared(t, t.TempDir(), model.RunnerKimi, "", 1, nil)
-	if err := os.WriteFile(filepath.Join(home, "attempts", id, "hard-duration"), []byte("240s"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "attempts", id, "hard-duration"), []byte("150s"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	db, err := store.Open(filepath.Join(home, "cardex.db"))
@@ -51,6 +51,11 @@ func TestKimiGoalRealSmoke(t *testing.T) {
 	}
 	if err := host.Run(ctx, home, id); err != nil {
 		t.Fatal(err)
+	}
+	if out := os.Getenv("CARDEX_SMOKE_OUT"); out != "" {
+		if raw, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log")); err == nil {
+			_ = os.WriteFile(out, raw, 0o644)
+		}
 	}
 	attempt, events := loadAttempt(t, home, id)
 	finishEv, _ := eventType(events, "host_finish")

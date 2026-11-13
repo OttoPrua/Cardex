@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -145,6 +146,9 @@ func TestHarvestEvidenceFiles(t *testing.T) {
 	})
 
 	t.Run("trailing space home is joined as given", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows strips a trailing space from a path component")
+		}
 		dir, head := newRepo(t)
 		parent := t.TempDir()
 		home := filepath.Join(parent, "home ")

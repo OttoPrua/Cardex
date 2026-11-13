@@ -507,7 +507,7 @@ func TestTickAndServeTakeOverHost(t *testing.T) {
 	if err := db.CreateCard(ctx, &card); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("sleep", "30")
+	cmd := exec.Command(sleepBin(), "30")
 	proc.NewGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)

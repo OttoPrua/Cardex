@@ -13,7 +13,8 @@ import (
 // osSignal maps Unix signals onto Windows. Signal 0 probes liveness. Any other
 // signal terminates: a negative pid kills the whole process tree via taskkill,
 // a positive pid terminates that one process. Windows has no SIGTERM for
-// console children, so SIGTERM is also a hard stop.
+// console children: SIGTERM/SIGINT to a single process sends CTRL_BREAK to its
+// console process group when it has one, else it is a hard stop.
 func osSignal(pid int, sig syscall.Signal) error {
 	if sig == 0 {
 		return probe(pid)
@@ -27,6 +28,17 @@ func osSignal(pid int, sig syscall.Signal) error {
 			return &exec.Error{Name: "taskkill " + string(out), Err: err}
 		}
 		return nil
+	}
+	if sig == syscall.SIGTERM || sig == syscall.SIGINT {
+		// A child started with proc.NewGroup leads its own console process
+		// group: CTRL_BREAK reaches it as os.Interrupt, so it can shut down
+		// cleanly. Without a shared console this fails and we terminate.
+		if probe(pid) != nil {
+			return syscall.ESRCH
+		}
+		if windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(pid)) == nil {
+			return nil
+		}
 	}
 	h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, uint32(pid))
 	if err != nil {

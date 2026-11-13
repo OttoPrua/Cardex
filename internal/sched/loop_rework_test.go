@@ -472,7 +472,7 @@ func TestFillReusesAutomaticChecks(t *testing.T) {
 				if err := db.CreateCard(ctx, &holder); err != nil {
 					t.Fatal(err)
 				}
-				held := exec.Command("sleep", "60")
+				held := exec.Command(sleepBin(), "60")
 				proc.NewGroup(held)
 				if err := held.Start(); err != nil {
 					t.Fatal(err)
@@ -1486,7 +1486,7 @@ func holdLaunch(t *testing.T) func(context.Context, string, string) (int, error)
 		}
 	})
 	return func(context.Context, string, string) (int, error) {
-		cmd := exec.Command("sleep", "60")
+		cmd := exec.Command(sleepBin(), "60")
 		proc.NewGroup(cmd)
 		if err := cmd.Start(); err != nil {
 			return 0, err

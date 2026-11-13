@@ -32,6 +32,7 @@ func TestCurrentProposeApprove(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()
 	cur, err := st.Current(ctx)
 	if err != nil {

@@ -123,6 +123,14 @@ func Detach(cmd *exec.Cmd) {
 }
 
 func scriptCmd(cmd *exec.Cmd) {
+	// A bare name resolves in PATH order, so an extensionless "#!" stub earlier
+	// on PATH wins over an installed .exe/.cmd later on, as it would on Unix.
+	if len(cmd.Args) > 0 && cmd.Args[0] != "" && !strings.ContainsAny(cmd.Args[0], `/\:`) {
+		if p, err := LookPath(cmd.Args[0], cmd.Env); err == nil {
+			cmd.Path = p
+			cmd.Err = nil
+		}
+	}
 	// exec.Command already failed LookPath on an extensionless script; the
 	// original name is still in Args[0].
 	if cmd.Err != nil && len(cmd.Args) > 0 {

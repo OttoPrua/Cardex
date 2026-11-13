@@ -1290,7 +1290,11 @@ func validateHermesInbound(path, subscriptionID, profile, sessionID string) (her
 		return hermesAckFile{}, false
 	}
 	stem := strings.TrimSuffix(filepath.Base(path), ".json")
-	if stem == "" || strings.Contains(stem, "/") || strings.Contains(stem, "..") || !containsString(ids, stem) {
+	stems := make([]string, len(ids))
+	for i, id := range ids {
+		stems[i] = wakeFileStem(id)
+	}
+	if stem == "" || strings.Contains(stem, "/") || strings.Contains(stem, "..") || !containsString(stems, stem) {
 		return hermesAckFile{}, false
 	}
 	if body.InboundDigest != inboundDigest(body.Message) || len(body.InboundDigest) != 64 {

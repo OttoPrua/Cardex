@@ -66,15 +66,25 @@ func Start(cmd *exec.Cmd) (*PTY, error) {
 		hpc: hpc,
 	}
 	p := &PTY{Master: m, Cmd: cmd}
-	p.wait = func() error {
-		state, err := proc.Wait()
+	// The process is reaped in the background so the console closes as soon
+	// as it exits: on Unix a master read ends when the child exits, and Drive
+	// relies on that to return before anyone calls Wait.
+	done := make(chan struct{})
+	var state *os.ProcessState
+	var werr error
+	go func() {
+		defer close(done)
+		state, werr = proc.Wait()
 		// conhost renders asynchronously: give it until output goes quiet
 		// before closing, or the child's last output is dropped. The output
 		// pipe only ends once the console is closed.
 		m.waitQuiet(250*time.Millisecond, 3*time.Second)
 		m.closeConsole()
-		if err != nil {
-			return err
+	}()
+	p.wait = func() error {
+		<-done
+		if werr != nil {
+			return werr
 		}
 		cmd.ProcessState = state
 		if !state.Success() {

@@ -1,0 +1,148 @@
+# Cardex 派发指引（给管理 Agent）
+
+这份说明写给替 使用者（owner） 操作 Cardex 的管理 Agent，例如 Codex、Hermes 或者其他 BOT。它讲两件事：一是有哪些功能、具体怎么用；二是每个功能为什么这样设计。遇到这里没写到的情况，就按第二部分的初衷去推断该怎么派。
+
+命令细节以 `cardex <命令> --help` 为准。每条命令都要带上 `--home <数据目录>`，需要机读结果时加 `--json`。
+
+## 一、为什么有 Cardex
+
+Cardex 是一个目标驱动的编程派发器，跑在本机上，目的是把 使用者（owner） 手里的多家订阅和 API 额度高效地用起来。
+
+- **质量第一，省 token 第二。** 宁可多派一张复核卡，也不要把没验证过的改动合进去。
+- **能并行就并行。** 锁只锁卡声明要改的符号，不锁整个 worktree，也不锁整个功能。
+- **约束能少就少。** 只有少数几条硬底线会阻断流程：写域冲突、预算硬上限、不泄露密钥、不越权 push/安装/删除、冻结的路由，以及测试必须通过。格式不对、字段缺失这类问题，Cardex 会自己补全或者修正，不会因此判卡失败。
+- **按结果验收。** 只看测试有没有过、复核有没有过、改动是不是落在写域里，不检查执行过程是否每一步都合规。回执和证据由事件日志自动记下来，不需要执行者手写。
+- **机械的事交给 Go，需要判断的事交给卡。** 派发、合并、预算和门禁都是确定性逻辑。设计、拆卡、复核和重规划本身也是卡，会路由给合适的模型去做。除了入队时分级，Cardex 自己不调用模型。
+
+所以你在派活时：
+
+1. 卡要写清楚做什么、怎么算完成。至于流程细节，交给 Cardex。
+2. 别为了“保险”额外加门禁。想加约束，先说清楚它防的是哪一类真实发生过的失败；说不出来就不加。
+3. 一张卡失败，只影响它自己和直接依赖它的卡。不要因为一张卡失败就停掉整个目标。
+
+## 二、基本对象
+
+| 对象 | 是什么 | 常用命令 |
+| --- | --- | --- |
+| project | 一个仓库，带主 checkout、默认测试命令和设计目录 | `project add\|list\|show\|set` |
+| objective | 一个目标，带验收、预算、优先级和模式；所有卡都挂在某个目标下 | `objective add\|list\|show\|set\|pause\|resume\|cancel` |
+| node | 设计树上的一个节点（方向、模块、细节），带开放问题和冻结状态 | `node list\|show\|freeze\|reopen` |
+| card | 一个工作单元 | `card add\|list\|show\|cancel\|retry\|pause\|resume\|revive` |
+| attempt | 一张卡的一次执行，用独立的 worktree 和分支 | 在 `card show` 里查看 |
+| question | 需要拍板的问题 | `question list\|show\|answer` |
+| channel | 一条执行渠道，对应 runner、模型、并发、额度窗口和红线 | `channel list\|show\|set\|check` |
+
+## 三、怎么选目标模式
+
+- **`--mode manual`**：只跑你用 `card add` 放进去的卡。适合需求明确的小改动和修 bug，一两张卡就能做完的活。
+- **`--mode auto`**：Cardex 自己做盘点、分层设计、事实研究、拆卡和重规划，只在需要拍板时来问。适合需求还模糊、或者规模比较大的目标。
+- **`--freeze-mode safe`**（默认）：方向层和模块层冻结都要 使用者（owner） 确认。**`fast`**：只有方向层要确认，其余各层自动冻结。
+
+设计按层冻结，设计和开发交替推进，不要求一开始就把设计全部定下来。这样既不会卡在“设计没定完就不能开工”，也不会出现“开发跑偏却没人知道”的情况。
+
+## 四、怎么写一张卡
+
+```sh
+cardex --home ~/.cardex card add --objective <目标> --kind dev --tier T2 \
+  --title '一句话说清做什么' \
+  --body '背景、要改什么、不要动什么、怎样算完成' \
+  --claim internal/foo/bar.go=Parse --claim internal/foo/bar_test.go \
+  --acceptance 'go test ./internal/foo/...' \
+  --dep <前置卡> --origin codex:<thread>
+```
+
+| 参数 | 用途 | 为什么 |
+| --- | --- | --- |
+| `--kind` | 卡的种类，见下表；默认 `dev` | 不同种类有不同的默认等级和收尾方式，例如研究卡不合并 |
+| `--tier` | T1 查事实，T2 常规开发，T3 设计和复核；留空时入队自动分级 | 按难度用合适档位的模型，省下强模型的额度 |
+| `--claim` | 声明要改的文件，或者 `文件=符号` | 写域只锁这些符号，同一个文件里互不相干的改动可以并行。声明之外的顺带改动会在合并队列里检测冲突，有冲突时自动派变基卡，不会事先拒绝派发 |
+| `--acceptance` | 验收命令，可以写多条 | 按结果验收；不写时用项目的 `--test-cmd` |
+| `--dep` | 依赖的卡 | 依赖关系构成 DAG，前置卡完成后这张卡才派 |
+| `--require` | 能力要求，例如 `web`（要能联网搜索）、`goal_mode`（走 Grok 原生 `/goal`）、`browser`（要跑浏览器测试，见第六节） | 路由只选具备这些能力的模型；`browser` 由 host 提供，不影响路由 |
+| `--base` | 起点 commit；默认是集成分支的 HEAD | 需要基于某个特定版本做的时候才填；填了不存在的 commit 会直接失败，不会静默改用别的起点 |
+| `--sandbox` | `on`（默认）或 `off`，见第六节 | 正式收尾任务需要在沙箱外跑 |
+| `--origin` | 派卡会话，形式是 `kind:id` | 需要拍板的问题和熔断通知会推回这个会话 |
+
+常用卡的种类：`dev` 实现，`research` 带证据回答事实问题（不合并），`spike` 实做验证（不合并），`design` 推进一个设计节点，`skeleton` 先定接口和桩，`backlog` 低风险的积压活，用来填渠道剩余额度。`review`、`repair`、`rebase`、`replan` 通常由 Cardex 自动派出，不需要手动建。
+
+写卡的原则：
+
+- 一张卡做一件能独立验收的事。可以并行的部分拆成多张卡，并分别声明写域。
+- 正文要写清楚“不要动什么”。这比写清楚“要做什么”更能防止改动越界。
+- 卡建好以后，可以 `cancel`、`retry`、`pause`、`resume`、`revive`，但卡本身的字段不能改。想换个做法，就取消旧卡再建一张新卡。
+
+## 五、Cardex 会自动做的事
+
+- **路由**：按等级、能力和定位表，在同一档里优先选离额度刷新最近、而且还有余量的渠道。剩余额度低于红线的渠道不会被自动选中。路由只在派发前决定，运行中不会改道。想知道为什么选了某条渠道，用 `route explain <card>` 查。
+- **复核**：每张开发卡完成后，自动派一张由不同模型族来做的复核卡。复核要求返工时，复核意见会带进下一次执行。返工超过上限就升级处理。
+- **合并队列**：所有卡串行合并，合并后跑全量测试。遇到冲突或者测试变红，会自动派修复卡或变基卡。
+- **熔断**：连续失败、同一个错误反复出现、测试变红或者没有进展时，停掉这条分支并上报。其他分支照常推进。
+- **额度和认证问题**：从这张卡自己的分支接着做。没有合适的渠道就等待或提问，不会悄悄换别的工具。
+- **代理**：在 `config.json` 里配一条 `proxy`，serve 和所有渠道的执行器就都走它；也可以给单个渠道设成直连或者单独覆盖。用 `cardex proxy show` 和 `cardex proxy check` 查看当前设置。
+
+## 六、沙箱开关（`--sandbox`）
+
+**默认在沙箱里跑。** 在 macOS 上，每次执行都包在 Cardex 的 seatbelt 沙箱里，只能写自己的 worktree 和这个执行器自身需要的目录。原因是开发、复核和返工都是在模型自主操作的情况下进行的，沙箱是防止它误删、误写工作区以外文件的最后一道边界。codex、claude、agy、grok 自带的沙箱或权限确认已经关掉，统一由这一层把关；macOS 本来也不允许在受限沙箱里再套一层沙箱。
+
+**`--sandbox off` 让整张卡在沙箱外跑。** 适用于在沙箱里根本做不成的正式任务，通常出现在最后阶段：
+
+- 签名、打包、发布、安装到本机路径；
+- 需要读写钥匙串、系统配置，或者工作区以外的项目目录；
+- 需要访问真实设备、本机服务，或者其他被沙箱拦住的资源。
+
+使用规则：
+
+1. 只在 使用者（owner） 明确要求，或者已经批准了这张卡要在沙箱外跑的时候，才设 `off`。不要因为“沙箱里报错了”就自己关掉沙箱，先确认失败原因确实就是沙箱。
+2. 只给真正需要的那一张收尾卡设 `off`。前面的开发、复核和测试卡继续留在沙箱里。
+3. 这个开关只能在 `card add` 时设定，之后不能修改。Cardex 自动派出的复核、修复、变基卡一律在沙箱内运行。所以要在沙箱外跑，必须由你显式新建一张卡。
+4. 在沙箱外跑的每次执行，都会在事件里记一条 `sandbox_skipped`（内容是 `sandbox off`），用 `card show` 能查到。
+5. 写这种卡时，正文要比平时更具体：写清楚会动到哪些路径和资源，以及哪些操作不能做，例如“不推远端、不删目录”。
+
+### 浏览器卡（`--require browser`）
+
+macOS 的 seatbelt 不能套两层，所以 Chrome 在卡的沙箱里起不来自己的沙箱，会直接崩（`target_crashed`）。要在卡里跑浏览器测试，就给卡加 `--require browser`，**不要**为此把沙箱关掉，也不要给 Chrome 加 `--no-sandbox`。
+
+带这个标记的卡，每次执行前 host 会在沙箱外替它启动一个无头 Chrome，Chrome 自己的沙箱照开：
+
+- 只监听 `127.0.0.1`，端口每次随机；
+- 用这次执行自己的临时用户目录 `attempts/<id>/browser/profile`；
+- 执行结束（正常结束、取消、超时，或者 host 挂掉后由 reconcile 清理）时，Chrome 的整个进程组被杀掉，临时目录删除。`attempts/<id>/browser/chrome.log` 保留，排查用。
+
+执行器拿到两个环境变量，测试里连过去，不要自己启动浏览器：
+
+```js
+// Playwright
+const browser = await chromium.connectOverCDP(process.env.CARDEX_BROWSER_CDP);
+const context = browser.contexts()[0] ?? await browser.newContext();
+// Puppeteer: puppeteer.connect({ browserURL: process.env.CARDEX_BROWSER_CDP })
+```
+
+- `CARDEX_BROWSER_CDP`：`http://127.0.0.1:<port>`
+- `CARDEX_BROWSER_CDP_WS`：浏览器级的 `ws://` 地址
+- `NO_PROXY` 里会自动加上 `127.0.0.1,localhost`，渠道代理不会拦住这条连接。
+
+Chrome 的位置按顺序找：环境变量 `CARDEX_CHROME`、`config.json` 里的 `browser.chrome`、系统默认安装位置。找不到或者 30 秒内没起来，这次执行直接失败（事件 `browser_start` 里有原因），执行器不会启动。
+
+注意：
+
+- Cardex 自动派出的复核、修复、变基卡不继承 `browser`。
+- 第一版是裸 CDP 端口：卡运行期间，本机任何进程（包括并发的其他卡）找到这个端口都能操控这个 Chrome。不要在浏览器卡里登录真实账号或放敏感数据。以后会升级成带随机路径的 launchServer。
+- Chrome 只拿到基本环境变量（`PATH`、`HOME`、语言、代理等），拿不到各渠道的 key。
+- 事件 `browser_start` 带 `error` 表示没起来，这次执行到此结束，不会再有 `browser_stop`。
+
+## 七、哪些事必须交给 使用者（owner）
+
+以下情况由 使用者（owner） 拍板，管理 Agent 不能自己代选：方向层冻结、safe 模式下的模块冻结、重开已冻结的节点、预算用尽、熔断、目标完成，以及 `positioning approve`（采纳模型定位提案）。
+
+只有在 使用者（owner） 已经明确选好之后，你才能用 `question answer <id> <选项>` 替他提交。先用 `cardex --json question show <id>` 读出选项。对方没回复不等于同意。
+
+另外这些操作也要先问：推远端、开 PR 或合并到 main、发 Release，替换本机正在用的 `cardex` 二进制或者修改 launchd 配置，以及花钱的真实模型测试。
+
+## 八、排查
+
+- 卡停在 `needs_input`：看 `question list` 和 `card show <id>` 的 wait_reason。
+- 卡停在 `waiting`：wait_reason 会写明被哪张卡占了哪个符号。
+- 没派到期望的渠道：用 `route explain <card>` 看红线、定位表和模型族过滤。
+- 渠道异常：`channel check`、`doctor`、`proxy check`。
+
+更完整的说明见 [使用指南](guide.md)、[设计说明](design.md)、[本轮目标](goals.md)，以及 [派发 Skill](../../skills/cardex-dispatch/SKILL.md)。

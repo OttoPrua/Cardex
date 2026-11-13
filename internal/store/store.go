@@ -184,6 +184,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (3, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
+		current = 3
+	}
+	if current < 4 {
+		// Per-card sandbox switch. Older binaries name their columns, so they keep working on a migrated db.
+		var has int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='sandbox'`).Scan(&has); err != nil {
+			return fmt.Errorf("migration 4: %w", err)
+		}
+		if has == 0 {
+			if _, err := conn.ExecContext(ctx, `ALTER TABLE cards ADD COLUMN sandbox TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migration 4: %w", err)
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (4, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return err

@@ -17,6 +17,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
+	"github.com/OttoPrua/Cardex/internal/proxy"
 	"github.com/OttoPrua/Cardex/internal/pty"
 	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/sandbox"
@@ -138,6 +139,31 @@ func run(ctx context.Context, home, attemptID string) error {
 		return err
 	}
 
+	// The channel's proxy route goes last so it wins over the inherited
+	// default, including for engine profiles that replace the whole env.
+	if pe, err := proxy.ChildEnv(home, channel.ID); err != nil {
+		appendEvent(ctx, db, attempt.ID, "host_config", map[string]string{"message": err.Error()})
+	} else if pe != nil {
+		env = append(env, pe...)
+	}
+	// A browser card gets its own Chrome, started here outside the seatbelt
+	// so Chrome keeps its own sandbox. It is stopped when this run returns.
+	// A browser_start event with an error is terminal: no browser_stop follows.
+	// Card cancel is watched only once the executor starts; Chrome startup is
+	// bounded by browserStartTimeout.
+	if requiresBrowser(card) {
+		b, err := launchBrowser(ctx, cfg, attemptDir)
+		if err != nil {
+			appendEvent(ctx, db, attempt.ID, "browser_start", map[string]any{"error": err.Error()})
+			return failStart(ctx, db, &attempt, err)
+		}
+		defer func() {
+			b.Stop()
+			appendEvent(context.Background(), db, attempt.ID, "browser_stop", map[string]any{"pgid": b.pgid})
+		}()
+		appendEvent(ctx, db, attempt.ID, "browser_start", map[string]any{"pgid": b.pgid, "cdp": b.httpURL})
+		env = append(env, b.Env(env)...)
+	}
 	cmd, err := commandFor(argv, env)
 	if err != nil {
 		return failStart(ctx, db, &attempt, err)
@@ -175,7 +201,11 @@ func run(ctx context.Context, home, attemptID string) error {
 	}
 
 	writable := append([]string{attempt.Worktree}, r.WritablePaths()...)
-	wrapped, err := sandbox.Wrap(cmd, writable)
+	wrap := sandbox.Wrap
+	if card.Sandbox == "off" {
+		wrap = func(c *exec.Cmd, _ []string) (*exec.Cmd, error) { return sandbox.Off(c) }
+	}
+	wrapped, err := wrap(cmd, writable)
 	if err != nil {
 		closePipe(logWrite, logRead)
 		if copied != nil {
@@ -209,6 +239,11 @@ func run(ctx context.Context, home, attemptID string) error {
 		goalStatus string
 		fired      interface{ Load() bool }
 	)
+	// Canceling the card stops this executor the same way the deadline does,
+	// so a canceled card does not keep holding files and its worktree.
+	execCtx, stopWatch := context.WithCancel(ctx)
+	defer stopWatch()
+	go watchCardCanceled(execCtx, db, card.ID, attempt.ID, stopWatch)
 	if needPTY {
 		session, err := pty.Start(wrapped)
 		if err != nil {
@@ -256,7 +291,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		}
 		var stop func()
 		var killed <-chan struct{}
-		stop, killed, fired = armGroup(ctx, pid, limit, release)
+		stop, killed, fired = armGroup(execCtx, pid, limit, release)
 		driveErr = r.Drive(ctx, struct {
 			io.Reader
 			io.Writer
@@ -302,7 +337,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		}
 		var stop func()
 		var killed <-chan struct{}
-		stop, killed, fired = armGroup(ctx, pid, limit, release)
+		stop, killed, fired = armGroup(execCtx, pid, limit, release)
 		waitErr = wrapped.Wait()
 		waitCopy(copied, stop, killed, pid)
 		if logRead != nil {
@@ -701,5 +736,27 @@ func openPrompt(ctx context.Context, path string) (*os.File, error) {
 		return nil, ctx.Err()
 	case r := <-ch:
 		return r.f, r.err
+	}
+}
+
+// cancelPoll is how often a running host rereads its card's status.
+var cancelPoll = 3 * time.Second
+
+func watchCardCanceled(ctx context.Context, db *store.Store, cardID, attemptID string, stop context.CancelFunc) {
+	t := time.NewTicker(cancelPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		c, err := db.GetCard(ctx, cardID)
+		if err != nil || c.Status != model.CardCanceled {
+			continue
+		}
+		appendEvent(context.Background(), db, attemptID, "card_canceled", map[string]string{"message": "card canceled; executor stopped"})
+		stop()
+		return
 	}
 }

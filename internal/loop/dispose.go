@@ -239,6 +239,8 @@ func rankingFailureResult(res harvest.Result) harvest.Result {
 		res.Outcome = model.OutcomeQuotaHit
 	case model.ErrorAuthFailed:
 		res.Outcome = model.OutcomeAuthFailed
+	case model.ErrorUnavailable:
+		res.Outcome = model.OutcomeUnavailable
 	case model.ErrorTransport:
 		res.Outcome = model.OutcomeTransport
 	case model.ErrorTimeout:
@@ -316,7 +318,7 @@ func designFailureOutcome(outcome model.Outcome) bool {
 	case model.OutcomeTestsFailed, model.OutcomeNoOutput, model.OutcomeQuotaHit,
 		model.OutcomeAuthFailed, model.OutcomeTransport, model.OutcomeTimeout,
 		model.OutcomePermissionDenied, model.OutcomeRefusal, model.OutcomeBudgetLimited,
-		model.OutcomeViolation:
+		model.OutcomeViolation, model.OutcomeUnavailable:
 		return true
 	default:
 		return false

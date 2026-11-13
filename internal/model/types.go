@@ -108,6 +108,7 @@ type Card struct {
 	ReworkNote   string     `json:"rework_note"`   // 复核意见，附进下一次尝试的 prompt。
 	AuthorFamily string     `json:"author_family"` // 作者模型族；复核卡必须换族。
 	Budget       Budget     `json:"budget"`        // 单卡预算。
+	Sandbox      string     `json:"sandbox"`       // 空表示在 Cardex 沙箱内跑；"off" 表示整张卡在沙箱外跑，只能在 card add 时设定。
 }
 
 // Route is the channel and model chosen before an attempt starts.
@@ -197,7 +198,7 @@ type Channel struct {
 	Family        string        `json:"family"`         // 模型族，复核卡要求与作者不同。
 	Tier          Tier          `json:"tier"`           // 注册时声明的等级，供调度和测试使用。
 	Models        []string      `json:"models"`         // 可用模型。
-	Concurrency   int           `json:"concurrency"`    // 并发上限。
+	Concurrency   int           `json:"concurrency"`    // 本地并发上限；0 表示不设本地上限，由渠道自身的限流决定。
 	QuotaWindows  []QuotaWindow `json:"quota_windows"`  // 额度窗口。
 	Redline       float64       `json:"redline"`        // 保留比例，剩余比例小于等于它则不参与自动选择。
 	Health        Health        `json:"health"`         // ok、auth_failed 或 degraded。

@@ -372,6 +372,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	fs.Var(&acceptance, "acceptance", "acceptance command")
 	fs.Var(&claims, "claim", "path or path=symbol")
 	base := fs.String("base", "", "base commit")
+	sandboxMode := fs.String("sandbox", "on", "on, or off to run this card outside the Cardex sandbox; fixed once the card exists")
 	status := fs.String("status", string(model.CardReady), "status")
 	originFlag := fs.String("origin", "", "origin session kind:id; a present flag wins over CARDEX_ORIGIN")
 	if code, ok := parseSet(fs, args); !ok {
@@ -409,7 +410,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		ID: *id, Objective: *objective, Node: *node, Kind: kindVal,
 		Title: titleVal, Body: *body, Tier: tierVal, Requires: requires,
 		Deps: deps, Acceptance: acceptance, Base: *base, Status: statusVal,
-		WaitReason: strings.Join(reasons, "; "),
+		WaitReason: strings.Join(reasons, "; "), Sandbox: *sandboxMode,
 	}
 	if c.ID == "" {
 		gen, err := newID("c")

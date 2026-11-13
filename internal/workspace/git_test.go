@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -995,4 +996,66 @@ func contains(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestRemoveReadOnlyTree(t *testing.T) {
+	repo := initRepo(t)
+	ctx := context.Background()
+	m := Git{}
+	wt, err := m.Create(ctx, CreateRequest{
+		CardID: "card", AttemptID: "ro", ObjectiveID: "obj",
+		RepoPath: repo, WorktreeRoot: t.TempDir(), IntegrationBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Shape of a Go module cache inside the worktree: 0444 files in 0555 dirs.
+	cache := filepath.Join(wt.Path, ".gomodcache", "example.com", "m@v1")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "go.mod"), []byte("module m\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{cache, filepath.Dir(cache), filepath.Join(wt.Path, ".gomodcache")} {
+		if err := os.Chmod(d, 0o555); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { makeWritable(wt.Path) })
+	if err := m.Remove(ctx, wt.Path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(wt.Path); !os.IsNotExist(err) {
+		t.Fatalf("worktree still present: %v", err)
+	}
+}
+
+func TestRemoveStaleGitdirIsReportedNotDeleted(t *testing.T) {
+	repo := initRepo(t)
+	ctx := context.Background()
+	m := Git{}
+	wt, err := m.Create(ctx, CreateRequest{
+		CardID: "card", AttemptID: "orphan", ObjectiveID: "obj",
+		RepoPath: repo, WorktreeRoot: t.TempDir(), IntegrationBranch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitdir, stale := StaleGitdir(wt.Path)
+	if stale || gitdir == "" {
+		t.Fatalf("live worktree reported stale: %q %v", gitdir, stale)
+	}
+	// A half-finished git worktree remove drops the admin directory first.
+	if err := os.RemoveAll(gitdir); err != nil {
+		t.Fatal(err)
+	}
+	err = m.Remove(ctx, wt.Path)
+	var se *StaleWorktreeError
+	if !errors.As(err, &se) || se.Path != wt.Path {
+		t.Fatalf("want StaleWorktreeError, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wt.Path, "README")); err != nil {
+		t.Fatalf("orphan contents must stay for a person: %v", err)
+	}
 }

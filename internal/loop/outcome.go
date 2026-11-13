@@ -18,19 +18,24 @@ import (
 type Action string
 
 const (
-	ActionNone       Action = ""
-	ActionReview     Action = "review"
-	ActionRework     Action = "rework"
-	ActionQuestion   Action = "question"
-	ActionReschedule Action = "reschedule"
-	ActionRetrySame  Action = "retry_same"
-	ActionNormalize  Action = "normalize"
-	ActionQuotaMove  Action = "quota_move"
-	ActionAuthMove   Action = "auth_move"
-	ActionContinue   Action = "continue"
-	ActionVoid       Action = "void"
-	ActionAbsorb     Action = "absorb"
+	ActionNone            Action = ""
+	ActionReview          Action = "review"
+	ActionRework          Action = "rework"
+	ActionQuestion        Action = "question"
+	ActionReschedule      Action = "reschedule"
+	ActionRetrySame       Action = "retry_same"
+	ActionNormalize       Action = "normalize"
+	ActionQuotaMove       Action = "quota_move"
+	ActionAuthMove        Action = "auth_move"
+	ActionUnavailableMove Action = "unavailable_move"
+	ActionContinue        Action = "continue"
+	ActionVoid            Action = "void"
+	ActionAbsorb          Action = "absorb"
 )
+
+// noOutputQuestion opens the question after a second no-output attempt.
+// The loop appends each attempt's cause to it.
+const noOutputQuestion = "no output after switching channel"
 
 // History counts earlier attempts on the same card.
 type History struct {
@@ -83,7 +88,7 @@ func Decide(card model.Card, outcome model.Outcome, excerpt string, reworkLimit,
 			return Decision{
 				Action:       ActionQuestion,
 				QuestionKind: model.QuestionCustom,
-				QuestionText: "no output after switching channel",
+				QuestionText: noOutputQuestion,
 				NeedsInput:   true,
 			}
 		}
@@ -97,6 +102,10 @@ func Decide(card model.Card, outcome model.Outcome, excerpt string, reworkLimit,
 		return Decision{Action: ActionQuotaMove, BlockQuota: true, OtherChannel: true, UseBranch: true}
 	case model.OutcomeAuthFailed:
 		return Decision{Action: ActionAuthMove, Notify: true, OtherChannel: true, UseBranch: true}
+	case model.OutcomeUnavailable:
+		// Not the card's fault: no rework is spent. The channel is taken out
+		// of automatic routing until a person fixes its model or region.
+		return Decision{Action: ActionUnavailableMove, Notify: true, OtherChannel: true, UseBranch: true}
 	case model.OutcomeTransport, model.OutcomeTimeout:
 		if hist.SameChannelRetries < retryLimit {
 			return Decision{Action: ActionRetrySame, SameChannel: true, UseBranch: true}

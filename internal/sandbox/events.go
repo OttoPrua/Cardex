@@ -32,11 +32,21 @@ func Consume(cmd *exec.Cmd) []Event {
 // Skip returns cmd unchanged and records one sandbox_skipped event.
 // Non-macOS Wrap calls this.
 func Skip(cmd *exec.Cmd) (*exec.Cmd, error) {
+	return skipWith(cmd, "sandbox skipped: not macOS")
+}
+
+// Off returns cmd unchanged for a card created with sandbox off and records one
+// sandbox_skipped event saying so.
+func Off(cmd *exec.Cmd) (*exec.Cmd, error) {
+	return skipWith(cmd, "sandbox off: card runs outside the Cardex sandbox")
+}
+
+func skipWith(cmd *exec.Cmd, message string) (*exec.Cmd, error) {
 	if cmd == nil {
 		return nil, osErrNil
 	}
 	payload, _ := json.Marshal(map[string]string{
-		"message": "sandbox skipped: not macOS",
+		"message": message,
 	})
 	note(cmd, Event{Type: "sandbox_skipped", Data: string(payload)})
 	return cmd, nil

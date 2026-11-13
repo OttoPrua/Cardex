@@ -3,6 +3,8 @@ package merge
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -390,10 +392,27 @@ func (q *Service) removeWorktrees(ctx context.Context, card *model.Card) error {
 			continue
 		}
 		if err := git.Remove(ctx, path); err != nil {
-			return err
+			var stale *workspace.StaleWorktreeError
+			if !errors.As(err, &stale) {
+				return err
+			}
+			// The merge already landed. An orphan left by an earlier failed
+			// removal must not block the card forever; record it once per
+			// card and leave the directory for a person.
+			q.noteOrphan(ctx, card, stale)
 		}
 	}
 	return nil
+}
+
+func (q *Service) noteOrphan(ctx context.Context, card *model.Card, stale *workspace.StaleWorktreeError) {
+	data, _ := json.Marshal(map[string]string{"worktree": stale.Path, "gitdir": stale.Gitdir})
+	_ = q.DB.AppendEvent(ctx, &model.Event{
+		Entity: "card:" + card.ID,
+		Type:   "worktree_orphaned",
+		TS:     time.Now().UTC(),
+		Data:   data,
+	})
 }
 
 func conflictReport(dir string) (string, error) {

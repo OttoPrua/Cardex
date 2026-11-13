@@ -85,6 +85,8 @@ func runnerOutcome(class model.ErrorClass) (model.Outcome, bool) {
 		return model.OutcomeQuotaHit, true
 	case model.ErrorAuthFailed:
 		return model.OutcomeAuthFailed, true
+	case model.ErrorUnavailable:
+		return model.OutcomeUnavailable, true
 	case model.ErrorTransport:
 		return model.OutcomeTransport, true
 	case model.ErrorTimeout:

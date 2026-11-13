@@ -39,10 +39,23 @@ type Grok struct {
 }
 
 var _ Runner = Grok{}
+var _ GoalRunner = Grok{}
+
+// ForGoal turns on the PTY /goal driver for one launch. The session dir is
+// GROK_HOME/sessions/<cwd>/<attempt id>, because the attempt id is passed as -s.
+func (g Grok) ForGoal(l GoalLaunch) Runner {
+	g.GoalMode = true
+	g.Prompt = l.Prompt
+	g.SessionDir = GrokGoalSessionDir(l.WorkDir, l.AttemptID)
+	return g
+}
+
+// GoalFacts is the goal text and session dir this launch watched.
+func (g Grok) GoalFacts() GoalFacts { return GoalFacts{Prompt: g.Prompt, SessionDir: g.SessionDir} }
 
 // Drive terminals. Completion is a nil error. budget_limited is not completion.
 var (
-	ErrGrokBudgetLimited = errors.New("grok goal budget_limited")
+	ErrGrokBudgetLimited = ErrGoalBudgetLimited
 	ErrGrokQuotaHit      = errors.New("grok goal quota_hit")
 	ErrGrokCrash         = errors.New("grok goal crash")
 	errGrokNoTerminal    = errors.New("grok goal: no terminal")

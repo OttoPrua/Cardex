@@ -23,7 +23,7 @@ import (
 //go:embed templates/page.html
 var templateFS embed.FS
 
-var pageTmpl = template.Must(template.ParseFS(templateFS, "templates/page.html"))
+var pageTmpl = template.Must(template.New("page.html").Funcs(boardFuncs).ParseFS(templateFS, "templates/page.html"))
 
 // logTailBytes is how much of an attempt output.log a GET returns.
 const logTailBytes = 32 * 1024

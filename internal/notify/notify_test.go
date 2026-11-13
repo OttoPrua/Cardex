@@ -358,7 +358,7 @@ func TestHermesReceiverAckInAttempt(t *testing.T) {
 		t.Fatalf("wake ids %+v rows %+v", inbound.WakeEventIDs, wakes)
 	}
 	stem := strings.TrimSuffix(filepath.Base(inboundPath), ".json")
-	if strings.Contains(stem, "/") || strings.Contains(stem, "..") || !containsString(wakes, stem) {
+	if strings.Contains(stem, "/") || strings.Contains(stem, "..") || !containsString(wakes, unWakeFileStem(stem)) {
 		t.Fatalf("stem %s wakes %v", stem, wakes)
 	}
 	if filepath.Dir(inboundPath) != hermesInboxDir(home, sub) {
@@ -597,7 +597,7 @@ func TestDueHermesReminderIsConsumableAgain(t *testing.T) {
 				wake1, body1 = id, body
 			}
 			headerSub, highWater, rows := mustParseCompact(t, body1.Message)
-			if headerSub != sub || highWater != 1 || len(rows) != 1 || rows[0].wake != rows[0].task+":1" || wake1 != rows[0].wake {
+			if headerSub != sub || highWater != 1 || len(rows) != 1 || rows[0].wake != rows[0].task+":1" || wake1 != wakeFileStem(rows[0].wake) {
 				t.Fatalf("first wake %s high %d rows %+v", wake1, highWater, rows)
 			}
 			digest1 := inboundDigest(body1.Message)
@@ -1664,3 +1664,6 @@ func savedQuestionGap(t *testing.T, home, id string) int64 {
 	}
 	return gap
 }
+
+// unWakeFileStem undoes wakeFileStem.
+func unWakeFileStem(stem string) string { return strings.ReplaceAll(stem, "%3A", ":") }

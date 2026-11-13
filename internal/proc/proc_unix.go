@@ -25,3 +25,6 @@ func scriptCmd(cmd *exec.Cmd) {}
 
 // Tool finds a POSIX tool such as false or sleep on PATH.
 func Tool(name string) (string, error) { return exec.LookPath(name) }
+
+// LookPath is exec.LookPath on Unix; env is used only on Windows.
+func LookPath(name string, env []string) (string, error) { return exec.LookPath(name) }

@@ -381,7 +381,7 @@ func commandFor(argv, extra []string) (*exec.Cmd, error) {
 	} else {
 		path := argv[0]
 		if !filepath.IsAbs(path) {
-			if found, err := exec.LookPath(path); err == nil {
+			if found, err := proc.LookPath(path, env); err == nil {
 				path = found
 			}
 		}

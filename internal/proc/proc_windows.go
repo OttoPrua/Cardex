@@ -13,6 +13,11 @@ import (
 
 const createNoWindow = 0x08000000
 
+// shPrelude puts Git for Windows' POSIX tools (sleep, grep, sed...) first on
+// PATH. A bare sh.exe started outside Git Bash does not add /usr/bin itself,
+// so without it a script cannot run even sleep.
+const shPrelude = `PATH="/usr/bin:$PATH"; export PATH; `
+
 var (
 	shMu   sync.Mutex
 	shPath string
@@ -96,7 +101,7 @@ func findSh() string {
 
 func shellArgv(line string) (string, []string) {
 	if sh := gitSh(); sh != "" {
-		return sh, []string{"-c", line}
+		return sh, []string{"-c", shPrelude + line}
 	}
 	return "cmd", []string{"/C", line}
 }
@@ -140,7 +145,7 @@ func scriptCmd(cmd *exec.Cmd) {
 	if sh == "" {
 		return
 	}
-	args := []string{sh, filepath.ToSlash(cmd.Path)}
+	args := []string{sh, "-c", shPrelude + `exec sh "$0" "$@"`, filepath.ToSlash(cmd.Path)}
 	if len(cmd.Args) > 1 {
 		args = append(args, cmd.Args[1:]...)
 	}
@@ -180,6 +185,52 @@ func Tool(name string) (string, error) {
 		p := filepath.Join(filepath.Dir(sh), name+".exe")
 		if st, err := os.Stat(p); err == nil && st.Mode().IsRegular() {
 			return p, nil
+		}
+	}
+	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}
+}
+
+// LookPath resolves a bare command name in PATH order (env's PATH when set),
+// like a Unix shell: in each directory a PATHEXT match or an extensionless
+// "#!" script counts. exec.LookPath skips extensionless scripts, so a stub
+// earlier on PATH would lose to an installed .exe further down.
+func LookPath(name string, env []string) (string, error) {
+	if strings.ContainsAny(name, `/\:`) {
+		return exec.LookPath(name)
+	}
+	path := os.Getenv("PATH")
+	for _, kv := range env {
+		if len(kv) > 5 && strings.EqualFold(kv[:5], "PATH=") {
+			path = kv[5:]
+		}
+	}
+	exts := []string{".com", ".exe", ".bat", ".cmd"}
+	if pe := os.Getenv("PATHEXT"); pe != "" {
+		exts = nil
+		for _, e := range strings.Split(strings.ToLower(pe), ";") {
+			if e != "" {
+				exts = append(exts, e)
+			}
+		}
+	}
+	hasExt := filepath.Ext(name) != ""
+	for _, dir := range filepath.SplitList(path) {
+		if dir == "" {
+			continue
+		}
+		base := filepath.Join(dir, name)
+		if hasExt {
+			if st, err := os.Stat(base); err == nil && st.Mode().IsRegular() {
+				return base, nil
+			}
+		}
+		for _, ext := range exts {
+			if st, err := os.Stat(base + ext); err == nil && st.Mode().IsRegular() {
+				return base + ext, nil
+			}
+		}
+		if st, err := os.Stat(base); err == nil && st.Mode().IsRegular() && hasShebang(base) {
+			return base, nil
 		}
 	}
 	return "", &exec.Error{Name: name, Err: exec.ErrNotFound}

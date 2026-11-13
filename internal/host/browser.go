@@ -244,6 +244,7 @@ func launchBrowser(ctx context.Context, cfg fileConfig, attemptDir string) (*bro
 	}
 	args := browserArgs(profile)
 	cmd := exec.Command(bin, args...)
+	proc.Script(cmd)
 	cmd.Env = browserEnv(os.Environ())
 	cmd.Stdout = logf
 	cmd.Stderr = logf

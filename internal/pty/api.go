@@ -25,3 +25,10 @@ func (p *PTY) Wait() error {
 	}
 	return p.Cmd.Wait()
 }
+
+// Rows and Cols are the terminal size every PTY starts with, on ConPTY and
+// Unix alike. A TUI on a 0x0 terminal wraps every character onto its own line.
+const (
+	Rows = 50
+	Cols = 200
+)

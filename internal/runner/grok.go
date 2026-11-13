@@ -57,7 +57,7 @@ func (g Grok) GoalFacts() GoalFacts { return GoalFacts{Prompt: g.Prompt, Session
 var (
 	ErrGrokBudgetLimited = ErrGoalBudgetLimited
 	ErrGrokQuotaHit      = errors.New("grok goal quota_hit")
-	ErrGrokCrash         = errors.New("grok goal crash")
+	ErrGrokCrash         = errors.New("goal executor crash")
 	errGrokNoTerminal    = errors.New("grok goal: no terminal")
 )
 

@@ -45,3 +45,26 @@ func TestStartReadsChildOutput(t *testing.T) {
 		t.Fatalf("master output %q", buf)
 	}
 }
+
+func TestStartSetsTerminalSize(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ConPTY size is set at CreatePseudoConsole")
+	}
+	session, err := pty.Start(exec.Command("/bin/sh", "-c", "stty size"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Master.Close()
+	done := make(chan []byte, 1)
+	go func() { b, _ := io.ReadAll(session.Master); done <- b }()
+	_ = session.Wait()
+	var out []byte
+	select {
+	case out = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out reading the PTY master")
+	}
+	if !strings.Contains(string(out), "50 200") {
+		t.Fatalf("stty size %q", out)
+	}
+}

@@ -39,7 +39,7 @@ func Start(cmd *exec.Cmd) (*PTY, error) {
 		return nil, err
 	}
 	var hpc windows.Handle
-	if err := windows.CreatePseudoConsole(windows.Coord{X: 200, Y: 50}, inRead, outWrite, 0, &hpc); err != nil {
+	if err := windows.CreatePseudoConsole(windows.Coord{X: Cols, Y: Rows}, inRead, outWrite, 0, &hpc); err != nil {
 		closeAll(inRead, inWrite, outRead, outWrite)
 		return nil, err
 	}

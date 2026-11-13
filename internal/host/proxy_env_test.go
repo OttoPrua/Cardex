@@ -24,7 +24,9 @@ func TestRunAppliesChannelProxy(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			binDir := t.TempDir()
 			stub := filepath.Join(binDir, "claude")
-			body := "#!/bin/sh\nprintf 'HTTPS=%s|NO=%s|\\n' \"$https_proxy\" \"$NO_PROXY\"\n"
+			// Windows keeps one of each upper/lower pair (names are case-insensitive),
+			// so read whichever survived.
+			body := "#!/bin/sh\nprintf 'HTTPS=%s|NO=%s|\\n' \"${https_proxy:-$HTTPS_PROXY}\" \"${NO_PROXY:-$no_proxy}\"\n"
 			if err := os.WriteFile(stub, []byte(body), 0o755); err != nil {
 				t.Fatal(err)
 			}

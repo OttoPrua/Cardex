@@ -32,8 +32,8 @@ func writeCursorTranscript(t *testing.T, data, work, id, body string) string {
 
 func TestCursorProjectSlug(t *testing.T) {
 	for in, want := range map[string]string{
-		"/Volumes/Storage/Development/Cardex/work/goal-probe/cursor/ws2":      "Volumes-Storage-Development-Cardex-work-goal-probe-cursor-ws2",
-		"/Volumes/Storage/Development/Cardex/work/goal-probe/cursor/ws_a.b Z": "Volumes-Storage-Development-Cardex-work-goal-probe-cursor-ws-a-b-Z",
+		"/srv/dev/proj/probe/ws2":      "srv-dev-proj-probe-ws2",
+		"/srv/dev/proj/probe/ws_a.b Z": "srv-dev-proj-probe-ws-a-b-Z",
 	} {
 		if got := CursorProjectSlug(in); got != want {
 			t.Fatalf("%s: %s", in, got)

@@ -16,7 +16,15 @@ import (
 // console children: SIGTERM/SIGINT to a single process sends CTRL_BREAK to its
 // console process group when it has one, else it is a hard stop.
 func osSignal(pid int, sig syscall.Signal) error {
+	if pid < 0 {
+		if err, ok := signalJob(-pid, sig); ok {
+			return err
+		}
+	}
 	if sig == 0 {
+		if pid < 0 {
+			pid = -pid
+		}
 		return probe(pid)
 	}
 	if pid < 0 {

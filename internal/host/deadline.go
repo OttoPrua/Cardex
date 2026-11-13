@@ -41,6 +41,8 @@ func attemptDeadline(attemptDir string) (time.Duration, string) {
 }
 
 func persistExecutorGroup(attemptDir string, pgid int) error {
+	// Best effort: without a job, Windows falls back to the taskkill tree walk.
+	_ = joinGroup(pgid)
 	return persistGroupFile(filepath.Join(attemptDir, executorGroupName), pgid)
 }
 

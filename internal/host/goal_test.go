@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,9 @@ func TestGoalModeSetsFieldsAndConsumesExit(t *testing.T) {
 		runGoal(t, "#!/bin/sh\nsleep 1\nexit 0\n", false, 0)
 	})
 	t.Run("crash", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("a signal-killed executor is a Unix exit status; Windows reports an exit code")
+		}
 		runGoal(t, "#!/bin/sh\nsleep 1\nkill -KILL $$\n", true, 9)
 	})
 }
@@ -34,6 +38,7 @@ func runGoal(t *testing.T, script string, wantCrash bool, wantSignal int) {
 	t.Setenv("PATH", bin)
 	t.Setenv("GROK_HOME", t.TempDir())
 	home, id, work := seedPrepared(t, t.TempDir(), model.RunnerGrok, "", 1, nil)
+	goalRootForWindows(t, work, id)
 	db, err := store.Open(filepath.Join(home, "cardex.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +89,12 @@ func runGoal(t *testing.T, script string, wantCrash bool, wantSignal int) {
 	if !got.GoalMode || got.Prompt != prompt || got.SessionDir != wantDir {
 		t.Fatalf("fields %+v want dir %s", got, wantDir)
 	}
-	if got.Crash != wantCrash || got.Signaled != wantCrash || got.Signal != wantSignal {
+	if runtime.GOOS == "windows" {
+		// Windows has no signal exit status: a process is ended with
+		// TerminateProcess, so only the crash flag is comparable.
+		wantSignal, wantCrash = 0, false
+	}
+	if got.Crash != wantCrash || got.Signaled != (wantSignal != 0) || got.Signal != wantSignal {
 		t.Fatalf("exit fact %+v", got)
 	}
 }
@@ -111,6 +121,7 @@ func TestGoalTerminalStaysOpenUntilSignaled(t *testing.T) {
 			t.Setenv("PATH", bin)
 			t.Setenv("GROK_HOME", t.TempDir())
 			home, id, work := seedPrepared(t, t.TempDir(), model.RunnerGrok, "", 1, nil)
+			goalRootForWindows(t, work, id)
 			if err := os.WriteFile(filepath.Join(home, "attempts", id, "hard-duration"), []byte("15s"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -159,7 +170,7 @@ func TestGoalTerminalStaysOpenUntilSignaled(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantDir := runner.GrokGoalSessionDir(work, id)
-			if exited.SessionDir != wantDir || !exited.Signaled || exited.Signal != 15 || exited.Crash {
+			if exited.SessionDir != wantDir || exited.Crash || (runtime.GOOS != "windows" && (!exited.Signaled || exited.Signal != 15)) {
 				t.Fatalf("exit %+v want dir %s signal 15", exited, wantDir)
 			}
 			finishEv, ok := eventType(events, "host_finish")
@@ -212,6 +223,7 @@ func TestGoalTerminalIgnoredSignalStillFinishes(t *testing.T) {
 			// The shell is the session leader, so its SIGTERM trap is the group.
 			t.Setenv("CARDEX_OUTER_SANDBOX", "1")
 			home, id, work := seedPrepared(t, t.TempDir(), model.RunnerGrok, "", 1, nil)
+			goalRootForWindows(t, work, id)
 			if err := os.WriteFile(filepath.Join(home, "attempts", id, "hard-duration"), []byte("6s"), 0o644); err != nil {
 				t.Fatal(err)
 			}
@@ -266,7 +278,7 @@ func TestGoalTerminalIgnoredSignalStillFinishes(t *testing.T) {
 			if err := json.Unmarshal(exitEv.Data, &exited); err != nil {
 				t.Fatal(err)
 			}
-			if !exited.Signaled || exited.Signal == 15 || exited.Crash {
+			if exited.Crash || (runtime.GOOS != "windows" && (!exited.Signaled || exited.Signal == 15)) {
 				t.Fatalf("exit %+v: ignored SIGTERM must be reaped without an executor crash", exited)
 			}
 			finishEv, ok := eventType(events, "host_finish")
@@ -320,6 +332,13 @@ if [ -z "$sid" ] || [ -z "$cwd" ] || [ -z "$GROK_HOME" ]; then
   echo "missing session binding sid=$sid cwd=$cwd" >&2
   exit 2
 fi
+if [ -n "$CARDEX_TEST_GOAL_ROOT" ]; then
+  root=$CARDEX_TEST_GOAL_ROOT
+  mkdir -p "$root/goal" || exit 2
+  printf '{"goal_id":"g1","status":"%s","last_classifier_verdict":"%s"}' "$status" "$verdict" > "$root/goal/state.json"
+  printf '{"params":{"sessionId":"s1","update":{"sessionUpdate":"goal_updated","goal_id":"g1","status":"%s","last_classifier_verdict":"%s"}}}\n' "$status" "$verdict" > "$root/updates.jsonl"
+  printf '{"info":{"id":"s1"}}' > "$root/summary.json"
+else
 /usr/bin/python3 - "$GROK_HOME" "$cwd" "$sid" "$status" "$verdict" <<'PY'
 import hashlib, json, os, sys
 from urllib.parse import quote
@@ -345,10 +364,20 @@ PY
 if [ "$?" -ne 0 ]; then
   exit 2
 fi
+fi
 /bin/sleep 60
 `
 }
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// goalRootForWindows hands the fake grok its session dir on Windows, where the
+// fixture has no python3 to derive it from GROK_HOME, --cwd and -s.
+func goalRootForWindows(t *testing.T, work, id string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Setenv("CARDEX_TEST_GOAL_ROOT", filepath.ToSlash(runner.GrokGoalSessionDir(work, id)))
+	}
 }

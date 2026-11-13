@@ -29,7 +29,8 @@ case "$goal" in */goal*GOAL-KIMI-R1*) ;; *) echo "no goal line" >&2; exit 3;; es
 dir="$KIMI_CODE_HOME/sessions/wd_w_1/session_1"
 mkdir -p "$dir/agents/main"
 printf '%s' "$goal" > "$KIMI_CODE_HOME/goal-line"
-printf '{"id":"session_1","cwd":"%s","createdAt":1}\n' "$PWD" > "$dir/state.json"
+cwd=$(pwd -W 2>/dev/null || pwd)
+printf '{"id":"session_1","cwd":"%s","createdAt":1}\n' "$cwd" > "$dir/state.json"
 printf '{"type":"goal.create","goalId":"g1","objective":"o"}\n` + update + `\n' > "$dir/agents/main/wire.jsonl"
 while :; do sleep 1; done
 `

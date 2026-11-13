@@ -4,10 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -96,12 +97,12 @@ func childPrelude(out *bytes.Buffer, spec LaunchSpec, step scriptAttempt) error 
 		return fmt.Errorf("fake grandchild: %w", err)
 	}
 	sec := strconv.FormatFloat(d.Seconds(), 'f', 3, 64)
-	cmd := exec.Command("/bin/sh", "-c", `sleep "$1"; echo late > "$2"`, "sh", sec, step.GrandchildMarker)
+	cmd := proc.Shell(context.Background(), "sleep "+shQuote(sec)+"; echo late > "+shQuote(filepath.ToSlash(step.GrandchildMarker)))
 	var devNull *os.File
 	if step.GrandchildDetach {
 		// Close or redirect the descendant's stdio so the parent's output
 		// pipe ends while the process group is still alive.
-		f, err := os.OpenFile("/dev/null", os.O_RDWR, 0)
+		f, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 		if err != nil {
 			return err
 		}
@@ -126,3 +127,5 @@ func childPrelude(out *bytes.Buffer, spec LaunchSpec, step scriptAttempt) error 
 	}
 	return os.WriteFile(filepath.Join(spec.WorkDir, "grandchild.pid"), []byte(strconv.Itoa(cmd.Process.Pid)), 0o644)
 }
+
+func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -191,6 +192,9 @@ func argvHas(calls [][]string, needle string) bool {
 func importReadOnly(t *testing.T, v1 string) (string, []string) {
 	t.Helper()
 	before := snapshotTree(t, v1)
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only dirs via chmod are not enforced on Windows")
+	}
 	if out, err := exec.Command("chmod", "-R", "a-w", v1).CombinedOutput(); err != nil {
 		t.Fatalf("chmod: %v %s", err, out)
 	}

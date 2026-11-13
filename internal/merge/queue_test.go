@@ -741,10 +741,13 @@ func writeCmd(t *testing.T, mark, label string) string {
 	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	// The step runs through sh -c, which would eat the backslashes of a
+	// Windows path; forward slashes work on both.
+	return filepath.ToSlash(path)
 }
 
 func shellQuote(s string) string {
+	s = filepath.ToSlash(s)
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 

@@ -121,6 +121,7 @@ func TestCardShowJSONMatchesBoard(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/cards/"+id, nil)
 	rec := httptest.NewRecorder()
+	t.Cleanup(board.CloseDB)
 	board.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("board %d %s", rec.Code, rec.Body.String())

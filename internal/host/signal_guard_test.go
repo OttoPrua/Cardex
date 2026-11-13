@@ -37,7 +37,9 @@ func TestSignalGuard(t *testing.T) {
 		reject("group "+label, func() error { return SignalGroup(id, syscall.SIGKILL) })
 	}
 	reject("this process", func() error { return SignalProcess(os.Getpid(), syscall.SIGKILL) })
-	reject("this process group", func() error { return SignalGroup(syscall.Getpgrp(), syscall.SIGKILL) })
+	if g := ownGroup(); g > 1 {
+		reject("this process group", func() error { return SignalGroup(g, syscall.SIGKILL) })
+	}
 	if calls != 0 {
 		t.Fatalf("injected syscall called %d times", calls)
 	}
@@ -68,7 +70,7 @@ func TestSignalGuard(t *testing.T) {
 			return err
 		}
 		rel = filepath.ToSlash(rel)
-		if rel == "internal/host/signal.go" {
+		if rel == "internal/host/signal.go" || rel == "internal/host/proc_unix.go" {
 			return nil
 		}
 		body, err := os.ReadFile(path)

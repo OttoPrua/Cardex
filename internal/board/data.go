@@ -28,20 +28,45 @@ type pageData struct {
 }
 
 type currentView struct {
-	Objectives       []objectiveView  `json:"objectives"`
-	Cards            []cardBrief      `json:"cards"`
-	StatusCounts     []statusCount    `json:"status_counts"`
-	Waiting          []waitingCard    `json:"waiting"`
-	RunningAttempts  []runningAttempt `json:"running_attempts"`
-	MergeQueue       []cardBrief      `json:"merge_queue"`
-	PendingQuestions []questionBrief  `json:"pending_questions"`
+	Objectives       []objectiveView   `json:"objectives"`
+	Cards            []cardBrief       `json:"cards"`
+	StatusCounts     []statusCount     `json:"status_counts"`
+	Waiting          []waitingCard     `json:"waiting"`
+	RunningAttempts  []runningAttempt  `json:"running_attempts"`
+	MergeQueue       []cardBrief       `json:"merge_queue"`
+	PendingQuestions []questionBrief   `json:"pending_questions"`
+	Progress         []projectProgress `json:"progress"`
+	Groups           []groupCount      `json:"groups"`
+	// Inbox is PendingQuestions minus ones the scheduler no longer delivers
+	// (canceled card, or a no-output question on a card that finished since).
+	Inbox []questionBrief `json:"inbox"`
+	Lanes []runningLane   `json:"lanes"`
 }
 
 type objectiveView struct {
-	ID     string     `json:"id"`
-	Title  string     `json:"title"`
-	Status string     `json:"status"`
-	Nodes  []nodeView `json:"nodes"`
+	ID      string     `json:"id"`
+	Title   string     `json:"title"`
+	Status  string     `json:"status"`
+	Project string     `json:"project"`
+	Nodes   []nodeView `json:"nodes"`
+	Cards   []cardRow  `json:"cards"`
+}
+
+// cardRow is one current card under its objective on the details tab.
+type cardRow struct {
+	ID         string `json:"id"`
+	Title      string `json:"title"`
+	Status     string `json:"status"`
+	Group      string `json:"group"`
+	WaitReason string `json:"wait_reason,omitempty"`
+}
+
+// groupCount is how many current cards fall in one status group.
+type groupCount struct {
+	Group string `json:"group"`
+	Label string `json:"label"`
+	Tone  string `json:"tone"`
+	Count int    `json:"count"`
 }
 
 type nodeView struct {
@@ -82,9 +107,16 @@ type cardBrief struct {
 }
 
 type questionBrief struct {
-	ID        string `json:"id"`
-	Objective string `json:"objective"`
-	Text      string `json:"text"`
+	ID             string   `json:"id"`
+	Objective      string   `json:"objective"`
+	Text           string   `json:"text"`
+	Human          string   `json:"human"`
+	Options        []string `json:"options"`
+	Scope          string   `json:"scope"`
+	ScopeKind      string   `json:"scope_kind"`
+	ScopeTitle     string   `json:"scope_title"`
+	ObjectiveTitle string   `json:"objective_title"`
+	Project        string   `json:"project"`
 }
 
 type channelsView struct {
@@ -108,11 +140,18 @@ type windowView struct {
 }
 
 type cardView struct {
-	ID       string         `json:"id"`
-	Title    string         `json:"title"`
-	Status   string         `json:"status"`
-	Attempts []attemptView  `json:"attempts"`
-	History  []historyEvent `json:"history"`
+	ID             string          `json:"id"`
+	Title          string          `json:"title"`
+	Status         string          `json:"status"`
+	Objective      string          `json:"objective"`
+	ObjectiveTitle string          `json:"objective_title"`
+	Project        string          `json:"project"`
+	Body           string          `json:"body"`
+	WaitReason     string          `json:"wait_reason"`
+	ReworkNote     string          `json:"rework_note"`
+	Questions      []questionBrief `json:"questions"`
+	Attempts       []attemptView   `json:"attempts"`
+	History        []historyEvent  `json:"history"`
 }
 
 type historyEvent struct {
@@ -200,12 +239,22 @@ func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 		RunningAttempts:  []runningAttempt{},
 		MergeQueue:       []cardBrief{},
 		PendingQuestions: []questionBrief{},
+		Inbox:            []questionBrief{},
 	}
 	counts := map[model.CardStatus]int{}
+	var inputs []progressInput
+	openQ := map[string]int{}
+	for _, q := range questions {
+		if q.Answer == "" {
+			openQ[q.Objective]++
+		}
+	}
 	objStatus := map[string]model.ObjectiveStatus{}
+	objByID := map[string]model.Objective{}
 	cardsByID := map[string]model.Card{}
 	for _, o := range objectives {
 		objStatus[o.ID] = o.Status
+		objByID[o.ID] = o
 		if o.Status != model.ObjectiveActive {
 			continue
 		}
@@ -223,18 +272,19 @@ func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 				OpenQuestionCount: openQuestionCount(n),
 			})
 		}
-		ov := objectiveView{ID: o.ID, Title: o.Title, Status: string(o.Status), Nodes: nestNodes(flat)}
-		view.Objectives = append(view.Objectives, ov)
+		ov := objectiveView{ID: o.ID, Title: o.Title, Status: string(o.Status), Project: o.Project, Nodes: nestNodes(flat), Cards: []cardRow{}}
 		cards, err := db.ListCards(ctx, o.ID)
 		if err != nil {
 			return nil, err
 		}
+		inputs = append(inputs, progressInput{objective: o, cards: cards, nodes: nodes, questions: openQ[o.ID]})
 		for _, c := range cards {
 			if !currentCard(c) {
 				continue
 			}
 			cardsByID[c.ID] = c
 			counts[c.Status]++
+			ov.Cards = append(ov.Cards, cardRow{ID: c.ID, Title: c.Title, Status: string(c.Status), Group: groupOf(string(c.Status)), WaitReason: c.WaitReason})
 			view.Cards = append(view.Cards, cardBrief{ID: c.ID, Title: c.Title, Status: string(c.Status)})
 			if c.Status == model.CardWaiting {
 				view.Waiting = append(view.Waiting, waitingCard{ID: c.ID, WaitReason: c.WaitReason})
@@ -243,9 +293,15 @@ func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 				view.MergeQueue = append(view.MergeQueue, cardBrief{ID: c.ID, Title: c.Title, Status: string(c.Status)})
 			}
 		}
+		view.Objectives = append(view.Objectives, ov)
 	}
+	groupCounts := map[string]int{}
 	for _, status := range model.AllCardStatuses() {
 		view.StatusCounts = append(view.StatusCounts, statusCount{Status: string(status), Count: counts[status]})
+		groupCounts[groupOf(string(status))] += counts[status]
+	}
+	for _, g := range groupOrder {
+		view.Groups = append(view.Groups, groupCount{Group: g, Label: groupText[g], Tone: groupTone[g], Count: groupCounts[g]})
 	}
 	for _, a := range attempts {
 		if !a.EndedAt.IsZero() {
@@ -265,9 +321,69 @@ func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 		if q.Answer != "" || !pendingQuestionStatus(objStatus[q.Objective]) {
 			continue
 		}
-		view.PendingQuestions = append(view.PendingQuestions, questionBrief{ID: q.ID, Objective: q.Objective, Text: q.Text})
+		b := briefQuestion(ctx, db, q, objByID)
+		view.PendingQuestions = append(view.PendingQuestions, b)
+		if !staleQuestion(ctx, db, q) {
+			view.Inbox = append(view.Inbox, b)
+		}
 	}
+	view.Progress, view.Lanes = buildProgress(inputs, attempts, time.Now())
+	// Objectives with open cards first, then by project.
+	sort.SliceStable(view.Objectives, func(i, j int) bool {
+		oi, oj := openCards(view.Objectives[i]), openCards(view.Objectives[j])
+		if (oi > 0) != (oj > 0) {
+			return oi > 0
+		}
+		return view.Objectives[i].Project < view.Objectives[j].Project
+	})
 	return view, nil
+}
+
+func openCards(o objectiveView) int {
+	n := 0
+	for _, c := range o.Cards {
+		if c.Group != "done" && c.Group != "paused" {
+			n++
+		}
+	}
+	return n
+}
+
+// staleQuestion mirrors the scheduler's rule for questions it stops delivering.
+func staleQuestion(ctx context.Context, db *store.Store, q model.Question) bool {
+	if q.ScopeKind != "card" || q.Scope == "" {
+		return false
+	}
+	c, err := db.GetCard(ctx, q.Scope)
+	if err != nil {
+		return false
+	}
+	switch c.Status {
+	case model.CardCanceled:
+		return true
+	case model.CardDone, model.CardMerged:
+		return strings.HasPrefix(q.Text, "no output after switching channel")
+	}
+	return false
+}
+
+// briefQuestion adds the plain-language reason and the titles a person needs
+// to tell what the question is about.
+func briefQuestion(ctx context.Context, db *store.Store, q model.Question, objs map[string]model.Objective) questionBrief {
+	b := questionBrief{ID: q.ID, Objective: q.Objective, Text: q.Text, Human: humanQuestion(q.Text),
+		Options: q.Options, Scope: q.Scope, ScopeKind: q.ScopeKind}
+	if b.Options == nil {
+		b.Options = []string{}
+	}
+	if o, ok := objs[q.Objective]; ok {
+		b.ObjectiveTitle, b.Project = o.Title, o.Project
+	}
+	if q.ScopeKind == "card" && q.Scope != "" {
+		if c, err := db.GetCard(ctx, q.Scope); err == nil {
+			b.ScopeTitle = c.Title
+		}
+	}
+	return b
 }
 
 // pendingQuestionStatus reports whether an unanswered question on an objective
@@ -375,7 +491,20 @@ func loadCard(ctx context.Context, db *store.Store, id string) (*cardView, error
 	}
 	view := &cardView{
 		ID: card.ID, Title: card.Title, Status: string(card.Status),
-		Attempts: []attemptView{}, History: history,
+		Objective: card.Objective, Body: card.Body, WaitReason: card.WaitReason, ReworkNote: card.ReworkNote,
+		Attempts: []attemptView{}, History: history, Questions: []questionBrief{},
+	}
+	objs := map[string]model.Objective{}
+	if obj, err := db.GetObjective(ctx, card.Objective); err == nil {
+		view.ObjectiveTitle, view.Project = obj.Title, obj.Project
+		objs[obj.ID] = obj
+	}
+	if qs, err := db.ListQuestions(ctx, card.Objective); err == nil {
+		for _, q := range qs {
+			if q.Answer == "" && q.ScopeKind == "card" && q.Scope == card.ID {
+				view.Questions = append(view.Questions, briefQuestion(ctx, db, q, objs))
+			}
+		}
 	}
 	for _, a := range attempts {
 		events, err := db.ListEvents(ctx, "attempt:"+a.ID)

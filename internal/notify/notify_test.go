@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -357,7 +358,7 @@ func TestHermesReceiverAckInAttempt(t *testing.T) {
 		t.Fatalf("wake ids %+v rows %+v", inbound.WakeEventIDs, wakes)
 	}
 	stem := strings.TrimSuffix(filepath.Base(inboundPath), ".json")
-	if strings.Contains(stem, "/") || strings.Contains(stem, "..") || !containsString(wakes, stem) {
+	if strings.Contains(stem, "/") || strings.Contains(stem, "..") || !containsString(wakes, unWakeFileStem(stem)) {
 		t.Fatalf("stem %s wakes %v", stem, wakes)
 	}
 	if filepath.Dir(inboundPath) != hermesInboxDir(home, sub) {
@@ -534,8 +535,8 @@ func hermesInboundFiles(t *testing.T, home, sub string) map[string]hermesInbound
 		if err := json.Unmarshal(raw, &body); err != nil {
 			t.Fatal(err)
 		}
-		stem := strings.TrimSuffix(name, ".json")
-		out[stem] = body
+		// Keyed by wake id, not by file stem (they differ on Windows).
+		out[unWakeFileStem(strings.TrimSuffix(name, ".json"))] = body
 	}
 	return out
 }
@@ -1289,7 +1290,11 @@ func validateHermesInbound(path, subscriptionID, profile, sessionID string) (her
 		return hermesAckFile{}, false
 	}
 	stem := strings.TrimSuffix(filepath.Base(path), ".json")
-	if stem == "" || strings.Contains(stem, "/") || strings.Contains(stem, "..") || !containsString(ids, stem) {
+	stems := make([]string, len(ids))
+	for i, id := range ids {
+		stems[i] = wakeFileStem(id)
+	}
+	if stem == "" || strings.Contains(stem, "/") || strings.Contains(stem, "..") || !containsString(stems, stem) {
 		return hermesAckFile{}, false
 	}
 	if body.InboundDigest != inboundDigest(body.Message) || len(body.InboundDigest) != 64 {
@@ -1477,6 +1482,9 @@ func TestReminderLedgerFormatFaultStillDelivers(t *testing.T) {
 					t.Fatal(err)
 				}
 				if tc.unreadable {
+					if runtime.GOOS == "windows" {
+						t.Skip("mode 000 does not block reads on Windows")
+					}
 					if err := os.Chmod(path, 0); err != nil {
 						t.Fatal(err)
 					}
@@ -1656,3 +1664,6 @@ func savedQuestionGap(t *testing.T, home, id string) int64 {
 	}
 	return gap
 }
+
+// unWakeFileStem undoes wakeFileStem.
+func unWakeFileStem(stem string) string { return strings.ReplaceAll(stem, "%3A", ":") }

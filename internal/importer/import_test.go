@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -1326,6 +1327,9 @@ func TestImportReadOnlySource(t *testing.T) {
 			writeRaw(t, v1, "workflows/ok.design-receipt.json", receipt)
 			writeRaw(t, v1, "tasks/readme.txt", []byte("not a record"))
 			before := snapshotTree(t, v1)
+			if runtime.GOOS == "windows" {
+				t.Skip("read-only dirs via chmod are not enforced on Windows")
+			}
 			if out, err := exec.Command("chmod", "-R", "a-w", v1).CombinedOutput(); err != nil {
 				t.Fatalf("chmod -R a-w: %v %s", err, out)
 			}

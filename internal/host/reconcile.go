@@ -63,7 +63,7 @@ func processAlive(pid int) bool {
 	if pid == os.Getpid() {
 		return true
 	}
-	if pgid, err := syscall.Getpgid(pid); err == nil && pgid == syscall.Getpgrp() {
+	if inOurGroup(pid) {
 		return true
 	}
 	err := SignalProcess(pid, 0)

@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -101,7 +101,7 @@ func toolFindings() []finding {
 }
 
 func lookupFinding(name, suggestion string) []finding {
-	if _, err := exec.LookPath(name); err != nil {
+	if _, err := proc.LookPath(name, nil); err != nil {
 		return []finding{{name + " is not on PATH", suggestion}}
 	}
 	return nil

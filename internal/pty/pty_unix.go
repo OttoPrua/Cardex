@@ -6,7 +6,16 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+	"unsafe"
 )
+
+func setWinsize(f *os.File, rows, cols uint16) error {
+	ws := struct{ Row, Col, X, Y uint16 }{rows, cols, 0, 0}
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), uintptr(syscall.TIOCSWINSZ), uintptr(unsafe.Pointer(&ws))); errno != 0 {
+		return errno
+	}
+	return nil
+}
 
 // Start opens a PTY and starts cmd on the slave side.
 // The child is a session leader so its process group can be signalled as a unit.
@@ -16,6 +25,11 @@ func Start(cmd *exec.Cmd) (*PTY, error) {
 	}
 	master, slave, err := openPTY()
 	if err != nil {
+		return nil, err
+	}
+	if err := setWinsize(slave, Rows, Cols); err != nil {
+		master.Close()
+		slave.Close()
 		return nil, err
 	}
 	if cmd.SysProcAttr == nil {

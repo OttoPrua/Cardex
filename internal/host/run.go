@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/proxy"
 	"github.com/OttoPrua/Cardex/internal/pty"
 	"github.com/OttoPrua/Cardex/internal/runner"
@@ -64,20 +65,19 @@ func run(ctx context.Context, home, attemptID string) error {
 		return errors.New("host: attempt has no worktree")
 	}
 	var goalMode bool
-	var goalRunner runner.Grok
-	if grok, isGrok := r.(runner.Grok); isGrok && requiresGoal(card) {
-		grok.GoalMode = true
+	var goalRunner runner.Runner
+	if gr, isGoal := r.(runner.GoalRunner); isGoal && requiresGoal(card) {
+		launch := runner.GoalLaunch{WorkDir: attempt.Worktree, AttemptID: attempt.ID}
 		if attempt.PromptPath != "" {
 			body, err := os.ReadFile(attempt.PromptPath)
 			if err != nil {
 				return fmt.Errorf("host: goal prompt: %w", err)
 			}
-			grok.Prompt = string(body)
+			launch.Prompt = string(body)
 		}
-		grok.SessionDir = runner.GrokGoalSessionDir(attempt.Worktree, attempt.ID)
-		r = grok
+		r = gr.ForGoal(launch)
 		goalMode = true
-		goalRunner = grok
+		goalRunner = r
 	}
 
 	cfg := loadConfig(home)
@@ -220,10 +220,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		appendEvent(ctx, db, attempt.ID, ev.Type, payload)
 	}
 	if !needPTY {
-		if wrapped.SysProcAttr == nil {
-			wrapped.SysProcAttr = &syscall.SysProcAttr{}
-		}
-		wrapped.SysProcAttr.Setpgid = true
+		proc.NewGroup(wrapped)
 	}
 
 	appendEvent(ctx, db, attempt.ID, "host_start", map[string]any{
@@ -254,7 +251,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		pid = session.Cmd.Process.Pid
 		if err := persistExecutorGroup(attemptDir, pid); err != nil {
 			killGroup(pid)
-			_ = session.Cmd.Wait()
+			_ = session.Wait()
 			_ = session.Master.Close()
 			return failStart(ctx, db, &attempt, err)
 		}
@@ -300,19 +297,17 @@ func run(ctx context.Context, home, attemptID string) error {
 		}{pr, session.Master})
 		// Drive has returned. Unblock the capture writer and keep draining.
 		closeRead()
-		if goalMode && (driveErr == nil || errors.Is(driveErr, runner.ErrGrokBudgetLimited)) {
-			if driveErr == nil {
-				goalStatus = "complete"
-			} else {
-				goalStatus = "budget_limited"
-			}
+		if goalMode {
+			goalStatus = goalTerminalStatus(driveErr)
+		}
+		if goalStatus != "" || (goalMode && errors.Is(driveErr, runner.ErrGoalStartFailed)) {
 			// A delivered SIGTERM is not the group exiting. The deadline stays
 			// armed and killGroup is what reaps a group that ignores it.
 			if pid > 1 {
 				_ = SignalGroup(pid, syscall.SIGTERM)
 			}
 		}
-		waitErr = session.Cmd.Wait()
+		waitErr = session.Wait()
 		waitCopy(copied, stop, killed, pid)
 		_ = session.Master.Close()
 	} else {
@@ -347,7 +342,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		}
 	}
 	if goalMode {
-		driveErr = noteGrokExit(ctx, db, attempt.ID, goalRunner, waitErr, driveErr, goalStatus != "")
+		driveErr = noteGoalExit(ctx, db, attempt.ID, goalRunner, waitErr, driveErr, goalStatus != "")
 		if errors.Is(driveErr, runner.ErrGrokCrash) {
 			goalStatus = ""
 		}
@@ -383,12 +378,13 @@ func commandFor(argv, extra []string) (*exec.Cmd, error) {
 	} else {
 		path := argv[0]
 		if !filepath.IsAbs(path) {
-			if found, err := exec.LookPath(path); err == nil {
+			if found, err := proc.LookPath(path, env); err == nil {
 				path = found
 			}
 		}
 		cmd.Path = path
 		cmd.Args = append([]string{}, argv...)
+		proc.Script(cmd)
 	}
 	cmd.Env = env
 	return cmd, nil
@@ -574,6 +570,23 @@ func trimExcerpt(s string) string {
 	return s
 }
 
+// goalTerminalStatus names the goal terminal Drive observed, or "" when Drive
+// ended without one. Blocked and paused are terminals for an unattended run:
+// nobody is there to resume the goal, so the TUI is closed like on completion.
+func goalTerminalStatus(driveErr error) string {
+	switch {
+	case driveErr == nil:
+		return "complete"
+	case errors.Is(driveErr, runner.ErrGoalBudgetLimited):
+		return "budget_limited"
+	case errors.Is(driveErr, runner.ErrGoalBlocked):
+		return "blocked"
+	case errors.Is(driveErr, runner.ErrGoalPaused):
+		return "paused"
+	}
+	return ""
+}
+
 func requiresGoal(card model.Card) bool {
 	for _, item := range card.Requires {
 		if item == "goal_mode" {
@@ -583,11 +596,13 @@ func requiresGoal(card model.Card) bool {
 	return false
 }
 
-// noteGrokExit records the WaitStatus fact and calls ConsumeGrokProcessExit.
+// noteGoalExit records the WaitStatus fact and calls ConsumeGrokProcessExit.
 // A crash replaces driveErr. A PTY line is not this fact.
 // keepGoal means a goal terminal was already observed. The host reaper's
 // follow-up signal is cleanup, so it does not replace that terminal with a crash.
-func noteGrokExit(ctx context.Context, db *store.Store, attemptID string, g runner.Grok, waitErr, driveErr error, keepGoal bool) error {
+// Grok keeps its grok_process_exit event; other goal runners record
+// goal_process_exit with the runner name.
+func noteGoalExit(ctx context.Context, db *store.Store, attemptID string, r runner.Runner, waitErr, driveErr error, keepGoal bool) error {
 	exit := runner.GrokProcessExit{}
 	var ee *exec.ExitError
 	if errors.As(waitErr, &ee) {
@@ -601,13 +616,22 @@ func noteGrokExit(ctx context.Context, db *store.Store, attemptID string, g runn
 		crashed = false
 		crash = nil
 	}
-	appendEvent(ctx, db, attemptID, "grok_process_exit", map[string]any{
+	var facts runner.GoalFacts
+	if rep, ok := r.(runner.GoalReporter); ok {
+		facts = rep.GoalFacts()
+	}
+	event := "goal_process_exit"
+	if r.Name() == string(model.RunnerGrok) {
+		event = "grok_process_exit"
+	}
+	appendEvent(ctx, db, attemptID, event, map[string]any{
+		"runner":      r.Name(),
 		"signaled":    exit.Signaled,
 		"signal":      exit.Signal,
 		"crash":       crashed,
-		"goal_mode":   g.GoalMode,
-		"prompt":      g.Prompt,
-		"session_dir": g.SessionDir,
+		"goal_mode":   true,
+		"prompt":      facts.Prompt,
+		"session_dir": facts.SessionDir,
 	})
 	if crashed {
 		return crash

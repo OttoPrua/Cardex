@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 // Grok adapts the grok-build CLI. GoalMode selects the PTY /goal driver;
@@ -38,12 +39,25 @@ type Grok struct {
 }
 
 var _ Runner = Grok{}
+var _ GoalRunner = Grok{}
+
+// ForGoal turns on the PTY /goal driver for one launch. The session dir is
+// GROK_HOME/sessions/<cwd>/<attempt id>, because the attempt id is passed as -s.
+func (g Grok) ForGoal(l GoalLaunch) Runner {
+	g.GoalMode = true
+	g.Prompt = l.Prompt
+	g.SessionDir = GrokGoalSessionDir(l.WorkDir, l.AttemptID)
+	return g
+}
+
+// GoalFacts is the goal text and session dir this launch watched.
+func (g Grok) GoalFacts() GoalFacts { return GoalFacts{Prompt: g.Prompt, SessionDir: g.SessionDir} }
 
 // Drive terminals. Completion is a nil error. budget_limited is not completion.
 var (
-	ErrGrokBudgetLimited = errors.New("grok goal budget_limited")
+	ErrGrokBudgetLimited = ErrGoalBudgetLimited
 	ErrGrokQuotaHit      = errors.New("grok goal quota_hit")
-	ErrGrokCrash         = errors.New("grok goal crash")
+	ErrGrokCrash         = errors.New("goal executor crash")
 	errGrokNoTerminal    = errors.New("grok goal: no terminal")
 )
 
@@ -110,7 +124,10 @@ func GrokGoalSessionDir(cwd, sessionID string) string {
 }
 
 func grokEncodeCwd(cwd string) string {
-	enc := url.PathEscape(cwd)
+	// grok percent-encodes ':' as well (a Windows cwd is stored as
+	// "C%3A%5C..."); url.PathEscape leaves it, and ':' cannot appear in a
+	// Windows file name.
+	enc := strings.ReplaceAll(url.PathEscape(cwd), ":", "%3A")
 	if len(enc) <= 255 {
 		return enc
 	}
@@ -417,7 +434,7 @@ func envParent(key string) string {
 }
 
 func userPath(name string) []string {
-	home, err := os.UserHomeDir()
+	home, err := proc.UserHome()
 	if err != nil {
 		return nil
 	}

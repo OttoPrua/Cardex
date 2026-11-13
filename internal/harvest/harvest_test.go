@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +192,9 @@ func TestHarvestOutcomes(t *testing.T) {
 }
 
 func TestHarvestModeOnlyCheckScriptPasses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no POSIX exec bit on Windows")
+	}
 	dir, _ := newRepo(t)
 	runGit(t, dir, "config", "core.filemode", "true")
 	write(t, dir, "check.sh", "#!/bin/sh\necho hi\n")

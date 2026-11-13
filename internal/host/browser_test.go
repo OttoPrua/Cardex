@@ -1,3 +1,5 @@
+//go:build !windows
+
 package host_test
 
 import (

@@ -14,6 +14,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/quota"
 	"github.com/OttoPrua/Cardex/internal/route"
 	"github.com/OttoPrua/Cardex/internal/workspace"
@@ -1840,7 +1841,7 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 	}
 	defer git(repo, "worktree", "remove", "--force", dir)
 	for _, command := range commands {
-		cmd := exec.CommandContext(ctx, "sh", "-c", command)
+		cmd := proc.Shell(ctx, command)
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 		if err := cmd.Run(); err != nil {

@@ -6,10 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
@@ -55,7 +55,7 @@ func launchDetached(home, attemptID string) (int, error) {
 		"CARDEX_SCHED_HOST=1",
 		"CARDEX_SCHED_ATTEMPT="+attemptID,
 	)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proc.Detach(cmd)
 	dir := filepath.Join(home, "attempts", attemptID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return 0, err

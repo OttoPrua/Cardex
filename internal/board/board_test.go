@@ -525,6 +525,7 @@ func TestDefaultExcludes3000History(t *testing.T) {
 func TestHomeFlagOverridesEnv(t *testing.T) {
 	envHome := t.TempDir()
 	flagHome := t.TempDir()
+	t.Cleanup(CloseDB)
 	seedCard(t, envHome, "only-env")
 	seedCard(t, flagHome, "only-flag")
 	t.Setenv("CARDEX_HOME", envHome)
@@ -538,6 +539,7 @@ func TestHomeFlagOverridesEnv(t *testing.T) {
 	}
 
 	eqHome := t.TempDir()
+	t.Cleanup(CloseDB)
 	seedCard(t, eqHome, "only-eq")
 	os.Args = []string{"cardex", "--home=" + eqHome, "serve"}
 	body = do(t, http.MethodGet, "/api/work").Body.String()
@@ -756,6 +758,7 @@ func TestHomeLastWins(t *testing.T) {
 	envHome := t.TempDir()
 	homeA := t.TempDir()
 	homeB := t.TempDir()
+	t.Cleanup(CloseDB)
 	seedCard(t, envHome, "env-only-card")
 	seedCard(t, homeA, "home-a-card")
 	seedCard(t, homeB, "home-b-card")
@@ -1215,6 +1218,7 @@ func seedCard(t *testing.T, home, cardID string) {
 func openHome(t *testing.T) (*store.Store, string) {
 	t.Helper()
 	home := t.TempDir()
+	t.Cleanup(CloseDB)
 	t.Setenv("CARDEX_HOME", home)
 	db, err := store.Open(filepath.Join(home, "cardex.db"))
 	if err != nil {

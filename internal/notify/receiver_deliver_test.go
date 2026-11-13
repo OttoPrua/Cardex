@@ -222,7 +222,7 @@ func TestTwoHermesHopsAckIndependently(t *testing.T) {
 	if got := mustReadFile(t, laterPath); string(got) != string(laterBytes) {
 		t.Fatal("unacked hop left its wake")
 	}
-	if wakes := nonAckJSON(t, later.Root, later.Sub); len(wakes) != 1 || wakes[0] != later.WakeID {
+	if wakes := nonAckJSON(t, later.Root, later.Sub); len(wakes) != 1 || wakes[0] != wakeFileStem(later.WakeID) {
 		t.Fatalf("later wakes %v", wakes)
 	}
 	if _, err := os.Stat(hermesAckPath(later.Root, later.Sub, later.WakeID)); !os.IsNotExist(err) {

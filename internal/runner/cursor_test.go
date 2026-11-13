@@ -39,7 +39,7 @@ func TestCursorBuildSnapshot(t *testing.T) {
 	if (runner.Cursor{}).Name() != "cursor" {
 		t.Fatalf("name %s", (runner.Cursor{}).Name())
 	}
-	if len((runner.Cursor{}).Capabilities()) != 0 {
+	if caps := (runner.Cursor{}).Capabilities(); len(caps) != 1 || caps[0] != "goal_mode" {
 		t.Fatalf("capabilities %q", (runner.Cursor{}).Capabilities())
 	}
 	if _, _, err := (runner.Cursor{}).Build(runner.LaunchSpec{}); err != nil {

@@ -10,11 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
-	"github.com/OttoPrua/Cardex/internal/homeguard"
 	_ "modernc.org/sqlite"
+
+	"github.com/OttoPrua/Cardex/internal/homeguard"
 )
 
 // ErrAppendOnly is returned by event update and delete.
@@ -128,21 +128,6 @@ func (s *Store) q(ctx context.Context) execer {
 		return tx
 	}
 	return s.db
-}
-
-func lockExclusive(path string) (func(), error) {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return nil, err
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
-		_ = f.Close()
-		return nil, err
-	}
-	return func() {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		_ = f.Close()
-	}, nil
 }
 
 func (s *Store) migrate(ctx context.Context) error {

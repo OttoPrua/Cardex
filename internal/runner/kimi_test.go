@@ -40,7 +40,7 @@ func TestKimiBuildSnapshot(t *testing.T) {
 			t.Fatalf("env %q", env)
 		}
 	}
-	if (runner.Kimi{}).NeedsPTY() || (runner.Kimi{}).Name() != "kimi" || len((runner.Kimi{}).Capabilities()) != 0 {
+	if (runner.Kimi{}).NeedsPTY() || (runner.Kimi{}).Name() != "kimi" || strings.Join((runner.Kimi{}).Capabilities(), ",") != "goal_mode" {
 		t.Fatalf("meta pty=%v name=%s caps=%q", (runner.Kimi{}).NeedsPTY(), (runner.Kimi{}).Name(), (runner.Kimi{}).Capabilities())
 	}
 	_, env, err = (runner.Kimi{}).Build(runner.LaunchSpec{})

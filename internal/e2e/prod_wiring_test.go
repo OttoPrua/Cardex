@@ -384,6 +384,9 @@ func TestProdWiringCLIFirstDispatch(t *testing.T) {
 	}
 	module := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 	bin := filepath.Join(t.TempDir(), "cardex")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	build := exec.Command("go", "build", "-o", bin, "./cmd/cardex")
 	build.Dir = module
 	if out, err := build.CombinedOutput(); err != nil {

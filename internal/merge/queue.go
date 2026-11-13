@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/store"
 	"github.com/OttoPrua/Cardex/internal/workspace"
 )
@@ -475,7 +476,7 @@ func runChecks(ctx context.Context, dir string, acceptance []string, testCmd str
 		if command == "" {
 			continue
 		}
-		cmd := exec.CommandContext(ctx, "sh", "-c", command)
+		cmd := proc.Shell(ctx, command)
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		fmt.Fprintf(&buf, "$ %s\n%s", command, out)

@@ -1,131 +1,418 @@
 {{define "layout"}}<!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="utf-8">
-<title>{{.Title}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · Cardex</title>
+<script>
+(function () {
+  try {
+    var t = localStorage.getItem("cardex.theme") || "dark";
+    var dark = t === "dark" || (t === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+  } catch (e) {}
+  window.cardexTheme = function () {
+    var next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("cardex.theme", next); } catch (e) {}
+  };
+  document.addEventListener("DOMContentLoaded", function () {
+    var saved = null;
+    try { saved = localStorage.getItem("cardex.tab"); } catch (e) {}
+    var h = location.hash.replace("#", "");
+    if (h === "overview" || h === "input" || h === "detail") { saved = "tab-" + h; }
+    var el = saved && document.getElementById(saved);
+    if (el) { el.checked = true; }
+    document.querySelectorAll("input.tab").forEach(function (r) {
+      r.addEventListener("change", function () { try { localStorage.setItem("cardex.tab", r.id); } catch (e) {} });
+    });
+  });
+  setInterval(function () {
+    if (document.activeElement && document.activeElement.tagName === "INPUT" && document.activeElement.type !== "radio") { return; }
+    if (document.querySelector("details[open]")) { return; }
+    if (window.getSelection && String(window.getSelection()).length > 0) { return; }
+    location.reload();
+  }, 5000);
+})();
+</script>
+<style>
+:root{
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,"PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace;
+  --radius-sm:8px;--radius:12px;--radius-lg:16px;
+  --ease:cubic-bezier(.16,1,.3,1);
+  --background:oklch(98.5% 0 0);--foreground:oklch(14.5% 0 0);--card:oklch(100% 0 0);
+  --muted:oklch(96% 0 0);--muted-foreground:oklch(55.6% 0 0);--border:oklch(92.2% 0 0);
+  --accent-soft:color-mix(in oklab,var(--foreground) 6%,transparent);
+  --shadow:0 1px 2px oklch(0% 0 0/.05);
+  --ok:oklch(62% .17 162.48);--warn:oklch(70% .17 70.08);--err:oklch(57.7% .245 27.325);--live:oklch(60% .16 250);
+  --dot:oklch(88% 0 0);--thumb:oklch(82% 0 0);
+}
+[data-theme=dark]{
+  --background:oklch(20.5% 0 0);--foreground:oklch(96% 0 0);--card:oklch(24.5% 0 0);
+  --muted:oklch(29% 0 0);--muted-foreground:oklch(70% 0 0);--border:oklch(32% 0 0);
+  --shadow:0 1px 2px oklch(0% 0 0/.3);
+  --ok:oklch(69.6% .17 162.48);--warn:oklch(76.9% .188 70.08);--err:oklch(63.7% .237 25.331);--live:oklch(70% .15 250);
+  --dot:oklch(27% 0 0);--thumb:oklch(38% 0 0);
+}
+*{box-sizing:border-box}
+html{scrollbar-color:var(--thumb) transparent;scrollbar-width:thin;color-scheme:light}
+[data-theme=dark]{color-scheme:dark}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--thumb);border-radius:99px;border:3px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background-color:var(--muted-foreground)}
+html,body{margin:0}
+body{font:14px/1.6 var(--font);color:var(--foreground);background:var(--background);
+  background-image:radial-gradient(var(--dot) 1px,transparent 1px);background-size:24px 24px;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+code,.mono{font-family:var(--mono);font-size:12px}
+.k{position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:20px;padding:14px clamp(20px,3vw,48px);
+  background:color-mix(in oklab,var(--background) 84%,transparent);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:650;letter-spacing:-.01em;text-decoration:none}
+.logo{width:28px;height:28px;border-radius:8px;background:var(--foreground);color:var(--background);display:grid;place-items:center;font:700 13px var(--mono)}
+.brand small{font-weight:500;color:var(--muted-foreground)}
+nav{display:flex;gap:4px;padding:3px;border:1px solid var(--border);border-radius:999px;background:var(--card)}
+nav a{padding:5px 15px;border-radius:999px;text-decoration:none;color:var(--muted-foreground);transition:background .2s var(--ease),color .2s var(--ease)}
+nav a:hover{color:var(--foreground)}
+nav a[aria-current=page]{background:var(--foreground);color:var(--background)}
+.spacer{flex:1}
+.live{display:flex;align-items:center;gap:6px;color:var(--muted-foreground);font-size:12px}
+.pulse{width:7px;height:7px;border-radius:50%;background:var(--ok);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in oklab,var(--ok) 60%,transparent)}100%{box-shadow:0 0 0 8px transparent}}
+.icon-btn{border:1px solid var(--border);background:var(--card);color:var(--foreground);border-radius:var(--radius-sm);width:32px;height:32px;cursor:pointer;display:grid;place-items:center}
+main{max-width:1180px;margin:0 auto;padding:40px clamp(20px,3vw,48px) 80px}
+h1{font-size:28px;font-weight:700;letter-spacing:-.025em;margin:0 0 6px;line-height:1.25}
+.sub{color:var(--muted-foreground);margin:0 0 28px;font-size:14px}
+h2.section{font-size:12px;font-weight:600;letter-spacing:.06em;color:var(--muted-foreground);margin:36px 0 14px}
+.grid{display:grid;gap:20px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(380px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow);padding:24px 28px;min-width:0}
+.panel+.panel{margin-top:20px}
+.panel h3{font-size:13px;font-weight:600;margin:0 0 16px;display:flex;align-items:center;gap:8px;color:var(--muted-foreground)}
+.n{font:500 12px var(--mono);padding:1px 8px;border-radius:999px;background:var(--muted);color:var(--foreground)}
+.panel h3 .n{margin-left:auto}
+.empty{color:var(--muted-foreground);font-size:13px;padding:6px 0}
+ul.rows{list-style:none;margin:0;padding:0}
+ul.rows>li{padding:16px 0;border-top:1px solid var(--border);display:flex;gap:12px;align-items:flex-start;min-width:0}
+ul.rows>li:first-child{border-top:0;padding-top:0}
+ul.rows>li:last-child{padding-bottom:0}
+.grow{flex:1;min-width:0}
+.title{font-weight:550;overflow-wrap:anywhere}
+.meta{color:var(--muted-foreground);font-size:12px;display:flex;flex-wrap:wrap;gap:4px 12px;margin-top:4px}
+.id{font:11px var(--mono);color:var(--muted-foreground);opacity:.8}
+a.title{text-decoration:none}a.title:hover{text-decoration:underline}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:999px;font-size:12px;white-space:nowrap;border:1px solid var(--border);background:var(--muted);flex:none}
+.pill::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--muted-foreground)}
+.t-ok::before{background:var(--ok)}.t-warn::before{background:var(--warn)}.t-err::before{background:var(--err)}
+.t-live::before{background:var(--live);animation:pulse 2s infinite}
+.chip{font:12px var(--mono);padding:1px 7px;border-radius:6px;background:var(--accent-soft)}
+/* tabs */
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin:0 0 28px}
+.tabs label{padding:10px 16px;cursor:pointer;color:var(--muted-foreground);border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;gap:8px;align-items:center;font-weight:500}
+.tabs label:hover{color:var(--foreground)}
+.tabs .n.warn{background:color-mix(in oklab,var(--warn) 22%,transparent)}
+input.tab{position:absolute;opacity:0;pointer-events:none}
+.pane{display:none}
+#tab-overview:checked~.tabs label[for=tab-overview],#tab-input:checked~.tabs label[for=tab-input],#tab-detail:checked~.tabs label[for=tab-detail]{color:var(--foreground);border-bottom-color:var(--foreground)}
+#tab-overview:checked~#pane-overview,#tab-input:checked~#pane-input,#tab-detail:checked~#pane-detail{display:block}
+/* bars */
+.bar{height:6px;border-radius:99px;background:var(--muted);overflow:hidden}
+.bar i{display:block;height:100%;border-radius:99px;background:var(--foreground);transition:width .4s var(--ease)}
+.bar.total{height:12px;margin-top:14px}.bar.total i{background:var(--ok)}
+.bar.thin{height:4px;margin-top:10px}
+.bar.t-warn i{background:var(--warn)}
+.bar.unknown i{width:100%;background:repeating-linear-gradient(45deg,var(--border) 0 6px,transparent 6px 12px)}
+.segbar{display:flex;height:6px;border-radius:99px;background:var(--muted);overflow:hidden;gap:2px;margin-top:12px}
+.segbar i{display:block;height:100%}
+.s-done{background:var(--ok)}.s-active{background:var(--live)}.s-merge{background:color-mix(in oklab,var(--live) 55%,var(--ok))}
+.s-input{background:var(--warn)}.s-wait{background:color-mix(in oklab,var(--warn) 40%,var(--muted))}.s-ready{background:var(--border)}.s-fail{background:var(--err)}
+.legend{display:flex;flex-wrap:wrap;gap:4px 16px;margin-top:10px;font-size:12px;color:var(--muted-foreground);align-items:center}
+.legend b{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}
+/* overview */
+.lane-top,.obj-top,.proj-head{display:flex;align-items:center;gap:12px;min-width:0}
+.lane-time{margin-left:auto;font-size:12px;color:var(--muted-foreground);white-space:nowrap}
+.lane-time.over{color:var(--warn)}
+.proj-name{font-size:20px;font-weight:700;letter-spacing:-.02em}
+.proj-pct{font:700 32px/1 var(--font);letter-spacing:-.03em}
+.proj-pct small{font-size:16px;font-weight:600;color:var(--muted-foreground);margin-left:2px}
+.obj-list{margin-top:24px;padding-top:4px;border-top:1px solid var(--border)}
+.obj-list>li:first-child{padding-top:20px!important}
+.obj-title{font-size:15px;font-weight:600}
+.obj-pct{font:600 15px var(--font);color:var(--muted-foreground);white-space:nowrap}
+.now{font-size:13px;color:var(--muted-foreground);margin-top:6px;overflow-wrap:anywhere}
+.eta{color:var(--foreground);font-weight:500}
+.basis{font-size:11px;color:var(--muted-foreground);margin-top:4px;text-align:right;opacity:.85}
+details{margin-top:12px}
+summary{cursor:pointer;color:var(--muted-foreground);font-size:12px;list-style-position:outside}
+summary:hover{color:var(--foreground)}
+ul.mini{list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px}
+ul.mini li{display:flex;gap:12px;justify-content:space-between;font-size:13px}
+/* inbox */
+.qcard{display:block!important}
+.qhead{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.qhuman{font-size:15px;font-weight:550;margin-top:8px;line-height:1.55}
+.qctx{font-size:12px;color:var(--muted-foreground);margin-top:6px;display:flex;flex-wrap:wrap;gap:4px 12px}
+.howto{margin-top:12px;padding:12px 14px;border-radius:var(--radius);background:var(--muted);font-size:12px;color:var(--muted-foreground);display:grid;gap:6px}
+.howto code{color:var(--foreground);user-select:all}
+.opts{display:flex;gap:6px;flex-wrap:wrap}
+/* detail */
+.groups{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow)}
+.stat b{display:block;font-size:26px;font-weight:700;letter-spacing:-.02em;line-height:1.15}
+.stat span{font-size:12px;color:var(--muted-foreground);display:flex;align-items:center;gap:6px;margin-top:4px}
+.stat span::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--muted-foreground)}
+.stat.t-ok span::before{background:var(--ok)}.stat.t-warn span::before{background:var(--warn)}.stat.t-err span::before{background:var(--err)}.stat.t-live span::before{background:var(--live)}
+.stat.zero b{color:var(--muted-foreground);font-weight:500}
+.obj-art .proj-tag{font-size:12px;color:var(--muted-foreground)}
+.cardlist{list-style:none;margin:16px 0 0;padding:0;display:grid;gap:2px}
+.cardlist li{display:flex;gap:12px;align-items:flex-start;padding:8px 10px;border-radius:var(--radius-sm)}
+.cardlist .pill{min-width:88px;justify-content:flex-start}
+.cardlist li:hover{background:var(--accent-soft)}
+.why{font-size:12px;color:var(--muted-foreground);margin-top:2px;overflow-wrap:anywhere}
+.tree,.tree ul{list-style:none;margin:0;padding:0}
+.tree ul ul{margin-left:14px;padding-left:12px;border-left:1px dashed var(--border)}
+.tree li{padding:5px 0}
+.node{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.layer{font-size:11px;padding:0 6px;border-radius:5px;border:1px solid var(--border);color:var(--muted-foreground)}
+.qcount{font-size:11px;color:var(--warn)}
+/* channels */
+.ch-head{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+.ch-head .title{font-size:16px;font-weight:650}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:12px;color:var(--muted-foreground);margin-bottom:12px}
+.kv b{color:var(--foreground);font-weight:500;font-family:var(--mono)}
+.win-top{display:flex;justify-content:space-between;font-size:12px}
+.win-top span{color:var(--muted-foreground)}
+/* card page */
+.crumbs{font-size:13px;color:var(--muted-foreground);display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+.body{white-space:pre-wrap;font-size:13px;line-height:1.65;max-height:320px;overflow:auto;color:var(--foreground)}
+.attempt{display:block!important}
+.attempt-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.excerpt{margin-top:10px;padding:10px 12px;border-radius:var(--radius-sm);background:color-mix(in oklab,var(--err) 10%,transparent);font:12px/1.55 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:200px;overflow:auto}
+.events{margin-top:10px;display:grid;gap:4px;max-height:260px;overflow:auto}
+.ev{display:flex;gap:8px;font-size:12px;min-width:0}
+.ev code{color:var(--muted-foreground);overflow-wrap:anywhere;min-width:0}
+pre{margin:8px 0 0;padding:12px;border-radius:var(--radius-sm);background:var(--muted);font:12px/1.55 var(--mono);white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:var(--radius-sm);border:1px solid var(--border);background:var(--card);color:var(--foreground);text-decoration:none;font:inherit;font-size:13px;cursor:pointer}
+.btn.primary{background:var(--foreground);color:var(--background);border-color:var(--foreground)}
+form.search{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px}
+form.search input{font:inherit;color:var(--foreground);background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 12px;min-width:0}
+form.search input[type=search]{flex:1 1 260px}
+form.search input:focus{outline:2px solid color-mix(in oklab,var(--foreground) 30%,transparent);outline-offset:1px}
+.pager{display:flex;align-items:center;gap:10px;justify-content:flex-end;margin-top:16px;color:var(--muted-foreground);font-size:12px}
+footer{max-width:1180px;margin:0 auto;padding:0 clamp(20px,3vw,48px) 40px;color:var(--muted-foreground);font-size:12px}
+@media (max-width:640px){.top{flex-wrap:wrap}.live{display:none}.panel{padding:18px}}
+</style>
 </head>
 <body>
+<header class="top">
+<a class="brand" href="/"><span class="logo">C</span>Cardex <small>看板</small></a>
 <nav>
-<a href="/">当前工作</a>
-<a href="/channels">渠道</a>
-<a href="/history">历史</a>
+<a href="/"{{if .Current}} aria-current="page"{{end}}>当前工作</a>
+<a href="/channels"{{if .Channels}} aria-current="page"{{end}}>渠道</a>
+<a href="/history"{{if .History}} aria-current="page"{{end}}>历史</a>
 </nav>
+<span class="spacer"></span>
+<span class="live"><span class="pulse"></span>每 5 秒自动刷新</span>
+<button class="icon-btn" type="button" onclick="cardexTheme()" title="切换深浅色" aria-label="切换深浅色">◐</button>
+</header>
+<main>
 {{if .Current}}{{template "current" .Current}}{{end}}
 {{if .Channels}}{{template "channels" .Channels}}{{end}}
 {{if .Card}}{{template "card" .Card}}{{end}}
 {{if .History}}{{template "history" .History}}{{end}}
-<script>
-setInterval(function () {
-  location.reload();
-}, 5000);
-</script>
+</main>
+<footer>只读看板 · 数据来自本机 Cardex，不调用模型</footer>
 </body>
 </html>
 {{end}}
 
 {{define "current"}}
 <section id="current-work">
-{{range .Objectives}}
-<article class="objective">
-<h2>{{.Title}}</h2>
-<p>objective {{.ID}} status {{.Status}}</p>
-{{template "design-nodes" .Nodes}}
-</article>
+<h1>当前工作</h1>
+<p class="sub">在并行跑什么、每个目标走到哪一步、还有多远，以及哪些事在等你。</p>
+<input class="tab" type="radio" name="tab" id="tab-overview" checked>
+<input class="tab" type="radio" name="tab" id="tab-input">
+<input class="tab" type="radio" name="tab" id="tab-detail">
+<div class="tabs" role="tablist">
+<label for="tab-overview">总览</label>
+<label for="tab-input">待你处理<span class="n{{if .Inbox}} warn{{end}}">{{len .Inbox}}</span></label>
+<label for="tab-detail">明细</label>
+</div>
+<div class="pane" id="pane-overview">{{template "overview" .}}</div>
+<div class="pane" id="pane-input">{{template "inbox" .}}</div>
+<div class="pane" id="pane-detail">{{template "detail" .}}</div>
+<div class="k">
+{{range .StatusCounts}}status {{.Status}} count {{.Count}}
+{{end}}{{range .Waiting}}waiting {{.ID}} reason {{.WaitReason}}
+{{end}}{{range .RunningAttempts}}attempt {{.ID}} card {{.Card}} channel {{.Channel}} {{range .Claims}}claim {{.Path}} {{.Symbol}} {{end}}
+{{end}}{{range .MergeQueue}}merge {{.ID}} {{.Title}}
+{{end}}{{range .Objectives}}{{range .Cards}}card {{.ID}} status {{.Status}} {{.Title}}
+{{end}}{{end}}{{range .PendingQuestions}}question {{.ID}} {{.Text}}
 {{end}}
-<h3>卡</h3>
-<ul>
-{{range .Cards}}
-<li>card {{.ID}} status {{.Status}} {{.Title}}</li>
-{{end}}
-</ul>
-<h3>状态</h3>
-<ul>
-{{range .StatusCounts}}
-<li>status {{.Status}} count {{.Count}}</li>
-{{end}}
-</ul>
-<h3>waiting</h3>
-<ul>
-{{range .Waiting}}
-<li>waiting {{.ID}} reason {{.WaitReason}}</li>
-{{end}}
-</ul>
-<h3>运行中的尝试</h3>
-<ul>
-{{range .RunningAttempts}}
-<li>attempt {{.ID}} card <a href="/cards/{{.Card}}">{{.Card}}</a> channel {{.Channel}}
-{{range .Claims}}claim {{.Path}} {{.Symbol}} {{end}}</li>
-{{end}}
-</ul>
-<h3>合并队列</h3>
-<ul>
-{{range .MergeQueue}}
-<li>merge {{.ID}} {{.Title}}</li>
-{{end}}
-</ul>
-<h3>待拍板</h3>
-<ul>
-{{range .PendingQuestions}}
-<li>question {{.ID}} {{.Text}}</li>
-{{end}}
-</ul>
+</div>
 </section>
+{{end}}
+
+{{define "overview"}}
+<div class="panel">
+<h3>正在并行<span class="n">{{len .Lanes}}</span></h3>
+{{if .Lanes}}<ul class="rows">
+{{range .Lanes}}<li><span class="pill t-live">{{.Channel}}</span><div class="grow">
+<div class="lane-top"><a class="title" href="/cards/{{.Card}}">{{.CardTitle}}</a><span class="lane-time{{if .Over}} over{{end}}">已跑 {{.Elapsed}}{{if .Typical}} · 通常 {{.Typical}}{{end}}</span></div>
+<div class="meta"><span>{{.Project}}</span><span>{{.Objective}}</span>{{if .Model}}<span class="chip">{{.Model}}</span>{{end}}</div>
+<div class="bar thin{{if not .Fraction}} unknown{{end}}{{if .Over}} t-warn{{end}}"><i style="width:{{pct .Fraction}}"></i></div>
+</div></li>
+{{end}}</ul>{{else}}<div class="empty">现在没有任务在跑。</div>{{end}}
+</div>
+<h2 class="section">项目进度</h2>
+{{range .Progress}}{{if .Objectives}}<div class="panel">
+<div class="proj-head"><div class="grow"><div class="proj-name">{{.Project}}</div><div class="meta"><span>{{len .Objectives}} 个目标在推进</span>{{if .Running}}<span>{{.Running}} 个在跑</span>{{end}}<span>卡完成 {{.Done}} / {{.Total}}</span></div></div><span class="proj-pct">{{.Percent}}<small>%</small></span></div>
+<div class="bar total"><i style="width:{{.Percent}}%"></i></div>
+<ul class="rows obj-list">
+{{range .Objectives}}<li><div class="grow">
+<div class="obj-top"><span class="pill t-{{.StageTone}}">{{.Stage}}</span><span class="obj-title grow">{{.Title}}</span><span class="obj-pct">{{.Percent}}%</span></div>
+<div class="now">{{.Now}}</div>
+<div class="segbar" title="完成 {{.Done}}，执行 {{.Active}}，合并 {{.Merging}}，待你处理 {{.NeedsInput}}，等待 {{.Waiting}}，排队 {{.Ready}}，失败 {{.Failed}}"><i class="s-done" style="width:{{.Seg .Done}}"></i><i class="s-active" style="width:{{.Seg .Active}}"></i><i class="s-merge" style="width:{{.Seg .Merging}}"></i><i class="s-input" style="width:{{.Seg .NeedsInput}}"></i><i class="s-wait" style="width:{{.Seg .Waiting}}"></i><i class="s-ready" style="width:{{.Seg .Ready}}"></i><i class="s-fail" style="width:{{.Seg .Failed}}"></i></div>
+<div class="legend"><span><b class="s-done"></b>完成 {{.Done}}/{{.Total}}</span>{{if .Active}}<span><b class="s-active"></b>执行 {{.Active}}</span>{{end}}{{if .Merging}}<span><b class="s-merge"></b>合并 {{.Merging}}</span>{{end}}{{if .NeedsInput}}<span><b class="s-input"></b>待你处理 {{.NeedsInput}}</span>{{end}}{{if .Waiting}}<span><b class="s-wait"></b>等待 {{.Waiting}}</span>{{end}}{{if .Ready}}<span><b class="s-ready"></b>排队 {{.Ready}}</span>{{end}}{{if .Failed}}<span><b class="s-fail"></b>失败 {{.Failed}}</span>{{end}}
+<span class="spacer"></span><span class="eta">{{if .ETABasis}}预计还要 {{end}}{{.ETA}}</span></div>
+{{if .ETABasis}}<div class="basis">{{.ETABasis}}</div>{{end}}
+</div></li>
+{{end}}</ul>
+{{if .Wrapping}}{{template "wrapping" .Wrapping}}{{end}}
+</div>
+{{end}}{{end}}
+{{$w := 0}}{{range .Progress}}{{if not .Objectives}}{{$w = inc $w}}{{end}}{{end}}
+{{if $w}}<div class="panel">
+<div class="proj-head"><div class="grow"><div class="proj-name">只差验收</div><div class="meta"><span>{{$w}} 个项目的卡已经全部做完</span></div></div></div>
+<ul class="rows obj-list">
+{{range .Progress}}{{if not .Objectives}}<li><div class="grow"><div class="obj-top"><span class="pill t-ok">收尾</span><span class="obj-title grow">{{.Project}}</span><span class="obj-pct">卡 {{.Done}} / {{.Total}}</span></div>{{template "wrapping" .Wrapping}}</div></li>
+{{end}}{{end}}</ul>
+</div>{{end}}
+{{end}}
+
+{{define "wrapping"}}<details><summary>{{len .}} 个目标的卡已做完，等验收</summary><ul class="mini">{{range .}}<li><span>{{.Title}}</span><span class="meta"><span>卡 {{.Done}}/{{.Total}}</span></span></li>{{end}}</ul></details>{{end}}
+
+{{define "inbox"}}
+{{if .Inbox}}<div class="panel">
+<h3>这些事在等你决定<span class="n">{{len .Inbox}}</span></h3>
+<ul class="rows">
+{{range .Inbox}}<li class="qcard">{{template "question" .}}</li>
+{{end}}</ul>
+</div>{{else}}<div class="panel"><div class="empty">没有等你处理的事。</div></div>{{end}}
+{{$stale := len .PendingQuestions}}{{if gt $stale (len .Inbox)}}<p class="sub" style="margin-top:16px">另有 {{sub $stale (len .Inbox)}} 个问题对应的卡已经结束或取消，调度器不再提醒，这里不列出。</p>{{end}}
+{{end}}
+
+{{define "question"}}
+<div class="qhead"><span class="pill t-warn">待你处理</span>{{if .ScopeTitle}}<a class="title" href="/cards/{{.Scope}}">{{.ScopeTitle}}</a>{{else if .Scope}}<span class="title">{{.Scope}}</span>{{end}}</div>
+<div class="qhuman">{{.Human}}</div>
+<div class="qctx">{{if .Project}}<span>项目 {{.Project}}</span>{{end}}{{if .ObjectiveTitle}}<span>目标 {{.ObjectiveTitle}}</span>{{end}}<span class="id">{{.ID}}</span></div>
+<details><summary>原始问题和处理方式</summary>
+<pre>{{.Text}}</pre>
+<div class="howto">
+{{if .Options}}<div class="opts">可选回答：{{range .Options}}<span class="chip">{{.}}</span>{{end}}</div>{{end}}
+<div>记录你的决定：<code>cardex question answer {{.ID}} &lt;选项&gt;</code></div>
+{{if eq .ScopeKind "card"}}<div>让这张卡再跑一次：<code>cardex card retry {{.Scope}}</code></div>
+<div>不要这张卡了：<code>cardex card cancel {{.Scope}}</code></div>{{end}}
+<div>回答只会记下你的决定，调度器不会因此自动重跑，要继续需要上面的重试命令。</div>
+</div>
+</details>
+{{end}}
+
+{{define "detail"}}
+<div class="groups">
+{{range .Groups}}<div class="stat t-{{.Tone}}{{if eq .Count 0}} zero{{end}}"><b>{{.Count}}</b><span>{{.Label}}</span></div>
+{{end}}
+</div>
+<h2 class="section">按目标看卡片</h2>
+{{if .Objectives}}{{range .Objectives}}<article class="panel obj-art">
+<span class="k">objective {{.ID}} status {{.Status}}</span>
+<div class="obj-top"><span class="pill t-{{tone .Status}}">{{label .Status}}</span><span class="obj-title grow">{{.Title}}</span><span class="proj-tag">{{.Project}}</span></div>
+{{if .Cards}}<ul class="cardlist">
+{{range .Cards}}<li><span class="pill t-{{gtone .Group}}">{{glabel .Group}}</span><div class="grow"><a class="title" href="/cards/{{.ID}}">{{.Title}}</a>{{if .WaitReason}}<div class="why">{{.WaitReason}}</div>{{end}}</div></li>
+{{end}}</ul>{{else}}<div class="empty" style="margin-top:12px">这个目标还没有进行中的卡。</div>{{end}}
+{{if .Nodes}}<details><summary>设计树</summary><div class="tree" style="margin-top:8px">{{template "design-nodes" .Nodes}}</div></details>{{end}}
+</article>
+{{end}}{{else}}<div class="panel"><div class="empty">没有进行中的目标。</div></div>{{end}}
 {{end}}
 
 {{define "channels"}}
 <section id="channels">
-{{range .Channels}}
-<article class="channel">
-<h2>{{.ID}}</h2>
-<p>health {{.Health}} redline {{.Redline}} occupied {{.Occupied}} concurrency {{.Concurrency}}</p>
-<ul>
-{{range .Windows}}
-<li>window {{.Name}} remaining {{.RemainingLabel}} confidence {{.Confidence}} reset {{.ResetAt}}</li>
-{{end}}
-</ul>
+<h1>渠道</h1>
+<p class="sub">每个执行工具的健康、占用和额度余量。</p>
+<div class="grid g3">
+{{range .Channels}}<article class="panel channel">
+<div class="ch-head"><span class="title">{{.ID}}</span><span class="spacer"></span><span class="pill t-{{tone .Health}}">{{label .Health}}</span></div>
+<div class="kv"><span>占用</span><b>{{.Occupied}} / {{.Concurrency}}</b><span>额度红线</span><b>{{.Redline}}</b></div>
+<div class="bar"><i style="width:{{load .Occupied .Concurrency}}"></i></div>
+<span class="k">health {{.Health}} redline {{.Redline}} occupied {{.Occupied}} concurrency {{.Concurrency}}</span>
+{{if .Windows}}<ul class="rows" style="margin-top:6px">
+{{range .Windows}}<li class="win"><div class="grow"><div class="win-top"><b>{{.Name}}</b><span>剩余 {{.RemainingLabel}} · 可信度 {{.Confidence}}</span></div><div class="bar{{if not .Remaining}} unknown{{end}}"><i style="width:{{pct .Remaining}}"></i></div><div class="meta"><span>重置 {{.ResetAt}}</span></div>
+<span class="k">window {{.Name}} remaining {{.RemainingLabel}} confidence {{.Confidence}} reset {{.ResetAt}}</span></div></li>
+{{end}}</ul>{{else}}<div class="empty">没有额度窗口记录。</div>{{end}}
 </article>
 {{end}}
+</div>
 </section>
 {{end}}
 
 {{define "card"}}
 <article class="card">
-<h2>{{.Title}}</h2>
-<p>card {{.ID}} status {{.Status}}</p>
-<ul>
-{{range .Attempts}}
-<li>attempt {{.ID}} outcome {{.Outcome}} excerpt {{.ErrorExcerpt}} ended {{.Ended}}
-{{with .Exit}}exit {{.}} {{end}}base {{.BaseCommit}} head {{.HeadCommit}}
-{{range .Events}}event {{.Type}} {{.DataText}} {{end}}
-<pre class="route-reason">{{.RouteReasonJSON}}</pre>
-<a href="{{.LogTailURL}}">output.log</a>
+<div class="crumbs">{{if .Project}}<span>{{.Project}}</span><span>/</span>{{end}}{{if .ObjectiveTitle}}<span>{{.ObjectiveTitle}}</span>{{end}}</div>
+<h1>{{.Title}}</h1>
+<div class="meta" style="margin-bottom:28px"><span class="pill t-{{tone .Status}}">{{label .Status}}</span><span class="id">{{.ID}}</span><span>共 {{len .Attempts}} 次尝试</span></div>
+<span class="k">card {{.ID}} status {{.Status}}</span>
+{{if .Questions}}<div class="panel">
+<h3>等你决定<span class="n">{{len .Questions}}</span></h3>
+<ul class="rows">{{range .Questions}}<li class="qcard">{{template "question" .}}</li>{{end}}</ul>
+</div>{{end}}
+{{if or .WaitReason .ReworkNote}}<div class="panel">
+{{if .WaitReason}}<h3>为什么在等</h3><div class="body">{{.WaitReason}}</div>{{end}}
+{{if .ReworkNote}}<h3 style="margin-top:16px">复核意见</h3><div class="body">{{.ReworkNote}}</div>{{end}}
+</div>{{end}}
+{{if .Body}}<div class="panel"><h3>任务说明</h3><div class="body">{{.Body}}</div></div>{{end}}
+<div class="panel">
+<h3>尝试<span class="n">{{len .Attempts}}</span></h3>
+{{if .Attempts}}<ul class="rows">
+{{range .Attempts}}<li class="attempt"><span class="k">attempt {{.ID}}</span>
+<div class="attempt-head"><span class="pill t-{{if .Ended}}{{tone .Outcome}}{{else}}live{{end}}">{{if .Outcome}}{{label .Outcome}}{{else if .Ended}}已结束{{else}}进行中{{end}}</span><span class="id">{{.ID}}</span><span class="spacer"></span><a class="btn" href="{{.LogTailURL}}">output.log</a></div>
+<div class="meta" style="margin-top:8px">{{with .Exit}}<span>退出码 <b class="chip">{{.}}</b></span>{{end}}{{if .BaseCommit}}<span>基于 <span class="chip">{{short .BaseCommit}}</span></span>{{end}}{{if .HeadCommit}}<span>产出 <span class="chip">{{short .HeadCommit}}</span></span>{{end}}</div>
+<span class="k">outcome {{.Outcome}} excerpt {{.ErrorExcerpt}} ended {{.Ended}} {{with .Exit}}exit {{.}} {{end}}base {{.BaseCommit}} head {{.HeadCommit}}</span>
+{{if .ErrorExcerpt}}<div class="excerpt">{{.ErrorExcerpt}}</div>{{end}}
+{{if .Events}}<details><summary>{{len .Events}} 条事件</summary><div class="events">{{range .Events}}<div class="ev"><span class="chip">{{.Type}}</span><code>{{.DataText}}</code><span class="k">event {{.Type}} {{.DataText}}</span></div>{{end}}</div></details>{{end}}
+<details><summary>选路原因</summary><pre class="route-reason">{{.RouteReasonJSON}}</pre></details>
 </li>
-{{end}}
-</ul>
+{{end}}</ul>{{else}}<div class="empty">这张卡还没有尝试。</div>{{end}}
+</div>
 </article>
 {{end}}
 
 {{define "history"}}
 <section id="history">
-<form method="get" action="/history">
-<input type="search" name="q" value="{{.Query}}">
-<input type="text" name="status" value="{{.Status}}">
-<input type="number" name="page" value="{{.Page}}">
-<button type="submit">搜索</button>
+<h1>历史</h1>
+<p class="sub">已完成或已取消的目标，以及从旧版导入的卡。</p>
+<form class="search" method="get" action="/history">
+<input type="search" name="q" value="{{.Query}}" placeholder="搜索 ID、标题或原因">
+<input type="text" name="status" value="{{.Status}}" placeholder="状态，例如 done" size="14">
+<input type="number" name="page" value="{{.Page}}" min="1" style="width:84px" aria-label="页码">
+<button class="btn primary" type="submit">搜索</button>
 </form>
-<p>total {{.Total}} page {{.Page}} page_size {{.PageSize}}</p>
-<ul>
-{{range .Items}}
-<li>history {{.Kind}} {{.ID}} status {{.Status}} legacy {{.LegacyStatus}} {{.Title}} <a href="{{.Href}}">详情</a></li>
-{{end}}
-</ul>
+<div class="panel">
+<h3>记录<span class="n">{{.Total}}</span></h3>
+<span class="k">total {{.Total}} page {{.Page}} page_size {{.PageSize}}</span>
+{{if .Items}}<ul class="rows">
+{{range .Items}}<li><span class="pill t-{{tone .Status}}">{{label .Status}}</span><div class="grow"><a class="title" href="{{.Href}}">{{if .Title}}{{.Title}}{{else}}{{.ID}}{{end}}</a><div class="meta"><span>{{if eq .Kind "objective"}}目标{{else}}卡片{{end}}</span><span class="id">{{.ID}}</span>{{if .LegacyStatus}}<span>旧版状态 {{.LegacyStatus}}</span>{{end}}</div><span class="k">history {{.Kind}} {{.ID}} status {{.Status}} legacy {{.LegacyStatus}} {{.Title}}</span></div></li>
+{{end}}</ul>{{else}}<div class="empty">没有符合条件的记录。</div>{{end}}
+<div class="pager">{{$p := pages .Total .PageSize}}<span>第 {{.Page}} / {{$p}} 页</span>{{if gt .Page 1}}<a class="btn" href="/history?q={{.Query}}&amp;status={{.Status}}&amp;page={{dec .Page}}">上一页</a>{{end}}{{if lt .Page $p}}<a class="btn" href="/history?q={{.Query}}&amp;status={{.Status}}&amp;page={{inc .Page}}">下一页</a>{{end}}</div>
+</div>
 </section>
 {{end}}
 
 {{define "design-nodes"}}
 <ul>
-{{range .}}
-<li class="design-node">node {{.ID}} status {{.Status}} open_questions {{.OpenQuestionCount}} parent {{.Parent}} layer {{.Layer}}
+{{range .}}<li class="design-node"><div class="node"><span class="pill t-{{tone .Status}}">{{label .Status}}</span><span class="layer">{{.Layer}}</span><span class="id">{{.ID}}</span>{{if .OpenQuestionCount}}<span class="qcount">{{.OpenQuestionCount}} 个待答问题</span>{{end}}</div><span class="k">node {{.ID}} status {{.Status}} open_questions {{.OpenQuestionCount}} parent {{.Parent}} layer {{.Layer}}</span>
 {{if .Children}}{{template "design-nodes" .Children}}{{end}}
 </li>
 {{end}}

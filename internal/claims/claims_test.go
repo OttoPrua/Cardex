@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -242,6 +243,9 @@ func TestModeOnlyChangeIsClaim(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.after == "" && runtime.GOOS == "windows" {
+				t.Skip("no POSIX exec bit on Windows")
+			}
 			repo := initClaimsRepo(t)
 			gitClaims(t, repo, "config", "core.filemode", "true")
 			writeFile(t, repo, tc.file, tc.before)

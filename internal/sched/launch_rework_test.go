@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -700,7 +701,11 @@ func TestServeLoopLogErrorContinues(t *testing.T) {
 				t.Fatal("serve did not return")
 			}
 			text := stderr()
-			if !strings.Contains(text, "serve-loop.log") || !strings.Contains(text, tc.want) {
+			want := tc.want
+			if runtime.GOOS == "windows" && tc.name == "not writable" {
+				want = "Access is denied"
+			}
+			if !strings.Contains(text, "serve-loop.log") || !strings.Contains(text, want) {
 				t.Fatalf("stderr %q", text)
 			}
 			info, err := os.Stat(filepath.Join(home, "serve-loop.log"))

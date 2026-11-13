@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 // Browser cards.
@@ -136,6 +137,21 @@ func chromePath(cfg fileConfig) (string, error) {
 			candidates = append(candidates, filepath.Join(home, "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"))
 		}
 	}
+	if runtime.GOOS == "windows" {
+		for _, env := range []string{"ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"} {
+			if root := os.Getenv(env); root != "" {
+				candidates = append(candidates,
+					filepath.Join(root, "Google", "Chrome", "Application", "chrome.exe"),
+					filepath.Join(root, "Chromium", "Application", "chrome.exe"),
+				)
+			}
+		}
+		for _, env := range []string{"ProgramFiles(x86)", "ProgramFiles"} {
+			if root := os.Getenv(env); root != "" {
+				candidates = append(candidates, filepath.Join(root, "Microsoft", "Edge", "Application", "msedge.exe"))
+			}
+		}
+	}
 	for _, c := range candidates {
 		if st, err := os.Stat(c); err == nil && !st.IsDir() {
 			return c, nil
@@ -161,11 +177,27 @@ func browserEnv(host []string) []string {
 		"DISPLAY": true, "WAYLAND_DISPLAY": true, "XDG_RUNTIME_DIR": true,
 		"DBUS_SESSION_BUS_ADDRESS": true, "FONTCONFIG_PATH": true,
 	}
+	if runtime.GOOS == "windows" {
+		// What Chrome needs to start on Windows. Windows env names are
+		// case-insensitive (PATH is usually "Path"), so match on upper case.
+		for _, k := range []string{"SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT",
+			"USERPROFILE", "USERNAME", "HOMEDRIVE", "HOMEPATH", "APPDATA", "LOCALAPPDATA",
+			"PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)", "PROGRAMW6432",
+			"NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE"} {
+			keep[k] = true
+		}
+		for k := range keep {
+			keep[strings.ToUpper(k)] = true
+		}
+	}
 	var out []string
 	for _, kv := range host {
 		k, _, ok := strings.Cut(kv, "=")
 		if !ok {
 			continue
+		}
+		if runtime.GOOS == "windows" {
+			k = strings.ToUpper(k)
 		}
 		if keep[k] || strings.HasPrefix(k, "LC_") {
 			out = append(out, kv)
@@ -212,11 +244,12 @@ func launchBrowser(ctx context.Context, cfg fileConfig, attemptDir string) (*bro
 	}
 	args := browserArgs(profile)
 	cmd := exec.Command(bin, args...)
+	proc.Script(cmd)
 	cmd.Env = browserEnv(os.Environ())
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	cmd.Dir = dir
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	proc.NewGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		_ = logf.Close()
 		_ = os.RemoveAll(profile)
@@ -225,6 +258,7 @@ func launchBrowser(ctx context.Context, cfg fileConfig, attemptDir string) (*bro
 	// Record the group right away so reconcile can reap it if this host dies.
 	// Known gap: a host killed between Start and this write leaves a Chrome
 	// no one records; reconcile then only removes the profile.
+	_ = joinGroup(cmd.Process.Pid)
 	perr := persistGroupFile(filepath.Join(attemptDir, browserGroupName), cmd.Process.Pid)
 	_ = logf.Close()
 	b := &browserSession{cmd: cmd, pgid: cmd.Process.Pid, dir: dir, profile: profile, done: make(chan struct{})}
@@ -348,18 +382,5 @@ func groupUsesProfile(pgid int, profile string) bool {
 	if !processGroupAlive(pgid) {
 		return false
 	}
-	// `ps -g` means different things on macOS and Linux, so list every
-	// process with its pgid and filter here; -ww keeps long Chrome args whole.
-	out, err := exec.Command("ps", "-A", "-ww", "-o", "pgid=,args=").Output()
-	if err != nil {
-		return false
-	}
-	want := strconv.Itoa(pgid)
-	for _, line := range strings.Split(string(out), "\n") {
-		f := strings.Fields(line)
-		if len(f) > 1 && f[0] == want && strings.Contains(line, "--user-data-dir="+profile) {
-			return true
-		}
-	}
-	return false
+	return groupHasArg(pgid, "--user-data-dir="+profile)
 }

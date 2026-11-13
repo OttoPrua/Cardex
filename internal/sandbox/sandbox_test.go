@@ -12,6 +12,9 @@ import (
 )
 
 func TestProfileAllowsReadNetworkAndWriteList(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the seatbelt profile is macOS only; Windows runs without a sandbox")
+	}
 	dir := t.TempDir()
 	profile := sandbox.Profile([]string{dir})
 	for _, needle := range []string{

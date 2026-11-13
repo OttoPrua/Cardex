@@ -16,13 +16,14 @@ import (
 	"sync"
 
 	"github.com/OttoPrua/Cardex/internal/homeguard"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 //go:embed templates/page.html
 var templateFS embed.FS
 
-var pageTmpl = template.Must(template.ParseFS(templateFS, "templates/page.html"))
+var pageTmpl = template.Must(template.New("page.html").Funcs(boardFuncs).ParseFS(templateFS, "templates/page.html"))
 
 // logTailBytes is how much of an attempt output.log a GET returns.
 const logTailBytes = 32 * 1024
@@ -283,13 +284,25 @@ func openDB() (*store.Store, string, error) {
 	return db, home, nil
 }
 
+// CloseDB closes the cached connection, if any. serve calls it on the way out;
+// on Windows an open database file cannot be removed or replaced.
+func CloseDB() {
+	dbMu.Lock()
+	defer dbMu.Unlock()
+	if cachedDB != nil {
+		_ = cachedDB.Close()
+	}
+	cachedDB = nil
+	cachedHome = ""
+}
+
 func resolveHome() (string, error) {
 	home := homeFromArgs(os.Args[1:])
 	if home == "" {
 		home = os.Getenv("CARDEX_HOME")
 	}
 	if home == "" {
-		user, err := os.UserHomeDir()
+		user, err := proc.UserHome()
 		if err != nil {
 			return "", err
 		}

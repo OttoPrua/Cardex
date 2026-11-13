@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -55,11 +56,24 @@ func hermesInboxDir(home, subscriptionID string) string {
 }
 
 func hermesInboundPath(home, subscriptionID, wakeID string) string {
-	return filepath.Join(hermesInboxDir(home, subscriptionID), wakeID+".json")
+	return filepath.Join(hermesInboxDir(home, subscriptionID), wakeFileStem(wakeID)+".json")
 }
 
 func hermesAckPath(home, subscriptionID, wakeID string) string {
-	return filepath.Join(hermesInboxDir(home, subscriptionID), wakeID+".ack.json")
+	return filepath.Join(hermesInboxDir(home, subscriptionID), wakeFileStem(wakeID)+".ack.json")
+}
+
+// wakeFileStem is the file name stem for a wake id. Wake ids are
+// "<task>:<seq>", and Windows does not allow ':' in a file name, so there it
+// is written as "%3A" ('%' is never in a wake id, so the mapping is
+// one-to-one). The receiver writes its ack next to the inbound file with the
+// same stem, so it does not need to know about the mapping. Other platforms
+// keep the wake id unchanged.
+func wakeFileStem(wakeID string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ReplaceAll(wakeID, ":", "%3A")
+	}
+	return wakeID
 }
 
 func inboundDigest(message string) string {

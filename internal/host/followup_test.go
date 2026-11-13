@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
@@ -281,15 +280,8 @@ func testFailStartPersists(t *testing.T) {
 	if err := os.Remove(prompt); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(prompt, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		f, err := os.OpenFile(prompt, os.O_WRONLY|syscall.O_NONBLOCK, 0)
-		if err == nil {
-			_ = f.Close()
-		}
-	}()
+	release := makeBlockingPrompt(t, prompt)
+	defer release()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

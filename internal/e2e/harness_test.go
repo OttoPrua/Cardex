@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,6 +50,7 @@ func TestHarness(t *testing.T) {
 		}
 	}
 	testCmd := exec.Command(filepath.Join(h.Repo, "test.sh"))
+	proc.Script(testCmd)
 	testCmd.Dir = h.Repo
 	if out, err = testCmd.CombinedOutput(); err != nil {
 		t.Fatalf("test.sh: %v\n%s", err, out)

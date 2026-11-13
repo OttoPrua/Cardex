@@ -2,7 +2,7 @@ package main
 
 import (
 	"os"
-	"path/filepath"
+	"path"
 	"runtime"
 	"strings"
 )
@@ -15,17 +15,17 @@ var systemPathDirs = []string{"/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin",
 
 // withSystemPath appends any missing system directory to path, keeping the
 // existing order so user entries still win.
-func withSystemPath(path, goos string) string {
+func withSystemPath(list, goos string) string {
 	if goos == "windows" {
-		return path
+		return list
 	}
 	have := map[string]bool{}
 	var parts []string
-	for _, p := range filepath.SplitList(path) {
+	for _, p := range strings.Split(list, ":") {
 		if p == "" {
 			continue
 		}
-		have[filepath.Clean(p)] = true
+		have[path.Clean(p)] = true
 		parts = append(parts, p)
 	}
 	for _, d := range systemPathDirs {
@@ -33,7 +33,7 @@ func withSystemPath(path, goos string) string {
 			parts = append(parts, d)
 		}
 	}
-	return strings.Join(parts, string(os.PathListSeparator))
+	return strings.Join(parts, ":")
 }
 
 func ensureSystemPath() {

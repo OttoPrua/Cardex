@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 // AcceptSubscriptionID reports whether id matches the hermes subscription token.
@@ -19,5 +21,6 @@ func CommandExec(ctx context.Context, argv []string) error {
 		return fmt.Errorf("notify: empty command")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	proc.Script(cmd)
 	return cmd.Run()
 }

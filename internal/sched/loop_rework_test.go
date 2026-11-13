@@ -16,6 +16,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/host"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/prompt"
 	"github.com/OttoPrua/Cardex/internal/quota"
 	"github.com/OttoPrua/Cardex/internal/route"
@@ -471,8 +472,8 @@ func TestFillReusesAutomaticChecks(t *testing.T) {
 				if err := db.CreateCard(ctx, &holder); err != nil {
 					t.Fatal(err)
 				}
-				held := exec.Command("sleep", "60")
-				held.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+				held := exec.Command(sleepBin(), "60")
+				proc.NewGroup(held)
 				if err := held.Start(); err != nil {
 					t.Fatal(err)
 				}
@@ -1485,8 +1486,8 @@ func holdLaunch(t *testing.T) func(context.Context, string, string) (int, error)
 		}
 	})
 	return func(context.Context, string, string) (int, error) {
-		cmd := exec.Command("sleep", "60")
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd := exec.Command(sleepBin(), "60")
+		proc.NewGroup(cmd)
 		if err := cmd.Start(); err != nil {
 			return 0, err
 		}

@@ -1,8 +1,6 @@
 package runner
 
 import (
-	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,15 +11,21 @@ import (
 // Kimi adapts kimi-cli. v1 forbids --auto/--yolo/--plan next to --prompt.
 // An empty ConfigHome inherits KIMI_CODE_HOME without changing its config.
 // An explicit ConfigHome gets the auto-permission overlay.
+//
+// GoalMode selects the interactive /goal driver (kimi_goal.go). The host
+// sets it, with Prompt and WorkDir, through ForGoal.
 type Kimi struct {
 	ConfigHome string
+	GoalMode   bool
+	Prompt     string
+	WorkDir    string
 }
 
 var _ Runner = Kimi{}
 
 func (Kimi) Name() string           { return string(model.RunnerKimi) }
-func (Kimi) Capabilities() []string { return nil }
-func (Kimi) NeedsPTY() bool         { return false }
+func (Kimi) Capabilities() []string { return []string{"goal_mode"} }
+func (k Kimi) NeedsPTY() bool       { return k.GoalMode }
 func (k Kimi) WritablePaths() []string {
 	return appendEnvDirs(
 		userPath(".kimi-code"),
@@ -31,9 +35,10 @@ func (k Kimi) WritablePaths() []string {
 	)
 }
 
-func (Kimi) Drive(context.Context, io.ReadWriter) error { return nil }
-
 func (k Kimi) Build(spec LaunchSpec) ([]string, []string, error) {
+	if k.GoalMode {
+		return k.buildGoal(spec)
+	}
 	body, err := promptArg(spec.PromptPath)
 	if err != nil {
 		return nil, nil, err

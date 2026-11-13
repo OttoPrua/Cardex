@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -44,6 +45,9 @@ func TestImportSubscriptionsReadOnlySource(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := snapshotTree(t, v1)
+	if runtime.GOOS == "windows" {
+		t.Skip("read-only dirs via chmod are not enforced on Windows")
+	}
 	if out, err := exec.Command("chmod", "-R", "a-w", v1).CombinedOutput(); err != nil {
 		t.Fatalf("chmod: %v %s", err, out)
 	}

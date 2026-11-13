@@ -535,8 +535,8 @@ func hermesInboundFiles(t *testing.T, home, sub string) map[string]hermesInbound
 		if err := json.Unmarshal(raw, &body); err != nil {
 			t.Fatal(err)
 		}
-		stem := strings.TrimSuffix(name, ".json")
-		out[stem] = body
+		// Keyed by wake id, not by file stem (they differ on Windows).
+		out[unWakeFileStem(strings.TrimSuffix(name, ".json"))] = body
 	}
 	return out
 }
@@ -597,7 +597,7 @@ func TestDueHermesReminderIsConsumableAgain(t *testing.T) {
 				wake1, body1 = id, body
 			}
 			headerSub, highWater, rows := mustParseCompact(t, body1.Message)
-			if headerSub != sub || highWater != 1 || len(rows) != 1 || rows[0].wake != rows[0].task+":1" || wake1 != wakeFileStem(rows[0].wake) {
+			if headerSub != sub || highWater != 1 || len(rows) != 1 || rows[0].wake != rows[0].task+":1" || wake1 != rows[0].wake {
 				t.Fatalf("first wake %s high %d rows %+v", wake1, highWater, rows)
 			}
 			digest1 := inboundDigest(body1.Message)

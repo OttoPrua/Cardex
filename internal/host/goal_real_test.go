@@ -25,7 +25,24 @@ func TestKimiGoalRealSmoke(t *testing.T) {
 	if _, err := exec.LookPath("kimi"); err != nil {
 		t.Skip("kimi not on PATH")
 	}
-	home, id, work := seedPrepared(t, t.TempDir(), model.RunnerKimi, "", 1, nil)
+	realGoalSmoke(t, model.RunnerKimi, "kimi-code/kimi-for-coding")
+}
+
+// TestCursorGoalRealSmoke is the same check against cursor-agent's /goal.
+// Opt-in with CARDEX_REAL_CURSOR=1.
+func TestCursorGoalRealSmoke(t *testing.T) {
+	if os.Getenv("CARDEX_REAL_CURSOR") != "1" {
+		t.Skip("set CARDEX_REAL_CURSOR=1 to run the real cursor goal smoke")
+	}
+	if _, err := exec.LookPath("cursor-agent"); err != nil {
+		t.Skip("cursor-agent not on PATH")
+	}
+	realGoalSmoke(t, model.RunnerCursor, "grok-4.7-low")
+}
+
+func realGoalSmoke(t *testing.T, rn model.RunnerName, defaultModel string) {
+	t.Helper()
+	home, id, work := seedPrepared(t, t.TempDir(), rn, "", 1, nil)
 	if err := os.WriteFile(filepath.Join(home, "attempts", id, "hard-duration"), []byte("150s"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +62,7 @@ func TestKimiGoalRealSmoke(t *testing.T) {
 	}
 	att.Route.Model = os.Getenv("CARDEX_SMOKE_MODEL")
 	if att.Route.Model == "" {
-		att.Route.Model = "kimi-code/kimi-for-coding"
+		att.Route.Model = defaultModel
 	}
 	if err := db.UpdateAttempt(ctx, &att); err != nil {
 		t.Fatal(err)

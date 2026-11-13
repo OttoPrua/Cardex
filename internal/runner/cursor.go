@@ -1,21 +1,26 @@
 package runner
 
 import (
-	"context"
 	"fmt"
-	"io"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 // Cursor adapts the Cursor Agent CLI. v1's command name is cursor-agent.
-type Cursor struct{}
+type Cursor struct {
+	// GoalMode launches the interactive TUI and drives its /goal command.
+	GoalMode bool
+	Prompt   string
+	WorkDir  string
+	// DataDir overrides CURSOR_DATA_DIR (tests).
+	DataDir string
+}
 
 var _ Runner = Cursor{}
 
 func (Cursor) Name() string           { return string(model.RunnerCursor) }
-func (Cursor) Capabilities() []string { return nil }
-func (Cursor) NeedsPTY() bool         { return false }
+func (Cursor) Capabilities() []string { return []string{"goal_mode"} }
+func (c Cursor) NeedsPTY() bool       { return c.GoalMode }
 func (Cursor) WritablePaths() []string {
 	return appendEnvDirs(
 		userPath(".cursor"),
@@ -24,11 +29,12 @@ func (Cursor) WritablePaths() []string {
 	)
 }
 
-func (Cursor) Drive(context.Context, io.ReadWriter) error { return nil }
-
 // Build is v1 invokeCursor for a write-capable sequence: --sandbox enabled,
 // no --mode ask, and no --auto-review / --force / --yolo.
-func (Cursor) Build(spec LaunchSpec) ([]string, []string, error) {
+func (c Cursor) Build(spec LaunchSpec) ([]string, []string, error) {
+	if c.GoalMode {
+		return c.buildGoal(spec)
+	}
 	body, err := promptArg(spec.PromptPath)
 	if err != nil {
 		return nil, nil, err

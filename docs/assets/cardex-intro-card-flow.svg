@@ -1,61 +1,41 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title description" xml:lang="zh-CN">
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="450" viewBox="0 0 1200 450" role="img" aria-labelledby="title description" xml:lang="zh-CN">
   <title id="title">一张卡怎么走完</title>
-  <desc id="description">从入队到合入：先验收、再换一家复核；过不了就返工，拿不准就问你。</desc>
+  <desc id="description">不过就返工，拿不准就问你</desc>
   <defs>
     <pattern id="dots" width="15" height="15" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.45" fill="#bcc9e6"/></pattern>
     <marker id="arrow" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#7387b7"/></marker>
     <marker id="arrowWarm" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#b8894a"/></marker>
   </defs>
-  <rect x="1" y="1" width="1198" height="558" rx="25" fill="#f8faff" stroke="#d4def1"/>
+  <rect x="1" y="1" width="1198" height="448" rx="25" fill="#f8faff" stroke="#d4def1"/>
   <rect x="946" y="22" width="209" height="118" rx="10" fill="url(#dots)" opacity=".71"/>
   <text x="1034" y="80" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="42" font-weight="600" fill="#aebde2">{{  }}</text>
   <text x="45" y="50" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="17" font-weight="730" fill="#4052ad">CARDEX   /   CARD FLOW</text>
-  <text x="43" y="100" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="42" font-weight="750" fill="#172744">一张卡怎么走完</text>
-  <text x="45" y="136" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="480" fill="#445775">从入队到合入：先验收、再换一家复核；过不了就返工，拿不准就问你</text>
-
-  <path d="M244 232 H269" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
-  <path d="M469 232 H494" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
-  <path d="M694 232 H719" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
-  <path d="M919 232 H944" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
-
-  <rect x="44" y="168" width="200" height="128" rx="18" fill="#fff" stroke="#d4dff1"/>
-  <text x="60" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">01 / QUEUE</text>
-  <text x="60" y="232" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="24" font-weight="730" fill="#172744">入队</text>
-  <text x="60" y="262" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="16.5" font-weight="490" fill="#445775">登记要做的事</text>
-
-  <rect x="269" y="168" width="200" height="128" rx="18" fill="#eef5ff" stroke="#bfcff0"/>
-  <text x="285" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">02 / DISPATCH</text>
-  <text x="285" y="232" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="24" font-weight="730" fill="#172744">选工具开工</text>
-  <text x="285" y="262" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="16.5" font-weight="490" fill="#445775">独立工作区里做</text>
-
-  <rect x="494" y="168" width="200" height="128" rx="18" fill="#fff" stroke="#d4dff1"/>
-  <text x="510" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">03 / HARVEST</text>
-  <text x="510" y="232" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="24" font-weight="730" fill="#172744">收割验收</text>
-  <text x="510" y="262" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="16.5" font-weight="490" fill="#445775">看改动、跑测试</text>
-
-  <rect x="719" y="168" width="200" height="128" rx="18" fill="#fff" stroke="#d4dff1"/>
-  <text x="735" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">04 / REVIEW</text>
-  <text x="735" y="232" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="24" font-weight="730" fill="#172744">换一家复核</text>
-  <text x="735" y="262" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="16.5" font-weight="490" fill="#445775">另一家模型来检查</text>
-
-  <rect x="944" y="168" width="212" height="128" rx="18" fill="#effaf7" stroke="#b9ded7"/>
-  <text x="960" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#18736b">05 / INTEGRATE</text>
-  <text x="960" y="232" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="23" font-weight="730" fill="#172744">合入目标分支</text>
-  <text x="960" y="262" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="16" font-weight="490" fill="#445775">你同意后再进主分支</text>
-
-  <path d="M594 296 V326" fill="none" stroke="#b8894a" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round"/>
-  <path d="M819 296 V326" fill="none" stroke="#b8894a" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round"/>
-  <path d="M369 356 V326 H819" fill="none" stroke="#b8894a" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M369 356 V304" fill="none" stroke="#b8894a" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round" marker-end="url(#arrowWarm)"/>
-
-  <rect x="44" y="372" width="686" height="86" rx="16" fill="#fff9ed" stroke="#e6d6b6"/>
-  <text x="64" y="408" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#8f5a16">REWORK</text>
-  <text x="64" y="440" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="700" fill="#172744">返工：带着意见接着改，默认最多 2 次</text>
-
-  <rect x="746" y="372" width="410" height="86" rx="16" fill="#fff" stroke="#d4dff1"/>
-  <text x="766" y="408" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">ASK</text>
-  <text x="766" y="440" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="700" fill="#172744">超出或拿不准，就停下来问你</text>
-
-  <path d="M45 484 H1155" stroke="#d4deef"/>
-  <text x="45" y="522" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="18" font-weight="570" fill="#445775">调度在后台持续运转 · 对话关闭或电脑重启后会对账接上 · 目标模式目前仅 Grok /goal</text>
+  <text x="43" y="100" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="40" font-weight="750" fill="#172744">一张卡怎么走完</text>
+  <text x="45" y="136" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="19" font-weight="480" fill="#445775">不过就返工，拿不准就问你</text>
+  <rect x="44" y="170" width="196" height="96" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="62" y="198" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13" font-weight="700" fill="#4052ad">01 / QUEUE</text>
+  <text x="62" y="240" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="730" fill="#172744">入队</text>
+  <path d="M244 218 H267" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="273" y="170" width="196" height="96" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="291" y="198" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13" font-weight="700" fill="#4052ad">02 / DISPATCH</text>
+  <text x="291" y="240" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="730" fill="#172744">选工具开工</text>
+  <path d="M473 218 H496" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="502" y="170" width="196" height="96" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="520" y="198" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13" font-weight="700" fill="#4052ad">03 / VERIFY</text>
+  <text x="520" y="240" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="730" fill="#172744">测试验收</text>
+  <path d="M702 218 H725" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="731" y="170" width="196" height="96" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="749" y="198" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13" font-weight="700" fill="#4052ad">04 / REVIEW</text>
+  <text x="749" y="240" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="730" fill="#172744">换一家复核</text>
+  <path d="M931 218 H954" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="960" y="170" width="196" height="96" rx="18" fill="#effaf7" stroke="#b9ded7"/>
+  <text x="978" y="198" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13" font-weight="700" fill="#18736b">05 / MERGE</text>
+  <text x="978" y="240" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="730" fill="#172744">合入目标分支</text>
+  <path d="M600 266 V300 M829 266 V300 M829 300 H371" fill="none" stroke="#b8894a" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round"/>
+  <path d="M371 300 V274" fill="none" stroke="#b8894a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 5" marker-end="url(#arrowWarm)"/>
+  <rect x="44" y="322" width="600" height="64" rx="16" fill="#fff9ed" stroke="#e6d6b6"/>
+  <text x="64" y="361" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="19" font-weight="650" fill="#8f5a16">不通过：带意见返工，最多 2 次</text>
+  <rect x="660" y="322" width="496" height="64" rx="16" fill="#fff" stroke="#d4dff1"/>
+  <text x="680" y="361" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="19" font-weight="650" fill="#172744">还不行或拿不准：停下来问你</text>
+  <text x="45" y="420" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="17" font-weight="520" fill="#445775">后台持续运行 · 重启后自动接上</text>
 </svg>

@@ -1,28 +1,58 @@
 # Cardex
 
-**Set a goal in one conversation and let multiple AI coding tools deliver it together.**
+**Turn the AI coding tools you already pay for into one crew: you set the goal and make the calls; Cardex splits the work, dispatches it, checks it, and merges it.**
 
-[中文](README.md) · **English** · [Install](#install) · [Supported tools](#supported-tools) · [Upgrade from V1](docs/v2/upgrade-from-v1.md) · [Download source](https://github.com/OttoPrua/Cardex/releases/tag/v2.0.0)
+[中文](README.md) · **English** · [Install](#install) · [Supported tools](#supported-tools) · [Upgrade from V1](docs/v2/upgrade-from-v1.md) · [Download](https://github.com/OttoPrua/Cardex/releases/latest)
 
 ![Cardex: a Codex or Hermes management session hands work to local Cardex, which dispatches to configured coding tools.](docs/images/cardex-v2-overview.en.svg)
 
-Cardex is a development orchestrator that runs on your machine. You set goals and answer key questions in a **Codex or Hermes management session**; Cardex splits the work into cards, picks models, dispatches, reviews, and merges, while each coding tool uses its own subscription or API. The scheduler and board never call a model themselves.
+## What it fixes
 
-- **Reuse the subscriptions and APIs you already have.** Claude Code, Codex, Grok, Cursor, Kimi, OpenCode, and Antigravity plug in. Routing weighs tier, capability, and remaining quota, and `route explain` shows why a model was picked.
-- **One card for small jobs, automatic planning for big ones.** A manual objective runs only the cards you add; an automatic one surveys, designs, and splits the work, and asks you only when a decision is needed.
-- **Parallel work, merged only after it checks out.** Each attempt gets its own worktree and conflicting writes wait. A different model family reviews, and the project tests must pass before the objective branch moves.
-- **The conversation can stop; progress stays.** Objectives, cards, attempts, and decisions live in local SQLite, and code lives in Git. After a quota or auth failure, work resumes from the card branch; with no suitable channel it waits or asks, and never silently switches tools.
+![What it fixes: unused quota, one window at a time, "done" but not really, progress lost on restart; Cardex runs tools in parallel, works in the background, tests and cross-reviews, and saves state locally.](docs/assets/cardex-problems.en.svg)
+
+The scheduler and board never call a model; the work runs on your own subscriptions or APIs.
+
+## Highlights
+
+![Seven highlights: mix your tools, it breaks work down, parallel without clashes, test then review, no wasted quota, asks when it matters, stays local.](docs/assets/cardex-intro-highlights.en.svg)
+
+- **Mix your tools**: Claude Code, Codex, Grok Build, Cursor, Kimi, OpenCode, Antigravity, picked by difficulty, capability, and quota; `route explain` says why.
+- **Small jobs as cards, big ones split for you**: manual objectives run only your cards; automatic ones survey the repo, design, and split, starting only after you approve the direction.
+- **Parallel without clashes**: each card works in its own workspace; edits to the same function queue up.
+- **Test, review, then merge**: it checks real diffs and test results, not claims; code cards are reviewed by a different model family.
+- **No wasted quota**: stops dispatching near a limit, and uses leftovers on backlog before a reset.
+- **Asks when it matters**: decisions only you can make stop for your answer; silence is not a yes. Rework is capped at 2 tries by default.
+- **Local and safe**: data stays on your machine, code in Git; on macOS executors run in a system sandbox and cannot push.
+
+## How it works
+
+![How a card moves: queue, pick a tool, test, cross-review, merge; failures go back for rework up to twice, then it asks you.](docs/assets/cardex-intro-card-flow.en.svg)
+
+`cardex serve` loops in the background: reconcile → settle finished work → advance objectives → merge → dispatch → send open questions.
+
+- **A card**: pick a tool → verify → review → merge queue; failures go back with notes.
+- **Automatic objectives**: add a design loop first; cards are split after you confirm the direction.
+- **Merging**: one card at a time per objective, retested before merging; conflicts or red tests get a fix card. The main branch waits for your OK, and nothing is pushed for you.
+- **Resilience**: one failing card doesn't block others; restarting the scheduler doesn't interrupt running executors.
+
+<details>
+<summary>More: browser testing, goal mode</summary>
+
+- **Browser testing**: when needed, Cardex starts a localhost-only Chrome for the executor and cleans up afterwards.
+- **Goal mode**: the native `/goal` of Grok Build, Kimi Code, and Cursor can drive a card for a long stretch; results still go through verify, review, and merge.
+
+</details>
 
 ## Install
 
-**Recommended: paste this into a Codex or Hermes session that can operate your computer.**
+**Recommended**: paste this into a Codex or Hermes session that can operate your computer.
 
 ```text
-Help me install and configure Cardex in this conversation. Get the source from
-https://github.com/OttoPrua/Cardex/releases/tag/v2.0.0 (or continue in the extracted folder with go.mod).
+Help me install and configure Cardex in this conversation. Download it from
+https://github.com/OttoPrua/Cardex/releases/latest (or continue in the extracted folder with go.mod).
 Read docs/v2/guide.md and skills/cardex-dispatch/SKILL.md. If this machine already has Cardex V1 data,
 read docs/v2/upgrade-from-v1.md first. Then guide me step by step:
-1. Confirm the management session, host, and data directory; build from source and run doctor.
+1. Confirm the management session, host, and data directory; install and run doctor.
 2. List the execution CLIs you find, ask which subscriptions or APIs I want, and set up auth inside
    each tool (no keys pasted into chat).
 3. Recommend T1–T3 models, a different model family for review, and quota reserves; save only after
@@ -31,16 +61,20 @@ read docs/v2/upgrade-from-v1.md first. Then guide me step by step:
    before starting the scheduler.
 ```
 
-**Manual** (Git and Go 1.24+):
+**Manual**: download the package for your platform from [Releases](https://github.com/OttoPrua/Cardex/releases/latest), or build from source (Git + Go 1.24+):
 
 ```sh
 git clone https://github.com/OttoPrua/Cardex.git && cd Cardex
 go build -o ./cardex ./cmd/cardex && ./cardex --home "$HOME/.cardex-demo" doctor
 ```
 
-A fresh `doctor` reporting missing channels or model placement is expected; continue with [the first objective](#run-a-first-objective). Choose the data directory with `--home` or `CARDEX_HOME`.
+A fresh `doctor` reporting missing channels or model placement is expected; continue with [the first objective](#run-a-first-objective).
 
-> **Platforms:** macOS is fully supported, with executors running in a seatbelt sandbox. Linux builds and runs, but executors are not sandboxed. Windows is not supported in V2 yet.
+| Platform | Support |
+| --- | --- |
+| macOS | Full, executors run in a seatbelt sandbox |
+| Linux | Runs, no sandbox |
+| Windows (amd64 / arm64) | Runs, no sandbox; needs `sh` from Git for Windows |
 
 ## Supported tools
 
@@ -50,17 +84,17 @@ A fresh `doctor` reporting missing channels or model placement is expected; cont
 | Codex CLI | `codex` | Signed-in account, or a Responses compatible provider |
 | Grok Build | `grok` | Grok CLI account |
 | Cursor Agent | `cursor` | Models available to your Cursor account |
-| OpenCode | `opencode` | A configured `provider/model` (e.g. OpenCode Go, Chat Completions compatible services) |
+| OpenCode | `opencode` | A configured `provider/model` |
 | Kimi CLI | `kimi` | Kimi CLI account |
 | Antigravity | `agy` | Antigravity CLI |
 
-Subscriptions, pay-as-you-go APIs, and compatible gateways all connect through the matching tool; Cardex passes the model ID and does not translate protocols.
+Cardex only passes the model ID to a signed-in tool; it does not translate protocols.
 
 ## Run a first objective
 
 ![An automatic objective: design, owner approval, parallel cards, review and tests, then merge into the objective branch; rejected work retries with review notes.](docs/images/cardex-v2-objective.en.svg)
 
-Using Codex to write and Claude to review; replace the repo path, model IDs, and test command:
+Using Codex to write and Claude to review:
 
 ```sh
 export CARDEX_HOME="$HOME/.cardex-demo"
@@ -70,7 +104,7 @@ export CARDEX_HOME="$HOME/.cardex-demo"
 ./cardex channel check
 ```
 
-Add an initial model placement to `$CARDEX_HOME/config.json` (example below), then update it later with `positioning proposals` / `positioning approve`.
+Add an initial model placement to `$CARDEX_HOME/config.json` (example below), then:
 
 ```sh
 ./cardex objective add --id first-change --project demo --mode manual \
@@ -80,14 +114,14 @@ Add an initial model placement to `$CARDEX_HOME/config.json` (example below), th
 ./cardex serve --addr 127.0.0.1:0
 ```
 
-`serve` starts the scheduler and a read-only board; open the printed address to follow progress. To check a dispatch, use `card show ID` and `route explain ID`.
+Open the printed address to follow progress; debug with `card show ID` and `route explain ID`.
 
-> The board has **no authentication**. For remote viewing, bind to localhost or a private address such as Tailscale; do not expose `0.0.0.0` to the internet.
+> ⚠️ The board has **no authentication**. Bind it to localhost or a private address such as Tailscale; never expose `0.0.0.0` to the internet.
 
 <details>
 <summary>Initial model placement example</summary>
 
-Merge into `config.json`; model IDs must match the channels. T1 suits fact checks, T2 routine development, T3 design and review.
+Model IDs must match the channels. T1 fact checks, T2 routine development, T3 design and review.
 
 ```json
 {
@@ -100,13 +134,15 @@ Merge into `config.json`; model IDs must match the channels. T1 suits fact check
 }
 ```
 
+Update it later with `positioning proposals` / `positioning approve`.
+
 </details>
 
-[Guide](docs/v2/guide.md) · [Design](docs/v2/design.md) · [Dispatch skill](skills/cardex-dispatch/SKILL.md) · [Upgrade from V1](docs/v2/upgrade-from-v1.md)
+**Docs**: [Guide](docs/v2/guide.md) · [Agent dispatch guide](docs/v2/agent-guide.md) · [Design](docs/v2/design.md) · [Dispatch skill](skills/cardex-dispatch/SKILL.md) · [Upgrade from V1](docs/v2/upgrade-from-v1.md)
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE): free for personal use, study, research, and nonprofit organizations. Production use inside a company, paid client work, or offering it as part of a product or service needs a license; [open an issue](https://github.com/OttoPrua/Cardex/issues) describing your use. This is not an OSI open-source license; releases before 2026-08-03 (up to `b1ed92b`) remain MIT.
+[PolyForm Noncommercial 1.0.0](LICENSE): free for personal use, study, research, and nonprofits; for commercial use, [open an issue](https://github.com/OttoPrua/Cardex/issues) describing it. Not an OSI open-source license; releases before 2026-08-03 (up to `b1ed92b`) remain MIT.
 
 ## Thanks
 

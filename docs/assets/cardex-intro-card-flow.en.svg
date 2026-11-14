@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="450" viewBox="0 0 1200 450" role="img" aria-labelledby="title description" xml:lang="en">
+  <title id="title">How a card moves</title>
+  <desc id="description">Fails go back for rework; open questions come to you</desc>
+  <defs>
+    <pattern id="dots" width="15" height="15" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.45" fill="#bcc9e6"/></pattern>
+    <marker id="arrow" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#7387b7"/></marker>
+    <marker id="arrowWarm" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#b8894a"/></marker>
+  </defs>
+  <rect x="1" y="1" width="1198" height="448" rx="25" fill="#f8faff" stroke="#d4def1"/>
+  <rect x="946" y="22" width="209" height="118" rx="10" fill="url(#dots)" opacity=".71"/>
+  <text x="1034" y="80" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="42" font-weight="600" fill="#aebde2">{{  }}</text>
+  <text x="45" y="50" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="17" font-weight="730" fill="#4052ad">CARDEX   /   CARD FLOW</text>
+  <text x="43" y="100" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="40" font-weight="750" fill="#172744">How a card moves</text>
+  <text x="45" y="136" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="19" font-weight="480" fill="#445775">Fails go back for rework; open questions come to you</text>
+  <rect x="44" y="170" width="196" height="96" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="62" y="198" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13" font-weight="700" fill="#4052ad">01 / QUEUE</text>
+  <text x="62" y="240" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="730" fill="#172744">Queue</text>
+  <path d="M244 218 H267" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="273" y="170" width="196" height="96" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="291" y="198" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13" font-weight="700" fill="#4052ad">02 / DISPATCH</text>
+  <text x="291" y="240" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="730" fill="#172744">Pick a tool</text>
+  <path d="M473 218 H496" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="502" y="170" width="196" height="96" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="520" y="198" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13" font-weight="700" fill="#4052ad">03 / VERIFY</text>
+  <text x="520" y="240" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="730" fill="#172744">Test</text>
+  <path d="M702 218 H725" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="731" y="170" width="196" height="96" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="749" y="198" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13" font-weight="700" fill="#4052ad">04 / REVIEW</text>
+  <text x="749" y="240" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="730" fill="#172744">Cross-review</text>
+  <path d="M931 218 H954" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="960" y="170" width="196" height="96" rx="18" fill="#effaf7" stroke="#b9ded7"/>
+  <text x="978" y="198" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13" font-weight="700" fill="#18736b">05 / MERGE</text>
+  <text x="978" y="240" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="730" fill="#172744">Merge</text>
+  <path d="M600 266 V300 M829 266 V300 M829 300 H371" fill="none" stroke="#b8894a" stroke-width="2" stroke-dasharray="5 5" stroke-linecap="round"/>
+  <path d="M371 300 V274" fill="none" stroke="#b8894a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="5 5" marker-end="url(#arrowWarm)"/>
+  <rect x="44" y="322" width="600" height="64" rx="16" fill="#fff9ed" stroke="#e6d6b6"/>
+  <text x="64" y="361" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="19" font-weight="650" fill="#8f5a16">Not passed: rework with notes, up to 2 times</text>
+  <rect x="660" y="322" width="496" height="64" rx="16" fill="#fff" stroke="#d4dff1"/>
+  <text x="680" y="361" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="19" font-weight="650" fill="#172744">Still stuck or unsure: it asks you</text>
+  <text x="45" y="420" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="17" font-weight="520" fill="#445775">Runs continuously · picks up after restarts</text>
+</svg>

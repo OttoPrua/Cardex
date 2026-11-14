@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title description" xml:lang="en">
+  <title id="title">What it fixes</title>
+  <desc id="description">Four common pains and what Cardex does instead</desc>
+  <defs>
+    <pattern id="dots" width="15" height="15" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.45" fill="#bcc9e6"/></pattern>
+    <marker id="arrow" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#7387b7"/></marker>
+    <marker id="arrowWarm" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#b8894a"/></marker>
+  </defs>
+  <rect x="1" y="1" width="1198" height="428" rx="25" fill="#f8faff" stroke="#d4def1"/>
+  <rect x="946" y="22" width="209" height="118" rx="10" fill="url(#dots)" opacity=".71"/>
+  <text x="1034" y="80" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="42" font-weight="600" fill="#aebde2">{{  }}</text>
+  <text x="45" y="50" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="17" font-weight="730" fill="#4052ad">CARDEX   /   WHY</text>
+  <text x="43" y="100" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="40" font-weight="750" fill="#172744">What it fixes</text>
+  <text x="45" y="136" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="19" font-weight="480" fill="#445775">Four common pains and what Cardex does instead</text>
+  <rect x="44" y="170" width="264" height="90" rx="18" fill="#fff4f2" stroke="#ecc9c2"/>
+  <text x="64" y="200" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#a3473a">PAIN</text>
+  <text x="64" y="236" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="18" font-weight="650" fill="#6b3a33">Quota goes unused</text>
+  <path d="M176 266 V292" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="44" y="300" width="264" height="90" rx="18" fill="#effaf7" stroke="#b9ded7"/>
+  <text x="64" y="330" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#18736b">CARDEX</text>
+  <text x="64" y="366" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="18" font-weight="730" fill="#172744">Tools run in parallel</text>
+  <rect x="326" y="170" width="264" height="90" rx="18" fill="#fff4f2" stroke="#ecc9c2"/>
+  <text x="346" y="200" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#a3473a">PAIN</text>
+  <text x="346" y="236" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="18" font-weight="650" fill="#6b3a33">One window at a time</text>
+  <path d="M458 266 V292" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="326" y="300" width="264" height="90" rx="18" fill="#effaf7" stroke="#b9ded7"/>
+  <text x="346" y="330" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#18736b">CARDEX</text>
+  <text x="346" y="366" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="18" font-weight="730" fill="#172744">Runs in the background</text>
+  <rect x="608" y="170" width="264" height="90" rx="18" fill="#fff4f2" stroke="#ecc9c2"/>
+  <text x="628" y="200" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#a3473a">PAIN</text>
+  <text x="628" y="236" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="18" font-weight="650" fill="#6b3a33">&quot;Done&quot; but not really</text>
+  <path d="M740 266 V292" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="608" y="300" width="264" height="90" rx="18" fill="#effaf7" stroke="#b9ded7"/>
+  <text x="628" y="330" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#18736b">CARDEX</text>
+  <text x="628" y="366" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="18" font-weight="730" fill="#172744">Tested + cross-reviewed</text>
+  <rect x="890" y="170" width="264" height="90" rx="18" fill="#fff4f2" stroke="#ecc9c2"/>
+  <text x="910" y="200" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#a3473a">PAIN</text>
+  <text x="910" y="236" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="18" font-weight="650" fill="#6b3a33">Progress lost on restart</text>
+  <path d="M1022 266 V292" fill="none" stroke="#7387b7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#arrow)"/>
+  <rect x="890" y="300" width="264" height="90" rx="18" fill="#effaf7" stroke="#b9ded7"/>
+  <text x="910" y="330" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#18736b">CARDEX</text>
+  <text x="910" y="366" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="18" font-weight="730" fill="#172744">Saved locally, resumes</text>
+</svg>

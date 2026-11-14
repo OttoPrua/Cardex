@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-labelledby="title description" xml:lang="en">
+  <title id="title">Seven highlights</title>
+  <desc id="description">What Cardex does at a glance</desc>
+  <defs>
+    <pattern id="dots" width="15" height="15" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.45" fill="#bcc9e6"/></pattern>
+    <marker id="arrow" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#7387b7"/></marker>
+    <marker id="arrowWarm" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#b8894a"/></marker>
+  </defs>
+  <rect x="1" y="1" width="1198" height="498" rx="25" fill="#f8faff" stroke="#d4def1"/>
+  <rect x="946" y="22" width="209" height="118" rx="10" fill="url(#dots)" opacity=".71"/>
+  <text x="1034" y="80" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="42" font-weight="600" fill="#aebde2">{{  }}</text>
+  <text x="45" y="50" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="17" font-weight="730" fill="#4052ad">CARDEX   /   HIGHLIGHTS</text>
+  <text x="43" y="100" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="40" font-weight="750" fill="#172744">Seven highlights</text>
+  <text x="45" y="136" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="19" font-weight="480" fill="#445775">What Cardex does at a glance</text>
+  <rect x="44" y="166" width="266" height="108" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="64" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">01 / TOOLS</text>
+  <text x="64" y="230" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="730" fill="#172744">Mix your tools</text>
+  <text x="64" y="258" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">Picked by difficulty and quota</text>
+  <rect x="326" y="166" width="266" height="108" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="346" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">02 / PLAN</text>
+  <text x="346" y="230" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="730" fill="#172744">It breaks work down</text>
+  <text x="346" y="258" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">You approve the direction</text>
+  <rect x="608" y="166" width="266" height="108" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="628" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">03 / PARALLEL</text>
+  <text x="628" y="230" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="730" fill="#172744">Parallel, no clashes</text>
+  <text x="628" y="258" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">One workspace per card</text>
+  <rect x="890" y="166" width="266" height="108" rx="18" fill="#effaf7" stroke="#b9ded7"/>
+  <text x="910" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#18736b">04 / VERIFY</text>
+  <text x="910" y="230" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="730" fill="#172744">Test, then review</text>
+  <text x="910" y="258" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">Merged only if it passes</text>
+  <rect x="44" y="290" width="360" height="108" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="64" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">05 / QUOTA</text>
+  <text x="64" y="354" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="730" fill="#172744">No wasted quota</text>
+  <text x="64" y="382" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">Stops near limits, uses leftovers</text>
+  <rect x="420" y="290" width="360" height="108" rx="18" fill="#fff9ed" stroke="#e6d6b6"/>
+  <text x="440" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#8f5a16">06 / ASK</text>
+  <text x="440" y="354" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="730" fill="#172744">Asks when it matters</text>
+  <text x="440" y="382" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">Silence is not a yes</text>
+  <rect x="796" y="290" width="360" height="108" rx="18" fill="#fff" stroke="#d4dff1"/>
+  <text x="816" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">07 / LOCAL</text>
+  <text x="816" y="354" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="20" font-weight="730" fill="#172744">Stays local</text>
+  <text x="816" y="382" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">Resumes after restarts</text>
+  <path d="M45 430 H1155" stroke="#d4deef"/>
+  <text x="45" y="466" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="18" font-weight="570" fill="#445775">macOS: system sandbox · Linux / Windows: supported, no sandbox</text>
+</svg>

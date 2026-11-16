@@ -34,7 +34,7 @@ import (
 const (
 	fillWindow = 2 * time.Hour
 	fillMargin = 0.20
-	hardDur    = "30m"
+	hardDur    = "1h"
 )
 
 // Collaborators the default path calls. Tests replace them to observe the call.

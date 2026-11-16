@@ -10,6 +10,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/loop"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 const projectGroupUsage = `project — read and update project records
@@ -294,7 +295,7 @@ func cardAbsorb(home string, asJSON bool, args []string, stdout, stderr io.Write
 }
 
 func cardMerged(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card merged", "mark a card merged after its branch was merged outside Cardex; allowed from merge_queued, reviewing or done", "[--note <text>] <id> --json", stdout, stderr)
+	fs := newFlagSet("card merged", "mark a card merged after its branch was merged outside Cardex; allowed from merge_queued, reviewing or done, or waiting on a canceled repair/rebase card", "[--note <text>] <id> --json", stdout, stderr)
 	note := fs.String("note", "", "optional note, e.g. the merge commit")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
@@ -316,12 +317,18 @@ func cardMerged(home string, asJSON bool, args []string, stdout, stderr io.Write
 		return 1
 	}
 	from := c.Status
+	waitWas := c.WaitReason
 	switch from {
 	case model.CardMergeQueued, model.CardReviewing, model.CardDone:
 	case model.CardMerged:
 		return emit(stdout, asJSON, cardView{Card: c}, c.ID+"\t"+string(c.Status))
+	case model.CardWaiting:
+		if msg := canceledBlocker(ctx, db, c); msg != "" {
+			fmt.Fprintln(stderr, msg)
+			return 1
+		}
 	default:
-		fmt.Fprintf(stderr, "card %s is %s; only merge_queued, reviewing or done can be marked merged\n", c.ID, from)
+		fmt.Fprintf(stderr, "card %s is %s; only merge_queued, reviewing, done, or waiting on a canceled repair/rebase card can be marked merged\n", c.ID, from)
 		return 1
 	}
 	err = db.WithTx(ctx, func(ctx context.Context) error {
@@ -330,7 +337,7 @@ func cardMerged(home string, asJSON bool, args []string, stdout, stderr io.Write
 		if err := db.UpdateCard(ctx, &c); err != nil {
 			return err
 		}
-		raw, _ := json.Marshal(map[string]string{"card": c.ID, "from": string(from), "note": *note})
+		raw, _ := json.Marshal(map[string]string{"card": c.ID, "from": string(from), "wait_reason": waitWas, "note": *note})
 		return db.AppendEvent(ctx, &model.Event{Entity: "card:" + c.ID, Type: "card_marked_merged", Data: raw, TS: time.Now().UTC()})
 	})
 	if err != nil {
@@ -338,4 +345,21 @@ func cardMerged(home string, asJSON bool, args []string, stdout, stderr io.Write
 		return 1
 	}
 	return emit(stdout, asJSON, cardView{Card: c}, c.ID+"\t"+string(c.Status))
+}
+
+// canceledBlocker returns "" when a waiting card is blocked only by a repair or
+// rebase card that has been canceled, so marking it merged cannot strand live work.
+func canceledBlocker(ctx context.Context, db *store.Store, c model.Card) string {
+	f := strings.Fields(c.WaitReason)
+	if len(f) != 2 || (f[0] != "repair" && f[0] != "rebase") {
+		return fmt.Sprintf("card %s is waiting (%q); only a wait on a repair or rebase card can be overridden", c.ID, c.WaitReason)
+	}
+	b, err := db.GetCard(ctx, f[1])
+	if err != nil {
+		return fmt.Sprintf("card %s waits on %s: %v", c.ID, f[1], err)
+	}
+	if b.Status != model.CardCanceled {
+		return fmt.Sprintf("card %s waits on %s %s, which is %s; cancel it first", c.ID, f[0], b.ID, b.Status)
+	}
+	return ""
 }

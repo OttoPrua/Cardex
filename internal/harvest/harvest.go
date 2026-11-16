@@ -19,7 +19,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
-const defaultAcceptanceTimeout = 2 * time.Minute
+const defaultAcceptanceTimeout = 10 * time.Minute
 
 // Harvest reads the exit code, the event stream, the diff, acceptance, and the result file.
 func Harvest(ctx context.Context, in Input) (Result, error) {

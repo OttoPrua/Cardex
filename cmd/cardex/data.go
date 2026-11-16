@@ -351,6 +351,10 @@ func cmdCard(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		return cardShow(home, asJSON, args[1:], stdout, stderr)
 	case "cancel", "retry", "pause", "resume", "revive":
 		return cardTransition(home, asJSON, args[0], args[1:], stdout, stderr)
+	case "absorb":
+		return cardAbsorb(home, asJSON, args[1:], stdout, stderr)
+	case "merged":
+		return cardMerged(home, asJSON, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown card verb %q\n", args[0])
 		return 2

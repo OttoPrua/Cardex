@@ -28,7 +28,7 @@ commands:
   project add|list|show|set
   objective add|list|show|set|pause|resume|cancel
   node list|show|freeze|reopen
-  card add|list|show|cancel|retry|pause|resume|revive
+  card add|list|show|cancel|retry|pause|resume|revive|absorb|merged
   question list|show|answer
   channel list|show|set|check
   route explain <card>

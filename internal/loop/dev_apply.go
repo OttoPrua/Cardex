@@ -247,7 +247,18 @@ func historyBefore(attempts []model.Attempt, cur model.Attempt) History {
 func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 	for _, other := range st.snap.cards {
 		if other.Kind == model.KindReview && hasDep(other, card.ID) && !TerminalCard(other.Status) {
-			return nil
+			// An open review (often a paused rv- card) already covers this card.
+			// Still move the card out of running: its attempt is disposed and no
+			// later tick will look at it again.
+			if card.Status == model.CardReviewing {
+				return nil
+			}
+			card.Status = model.CardReviewing
+			card.WaitReason = ""
+			if err := st.saveCard(card); err != nil {
+				return err
+			}
+			return st.event("card:"+card.ID, "review_reused", map[string]string{"card": card.ID, "review": other.ID, "review_status": string(other.Status)})
 		}
 	}
 	derived := st.reviewFamily(attempt)
@@ -913,12 +924,21 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 	raw := readResult(attempt)
 	verdict, opinion, ok := ReviewOf(raw)
 	stored := reviewOpinion(raw)
-	if !ok || len(card.Deps) == 0 {
+	if !ok {
 		card.Status = model.CardNeedsInput
 		if err := st.saveCard(card); err != nil {
 			return err
 		}
 		return st.event("card:"+card.ID, "review_unparsable", map[string]string{"card": card.ID})
+	}
+	if len(card.Deps) == 0 {
+		// A standalone review has no parent to merge or rework: keep the
+		// verdict on the review card itself and finish it.
+		if err := st.noteReviewVerdict(card, card, attempt, verdict, stored, false); err != nil {
+			return err
+		}
+		card.Status = model.CardDone
+		return st.saveCard(card)
 	}
 	parent, ok := st.snap.card(card.Deps[0])
 	if !ok {

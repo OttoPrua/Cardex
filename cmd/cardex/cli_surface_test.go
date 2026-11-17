@@ -1588,7 +1588,9 @@ func TestDoctorExecutorNames(t *testing.T) {
 	}
 	t.Run("real binaries", func(t *testing.T) {
 		home := t.TempDir()
-		t.Setenv("HOME", t.TempDir())
+		userHome := t.TempDir()
+		t.Setenv("HOME", userHome)
+		t.Setenv("USERPROFILE", userHome) // os.UserHomeDir on Windows
 		bin, marker := sentinelBin(t, "grok", "cursor-agent", "kimi")
 		t.Setenv("PATH", bin)
 		setup(t, home)

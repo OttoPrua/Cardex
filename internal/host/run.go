@@ -399,10 +399,10 @@ func completeEngineEnv(env []string) bool {
 		if !ok {
 			continue
 		}
-		switch key {
-		case "PATH":
+		switch {
+		case strings.EqualFold(key, "PATH"): // Windows spells it Path
 			path = true
-		case "ANTHROPIC_BASE_URL":
+		case key == "ANTHROPIC_BASE_URL":
 			base = true
 		}
 	}

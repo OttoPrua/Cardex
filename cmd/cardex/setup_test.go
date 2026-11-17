@@ -21,7 +21,9 @@ func TestSetupPlanAndApply(t *testing.T) {
 	write("codex", "echo Logged in using ChatGPT; exit 0")
 	write("grok", "exit 0") // no ~/.grok/auth.json in HOME: not signed in
 	t.Setenv("PATH", bin)
-	t.Setenv("HOME", t.TempDir())
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
 	home := t.TempDir()
 
 	code, out, errb := callCLI(t, []string{"--home", home, "setup"})

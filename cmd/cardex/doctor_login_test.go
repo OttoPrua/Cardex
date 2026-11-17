@@ -96,7 +96,9 @@ func TestLoginProbeStatusExit(t *testing.T) {
 	if st := loginProbe(ctx, model.RunnerKimi, write("kimi", "exit 1"), true); st != loginUnknown {
 		t.Fatalf("kimi has no probe: %v", st)
 	}
-	t.Setenv("HOME", t.TempDir())
+	userHome := t.TempDir()
+	t.Setenv("HOME", userHome)
+	t.Setenv("USERPROFILE", userHome)
 	if st := loginProbe(ctx, model.RunnerGrok, "grok", false); st != loginMissing {
 		t.Fatalf("grok without auth.json: %v", st)
 	}

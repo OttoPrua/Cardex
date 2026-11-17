@@ -56,7 +56,7 @@ func (c Cursor) buildGoal(spec LaunchSpec) ([]string, []string, error) {
 	if cursorPrivilegeWidening(args) {
 		return nil, nil, fmt.Errorf("cursor: privilege-widening flags")
 	}
-	return args, nil, nil
+	return withCursorForce(args, false), nil, nil
 }
 
 // Drive waits for the input box, pastes "/goal <prompt>", submits it, then

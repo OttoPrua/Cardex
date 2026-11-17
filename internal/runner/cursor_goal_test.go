@@ -93,7 +93,7 @@ func TestCursorGoalBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := strings.Join(args, " ")
-	if got != "cursor-agent --trust --sandbox disabled --workspace /w --model grok-4.7-low" {
+	if got != "cursor-agent --trust --sandbox disabled --workspace /w --model grok-4.7-low --force" {
 		t.Fatalf("argv %s", got)
 	}
 }

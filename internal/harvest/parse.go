@@ -100,8 +100,11 @@ func normHeading(s string) string {
 func reviewVerdict(body string) (string, bool) {
 	for _, field := range strings.Fields(strings.ToLower(body)) {
 		field = strings.Trim(field, "`*_.,;:()[]\"'")
-		if field == "pass" || field == "rework" {
+		switch field {
+		case "pass", "rework", "blocked", "escalate":
 			return field, true
+		case "missing":
+			return "rework", true
 		}
 	}
 	return "", false

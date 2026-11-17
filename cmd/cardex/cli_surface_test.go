@@ -1208,9 +1208,12 @@ func TestDoctorFindingsContinue(t *testing.T) {
 	}
 	joined := strings.Join(problems, "\n")
 	gitAt := strings.Index(out, "problem: git is not on PATH")
-	laterAt := strings.Index(out, "problem: opencode is not on PATH")
+	laterAt := strings.Index(out, "problem: no positioning table is approved")
 	if gitAt < 0 || laterAt < gitAt {
-		t.Fatalf("later binary was not reported after git\n%s", out)
+		t.Fatalf("later finding was not reported after git\n%s", out)
+	}
+	if strings.Contains(joined, "opencode") {
+		t.Fatalf("a CLI no channel uses was reported\n%s", joined)
 	}
 	if strings.Contains(joined, "grok is not on PATH") {
 		t.Fatalf("present binary reported missing\n%s", joined)
@@ -1233,7 +1236,8 @@ func TestDoctorFindingsContinue(t *testing.T) {
 	if strings.Contains(joined, `window "daily"`) || strings.Contains(joined, `window "5h"`) || strings.Contains(joined, `window "weekly"`) {
 		t.Fatalf("accepted window reported\n%s", joined)
 	}
-	if !strings.Contains(joined, "tier T1") || !strings.Contains(joined, "tier T2") || !strings.Contains(joined, "tier T3") {
+	// Nothing is approved, so the approval finding replaces the per-tier ones.
+	if !strings.Contains(joined, "no positioning table is approved") || strings.Contains(joined, "tier T1") {
 		t.Fatalf("tiers\n%s", joined)
 	}
 }
@@ -1573,25 +1577,23 @@ func TestSoftBusinessValues(t *testing.T) {
 }
 
 func TestDoctorExecutorNames(t *testing.T) {
-	real := []string{"grok", "cursor-agent", "kimi"}
-	display := []string{"grok-build", "cursor", "kimi-cli"}
-	kept := []string{"codex", "claude", "agy", "opencode", "git", "sandbox-exec"}
-	assertSuggestions := func(t *testing.T, out string) {
+	// Each runner's real executable name; doctor checks only the CLIs that
+	// configured channels use, and never starts them.
+	runners := map[string]string{"grok": "grok", "cursor": "cursor-agent", "kimi": "kimi", "codex": "codex"}
+	setup := func(t *testing.T, home string) {
 		t.Helper()
-		lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
-		for i, line := range lines {
-			if !strings.HasPrefix(line, "problem: ") {
-				continue
-			}
-			if i+1 >= len(lines) || !strings.HasPrefix(lines[i+1], "suggestion: ") || strings.TrimPrefix(lines[i+1], "suggestion: ") == "" {
-				t.Fatalf("problem without suggestion: %s\n%s", line, out)
-			}
+		for runner := range runners {
+			mustHome(t, home, "channel", "set", "--id", "ch-"+runner, "--runner", runner, "--model", "m-"+runner)
 		}
 	}
 	t.Run("real binaries", func(t *testing.T) {
 		home := t.TempDir()
-		bin, marker := sentinelBin(t, real...)
+		userHome := t.TempDir()
+		t.Setenv("HOME", userHome)
+		t.Setenv("USERPROFILE", userHome) // os.UserHomeDir on Windows
+		bin, marker := sentinelBin(t, "grok", "cursor-agent", "kimi")
 		t.Setenv("PATH", bin)
+		setup(t, home)
 		code, out, errb := callCLI(t, []string{"--home", home, "doctor"})
 		if code != 0 {
 			t.Fatalf("exit %d\n%s\n%s", code, out, errb)
@@ -1599,23 +1601,27 @@ func TestDoctorExecutorNames(t *testing.T) {
 		if _, err := os.Stat(marker); !os.IsNotExist(err) {
 			t.Fatalf("doctor executed a PATH binary: %v", err)
 		}
-		assertSuggestions(t, out)
-		joined := out + errb
-		for _, name := range real {
-			if strings.Contains(joined, name+" is not on PATH") {
+		for _, name := range []string{"grok", "cursor-agent", "kimi"} {
+			if strings.Contains(out, name+", which is not on PATH") {
 				t.Fatalf("%s reported missing\n%s", name, out)
 			}
 		}
-		for _, name := range kept {
-			if !strings.Contains(out, name+" is not on PATH") {
-				t.Fatalf("missing %s\n%s", name, out)
+		for _, want := range []string{"uses codex, which is not on PATH", "grok is not signed in", "git is not on PATH"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("missing %q\n%s", want, out)
+			}
+		}
+		for _, unused := range []string{"claude", "agy", "opencode"} {
+			if strings.Contains(out, unused) {
+				t.Fatalf("unused CLI %s reported\n%s", unused, out)
 			}
 		}
 	})
 	t.Run("display names", func(t *testing.T) {
 		home := t.TempDir()
-		bin, marker := sentinelBin(t, display...)
+		bin, marker := sentinelBin(t, "grok-build", "cursor", "kimi-cli")
 		t.Setenv("PATH", bin)
+		setup(t, home)
 		code, out, errb := callCLI(t, []string{"--home", home, "doctor"})
 		if code != 0 {
 			t.Fatalf("exit %d\n%s\n%s", code, out, errb)
@@ -1623,15 +1629,9 @@ func TestDoctorExecutorNames(t *testing.T) {
 		if _, err := os.Stat(marker); !os.IsNotExist(err) {
 			t.Fatalf("doctor executed a PATH binary: %v", err)
 		}
-		assertSuggestions(t, out)
-		for _, name := range real {
-			if !strings.Contains(out, name+" is not on PATH") {
+		for _, name := range []string{"grok", "cursor-agent", "kimi"} {
+			if !strings.Contains(out, "uses "+name+", which is not on PATH") {
 				t.Fatalf("real name %s not reported\n%s", name, out)
-			}
-		}
-		for _, name := range display {
-			if strings.Contains(out, name+" is not on PATH") {
-				t.Fatalf("display name looked up %s\n%s", name, out)
 			}
 		}
 	})

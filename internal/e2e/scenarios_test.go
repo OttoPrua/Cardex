@@ -1498,6 +1498,16 @@ func assertRankingTick(t *testing.T, config string, want bool) {
 	stopLater(t, h)
 	ctx := context.Background()
 	_, obj := bindProject(t, h, "true")
+	// The default ranking card needs an approved row with web; without one the
+	// tick sends a notice instead (internal/sched/ranking_gate.go).
+	webCh := model.Channel{ID: "web-ch", Runner: model.RunnerFake, Family: "alpha", Models: []string{"web-model"}, Concurrency: 1, Health: model.HealthOK}
+	if err := h.DB.CreateChannel(ctx, &webCh); err != nil {
+		t.Fatal(err)
+	}
+	webPos := model.Positioning{ID: "web-pos", Model: "web-model", Family: "alpha", Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Capabilities: []string{"web"}, Preference: 1}
+	if err := h.DB.CreatePositioning(ctx, &webPos); err != nil {
+		t.Fatal(err)
+	}
 	if config != "" {
 		if err := os.WriteFile(filepath.Join(h.Home, "config.json"), []byte(config), 0o644); err != nil {
 			t.Fatal(err)

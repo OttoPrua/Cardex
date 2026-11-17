@@ -35,6 +35,8 @@ func TestRankingScheduleTick(t *testing.T) {
 			home, db, repo := newHome(t)
 			t.Setenv("CARDEX_HOME", home)
 			_, obj := seedRepo(t, db, repo, "true")
+			// The default ranking card is created only once an approved row has web.
+			seedWebRoute(t, db)
 			if row.config != nil {
 				if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(*row.config), 0o644); err != nil {
 					t.Fatal(err)

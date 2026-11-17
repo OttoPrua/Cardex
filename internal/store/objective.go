@@ -27,7 +27,7 @@ func prepareObjective(o *model.Objective) error {
 	}
 	o.Acceptance.Commands = normStrings(o.Acceptance.Commands)
 	o.Acceptance.Checklist = normStrings(o.Acceptance.Checklist)
-	return nil
+	return normReview("objective review", &o.Review)
 }
 
 func (s *Store) CreateObjective(ctx context.Context, o *model.Objective) error {
@@ -38,13 +38,13 @@ func (s *Store) CreateObjective(ctx context.Context, o *model.Objective) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO objectives(id, project_id, title, acceptance, soft_tokens, hard_tokens, priority, mode, freeze_mode, origin, status, integration_branch, channel, model) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		o.ID, o.Project, o.Title, raw, o.Budget.SoftTokens, o.Budget.HardTokens, o.Priority, string(o.Mode), string(o.FreezeMode), o.Origin, string(o.Status), o.IntegrationBranch, o.Channel, o.Model)
+	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO objectives(id, project_id, title, acceptance, soft_tokens, hard_tokens, priority, mode, freeze_mode, origin, status, integration_branch, channel, model, review) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		o.ID, o.Project, o.Title, raw, o.Budget.SoftTokens, o.Budget.HardTokens, o.Priority, string(o.Mode), string(o.FreezeMode), o.Origin, string(o.Status), o.IntegrationBranch, o.Channel, o.Model, o.Review)
 	return err
 }
 
 func (s *Store) GetObjective(ctx context.Context, id string) (model.Objective, error) {
-	row := s.q(ctx).QueryRowContext(ctx, `SELECT id, project_id, title, acceptance, soft_tokens, hard_tokens, priority, mode, freeze_mode, origin, status, integration_branch, channel, model FROM objectives WHERE id=?`, id)
+	row := s.q(ctx).QueryRowContext(ctx, `SELECT id, project_id, title, acceptance, soft_tokens, hard_tokens, priority, mode, freeze_mode, origin, status, integration_branch, channel, model, review FROM objectives WHERE id=?`, id)
 	return scanObjective(row)
 }
 
@@ -55,14 +55,17 @@ func (s *Store) UpdateObjective(ctx context.Context, o *model.Objective) error {
 	if !o.Mode.Valid() || !o.FreezeMode.Valid() || !o.Status.Valid() {
 		return fmt.Errorf("invalid objective enum")
 	}
+	if err := normReview("objective review", &o.Review); err != nil {
+		return err
+	}
 	o.Acceptance.Commands = normStrings(o.Acceptance.Commands)
 	o.Acceptance.Checklist = normStrings(o.Acceptance.Checklist)
 	raw, err := mustJSON(o.Acceptance)
 	if err != nil {
 		return err
 	}
-	res, err := s.q(ctx).ExecContext(ctx, `UPDATE objectives SET project_id=?, title=?, acceptance=?, soft_tokens=?, hard_tokens=?, priority=?, mode=?, freeze_mode=?, origin=?, status=?, integration_branch=?, channel=?, model=? WHERE id=?`,
-		o.Project, o.Title, raw, o.Budget.SoftTokens, o.Budget.HardTokens, o.Priority, string(o.Mode), string(o.FreezeMode), o.Origin, string(o.Status), o.IntegrationBranch, o.Channel, o.Model, o.ID)
+	res, err := s.q(ctx).ExecContext(ctx, `UPDATE objectives SET project_id=?, title=?, acceptance=?, soft_tokens=?, hard_tokens=?, priority=?, mode=?, freeze_mode=?, origin=?, status=?, integration_branch=?, channel=?, model=?, review=? WHERE id=?`,
+		o.Project, o.Title, raw, o.Budget.SoftTokens, o.Budget.HardTokens, o.Priority, string(o.Mode), string(o.FreezeMode), o.Origin, string(o.Status), o.IntegrationBranch, o.Channel, o.Model, o.Review, o.ID)
 	return rowsAffected(res, err)
 }
 
@@ -72,7 +75,7 @@ func (s *Store) DeleteObjective(ctx context.Context, id string) error {
 }
 
 func (s *Store) ListObjectives(ctx context.Context, projectID string) ([]model.Objective, error) {
-	q := `SELECT id, project_id, title, acceptance, soft_tokens, hard_tokens, priority, mode, freeze_mode, origin, status, integration_branch, channel, model FROM objectives`
+	q := `SELECT id, project_id, title, acceptance, soft_tokens, hard_tokens, priority, mode, freeze_mode, origin, status, integration_branch, channel, model, review FROM objectives`
 	var args []any
 	if projectID != "" {
 		q += ` WHERE project_id=?`
@@ -98,7 +101,7 @@ func (s *Store) ListObjectives(ctx context.Context, projectID string) ([]model.O
 func scanObjective(sc scanner) (model.Objective, error) {
 	var o model.Objective
 	var acceptance, mode, freeze, status string
-	if err := sc.Scan(&o.ID, &o.Project, &o.Title, &acceptance, &o.Budget.SoftTokens, &o.Budget.HardTokens, &o.Priority, &mode, &freeze, &o.Origin, &status, &o.IntegrationBranch, &o.Channel, &o.Model); err != nil {
+	if err := sc.Scan(&o.ID, &o.Project, &o.Title, &acceptance, &o.Budget.SoftTokens, &o.Budget.HardTokens, &o.Priority, &mode, &freeze, &o.Origin, &status, &o.IntegrationBranch, &o.Channel, &o.Model, &o.Review); err != nil {
 		return o, err
 	}
 	if err := parseJSON(acceptance, &o.Acceptance); err != nil {

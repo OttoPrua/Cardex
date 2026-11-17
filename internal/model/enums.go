@@ -362,3 +362,34 @@ func (t OpenQuestionType) Valid() bool { return oneOf(t, AllOpenQuestionTypes())
 
 // Valid reports whether s is an open-question status.
 func (s OpenQuestionStatus) Valid() bool { return oneOf(s, AllOpenQuestionStatuses()) }
+
+// ReviewMode is how a passed dev-family card is checked before merge.
+// See docs/review-policy.md.
+type ReviewMode string
+
+const (
+	ReviewInherit ReviewMode = ""       // 沿用上一层；三层都空时等同 auto。
+	ReviewAuto    ReviewMode = "auto"   // 按卡种和改动风险决定。
+	ReviewOff     ReviewMode = "off"    // 不复核，验收通过即排队合并。
+	ReviewCheck   ReviewMode = "check"  // 完成度检查：T1，只核对交付物是否齐全。
+	ReviewFull    ReviewMode = "review" // 正常复核：档位按改动风险定。
+)
+
+// Valid reports whether m is a stored review mode, including inherit.
+func (m ReviewMode) Valid() bool {
+	switch m {
+	case ReviewInherit, ReviewAuto, ReviewOff, ReviewCheck, ReviewFull:
+		return true
+	default:
+		return false
+	}
+}
+
+// ParseReviewMode accepts the CLI spellings; "inherit" stores as "".
+func ParseReviewMode(s string) (ReviewMode, bool) {
+	if s == "inherit" {
+		return ReviewInherit, true
+	}
+	m := ReviewMode(s)
+	return m, m.Valid()
+}

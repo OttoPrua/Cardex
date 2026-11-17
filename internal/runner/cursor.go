@@ -29,8 +29,12 @@ func (Cursor) WritablePaths() []string {
 	)
 }
 
-// Build is v1 invokeCursor for a write-capable sequence: --sandbox enabled,
-// no --mode ask, and no --auto-review / --force / --yolo.
+// Build is a write-capable print run: --sandbox disabled plus --force, no
+// --mode ask, --auto-review or --yolo. macOS refuses a second seatbelt inside
+// Cardex's (sandbox_apply: Operation not permitted), and with cursor's sandbox
+// off a headless run rejects every shell command unless --force is given. So
+// Cardex's profile is the one boundary, the same as codex, claude and agy.
+// The privilege guard checks the argv before Cardex adds its own --force.
 func (c Cursor) Build(spec LaunchSpec) ([]string, []string, error) {
 	if c.GoalMode {
 		return c.buildGoal(spec)
@@ -42,13 +46,26 @@ func (c Cursor) Build(spec LaunchSpec) ([]string, []string, error) {
 	args := []string{
 		"cursor-agent",
 		"--print", "--trust", "--output-format", "stream-json",
-		"--model", spec.Model, "--workspace", spec.WorkDir, "--sandbox", "enabled",
+		"--model", spec.Model, "--workspace", spec.WorkDir, "--sandbox", "disabled",
 		body,
 	}
 	if cursorPrivilegeWidening(args) {
 		return nil, nil, fmt.Errorf("cursor: privilege-widening flags")
 	}
-	return args, nil, nil
+	return withCursorForce(args, true), nil, nil
+}
+
+// withCursorForce inserts --force after the binary name and, for print runs,
+// keeps the prompt body last.
+func withCursorForce(args []string, bodyLast bool) []string {
+	out := make([]string, 0, len(args)+1)
+	if bodyLast {
+		out = append(out, args[:len(args)-1]...)
+		out = append(out, "--force", args[len(args)-1])
+		return out
+	}
+	out = append(out, args...)
+	return append(out, "--force")
 }
 
 func cursorPrivilegeWidening(args []string) bool {

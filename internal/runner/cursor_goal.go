@@ -46,17 +46,17 @@ func (c Cursor) dataDir() string {
 	return ""
 }
 
-// buildGoal is the interactive TUI in the same sandbox as print mode. The
+// buildGoal is the interactive TUI with the same sandbox flag as print mode. The
 // objective is typed by Drive, never passed on argv.
 func (c Cursor) buildGoal(spec LaunchSpec) ([]string, []string, error) {
-	args := []string{"cursor-agent", "--trust", "--sandbox", "enabled", "--workspace", spec.WorkDir}
+	args := []string{"cursor-agent", "--trust", "--sandbox", "disabled", "--workspace", spec.WorkDir}
 	if spec.Model != "" {
 		args = append(args, "--model", spec.Model)
 	}
 	if cursorPrivilegeWidening(args) {
 		return nil, nil, fmt.Errorf("cursor: privilege-widening flags")
 	}
-	return args, nil, nil
+	return withCursorForce(args, false), nil, nil
 }
 
 // Drive waits for the input box, pastes "/goal <prompt>", submits it, then

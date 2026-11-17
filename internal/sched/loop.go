@@ -74,6 +74,10 @@ type Runner struct {
 	// tickMu guards tickAt, the in-memory tick_error throttle.
 	tickMu sync.Mutex
 	tickAt map[string]time.Time
+	// noCand is the last route_no_candidate explanation per card; starterAt
+	// throttles the fresh-install starter proposal. Both use tickMu.
+	noCand    map[string]string
+	starterAt time.Time
 }
 
 // New returns the production runner for home with loop.Dispose installed.
@@ -480,6 +484,7 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 	if err != nil {
 		return nil, err
 	}
+	r.ensureStarter(ctx, db, channels, pos)
 	quotas, err := r.quotaView(ctx, db, channels)
 	if err != nil {
 		return nil, err
@@ -506,6 +511,7 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 		ch, err := r.launchCard(ctx, db, card, obj, channels, pos, inUse, quotas)
 		if err != nil {
 			if errors.Is(err, route.ErrNoCandidate) || errors.Is(err, route.ErrPinnedUnavailable) {
+				r.noteNoCandidate(ctx, db, card, obj, channels, pos, inUse, quotas)
 				continue
 			}
 			if ctx.Err() != nil {
@@ -1029,7 +1035,7 @@ func (r *Runner) schedules(ctx context.Context, db *store.Store) error {
 	raw, err := os.ReadFile(filepath.Join(r.Home, "config.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return loop.ApplyDefaultSchedule(ctx, db, r.Home, r.now())
+			return r.applyDefaultSchedule(ctx, db)
 		}
 		return err
 	}
@@ -1038,7 +1044,7 @@ func (r *Runner) schedules(ctx context.Context, db *store.Store) error {
 		return nil
 	}
 	if _, set := top["schedules"]; !set {
-		return loop.ApplyDefaultSchedule(ctx, db, r.Home, r.now())
+		return r.applyDefaultSchedule(ctx, db)
 	}
 	var file scheduleFile
 	if err := json.Unmarshal(raw, &file); err != nil {

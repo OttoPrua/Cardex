@@ -23,8 +23,8 @@ func TestCursorBuildSnapshot(t *testing.T) {
 	want := []string{
 		"cursor-agent",
 		"--print", "--trust", "--output-format", "stream-json",
-		"--model", "composer-2", "--workspace", "/work/tree", "--sandbox", "enabled",
-		snapshotPrompt,
+		"--model", "composer-2", "--workspace", "/work/tree", "--sandbox", "disabled",
+		"--force", snapshotPrompt,
 	}
 	if !slices.Equal(cmd, want) {
 		t.Fatalf("argv\n got %q\nwant %q", cmd, want)
@@ -32,7 +32,7 @@ func TestCursorBuildSnapshot(t *testing.T) {
 	if env != nil {
 		t.Fatalf("env %q", env)
 	}
-	assertNoArg(t, cmd, "--auto-review", "--force", "--yolo", "--mode", "--resume")
+	assertNoArg(t, cmd, "--auto-review", "--yolo", "--mode", "--resume")
 	if (runner.Cursor{}).NeedsPTY() {
 		t.Fatal("NeedsPTY")
 	}

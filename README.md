@@ -61,10 +61,10 @@
 
 ```sh
 git clone https://github.com/OttoPrua/Cardex.git && cd Cardex
-go build -o ./cardex ./cmd/cardex && ./cardex --home "$HOME/.cardex-demo" doctor
+go build -o ./cardex ./cmd/cardex && ./cardex --home "$HOME/.cardex-demo" setup
 ```
 
-首次 `doctor` 提示缺渠道或模型定位是正常的，接着看[第一个目标](#跑通第一个目标)。
+`setup` 会找出已安装的 CLI、检查是否登录，并给出推荐渠道；确认后运行 `setup --yes` 写入渠道并生成一份推荐定位，再用 `positioning approve` 批准即可。想手动配置的，接着看[第一个目标](#跑通第一个目标)。
 
 | 平台 | 支持情况 |
 | --- | --- |
@@ -100,7 +100,7 @@ export CARDEX_HOME="$HOME/.cardex-demo"
 ./cardex channel check
 ```
 
-在 `$CARDEX_HOME/config.json` 写入初始模型定位（见下方示例），然后：
+生成并批准模型定位：`./cardex positioning propose`，再按提示 `./cardex positioning approve <id>`（也可以 `--file` 提交自己写的表，格式见下方示例）。然后：
 
 ```sh
 ./cardex objective add --id first-change --project demo --mode manual \

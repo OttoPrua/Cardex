@@ -38,11 +38,19 @@ func Select(ctx context.Context, req Request) (model.Route, model.RouteReason, e
 	}
 
 	kept, filtered := rankTier(ctx, req, tier, now)
-	if len(kept) == 0 {
+	if len(kept) == 0 || allSameFamily(kept) {
+		// Borrow one tier up when this tier is unusable, and for a review
+		// whose tier only has the author's family when the next tier has
+		// another family. Otherwise the same-family fallback stays.
 		if next, ok := upOne(tier); ok {
 			more, extra := rankTier(ctx, req, next, now)
-			filtered = append(filtered, extra...)
-			kept = more
+			if len(kept) == 0 || (len(more) > 0 && !allSameFamily(more)) {
+				for _, item := range kept {
+					filtered = append(filtered, model.FilteredCandidate{Channel: item.ch.ID, Model: item.modelName, Reason: ReasonFamily})
+				}
+				filtered = append(filtered, extra...)
+				kept = more
+			}
 		}
 	}
 
@@ -96,6 +104,24 @@ func rankTier(ctx context.Context, req Request, tier model.Tier, now time.Time) 
 		}
 		kept = append(kept, item)
 	}
+	// Review policy: another family is preferred, not required. Same-family
+	// candidates stay filtered while any usable other-family candidate is
+	// left in this tier, and become the pool when none is.
+	cross := kept[:0:0]
+	var same []ranked
+	for _, item := range kept {
+		if item.sameFam {
+			same = append(same, item)
+		} else {
+			cross = append(cross, item)
+		}
+	}
+	if len(cross) > 0 {
+		for _, item := range same {
+			filtered = append(filtered, model.FilteredCandidate{Channel: item.ch.ID, Model: item.modelName, Reason: ReasonFamily})
+		}
+		kept = cross
+	}
 	sort.SliceStable(kept, func(i, j int) bool {
 		a, b := kept[i], kept[j]
 		if a.pref != b.pref {
@@ -134,6 +160,7 @@ type cand struct {
 	pref      int
 	est       quota.Estimate
 	known     bool
+	sameFam   bool // review card and the author's family: kept only as a fallback.
 }
 
 func explicitPin(req Request) (channelID, modelName string, pinned bool) {
@@ -318,13 +345,10 @@ func collect(ctx context.Context, req Request, tier model.Tier) ([]cand, []model
 			if fam == "" {
 				fam = ch.Family
 			}
-			if review && fam == author {
-				filtered = append(filtered, model.FilteredCandidate{Channel: ch.ID, Model: row.Model, Reason: ReasonFamily})
-				continue
-			}
 			est, known := fetchEst(ctx, req.Quota, ch.ID)
 			cands = append(cands, cand{
 				ch: ch, modelName: row.Model, family: fam, tier: tier, pref: row.Preference, est: est, known: known,
+				sameFam: review && author != "" && fam == author,
 			})
 		}
 	}
@@ -472,4 +496,16 @@ func emptyReason() model.RouteReason {
 		Filtered:   []model.FilteredCandidate{},
 		Scores:     []model.RouteScore{},
 	}
+}
+
+func allSameFamily(items []ranked) bool {
+	if len(items) == 0 {
+		return false
+	}
+	for _, item := range items {
+		if !item.sameFam {
+			return false
+		}
+	}
+	return true
 }

@@ -146,7 +146,7 @@ func TestModelOnlyObjectivePinUsesSelectedChannel(t *testing.T) {
 			modelName: "other-m",
 		},
 		{
-			name: "author-family healthy pin with no other family is no candidate",
+			name: "author-family healthy pin with no other family falls back to the author family",
 			channels: []model.Channel{
 				ch("bad", foreign, model.HealthDegraded, "m"),
 				ch("good", author, model.HealthOK, "m"),
@@ -154,7 +154,8 @@ func TestModelOnlyObjectivePinUsesSelectedChannel(t *testing.T) {
 			pos:       []model.Positioning{row("m", "", 0)},
 			card:      review,
 			objective: model.Objective{Model: "m"},
-			err:       ErrNoCandidate,
+			channel:   "good",
+			modelName: "m",
 		},
 		{
 			name: "all unhealthy model-only pin uses the first provider",

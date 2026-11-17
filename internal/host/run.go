@@ -201,7 +201,7 @@ func run(ctx context.Context, home, attemptID string) error {
 
 	writable := append([]string{attempt.Worktree}, r.WritablePaths()...)
 	wrap := sandbox.Wrap
-	if card.Sandbox == "off" {
+	if sandboxOff(ctx, db, card) {
 		wrap = func(c *exec.Cmd, _ []string) (*exec.Cmd, error) { return sandbox.Off(c) }
 	}
 	wrapped, err := wrap(cmd, writable)
@@ -399,10 +399,10 @@ func completeEngineEnv(env []string) bool {
 		if !ok {
 			continue
 		}
-		switch key {
-		case "PATH":
+		switch {
+		case strings.EqualFold(key, "PATH"): // Windows spells it Path
 			path = true
-		case "ANTHROPIC_BASE_URL":
+		case key == "ANTHROPIC_BASE_URL":
 			base = true
 		}
 	}
@@ -784,4 +784,25 @@ func watchCardCanceled(ctx context.Context, db *store.Store, cardID, attemptID s
 		stop()
 		return
 	}
+}
+
+// sandboxOff reports whether the card runs outside the Cardex sandbox. An
+// explicit card setting wins; an empty one inherits its project's default.
+// When the project cannot be read the card stays sandboxed.
+func sandboxOff(ctx context.Context, db *store.Store, card model.Card) bool {
+	switch card.Sandbox {
+	case "off":
+		return true
+	case "on":
+		return false
+	}
+	obj, err := db.GetObjective(ctx, card.Objective)
+	if err != nil {
+		return false
+	}
+	p, err := db.GetProject(ctx, obj.Project)
+	if err != nil {
+		return false
+	}
+	return p.Sandbox == "off"
 }

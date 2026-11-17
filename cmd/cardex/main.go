@@ -24,6 +24,7 @@ import (
 const usage = `cardex — v2 command surface
 
 commands:
+  setup [--yes]          first run: find CLIs, check sign-in, add channels
   serve
   project add|list|show|set
   objective add|list|show|set|pause|resume|cancel
@@ -32,7 +33,7 @@ commands:
   question list|show|answer
   channel list|show|set|check
   route explain <card>
-  positioning show|proposals|approve|reject
+  positioning show|propose|proposals|approve|reject
   schedule list|run <name>
   scorecard
   import-legacy [--dry-run] <v1-home>
@@ -101,8 +102,10 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return cmdNotify(home, asJSON, rest[1:], stdout, stderr)
 	case "doctor":
 		return cmdDoctor(home, rest[1:], stdout, stderr)
-	case "version":
+	case "version", "--version", "-v":
 		return cmdVersion(stdout)
+	case "setup":
+		return cmdSetup(home, asJSON, rest[1:], stdout, stderr)
 	case "host":
 		return cmdHost(home, rest[1:], stdout, stderr)
 	default:

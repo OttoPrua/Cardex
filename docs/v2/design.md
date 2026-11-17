@@ -382,7 +382,7 @@ cardex card add|list|show|cancel|retry|pause|resume|revive
 cardex question list|show|answer
 cardex channel list|show|set|check                       # set: redline, windows, concurrency
 cardex route explain <card>
-cardex positioning show|proposals|approve|reject
+cardex positioning show|propose|proposals|approve|reject
 cardex schedule list|run <name>
 cardex scorecard
 cardex import-legacy [--dry-run] <v1-home>

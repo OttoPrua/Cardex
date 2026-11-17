@@ -544,7 +544,7 @@ func TestObjectivePinYieldsOnReviewFamilyOrRequires(t *testing.T) {
 		}
 	})
 
-	t.Run("no other family is no candidate", func(t *testing.T) {
+	t.Run("no other family falls back to the author family", func(t *testing.T) {
 		led, _, channels, pos := build(t, now, []spec{
 			{id: "codex", modelName: "codex-m", family: "codex", limit: 100},
 		})
@@ -552,7 +552,7 @@ func TestObjectivePinYieldsOnReviewFamilyOrRequires(t *testing.T) {
 		rt, _, err := call(t, now, led, channels, pos, card, func(r *Request) {
 			r.Objective = model.Objective{Channel: "codex"}
 		})
-		if !errors.Is(err, ErrNoCandidate) || rt.Channel != "" || rt.Model != "" {
+		if err != nil || rt.Channel != "codex" || rt.Model != "codex-m" {
 			t.Fatalf("route %+v err %v", rt, err)
 		}
 	})

@@ -216,6 +216,24 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (5, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
+		current = 5
+	}
+	if current < 6 {
+		// Review mode on projects, objectives and cards; empty inherits.
+		for _, table := range []string{"projects", "objectives", "cards"} {
+			var has int
+			if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('`+table+`') WHERE name='review'`).Scan(&has); err != nil {
+				return fmt.Errorf("migration 6: %w", err)
+			}
+			if has == 0 {
+				if _, err := conn.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN review TEXT NOT NULL DEFAULT ''`); err != nil {
+					return fmt.Errorf("migration 6: %w", err)
+				}
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (6, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return err

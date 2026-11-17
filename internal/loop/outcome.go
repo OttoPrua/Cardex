@@ -169,7 +169,9 @@ func reworkOrQuestion(card model.Card, limit int, why string) Decision {
 	}
 }
 
-// ReviewOf splits a review result into pass or rework plus the remaining opinion.
+// ReviewOf splits a review result into its verdict (pass, rework, blocked or
+// escalate) plus the remaining opinion. A check card's "missing" verdict reads
+// as rework: the missing items become the rework note.
 func ReviewOf(raw string) (verdict, opinion string, ok bool) {
 	body, found := sectionBody(raw, "复核结论")
 	if !found {
@@ -178,7 +180,11 @@ func ReviewOf(raw string) (verdict, opinion string, ok bool) {
 	fields := strings.Fields(body)
 	for i, field := range fields {
 		field = strings.Trim(strings.ToLower(field), "`*_.,;:()[]\"'")
-		if field != "pass" && field != "rework" {
+		switch field {
+		case "pass", "rework", "blocked", "escalate":
+		case "missing":
+			field = "rework"
+		default:
 			continue
 		}
 		return field, strings.TrimSpace(strings.Join(fields[i+1:], " ")), true
@@ -196,6 +202,7 @@ type ListedCard struct {
 	Claims     []model.Claim
 	Deps       []string
 	Acceptance []string
+	Review     string // check or review from the plan; off and unknown values drop to inherit.
 	Node       string
 	Op         string
 	Outside    bool
@@ -235,6 +242,7 @@ type rawCard struct {
 	Claims     json.RawMessage `json:"claims"`
 	Deps       []string        `json:"deps"`
 	Acceptance []string        `json:"acceptance"`
+	Review     string          `json:"review"`
 	Node       string          `json:"node"`
 	Op         string          `json:"op"`
 }
@@ -282,6 +290,7 @@ func normalizeList(raws []rawCard, scope string, known map[string]bool) CardList
 			Claims:     decodeClaims(raw.Claims),
 			Deps:       append([]string{}, raw.Deps...),
 			Acceptance: append([]string{}, raw.Acceptance...),
+			Review:     plannedReview(raw.Review),
 			Node:       node,
 			Op:         strings.ToLower(strings.TrimSpace(raw.Op)),
 			Outside:    node != "" && node != scope,
@@ -742,4 +751,15 @@ func stripCommas(s string) string {
 		b.WriteByte(c)
 	}
 	return b.String()
+}
+
+// plannedReview keeps the review modes a plan card may raise or narrow to.
+// A plan cannot turn review off; that is the owner's call.
+func plannedReview(v string) string {
+	switch m := strings.ToLower(strings.TrimSpace(v)); m {
+	case string(model.ReviewCheck), string(model.ReviewFull):
+		return m
+	default:
+		return ""
+	}
 }

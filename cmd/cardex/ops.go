@@ -17,10 +17,10 @@ const projectGroupUsage = `project — read and update project records
 purpose: add, list, show, or set a project stored in the home database
 
 parameters:
-  add   --id --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off
+  add   --id --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off --review auto|off|check|review
   list  --json
   show  <id> --json
-  set   --id <id> --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off
+  set   --id <id> --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off --review auto|off|check|review
 `
 
 func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
@@ -31,6 +31,7 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	testCmd := fs.String("test-cmd", "", "test command")
 	design := fs.String("design-dir", "", "design directory")
 	sandboxMode := fs.String("sandbox", "", "project default for its cards: on, or off to run them outside the Cardex sandbox")
+	reviewMode := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
 	var forbidden stringsFlag
 	fs.Var(&forbidden, "forbidden", "forbidden path")
 	if code, ok := parseSet(fs, args); !ok {
@@ -72,6 +73,9 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	if flagSeen(fs, "sandbox") {
 		p.Sandbox = *sandboxMode
 	}
+	if flagSeen(fs, "review") {
+		p.Review = *reviewMode
+	}
 	if err := db.UpdateProject(context.Background(), &p); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -83,10 +87,10 @@ const objectiveGroupUsage = `objective — read and update objective records
 purpose: add, list, show, set, pause, resume, or cancel an objective
 
 parameters:
-  add     --id --project --title --acceptance --check --soft-tokens --hard-tokens --priority --mode --freeze-mode --origin --status --integration-branch --channel --model
+  add     --id --project --title --acceptance --check --soft-tokens --hard-tokens --priority --mode --freeze-mode --origin --status --integration-branch --channel --model --review
   list    --project --json
   show    <id> --json
-  set     --id <id> --mode --freeze-mode --soft-tokens --hard-tokens --priority
+  set     --id <id> --mode --freeze-mode --soft-tokens --hard-tokens --priority --review
   pause   <id>
   resume  <id>
   cancel  <id>
@@ -103,6 +107,7 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	fs.Var(soft, "soft-tokens", "soft token budget")
 	fs.Var(hard, "hard-tokens", "hard token budget")
 	fs.Var(priority, "priority", "priority")
+	reviewMode := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -153,6 +158,9 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		o.Priority = priority.n
 	}
 	notes = append(notes, priority.bad...)
+	if flagSeen(fs, "review") {
+		o.Review = *reviewMode
+	}
 	if err := db.UpdateObjective(context.Background(), &o); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

@@ -17,7 +17,7 @@ const (
 	ReasonBlocked      = "blocked"       // 在观测到的重置时间之前被封锁。
 	ReasonCutoff       = "cutoff"        // 已用超过 98%。
 	ReasonUnknownQuota = "unknown_quota" // 余量未知且配置为 exclude。
-	ReasonFamily       = "family"        // 复核卡要求与作者不同族。
+	ReasonFamily       = "family"        // 复核卡优先换族：本档有别族可用时，同族候选被滤掉。
 )
 
 // ErrPinnedUnavailable means the explicit channel is missing or not healthy.

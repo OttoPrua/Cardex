@@ -267,23 +267,44 @@ func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 		card.AuthorFamily = derived
 		family = derived
 	}
+	var stat *diffStat
+	if reviewModeFor(card, st.snap.obj, st.snap.project) == model.ReviewFull {
+		stat = attemptDiff(st.ctx, st.snap.project, attempt)
+	}
+	plan := planReview(card, st.snap.obj, st.snap.project, stat)
+	if plan.Mode == model.ReviewOff {
+		card.Status = model.CardMergeQueued
+		card.WaitReason = ""
+		if err := st.saveCard(card); err != nil {
+			return err
+		}
+		return st.event("card:"+card.ID, "review_skipped", map[string]string{"card": card.ID, "reason": plan.Why})
+	}
 	card.Status = model.CardReviewing
 	if err := st.saveCard(card); err != nil {
 		return err
+	}
+	title := "review " + card.Title
+	if plan.Mode == model.ReviewCheck {
+		title = "check " + card.Title
 	}
 	review := model.Card{
 		Objective:    card.Objective,
 		Node:         card.Node,
 		Kind:         model.KindReview,
-		Title:        "review " + card.Title,
-		Body:         "reviewer family must differ from " + family,
-		Tier:         model.TierT3,
+		Title:        title,
+		Body:         reviewBody(plan, family),
+		Tier:         plan.Tier,
 		Status:       model.CardReady,
 		Deps:         []string{card.ID},
 		AuthorFamily: family,
+		Review:       string(plan.Mode),
 	}
-	_, err := st.createCard(review)
-	return err
+	created, err := st.createCard(review)
+	if err != nil {
+		return err
+	}
+	return st.event("card:"+card.ID, "review_planned", map[string]string{"card": card.ID, "review": created.ID, "mode": string(plan.Mode), "tier": string(plan.Tier), "reason": plan.Why})
 }
 
 // reviewFamily is the positioning family of the attempt's model.
@@ -952,6 +973,66 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		card.Status = model.CardDone
 		return st.saveCard(card)
 	}
+	switch verdict {
+	case verdictBlocked:
+		// The reviewer could not verify; a person decides. No rework is spent.
+		parent.Status = model.CardNeedsInput
+		parent.WaitReason = ""
+		if err := st.saveCard(parent); err != nil {
+			return err
+		}
+		text := "review blocked"
+		if opinion != "" {
+			text += ": " + opinion
+		}
+		if err := st.openQuestion(model.QuestionCustom, parent.ID, "card", text, true); err != nil {
+			return err
+		}
+		if err := st.noteReviewVerdict(parent, card, attempt, verdict, stored, true); err != nil {
+			return err
+		}
+		card.Status = model.CardDone
+		return st.saveCard(card)
+	case verdictEscalate:
+		// An unsure reviewer hands over one tier up; at T3 it is a person's call.
+		if err := st.noteReviewVerdict(parent, card, attempt, verdict, stored, false); err != nil {
+			return err
+		}
+		card.Status = model.CardDone
+		if err := st.saveCard(card); err != nil {
+			return err
+		}
+		cur := card.Tier
+		if cur == "" {
+			cur = model.TierT3
+		}
+		next, ok := upTier(cur)
+		if !ok {
+			parent.Status = model.CardNeedsInput
+			parent.WaitReason = ""
+			if err := st.saveCard(parent); err != nil {
+				return err
+			}
+			return st.openQuestion(model.QuestionCustom, parent.ID, "card", "review escalated at T3: "+opinion, true)
+		}
+		up := model.Card{
+			Objective:    card.Objective,
+			Node:         card.Node,
+			Kind:         model.KindReview,
+			Title:        card.Title,
+			Body:         strings.TrimSpace(card.Body) + "\n上一档复核（" + string(cur) + "）没把握，已升到 " + string(next) + "。上一档意见：" + opinion + "\n",
+			Tier:         next,
+			Status:       model.CardReady,
+			Deps:         []string{parent.ID},
+			AuthorFamily: card.AuthorFamily,
+			Review:       card.Review,
+		}
+		created, err := st.createCard(up)
+		if err != nil {
+			return err
+		}
+		return st.event("card:"+parent.ID, "review_escalated", map[string]string{"card": parent.ID, "from": card.ID, "review": created.ID, "tier": string(next)})
+	}
 	if verdict == "pass" {
 		parent.Status = model.CardMergeQueued
 		if err := st.saveCard(parent); err != nil {
@@ -1190,6 +1271,7 @@ func cardFromDraft(objective, node string, draft ListedCard) model.Card {
 		Claims:     draft.Claims,
 		Deps:       draft.Deps,
 		Acceptance: draft.Acceptance,
+		Review:     draft.Review,
 		Status:     model.CardReady,
 	}
 }

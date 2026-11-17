@@ -45,6 +45,7 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 	testCmd := fs.String("test-cmd", "", "test command")
 	design := fs.String("design-dir", "", "design directory")
 	sandboxMode := fs.String("sandbox", "on", "project default for its cards: on, or off to run them outside the Cardex sandbox")
+	reviewMode := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
 	var forbidden stringsFlag
 	fs.Var(&forbidden, "forbidden", "forbidden path")
 	if code, ok := parseSet(fs, args); !ok {
@@ -62,6 +63,7 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 		DesignDir:      *design,
 		ForbiddenPaths: forbidden,
 		Sandbox:        *sandboxMode,
+		Review:         *reviewMode,
 	}
 	if p.ID == "" {
 		gen, err := newID("p")
@@ -183,6 +185,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	branch := fs.String("integration-branch", "", "integration branch")
 	channel := fs.String("channel", "", "explicit channel")
 	modelName := fs.String("model", "", "explicit model")
+	objReview := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -238,7 +241,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		Budget:     model.Budget{SoftTokens: softTokens, HardTokens: hardTokens},
 		Priority:   priorityVal, Mode: modeVal, FreezeMode: freezeVal,
 		Origin: origin, Status: statusVal, IntegrationBranch: *branch,
-		Channel: *channel, Model: *modelName,
+		Channel: *channel, Model: *modelName, Review: *objReview,
 	}
 	if o.ID == "" {
 		gen, err := newID("o")
@@ -379,6 +382,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	fs.Var(&claims, "claim", "path or path=symbol")
 	base := fs.String("base", "", "base commit")
 	sandboxMode := fs.String("sandbox", "", "on or off; empty inherits the project default (on unless the project says off); fixed once the card exists")
+	cardReview := fs.String("review", "", "review mode after a passed dev card: auto, off, check, review; empty inherits objective then project")
 	status := fs.String("status", string(model.CardReady), "status")
 	originFlag := fs.String("origin", "", "origin session kind:id; a present flag wins over CARDEX_ORIGIN")
 	if code, ok := parseSet(fs, args); !ok {
@@ -416,7 +420,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		ID: *id, Objective: *objective, Node: *node, Kind: kindVal,
 		Title: titleVal, Body: *body, Tier: tierVal, Requires: requires,
 		Deps: deps, Acceptance: acceptance, Base: *base, Status: statusVal,
-		WaitReason: strings.Join(reasons, "; "), Sandbox: *sandboxMode,
+		WaitReason: strings.Join(reasons, "; "), Sandbox: *sandboxMode, Review: *cardReview,
 	}
 	if c.ID == "" {
 		gen, err := newID("c")

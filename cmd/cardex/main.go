@@ -32,7 +32,7 @@ commands:
   question list|show|answer
   channel list|show|set|check
   route explain <card>
-  positioning show|proposals|approve|reject
+  positioning show|propose|proposals|approve|reject
   schedule list|run <name>
   scorecard
   import-legacy [--dry-run] <v1-home>

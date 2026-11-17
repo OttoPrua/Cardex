@@ -16,6 +16,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/positioning"
 	"github.com/OttoPrua/Cardex/internal/question"
+	"github.com/OttoPrua/Cardex/internal/sched"
 	"github.com/OttoPrua/Cardex/internal/scorecard"
 	"github.com/OttoPrua/Cardex/internal/store"
 	"github.com/OttoPrua/Cardex/internal/workspace"
@@ -736,14 +737,48 @@ func cmdRoute(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 	if !asJSON {
 		fmt.Fprintf(stdout, "card %s\n", cardID)
 	}
-	return writeJSON(stdout, reason)
+	code := writeJSON(stdout, reason)
+	if !asJSON && code == 0 {
+		if line := lastNoCandidate(db, cardID); line != "" {
+			fmt.Fprintln(stdout, line)
+		}
+	}
+	return code
+}
+
+// lastNoCandidate is the newest scheduler note on why the card was not dispatched.
+func lastNoCandidate(db *store.Store, cardID string) string {
+	events, err := db.ListEvents(context.Background(), "card:"+cardID)
+	if err != nil {
+		return ""
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type != sched.EventRouteNoCandidate {
+			continue
+		}
+		var ex struct {
+			Reason string `json:"reason"`
+			Hint   string `json:"hint"`
+		}
+		if json.Unmarshal(events[i].Data, &ex) != nil {
+			return ""
+		}
+		out := "not dispatched (" + events[i].TS.Local().Format("2006-01-02 15:04:05") + "): " + ex.Reason
+		if ex.Hint != "" {
+			out += "\nnext step: " + ex.Hint
+		}
+		return out
+	}
+	return ""
 }
 
 const positioningGroupUsage = `positioning — show and approve the model positioning table
-purpose: show, list proposals, approve, or reject. approve and reject call positioning.Store
+purpose: show, propose, list proposals, approve, or reject. approve and reject call positioning.Store
+the scheduler routes only from an approved table; a fresh install gets a starter proposal to approve
 
 parameters:
   show        --json
+  propose     [--file <json>] --json
   proposals   --json
   approve     <id>
   reject      <id>
@@ -756,6 +791,8 @@ func cmdPositioning(home string, asJSON bool, args []string, stdout, stderr io.W
 	switch args[0] {
 	case "show":
 		return positioningShow(home, asJSON, args[1:], stdout, stderr)
+	case "propose":
+		return positioningPropose(home, asJSON, args[1:], stdout, stderr)
 	case "proposals":
 		return positioningProposals(home, asJSON, args[1:], stdout, stderr)
 	case "approve":
@@ -798,7 +835,93 @@ func positioningShow(home string, asJSON bool, args []string, stdout, stderr io.
 	for _, row := range rows {
 		fmt.Fprintf(stdout, "%s\t%s\n", row.ID, row.Model)
 	}
+	if approved, err := h.Approved(context.Background()); err == nil && !approved {
+		fmt.Fprintln(stderr, unapprovedHint(h))
+	}
 	return 0
+}
+
+// unapprovedHint says the table is not routed yet and how to approve one.
+func unapprovedHint(h *positioning.Home) string {
+	pending, err := h.Pending()
+	if err == nil && len(pending) > 0 {
+		id := pending[len(pending)-1].ID
+		return "note: no positioning is approved yet, so no card will be dispatched. approve the pending proposal: cardex positioning approve " + id
+	}
+	return "note: no positioning is approved yet, so no card will be dispatched. run: cardex positioning propose, then cardex positioning approve <id>"
+}
+
+func positioningPropose(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("positioning propose", "write a proposal: the starter table (config.json seed, else one row per channel model) or a JSON file", "--file --json", stdout, stderr)
+	file := fs.String("file", "", "JSON file: an array of positioning rows or {\"positioning\": [...]}")
+	if code, ok := parseSet(fs, args); !ok {
+		return code
+	}
+	h, err := openPositioning(home)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer h.Close()
+	ctx := context.Background()
+	var entries []model.Positioning
+	if *file != "" {
+		entries, err = readPositioningFile(*file)
+	} else {
+		var chans []model.Channel
+		chans, err = h.Channels(ctx)
+		if err == nil {
+			entries, err = h.StarterEntries(chans)
+		}
+	}
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if len(entries) == 0 {
+		fmt.Fprintln(stderr, "nothing to propose: add a channel with a model first (cardex channel set -id <id> -runner <runner> -model <model>)")
+		return 1
+	}
+	p, err := h.Propose(ctx, entries)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if asJSON {
+		return writeJSON(stdout, map[string]any{"id": p.ID, "entries": p.Entries, "diff": p.Diff, "approve": "cardex positioning approve " + p.ID})
+	}
+	fmt.Fprintf(stdout, "proposal %s\n", p.ID)
+	for _, row := range p.Entries {
+		fmt.Fprintf(stdout, "  %s\tfamily=%s\ttiers=%s\tpref=%d\n", row.Model, row.Family, joinTierList(row.Tiers), row.Preference)
+	}
+	fmt.Fprintf(stdout, "approve with: cardex positioning approve %s\n", p.ID)
+	return 0
+}
+
+func joinTierList(tiers []model.Tier) string {
+	parts := make([]string, 0, len(tiers))
+	for _, t := range tiers {
+		parts = append(parts, string(t))
+	}
+	return strings.Join(parts, ",")
+}
+
+func readPositioningFile(path string) ([]model.Positioning, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var rows []model.Positioning
+	if err := json.Unmarshal(body, &rows); err == nil {
+		return rows, nil
+	}
+	var wrapped struct {
+		Positioning []model.Positioning `json:"positioning"`
+	}
+	if err := json.Unmarshal(body, &wrapped); err != nil {
+		return nil, fmt.Errorf("%s: want a JSON array of positioning rows or {\"positioning\": [...]}: %v", path, err)
+	}
+	return wrapped.Positioning, nil
 }
 
 func positioningProposals(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {

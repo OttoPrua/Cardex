@@ -29,8 +29,11 @@ func (Cursor) WritablePaths() []string {
 	)
 }
 
-// Build is v1 invokeCursor for a write-capable sequence: --sandbox enabled,
-// no --mode ask, and no --auto-review / --force / --yolo.
+// Build is v1 invokeCursor for a write-capable sequence: --sandbox disabled,
+// no --mode ask, and no --auto-review / --force / --yolo. macOS refuses a
+// second seatbelt inside Cardex's (sandbox_apply: Operation not permitted), so
+// cursor's own sandbox broke every shell command; Cardex's profile is the one
+// boundary, the same as codex.
 func (c Cursor) Build(spec LaunchSpec) ([]string, []string, error) {
 	if c.GoalMode {
 		return c.buildGoal(spec)
@@ -42,7 +45,7 @@ func (c Cursor) Build(spec LaunchSpec) ([]string, []string, error) {
 	args := []string{
 		"cursor-agent",
 		"--print", "--trust", "--output-format", "stream-json",
-		"--model", spec.Model, "--workspace", spec.WorkDir, "--sandbox", "enabled",
+		"--model", spec.Model, "--workspace", spec.WorkDir, "--sandbox", "disabled",
 		body,
 	}
 	if cursorPrivilegeWidening(args) {

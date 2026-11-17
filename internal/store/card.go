@@ -26,9 +26,7 @@ func prepareCard(c *model.Card) error {
 		return invalid("card status", c.Status)
 	}
 	switch c.Sandbox {
-	case "", "on":
-		c.Sandbox = ""
-	case "off":
+	case "", "on", "off":
 	default:
 		return invalid("card sandbox", c.Sandbox)
 	}

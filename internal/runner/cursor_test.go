@@ -23,7 +23,7 @@ func TestCursorBuildSnapshot(t *testing.T) {
 	want := []string{
 		"cursor-agent",
 		"--print", "--trust", "--output-format", "stream-json",
-		"--model", "composer-2", "--workspace", "/work/tree", "--sandbox", "enabled",
+		"--model", "composer-2", "--workspace", "/work/tree", "--sandbox", "disabled",
 		snapshotPrompt,
 	}
 	if !slices.Equal(cmd, want) {

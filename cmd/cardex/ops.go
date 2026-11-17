@@ -17,10 +17,10 @@ const projectGroupUsage = `project — read and update project records
 purpose: add, list, show, or set a project stored in the home database
 
 parameters:
-  add   --id --repo --worktree-root --test-cmd --design-dir --forbidden
+  add   --id --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off
   list  --json
   show  <id> --json
-  set   --id <id> --repo --worktree-root --test-cmd --design-dir --forbidden
+  set   --id <id> --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off
 `
 
 func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
@@ -30,6 +30,7 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	root := fs.String("worktree-root", "", "worktree root")
 	testCmd := fs.String("test-cmd", "", "test command")
 	design := fs.String("design-dir", "", "design directory")
+	sandboxMode := fs.String("sandbox", "", "project default for its cards: on, or off to run them outside the Cardex sandbox")
 	var forbidden stringsFlag
 	fs.Var(&forbidden, "forbidden", "forbidden path")
 	if code, ok := parseSet(fs, args); !ok {
@@ -67,6 +68,9 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	}
 	if flagSeen(fs, "forbidden") {
 		p.ForbiddenPaths = forbidden
+	}
+	if flagSeen(fs, "sandbox") {
+		p.Sandbox = *sandboxMode
 	}
 	if err := db.UpdateProject(context.Background(), &p); err != nil {
 		fmt.Fprintln(stderr, err)

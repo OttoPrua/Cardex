@@ -13,6 +13,7 @@ type Project struct {
 	TestCmd        string   `json:"test_cmd"`        // 默认的全量测试命令。
 	DesignDir      string   `json:"design_dir"`      // 设计文档目录，默认 docs/design/。
 	ForbiddenPaths []string `json:"forbidden_paths"` // 触碰前需要使用者确认的路径。
+	Sandbox        string   `json:"sandbox"`         // 项目默认：空表示卡在 Cardex 沙箱内跑；"off" 表示卡默认在沙箱外跑。卡上的 on/off 优先。
 }
 
 // Acceptance is an objective's commands and checklist. Both are optional.
@@ -108,7 +109,7 @@ type Card struct {
 	ReworkNote   string     `json:"rework_note"`   // 复核意见，附进下一次尝试的 prompt。
 	AuthorFamily string     `json:"author_family"` // 作者模型族；复核卡必须换族。
 	Budget       Budget     `json:"budget"`        // 单卡预算。
-	Sandbox      string     `json:"sandbox"`       // 空表示在 Cardex 沙箱内跑；"off" 表示整张卡在沙箱外跑，只能在 card add 时设定。
+	Sandbox      string     `json:"sandbox"`       // 空表示沿用项目设置；"on" 在 Cardex 沙箱内跑；"off" 整张卡在沙箱外跑。只能在 card add 时设定。
 }
 
 // Route is the channel and model chosen before an attempt starts.

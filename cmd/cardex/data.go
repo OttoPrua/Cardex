@@ -44,6 +44,7 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 	root := fs.String("worktree-root", "", "worktree root")
 	testCmd := fs.String("test-cmd", "", "test command")
 	design := fs.String("design-dir", "", "design directory")
+	sandboxMode := fs.String("sandbox", "on", "project default for its cards: on, or off to run them outside the Cardex sandbox")
 	var forbidden stringsFlag
 	fs.Var(&forbidden, "forbidden", "forbidden path")
 	if code, ok := parseSet(fs, args); !ok {
@@ -60,6 +61,7 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 		TestCmd:        *testCmd,
 		DesignDir:      *design,
 		ForbiddenPaths: forbidden,
+		Sandbox:        *sandboxMode,
 	}
 	if p.ID == "" {
 		gen, err := newID("p")
@@ -376,7 +378,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	fs.Var(&acceptance, "acceptance", "acceptance command")
 	fs.Var(&claims, "claim", "path or path=symbol")
 	base := fs.String("base", "", "base commit")
-	sandboxMode := fs.String("sandbox", "on", "on, or off to run this card outside the Cardex sandbox; fixed once the card exists")
+	sandboxMode := fs.String("sandbox", "", "on or off; empty inherits the project default (on unless the project says off); fixed once the card exists")
 	status := fs.String("status", string(model.CardReady), "status")
 	originFlag := fs.String("origin", "", "origin session kind:id; a present flag wins over CARDEX_ORIGIN")
 	if code, ok := parseSet(fs, args); !ok {

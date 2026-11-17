@@ -200,6 +200,22 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (4, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
+		current = 4
+	}
+	if current < 5 {
+		// Per-project sandbox default; cards with an empty sandbox inherit it.
+		var has int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name='sandbox'`).Scan(&has); err != nil {
+			return fmt.Errorf("migration 5: %w", err)
+		}
+		if has == 0 {
+			if _, err := conn.ExecContext(ctx, `ALTER TABLE projects ADD COLUMN sandbox TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migration 5: %w", err)
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (5, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return err

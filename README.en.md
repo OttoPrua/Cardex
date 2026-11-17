@@ -65,10 +65,10 @@ read docs/v2/upgrade-from-v1.md first. Then guide me step by step:
 
 ```sh
 git clone https://github.com/OttoPrua/Cardex.git && cd Cardex
-go build -o ./cardex ./cmd/cardex && ./cardex --home "$HOME/.cardex-demo" doctor
+go build -o ./cardex ./cmd/cardex && ./cardex --home "$HOME/.cardex-demo" setup
 ```
 
-A fresh `doctor` reporting missing channels or model placement is expected; continue with [the first objective](#run-a-first-objective).
+`setup` finds installed CLIs, checks that they are signed in, and shows recommended channels. Run `setup --yes` to add them and propose a recommended placement, then approve it with `positioning approve`. For manual configuration, continue with [the first objective](#run-a-first-objective).
 
 | Platform | Support |
 | --- | --- |
@@ -104,7 +104,7 @@ export CARDEX_HOME="$HOME/.cardex-demo"
 ./cardex channel check
 ```
 
-Add an initial model placement to `$CARDEX_HOME/config.json` (example below), then:
+Propose and approve a placement: `./cardex positioning propose`, then `./cardex positioning approve <id>` as it prints (or submit your own table with `--file`; format below). Then:
 
 ```sh
 ./cardex objective add --id first-change --project demo --mode manual \

@@ -24,6 +24,7 @@ import (
 const usage = `cardex — v2 command surface
 
 commands:
+  setup [--yes]          first run: find CLIs, check sign-in, add channels
   serve
   project add|list|show|set
   objective add|list|show|set|pause|resume|cancel
@@ -101,8 +102,10 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return cmdNotify(home, asJSON, rest[1:], stdout, stderr)
 	case "doctor":
 		return cmdDoctor(home, rest[1:], stdout, stderr)
-	case "version":
+	case "version", "--version", "-v":
 		return cmdVersion(stdout)
+	case "setup":
+		return cmdSetup(home, asJSON, rest[1:], stdout, stderr)
 	case "host":
 		return cmdHost(home, rest[1:], stdout, stderr)
 	default:

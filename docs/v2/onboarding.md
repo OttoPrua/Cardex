@@ -20,14 +20,16 @@
 | 5 | doctor / channel check 对没登录的 CLI 报 OK | v2.2.2 已修：见 §4 |
 | 6 | 401 后的问题只写「no other channel is available」 | v2.2.2 已修：写明哪个渠道没登录和登录命令 |
 | 7 | Linux 上 doctor 报 sandbox-exec 缺失，并把所有没装的 CLI 都列成问题 | v2.2.2 已修 |
-| 8 | 发布包含 AppleDouble `._` 文件，缺 docs/ 和 skills/ | 待做（P2） |
-| 9 | `--version` 不识别，`--help` 打印两次 | 待做（P2） |
+| 8 | 发布包含 AppleDouble `._` 文件，缺 docs/ 和 skills/ | v2.2.2 已修：`scripts/release.sh` |
+| 9 | `--version` 不识别；`--help` 打印两次 | v2.2.2 已修 `--version`/`-v`；`--help` 两次在新版本里复现不出来 |
 | 10 | 只有英文输出 | 待做（P2） |
 | 11 | 问题只投递到文件收件箱 | 待做（P2），见 §7 |
 
-## 3. 推荐首跑流程：`cardex setup`（待实现）
+## 3. 推荐首跑流程：`cardex setup`
 
-一条命令串起现在分散的步骤，每步默认值都已填好，用户回车即可：
+v2.2.2 已实现第 1、2、4、5 步：`cardex setup` 只打印计划，`cardex setup --yes` 为每个已登录的 CLI 建渠道（默认并发见 §6）并提交推荐定位（§5 的分档），用户 `positioning approve` 即可。已有渠道的 CLI 显示 configured，不会重复创建；已批准的定位不会被覆盖。第 3、6、7、8 步留到 v2.2.3。
+
+完整设想如下：
 
 1. **扫描 CLI**：在 PATH 上找 grok、codex、claude、cursor-agent、kimi、agy、opencode。
 2. **查登录**：用不花额度的状态命令（§4）。没登录的给出登录命令，等用户登完再继续。
@@ -68,8 +70,10 @@
 
 | 只有 | T1 | T2 | T3 |
 |------|----|----|----|
-| ChatGPT / Codex | gpt-6.2-astra | gpt-6.2-sol | gpt-6.1-sol |
-| SuperGrok | grok-4.7（goal_mode、web） | grok-4.7 | grok 的快速型号 |
+| ChatGPT / Codex | gpt-6.2-astra | gpt-6.2-sol | gpt-6.2-sol |
+| Claude | opus | sonnet | sonnet |
+| Cursor | auto | auto | auto |
+| SuperGrok | grok-4.7（goal_mode） | grok-4.7 | grok-4.6 |
 | Kimi Code | kimi 最强型号 | 同左 | 同左（仅一个型号时三档共用，靠并发和红线控制花费） |
 
 已知限制：现在 `LaunchSpec` 没有推理强度字段，同一个模型无法按 low/medium/high 拆成不同档。
@@ -92,6 +96,6 @@ Cardex 常由一个 Agent 帮用户装好。凡是「需要用户拿主意但不
 
 ## 8. 落地顺序
 
-1. v2.2.2：§2 的 1–7（已完成，本地分支 `feat/v2.2.2-sandbox`，未推送）。
-2. v2.2.3：`cardex setup`（§3）、发布包修正、`--version`/`--help`。
+1. v2.2.2：§2 的 1–9 和 `cardex setup` 基础版。
+2. v2.2.3：setup 的冒烟、建项目和 origin 检查（§3 第 3、6、7、8 步）。
 3. v2.3：定位 `effort` 分档、多语言输出、问题投递给部署方。

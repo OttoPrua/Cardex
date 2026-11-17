@@ -13,6 +13,9 @@ import (
 // Otherwise the vcs stamp go build embeds from a git checkout is used.
 var revision string
 
+// version is the release tag, set with -ldflags "-X main.version=v2.2.2".
+var version = "dev"
+
 func buildRevision() string {
 	if revision != "" {
 		return revision
@@ -43,6 +46,6 @@ func buildRevision() string {
 }
 
 func cmdVersion(stdout io.Writer) int {
-	fmt.Fprintln(stdout, "cardex", buildRevision())
+	fmt.Fprintln(stdout, "cardex", version, buildRevision())
 	return 0
 }

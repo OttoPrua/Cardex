@@ -1035,7 +1035,7 @@ func (r *Runner) schedules(ctx context.Context, db *store.Store) error {
 	raw, err := os.ReadFile(filepath.Join(r.Home, "config.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			return loop.ApplyDefaultSchedule(ctx, db, r.Home, r.now())
+			return r.applyDefaultSchedule(ctx, db)
 		}
 		return err
 	}
@@ -1044,7 +1044,7 @@ func (r *Runner) schedules(ctx context.Context, db *store.Store) error {
 		return nil
 	}
 	if _, set := top["schedules"]; !set {
-		return loop.ApplyDefaultSchedule(ctx, db, r.Home, r.now())
+		return r.applyDefaultSchedule(ctx, db)
 	}
 	var file scheduleFile
 	if err := json.Unmarshal(raw, &file); err != nil {

@@ -400,7 +400,7 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 			if err := st.saveCard(card); err != nil {
 				return err
 			}
-			return st.openQuestion(model.QuestionCustom, card.ID, "card", "no other channel is available", true)
+			return st.openQuestion(model.QuestionCustom, card.ID, "card", noOtherChannelText(attempt, st.snap.channels), true)
 		}
 		pin := keptPin(st.snap.events, card)
 		excluded := autoExcluded(st.snap.events, card.ID)
@@ -2037,4 +2037,24 @@ func oneLine(s string, max int) string {
 		s = string(r[:max]) + "…"
 	}
 	return s
+}
+
+// noOtherChannelText keeps the "no other channel is available" prefix the board
+// reads, and after an auth failure names the channel and how to sign it in.
+func noOtherChannelText(attempt model.Attempt, channels []model.Channel) string {
+	const base = "no other channel is available"
+	if attempt.Outcome != model.OutcomeAuthFailed || attempt.Route.Channel == "" {
+		return base
+	}
+	id := attempt.Route.Channel
+	login := "its CLI's login"
+	for _, ch := range channels {
+		if ch.ID == id {
+			if cmd := model.LoginCommand(ch.Runner); cmd != "" {
+				login = cmd
+			}
+			break
+		}
+	}
+	return base + " (channel " + id + " is not signed in: run " + login + ", then cardex channel set -id " + id + " -health ok, then answer approve to retry)"
 }

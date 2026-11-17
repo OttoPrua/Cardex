@@ -69,7 +69,7 @@ func collectDoctor(home string) []finding {
 		}
 	}
 	out = append(out, toolFindings()...)
-	out = append(out, channelFindings(db, resolved)...)
+	out = append(out, channelFindings(db, resolved, false)...)
 	return out
 }
 
@@ -93,10 +93,7 @@ func homeWritable(home string) (problem, suggestion string, bad bool) {
 func toolFindings() []finding {
 	var out []finding
 	out = append(out, lookupFinding("git", "install git and put it on PATH")...)
-	out = append(out, lookupFinding("sandbox-exec", "on macOS this ships with the system; elsewhere install it or run doctor on macOS. doctor only looks it up and does not run it")...)
-	for _, name := range []string{"grok", "codex", "claude", "cursor-agent", "kimi", "agy", "opencode"} {
-		out = append(out, lookupFinding(name, "install "+name+" or add it to PATH. doctor only looks up the name and does not run it")...)
-	}
+	out = append(out, sandboxFindings()...)
 	return out
 }
 
@@ -107,7 +104,7 @@ func lookupFinding(name, suggestion string) []finding {
 	return nil
 }
 
-func channelFindings(db *store.Store, home string) []finding {
+func channelFindings(db *store.Store, home string, runProbes bool) []finding {
 	var out []finding
 	if db == nil {
 		out = append(out, finding{"channel config cannot be read", "open a home whose database can be created"})
@@ -122,13 +119,20 @@ func channelFindings(db *store.Store, home string) []finding {
 		out = append(out, finding{"channel config cannot be read: " + err.Error(), "check the channels table in cardex.db"})
 		channels = nil
 	}
+	if err == nil {
+		out = append(out, cliFindings(ctx, channels, runProbes)...)
+	}
+	unapproved := approvalFindings(ctx, home)
+	out = append(out, unapproved...)
 	pos, perr := loadPositioning(ctx, home)
 	if perr != nil {
 		out = append(out, finding{"positioning table cannot be read: " + perr.Error(), "open the home with positioning.Open and approve a proposal"})
 		pos = nil
 	}
+	// Before approval every tier is empty; the approval finding already says
+	// what to do, so the three tier findings would only repeat it.
 	for _, tier := range model.AllTiers() {
-		if !tierAvailable(channels, pos, tier) {
+		if len(unapproved) == 0 && !tierAvailable(channels, pos, tier) {
 			out = append(out, tierFinding(tier))
 		}
 	}
@@ -210,4 +214,26 @@ func windowAccepted(name, rule string) bool {
 	})
 	est, err := led.Remaining(context.Background(), "doctor-probe")
 	return err == nil && !est.Unknown
+}
+
+// approvalFindings reports a table that is shown but not routed: the scheduler
+// dispatches only from an approved positioning table.
+func approvalFindings(ctx context.Context, home string) []finding {
+	if home == "" {
+		return nil
+	}
+	h, err := positioning.Open(home)
+	if err != nil {
+		return nil
+	}
+	defer h.Close()
+	ok, err := h.Approved(ctx)
+	if err != nil || ok {
+		return nil
+	}
+	hint := "run cardex positioning propose, then cardex positioning approve <id>"
+	if pending, perr := h.Pending(); perr == nil && len(pending) > 0 {
+		hint = "approve the waiting proposal: cardex positioning approve " + pending[0].ID
+	}
+	return []finding{{"no positioning table is approved, so no card is dispatched", hint}}
 }

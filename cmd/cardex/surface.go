@@ -660,7 +660,7 @@ func parseWindows(raw []string) ([]model.QuotaWindow, error) {
 }
 
 func channelCheck(home string, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("channel check", "report channel tier, redline, and window problems with suggestions", "no command arguments", stdout, stderr)
+	fs := newFlagSet("channel check", "report channel sign-in, tier, redline, and window problems with suggestions", "no command arguments", stdout, stderr)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -675,7 +675,7 @@ func channelCheck(home string, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
-	for _, item := range channelFindings(db, resolved) {
+	for _, item := range channelFindings(db, resolved, true) {
 		fmt.Fprintf(stdout, "problem: %s\nsuggestion: %s\n", item.problem, item.suggestion)
 	}
 	return 0

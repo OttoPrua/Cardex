@@ -23,3 +23,30 @@ func TestDecideCrashWithoutChangesIsNotTestsFailed(t *testing.T) {
 		}
 	}
 }
+
+func TestDecideReadOnlyCodeCardPassesOnAcceptance(t *testing.T) {
+	base := facts{ProducesCode: true, AcceptRan: true, Acceptance: acceptOK, Result: resultValid}
+	if got := decide(base); got != model.OutcomePassed {
+		t.Fatalf("read-only dev card with passing acceptance: %s", got)
+	}
+	noAccept := base
+	noAccept.AcceptRan = false
+	if got := decide(noAccept); got != model.OutcomeNoOutput {
+		t.Fatalf("no acceptance commands and no changes: %s", got)
+	}
+	noResult := base
+	noResult.Result = resultMissing
+	if got := decide(noResult); got != model.OutcomeNoOutput {
+		t.Fatalf("no result file and no changes: %s", got)
+	}
+	crashed := base
+	crashed.Exit = 1
+	if got := decide(crashed); got != model.OutcomeNoOutput {
+		t.Fatalf("nonzero exit without changes: %s", got)
+	}
+	quota := base
+	quota.Class = model.ErrorQuotaHit
+	if got := decide(quota); got != model.OutcomeQuotaHit {
+		t.Fatalf("quota hit: %s", got)
+	}
+}

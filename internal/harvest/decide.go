@@ -22,6 +22,7 @@ type facts struct {
 	ProducesCode bool
 	HasChanges   bool
 	Acceptance   acceptState
+	AcceptRan    bool // the card had acceptance commands and they ran
 	Result       resultState
 	Class        model.ErrorClass
 	Exit         int
@@ -65,6 +66,14 @@ func decide(f facts) model.Outcome {
 		return model.OutcomePassed
 	}
 	if !f.ProducesCode && f.Result == resultValid {
+		return model.OutcomePassed
+	}
+	// A read-only code-kind card (an inventory, a check, a report written
+	// outside the repo) changes nothing. When it wrote a valid result file,
+	// exited cleanly and its own acceptance commands passed, the work is done;
+	// no_output would retry it on another channel forever. A lost or killed
+	// executor leaves no result file and stays no_output.
+	if f.ProducesCode && !f.HasChanges && f.AcceptRan && f.Acceptance == acceptOK && f.Result == resultValid && f.Exit == 0 && !runnerClass(f.Class) {
 		return model.OutcomePassed
 	}
 	if !f.HasChanges && f.Result != resultValid {

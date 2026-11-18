@@ -108,7 +108,8 @@ var migration1 = []string{
 		family TEXT NOT NULL,
 		tiers TEXT NOT NULL,
 		capabilities TEXT NOT NULL,
-		preference INTEGER NOT NULL
+		preference INTEGER NOT NULL,
+		kinds TEXT NOT NULL DEFAULT '[]'
 	)`,
 	`CREATE TABLE questions (
 		id TEXT PRIMARY KEY,

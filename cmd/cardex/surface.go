@@ -892,7 +892,15 @@ func positioningPropose(home string, asJSON bool, args []string, stdout, stderr 
 	}
 	fmt.Fprintf(stdout, "proposal %s\n", p.ID)
 	for _, row := range p.Entries {
-		fmt.Fprintf(stdout, "  %s\tfamily=%s\ttiers=%s\tpref=%d\n", row.Model, row.Family, joinTierList(row.Tiers), row.Preference)
+		kinds := "all"
+		if len(row.Kinds) > 0 {
+			parts := make([]string, len(row.Kinds))
+			for i, k := range row.Kinds {
+				parts[i] = string(k)
+			}
+			kinds = strings.Join(parts, ",")
+		}
+		fmt.Fprintf(stdout, "  %s\tfamily=%s\ttiers=%s\tkinds=%s\tpref=%d\n", row.Model, row.Family, joinTierList(row.Tiers), kinds, row.Preference)
 	}
 	fmt.Fprintf(stdout, "approve with: cardex positioning approve %s\n", p.ID)
 	return 0

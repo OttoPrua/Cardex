@@ -509,6 +509,7 @@ func cloneEntries(in []model.Positioning) []model.Positioning {
 		out[i] = e
 		out[i].Tiers = append([]model.Tier(nil), e.Tiers...)
 		out[i].Capabilities = append([]string(nil), e.Capabilities...)
+		out[i].Kinds = append([]model.CardKind(nil), e.Kinds...)
 	}
 	return out
 }
@@ -516,13 +517,13 @@ func cloneEntries(in []model.Positioning) []model.Positioning {
 func summarize(cur, next []model.Positioning) string {
 	have := map[string]model.Positioning{}
 	for _, e := range cur {
-		have[e.Model] = e
+		have[rowKey(e)] = e
 	}
 	seen := map[string]bool{}
 	var b strings.Builder
 	for _, e := range next {
-		seen[e.Model] = true
-		old, ok := have[e.Model]
+		seen[rowKey(e)] = true
+		old, ok := have[rowKey(e)]
 		if !ok {
 			fmt.Fprintf(&b, "+ %s\n", e.Model)
 			continue
@@ -539,13 +540,36 @@ func summarize(cur, next []model.Positioning) string {
 		if !sameStrings(old.Capabilities, e.Capabilities) {
 			fmt.Fprintf(&b, "~ %s capability %s -> %s\n", e.Model, strings.Join(old.Capabilities, ","), strings.Join(e.Capabilities, ","))
 		}
+		if joinKinds(old.Kinds) != joinKinds(e.Kinds) {
+			fmt.Fprintf(&b, "~ %s kinds %s -> %s\n", e.Model, joinKinds(old.Kinds), joinKinds(e.Kinds))
+		}
 	}
 	for _, e := range cur {
-		if !seen[e.Model] {
+		if !seen[rowKey(e)] {
 			fmt.Fprintf(&b, "- %s\n", e.Model)
 		}
 	}
 	return b.String()
+}
+
+// rowKey matches rows across versions: by id when set, since one model may
+// now have several rows, else by model for older id-less proposal files.
+func rowKey(p model.Positioning) string {
+	if p.ID != "" {
+		return p.ID
+	}
+	return p.Model
+}
+
+func joinKinds(kinds []model.CardKind) string {
+	if len(kinds) == 0 {
+		return "all"
+	}
+	parts := make([]string, len(kinds))
+	for i, k := range kinds {
+		parts[i] = string(k)
+	}
+	return strings.Join(parts, ",")
 }
 
 var _ Store = (*Home)(nil)

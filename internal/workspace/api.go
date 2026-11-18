@@ -19,6 +19,7 @@ type CreateRequest struct {
 	IntegrationBranch string // 集成分支。
 	StartPoint        string // 新卡起点（card add --base）；为空时用集成分支。
 	Continue          bool   // 为真时从卡分支 HEAD 续做，否则从集成分支 HEAD 切出。
+	Detach            bool   // 为真时不建分支，在 StartPoint（为空用集成分支）上起游离 HEAD 的只读 worktree。
 }
 
 // Worktree is a created attempt checkout.

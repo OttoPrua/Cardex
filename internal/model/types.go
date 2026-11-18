@@ -218,6 +218,10 @@ type Positioning struct {
 	Tiers        []Tier   `json:"tiers"`        // 该模型能承担的等级。
 	Capabilities []string `json:"capabilities"` // 能力，例如 web、goal_mode。
 	Preference   int      `json:"preference"`   // 偏好分组，路由时先按它分组。
+	// Kinds limits the row to these card kinds; empty means every kind.
+	// One model may have several rows, each with its own kinds and preference,
+	// so design, review and dev cards in the same tier can fall back differently.
+	Kinds []CardKind `json:"kinds,omitempty"`
 }
 
 // Delivery is one notification attempt for a question.

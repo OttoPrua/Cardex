@@ -31,7 +31,20 @@ func (Git) Create(ctx context.Context, req CreateRequest) (Worktree, error) {
 	if err := os.MkdirAll(req.WorktreeRoot, 0o755); err != nil {
 		return Worktree{}, err
 	}
-	if req.Continue {
+	if req.Detach {
+		// A read-only review of a card that left no branch: no branch is made.
+		start := strings.TrimSpace(req.StartPoint)
+		if start == "" {
+			start = strings.TrimSpace(req.IntegrationBranch)
+		}
+		if start == "" {
+			return Worktree{}, fmt.Errorf("workspace: detached worktree needs a start point")
+		}
+		if _, err := runGit(ctx, req.RepoPath, "worktree", "add", "--detach", path, start); err != nil {
+			return Worktree{}, err
+		}
+		branch = ""
+	} else if req.Continue {
 		// The previous attempt's worktree still has this branch until merge.
 		// Detach it in place so the new worktree can check the branch out.
 		if err := detachCardBranch(ctx, req.RepoPath, branch); err != nil {

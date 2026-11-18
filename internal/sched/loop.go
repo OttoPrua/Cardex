@@ -614,16 +614,25 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err != nil {
 		return "", err
 	}
-	wsCard, cont, readOnly, err := r.workspaceTarget(ctx, db, card)
+	wsCard, wsObj, cont, readOnly, err := r.workspaceTarget(ctx, db, card, obj.ID)
 	if err != nil {
 		return "", err
 	}
 	// The branch and worktree can exist before the attempt row is stored.
 	// Continue that branch instead of creating it again.
-	if !cont && gitRefExists(ctx, project.RepoPath, "refs/heads/"+cardBranchName(obj.ID, wsCard)) {
+	if !cont && gitRefExists(ctx, project.RepoPath, "refs/heads/"+cardBranchName(wsObj, wsCard)) {
 		cont = true
 	}
-	existed := cont
+	startPoint := card.Base
+	detached := false
+	if readOnly && !gitRefExists(ctx, project.RepoPath, "refs/heads/"+cardBranchName(wsObj, wsCard)) {
+		// The reviewed card left no branch (a read-only card, or one whose
+		// branch is gone). Review its starting commit, detached, instead of
+		// failing on a missing reference or creating a branch in its name.
+		cont, detached = false, true
+		startPoint = reviewFallbackBase(ctx, db, wsCard, card.Base)
+	}
+	existed := cont || detached
 	root := project.WorktreeRoot
 	if strings.TrimSpace(root) == "" {
 		root = filepath.Join(r.Home, "worktrees")
@@ -635,17 +644,18 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	wt, err := workspace.Git{}.Create(ctx, workspace.CreateRequest{
 		CardID:            wsCard,
 		AttemptID:         attemptID,
-		ObjectiveID:       obj.ID,
+		ObjectiveID:       wsObj,
 		RepoPath:          project.RepoPath,
 		WorktreeRoot:      root,
 		IntegrationBranch: obj.IntegrationBranch,
-		StartPoint:        card.Base,
+		StartPoint:        startPoint,
 		Continue:          cont,
+		Detach:            detached,
 	})
 	scratch := launchScratch{
 		repo:         project.RepoPath,
 		worktree:     filepath.Join(root, wsCard+"-"+attemptID),
-		branch:       cardBranchName(obj.ID, wsCard),
+		branch:       cardBranchName(wsObj, wsCard),
 		base:         baseSHA,
 		dropWorktree: true,
 		dropBranch:   !existed,
@@ -1443,19 +1453,46 @@ func openAttempt(ctx context.Context, db *store.Store, cardID string) (*model.At
 	return found, nil
 }
 
-func (r *Runner) workspaceTarget(ctx context.Context, db *store.Store, card model.Card) (string, bool, bool, error) {
+// workspaceTarget returns the card and objective whose branch the attempt
+// uses, whether to continue that branch, and whether the worktree is read-only.
+// A review reads the original card's branch, which is named after that card's
+// own objective; a cross-objective review must not use its own objective.
+func (r *Runner) workspaceTarget(ctx context.Context, db *store.Store, card model.Card, objectiveID string) (string, string, bool, bool, error) {
 	switch card.Kind {
 	case model.KindReview:
 		// The candidate branch belongs to the original card. A repair or rebase
 		// subject does not have a branch under its own id.
 		id, err := reviewBranchCard(ctx, db, reviewSubject(card))
-		return id, true, true, err
+		if err != nil {
+			return id, objectiveID, true, true, err
+		}
+		branchObj := objectiveID
+		if id != card.ID {
+			if subject, err := db.GetCard(ctx, id); err == nil && strings.TrimSpace(subject.Objective) != "" {
+				branchObj = subject.Objective
+			}
+		}
+		return id, branchObj, true, true, nil
 	case model.KindRepair, model.KindRebase:
 		id, err := rootCardID(ctx, db, card)
-		return id, true, false, err
+		return id, objectiveID, true, false, err
 	default:
-		return card.ID, card.ReworkCount > 0, false, nil
+		return card.ID, objectiveID, card.ReworkCount > 0, false, nil
 	}
+}
+
+// reviewFallbackBase is the commit a review starts from when the reviewed card
+// has no branch: that card's latest attempt start, else the review's own base.
+// Empty means the integration branch HEAD.
+func reviewFallbackBase(ctx context.Context, db *store.Store, subjectID, own string) string {
+	if attempts, err := db.ListAttempts(ctx, subjectID); err == nil {
+		for i := len(attempts) - 1; i >= 0; i-- {
+			if b := strings.TrimSpace(attempts[i].BaseCommit); b != "" {
+				return b
+			}
+		}
+	}
+	return strings.TrimSpace(own)
 }
 
 func reviewBranchCard(ctx context.Context, db *store.Store, subjectID string) (string, error) {

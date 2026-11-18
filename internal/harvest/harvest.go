@@ -58,6 +58,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 		ProducesCode: producesCode(in.Card.Kind),
 		HasChanges:   len(changed) > 0,
 		Acceptance:   acc,
+		AcceptRan:    hasAcceptance(in.Card.Acceptance),
 		Result:       result,
 		Class:        in.ErrorClass,
 		Exit:         in.Exit,
@@ -81,6 +82,15 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 		res.EvidenceErr = werr
 	}
 	return res, nil
+}
+
+func hasAcceptance(commands []string) bool {
+	for _, c := range commands {
+		if strings.TrimSpace(c) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func runnerClass(class model.ErrorClass) bool {

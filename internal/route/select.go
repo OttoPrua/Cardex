@@ -334,7 +334,7 @@ func collect(ctx context.Context, req Request, tier model.Tier) ([]cand, []model
 	var cands []cand
 	var filtered []model.FilteredCandidate
 	for _, row := range req.Positioning {
-		if row.Model == "" || !tierListed(row.Tiers, tier) || !hasCaps(row.Capabilities, req.Card.Requires) {
+		if row.Model == "" || !tierListed(row.Tiers, tier) || !hasCaps(row.Capabilities, req.Card.Requires) || !kindListed(row.Kinds, req.Card.Kind) {
 			continue
 		}
 		for _, ch := range req.Channels {
@@ -352,7 +352,39 @@ func collect(ctx context.Context, req Request, tier model.Tier) ([]cand, []model
 			})
 		}
 	}
-	return cands, filtered
+	return dedupeCands(cands), filtered
+}
+
+// kindListed reports whether a row applies to kind; an empty list applies to all.
+func kindListed(kinds []model.CardKind, kind model.CardKind) bool {
+	if len(kinds) == 0 {
+		return true
+	}
+	for _, k := range kinds {
+		if k == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// dedupeCands keeps one candidate per channel and model, the one with the best
+// (lowest) preference, so a model listed in several rows is tried once.
+func dedupeCands(in []cand) []cand {
+	best := map[string]int{}
+	out := make([]cand, 0, len(in))
+	for _, c := range in {
+		key := c.ch.ID + "\x00" + c.modelName
+		if i, ok := best[key]; ok {
+			if c.pref < out[i].pref {
+				out[i] = c
+			}
+			continue
+		}
+		best[key] = len(out)
+		out = append(out, c)
+	}
+	return out
 }
 
 func rejectReason(c cand, req Request, now time.Time) string {

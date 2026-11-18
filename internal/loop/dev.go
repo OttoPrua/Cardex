@@ -451,6 +451,29 @@ func (st *step) saveCard(card model.Card) error {
 	return nil
 }
 
+// depCard finds a dependency card. A review may live in another objective
+// than the card it reviews, so a card missing from this objective's snapshot
+// is read from the store; foreign reports that case.
+func (st *step) depCard(id string) (card model.Card, foreign, ok bool) {
+	if card, ok := st.snap.card(id); ok {
+		return card, false, true
+	}
+	card, err := st.db.GetCard(st.ctx, id)
+	if err != nil || card.ID == "" {
+		return model.Card{}, false, false
+	}
+	return card, true, true
+}
+
+// saveDep saves a card found by depCard. A foreign card is written to the
+// store only, so it never joins this objective's snapshot.
+func (st *step) saveDep(card model.Card, foreign bool) error {
+	if !foreign {
+		return st.saveCard(card)
+	}
+	return st.db.UpdateCard(st.ctx, &card)
+}
+
 func (st *step) createCard(card model.Card) (model.Card, error) {
 	st.fillBudget(&card)
 	if err := st.db.CreateCard(st.ctx, &card); err != nil {

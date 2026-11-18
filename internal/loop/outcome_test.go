@@ -521,7 +521,7 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		}
 	})
 
-	t.Run("unavailable degrades the channel, moves without rework, notifies once", func(t *testing.T) {
+	t.Run("unavailable degrades the channel on the second strike, moves without rework, notifies once", func(t *testing.T) {
 		f := newFx(t, model.ModeManual)
 		a := f.channel("ch-a", "a")
 		b := f.channel("ch-b", "b")
@@ -533,15 +533,29 @@ func TestDevStepOutcomeRows(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ch.Health != model.HealthDegraded || !strings.Contains(ch.LastError, "unavailable: model fake") {
-			t.Fatalf("channel %+v", ch)
+		// One transient failure: recorded, card moves, channel stays usable.
+		if ch.Health != model.HealthOK || !strings.Contains(ch.LastError, "unavailable: model fake") {
+			t.Fatalf("after first strike channel %+v", ch)
 		}
 		got := f.mustCard("dev")
 		if got.Channel != b.ID || got.Status != model.CardReady || got.ReworkCount != 0 || got.Base != attempt.Branch {
 			t.Fatalf("card %+v", got)
 		}
-		if len(f.questions()) != 0 || len(f.events("notify")) != 1 {
+		if len(f.questions()) != 0 || len(f.events("notify")) != 0 {
 			t.Fatalf("questions %d notify %d", len(f.questions()), len(f.events("notify")))
+		}
+		card2 := f.card(model.Card{ID: "dev2", Channel: a.ID})
+		f.attempt(card2, 0, model.OutcomeUnavailable, a.ID, "model fake is not recognized as a known model")
+		f.step()
+		ch, err = f.db.GetChannel(f.ctx, a.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ch.Health != model.HealthDegraded {
+			t.Fatalf("after second strike channel %+v", ch)
+		}
+		if len(f.events("notify")) != 1 {
+			t.Fatalf("notify %d", len(f.events("notify")))
 		}
 		f.step()
 		if len(f.events("notify")) != 1 {

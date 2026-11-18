@@ -592,13 +592,37 @@ func (st *step) markAuth(ch model.Channel, excerpt, attemptID string) error {
 // markUnavailable takes the channel out of automatic routing. Health
 // degraded is the existing "do not auto-select" state; LastError keeps the
 // model and the CLI's own words so doctor and the notice show the cause.
+//
+// One failure alone does not degrade: CLIs sometimes report "unknown model"
+// for a moment while the same model works on the next call. The first
+// failure is recorded as a strike and only the card moves on; a second
+// strike on the same channel and model within unavailableWindow degrades.
 func (st *step) markUnavailable(ch model.Channel, attempt model.Attempt) error {
 	excerpt := strings.TrimSpace(attempt.ErrorExcerpt)
-	ch.Health = model.HealthDegraded
-	ch.LastError = "unavailable: model " + attempt.Route.Model
+	lastError := "unavailable: model " + attempt.Route.Model
 	if excerpt != "" {
-		ch.LastError += ": " + excerpt
+		lastError += ": " + excerpt
 	}
+	strikes, err := st.unavailableStrikes(ch.ID, attempt.Route.Model)
+	if err != nil {
+		return err
+	}
+	if err := st.event("channel:"+ch.ID, "unavailable_strike", map[string]string{
+		"channel": ch.ID,
+		"model":   attempt.Route.Model,
+		"attempt": attempt.ID,
+	}); err != nil {
+		return err
+	}
+	ch.LastError = lastError
+	if strikes+1 < unavailableStrikeLimit {
+		if err := st.db.UpdateChannel(st.ctx, &ch); err != nil {
+			return err
+		}
+		st.snap.putChannel(ch)
+		return nil
+	}
+	ch.Health = model.HealthDegraded
 	if err := st.db.UpdateChannel(st.ctx, &ch); err != nil {
 		return err
 	}
@@ -613,6 +637,35 @@ func (st *step) markUnavailable(ch model.Channel, attempt model.Attempt) error {
 		"model":   attempt.Route.Model,
 		"attempt": attempt.ID,
 	})
+}
+
+const (
+	unavailableStrikeLimit = 2
+	unavailableWindow      = 30 * time.Minute
+)
+
+// unavailableStrikes counts earlier unavailable strikes for this channel and
+// model inside unavailableWindow. Strikes from before the channel was last
+// set back to ok still count while inside the window: a repeat soon after a
+// manual reset is a real failure.
+func (st *step) unavailableStrikes(channel, modelName string) (int, error) {
+	events, err := st.db.ListEvents(st.ctx, "channel:"+channel)
+	if err != nil {
+		return 0, err
+	}
+	since := st.now.Add(-unavailableWindow)
+	n := 0
+	for _, e := range events {
+		if e.Type != "unavailable_strike" || e.TS.Before(since) {
+			continue
+		}
+		var data map[string]string
+		if json.Unmarshal(e.Data, &data) != nil || data["model"] != modelName {
+			continue
+		}
+		n++
+	}
+	return n, nil
 }
 
 func (st *step) openQuestion(kind model.QuestionKind, scope, scopeKind, text string, deliver bool) error {
@@ -961,7 +1014,7 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		card.Status = model.CardDone
 		return st.saveCard(card)
 	}
-	parent, ok := st.snap.card(card.Deps[0])
+	parent, foreign, ok := st.depCard(card.Deps[0])
 	if !ok {
 		return fmt.Errorf("review %s missing card %s", card.ID, card.Deps[0])
 	}
@@ -978,7 +1031,7 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		// The reviewer could not verify; a person decides. No rework is spent.
 		parent.Status = model.CardNeedsInput
 		parent.WaitReason = ""
-		if err := st.saveCard(parent); err != nil {
+		if err := st.saveDep(parent, foreign); err != nil {
 			return err
 		}
 		text := "review blocked"
@@ -1010,7 +1063,7 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		if !ok {
 			parent.Status = model.CardNeedsInput
 			parent.WaitReason = ""
-			if err := st.saveCard(parent); err != nil {
+			if err := st.saveDep(parent, foreign); err != nil {
 				return err
 			}
 			return st.openQuestion(model.QuestionCustom, parent.ID, "card", "review escalated at T3: "+opinion, true)
@@ -1035,7 +1088,7 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 	}
 	if verdict == "pass" {
 		parent.Status = model.CardMergeQueued
-		if err := st.saveCard(parent); err != nil {
+		if err := st.saveDep(parent, foreign); err != nil {
 			return err
 		}
 		if err := st.noteReviewVerdict(parent, card, attempt, verdict, stored, false); err != nil {
@@ -1054,12 +1107,12 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		if branch := st.latestBranch(parent.ID); branch != "" {
 			parent.Base = branch
 		}
-		if err := st.saveCard(parent); err != nil {
+		if err := st.saveDep(parent, foreign); err != nil {
 			return err
 		}
 	} else {
 		parent.Status = model.CardNeedsInput
-		if err := st.saveCard(parent); err != nil {
+		if err := st.saveDep(parent, foreign); err != nil {
 			return err
 		}
 		text := dec.QuestionText
@@ -1318,6 +1371,13 @@ func hasOpenText(node model.DesignNode, text string) bool {
 
 func (st *step) latestBranch(cardID string) string {
 	attempts := append([]model.Attempt{}, st.snap.attempts[cardID]...)
+	if len(attempts) == 0 {
+		// A card in another objective (a cross-objective review's subject)
+		// has no attempts in this snapshot.
+		if stored, err := st.db.ListAttempts(st.ctx, cardID); err == nil {
+			attempts = stored
+		}
+	}
 	sort.Slice(attempts, func(i, j int) bool {
 		if attempts[i].Index != attempts[j].Index {
 			return attempts[i].Index > attempts[j].Index

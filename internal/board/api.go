@@ -110,11 +110,15 @@ func serveChannels(w http.ResponseWriter, r *http.Request, asJSON bool) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	view.Tab = "models"
+	if r.URL.Query().Get("tab") == "quota" {
+		view.Tab = "quota"
+	}
 	if asJSON {
 		writeJSON(w, view)
 		return
 	}
-	render(w, pageData{Title: "渠道", Channels: view})
+	render(w, pageData{Title: "模型与额度", Channels: view})
 }
 
 func serveCard(w http.ResponseWriter, r *http.Request, id string, asJSON bool) {

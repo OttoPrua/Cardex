@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,8 +41,9 @@ type currentView struct {
 	Groups           []groupCount      `json:"groups"`
 	// Inbox is PendingQuestions minus ones the scheduler no longer delivers
 	// (canceled card, or a no-output question on a card that finished since).
-	Inbox []questionBrief `json:"inbox"`
-	Lanes []runningLane   `json:"lanes"`
+	Inbox  []questionBrief `json:"inbox"`
+	Lanes  []runningLane   `json:"lanes"`
+	Models []modelActivity `json:"models"`
 }
 
 type objectiveView struct {
@@ -120,11 +123,21 @@ type questionBrief struct {
 }
 
 type channelsView struct {
-	Channels []channelView `json:"channels"`
+	Channels       []channelView   `json:"channels"`
+	Models         []modelActivity `json:"models"`
+	ActiveModels   int             `json:"active_models"`
+	ActiveChannels int             `json:"active_channels"`
+	Running        int             `json:"running"`
+	Tab            string          `json:"tab"`
+	TierConvention string          `json:"tier_convention"`
 }
 
 type channelView struct {
 	ID          string       `json:"id"`
+	Runner      string       `json:"runner"`
+	SourceGroup string       `json:"source_group"`
+	Tier        string       `json:"tier"`
+	Models      []string     `json:"models"`
 	Health      string       `json:"health"`
 	Redline     float64      `json:"redline"`
 	Concurrency int          `json:"concurrency"`
@@ -133,10 +146,56 @@ type channelView struct {
 }
 
 type windowView struct {
-	Name       string   `json:"name"`
-	Remaining  *float64 `json:"remaining"`
-	Confidence float64  `json:"confidence"`
-	ResetAt    string   `json:"reset_at"`
+	Name             string   `json:"name"`
+	Remaining        *float64 `json:"remaining"`
+	Confidence       float64  `json:"confidence"`
+	ResetAt          string   `json:"reset_at"`
+	CurrentRemaining *float64 `json:"current_remaining"`
+}
+
+type modelActivity struct {
+	Name     string        `json:"name"`
+	Channels []string      `json:"channels"`
+	Tasks    []runningLane `json:"tasks"`
+}
+
+func buildModelActivity(channels []model.Channel, lanes []runningLane) []modelActivity {
+	byModel := map[string]*modelActivity{}
+	add := func(name, channel string) *modelActivity {
+		if name == "" {
+			name = "未知模型"
+		}
+		m := byModel[name]
+		if m == nil {
+			m = &modelActivity{Name: name, Channels: []string{}, Tasks: []runningLane{}}
+			byModel[name] = m
+		}
+		if channel != "" && !slices.Contains(m.Channels, channel) {
+			m.Channels = append(m.Channels, channel)
+		}
+		return m
+	}
+	for _, ch := range channels {
+		for _, name := range ch.Models {
+			add(name, ch.ID)
+		}
+	}
+	for _, lane := range lanes {
+		m := add(lane.Model, lane.Channel)
+		m.Tasks = append(m.Tasks, lane)
+	}
+	out := make([]modelActivity, 0, len(byModel))
+	for _, m := range byModel {
+		sort.Strings(m.Channels)
+		out = append(out, *m)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i].Tasks) != len(out[j].Tasks) {
+			return len(out[i].Tasks) > len(out[j].Tasks)
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
 }
 
 type cardView struct {
@@ -328,6 +387,7 @@ func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 		}
 	}
 	view.Progress, view.Lanes = buildProgress(inputs, attempts, time.Now())
+	view.Models = buildModelActivity(nil, view.Lanes)
 	// Objectives with open cards first, then by project.
 	sort.SliceStable(view.Objectives, func(i, j int) bool {
 		oi, oj := openCards(view.Objectives[i]), openCards(view.Objectives[j])
@@ -440,9 +500,36 @@ func loadChannels(ctx context.Context, db *store.Store) (*channelsView, error) {
 		}
 	}
 	view := &channelsView{Channels: []channelView{}}
+	current, err := loadCurrent(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	view.Models = buildModelActivity(channels, current.Lanes)
+	view.Running = len(current.Lanes)
+	activeChannels := map[string]bool{}
+	for _, m := range view.Models {
+		if len(m.Tasks) > 0 {
+			view.ActiveModels++
+		}
+		for _, task := range m.Tasks {
+			if task.Channel != "" {
+				activeChannels[task.Channel] = true
+			}
+		}
+	}
+	view.ActiveChannels = len(activeChannels)
+	view.TierConvention = "旧版编号：T3 最强，T1 较轻量。新约定：T1 最强，T3 较轻量；T0 为稀缺顶级，使用前需确认。此页保留数据库原始等级，不转换编号或改变调度。"
+	if model.DefaultTier(model.KindDesign) == model.TierT1 {
+		view.TierConvention = "新版编号：T1 最强，T3 较轻量；T0 为稀缺顶级，使用前需确认。旧版数据的 T3 曾表示最强；此页保留数据库原始等级，不自动迁移或改变调度。"
+	}
+	now := time.Now()
 	for _, ch := range channels {
 		row := channelView{
 			ID:          ch.ID,
+			Runner:      string(ch.Runner),
+			SourceGroup: ch.SourceGroup,
+			Tier:        string(ch.Tier),
+			Models:      ch.Models,
 			Health:      string(ch.Health),
 			Redline:     ch.Redline,
 			Concurrency: ch.Concurrency,
@@ -451,15 +538,37 @@ func loadChannels(ctx context.Context, db *store.Store) (*channelsView, error) {
 		}
 		for _, w := range ch.QuotaWindows {
 			row.Windows = append(row.Windows, windowView{
-				Name:       w.Name,
-				Remaining:  windowRemaining(w),
-				Confidence: w.Confidence,
-				ResetAt:    formatReset(w.ResetAt),
+				Name:             w.Name,
+				Remaining:        windowRemaining(w),
+				Confidence:       w.Confidence,
+				ResetAt:          formatReset(w.ResetAt),
+				CurrentRemaining: localWindowRemaining(w, now),
 			})
 		}
 		view.Channels = append(view.Channels, row)
 	}
 	return view, nil
+}
+
+func localWindowRemaining(w model.QuotaWindow, now time.Time) *float64 {
+	if w.Confidence <= 0 || w.Confidence > 1 || math.IsNaN(w.Confidence) || math.IsNaN(w.Remaining) || math.IsInf(w.Remaining, 0) || w.Remaining < 0 || w.Remaining > 1 {
+		return nil
+	}
+	if !w.ResetAt.IsZero() && !w.ResetAt.After(now) {
+		return nil
+	}
+	return windowRemaining(w)
+}
+
+func (w windowView) PercentLabel() string {
+	if w.CurrentRemaining == nil {
+		return "unknown（未知）"
+	}
+	return strconv.FormatFloat(*w.CurrentRemaining*100, 'f', 0, 64) + "%"
+}
+
+func (c channelView) ReserveLabel() string {
+	return strconv.FormatFloat(c.Redline*100, 'f', 0, 64) + "%"
 }
 
 func formatReset(t time.Time) string {

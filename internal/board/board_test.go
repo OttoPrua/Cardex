@@ -46,10 +46,9 @@ func TestSubscriptionHTMLAndJSON(t *testing.T) {
 		t.Fatal("measurement timestamps need localization without a reset countdown; zero credits must remain visible")
 	}
 	s.CapturedAt = now.Add(-quota.SubscriptionMaxAge - time.Second)
-	s.CreditsAt = s.CapturedAt
 	must(t, quota.SaveSubscription(home, "", "ch-main", s))
 	body = do(t, http.MethodGet, "/channels?tab=quota").Body.String()
-	if !strings.Contains(body, "unknown（快照过期）") || strings.Contains(body, "订阅剩余 0%") {
+	if !strings.Contains(body, "unknown（快照过期）") || strings.Contains(body, "订阅剩余 0%") || !strings.Contains(body, "0 credits") {
 		t.Fatal("stale subscription remained visible as known")
 	}
 	files, err := filepath.Glob(filepath.Join(home, "subscription-usage", "*.json"))

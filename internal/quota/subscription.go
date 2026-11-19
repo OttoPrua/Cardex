@@ -177,9 +177,6 @@ func (s Subscription) current(now time.Time) Subscription {
 	if s.Credits != nil && (s.Provider != "codex" || !finite(*s.Credits) || *s.Credits < 0 || !subscriptionFresh(s.CreditsAt, now)) {
 		s.Credits = nil
 	}
-	if s.Credits != nil {
-		s.State = "known"
-	}
 	return s
 }
 

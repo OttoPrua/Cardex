@@ -152,6 +152,26 @@ func TestCodexCreditsMustBeFreshAndConfirmed(t *testing.T) {
 	}
 }
 
+func TestCodexCreditsDoNotValidateSubscriptionUsage(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	for _, state := range []string{"unavailable", "stale"} {
+		t.Run(state, func(t *testing.T) {
+			p := subscriptionPayload(now)
+			if state == "stale" {
+				usage(p)["updatedAt"] = now.Add(-SubscriptionMaxAge - time.Second)
+			} else {
+				delete(p, "usage")
+			}
+			p["credits"] = map[string]any{"remaining": 0, "updatedAt": now, "balanceReadSucceeded": true}
+			b, _ := json.Marshal([]any{p})
+			s, err := ParseCodexBar(strings.NewReader(string(b)), "codex", now)
+			if err != nil || s.State != state || s.Credits == nil || *s.Credits != 0 {
+				t.Fatalf("credits must remain independent from subscription usage: %+v %v", s, err)
+			}
+		})
+	}
+}
+
 func subscriptionPayload(now time.Time) map[string]any {
 	return map[string]any{
 		"provider": "codex", "source": "codex-cli",

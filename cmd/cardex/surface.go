@@ -457,6 +457,7 @@ parameters:
   show   <id> --json
   set    --id --runner --redline --concurrency --window name:rule[:tokens] --model
   check
+  import-usage --id <channel> --provider <provider> --input <CodexBar JSON file or ->
 `
 
 func cmdChannel(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
@@ -472,6 +473,8 @@ func cmdChannel(home string, asJSON bool, args []string, stdout, stderr io.Write
 		return channelSet(home, asJSON, args[1:], stdout, stderr)
 	case "check":
 		return channelCheck(home, args[1:], stdout, stderr)
+	case "import-usage":
+		return channelImportUsage(home, asJSON, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown channel verb %q\n", args[0])
 		return 2

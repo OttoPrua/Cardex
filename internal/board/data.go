@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/quota"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
@@ -133,16 +134,83 @@ type channelsView struct {
 }
 
 type channelView struct {
-	ID          string       `json:"id"`
-	Runner      string       `json:"runner"`
-	SourceGroup string       `json:"source_group"`
-	Tier        string       `json:"tier"`
-	Models      []string     `json:"models"`
-	Health      string       `json:"health"`
-	Redline     float64      `json:"redline"`
-	Concurrency int          `json:"concurrency"`
-	Occupied    int          `json:"occupied"`
-	Windows     []windowView `json:"windows"`
+	ID           string            `json:"id"`
+	Runner       string            `json:"runner"`
+	SourceGroup  string            `json:"source_group"`
+	Tier         string            `json:"tier"`
+	Models       []string          `json:"models"`
+	Health       string            `json:"health"`
+	Redline      float64           `json:"redline"`
+	Concurrency  int               `json:"concurrency"`
+	Occupied     int               `json:"occupied"`
+	Windows      []windowView      `json:"windows"`
+	Subscription *subscriptionView `json:"subscription,omitempty"`
+}
+
+type subscriptionView struct {
+	Provider   string                   `json:"provider"`
+	Source     string                   `json:"source"`
+	CapturedAt string                   `json:"captured_at"`
+	State      string                   `json:"state"`
+	Windows    []subscriptionWindowView `json:"windows"`
+	Credits    *float64                 `json:"credits,omitempty"`
+	CreditsAt  string                   `json:"credits_at,omitempty"`
+}
+
+type subscriptionWindowView struct {
+	Name      string   `json:"name"`
+	Remaining *float64 `json:"remaining"`
+	ResetAt   string   `json:"reset_at"`
+}
+
+func (w subscriptionWindowView) PercentLabel() string {
+	return (windowView{CurrentRemaining: w.Remaining}).PercentLabel()
+}
+
+func (s subscriptionView) StateLabel() string {
+	switch s.State {
+	case "known":
+		return "有效快照"
+	case "stale":
+		return "unknown（快照过期）"
+	case "unsupported_source":
+		return "unknown（来源未支持）"
+	case "read_failed":
+		return "unknown（快照不可读）"
+	default:
+		return "unknown（缺少有效用量）"
+	}
+}
+
+func (s subscriptionView) CreditsLabel() string {
+	if s.Credits == nil {
+		return "unknown"
+	}
+	return strconv.FormatFloat(*s.Credits, 'f', -1, 64) + " credits"
+}
+
+func loadSubscriptions(home string, view *channelsView) {
+	now := time.Now()
+	for i := range view.Channels {
+		ch := &view.Channels[i]
+		s, err := quota.ReadSubscription(home, ch.SourceGroup, ch.ID, now)
+		if err != nil {
+			ch.Subscription = &subscriptionView{State: "read_failed"}
+			continue
+		}
+		if s == nil {
+			continue
+		}
+		v := &subscriptionView{
+			Provider: s.Provider, Source: s.Source, CapturedAt: formatReset(s.CapturedAt),
+			State: s.State, Credits: s.Credits, CreditsAt: formatReset(s.CreditsAt),
+			Windows: []subscriptionWindowView{},
+		}
+		for _, w := range s.Windows {
+			v.Windows = append(v.Windows, subscriptionWindowView{Name: w.Name, Remaining: w.Remaining, ResetAt: formatReset(w.ResetAt)})
+		}
+		ch.Subscription = v
+	}
 }
 
 type windowView struct {

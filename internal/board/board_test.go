@@ -15,8 +15,54 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/quota"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
+
+func TestSubscriptionHTMLAndJSON(t *testing.T) {
+	db, home := seedCurrent(t)
+	before := snapshot(t, db)
+	now := time.Now().UTC().Truncate(time.Second)
+	raw := `[{"provider":"codex","source":"codex-cli","account":"secret-sentinel","usage":{"identity":{"accountEmail":"secret-sentinel"},"updatedAt":"` + now.Format(time.RFC3339) + `","primary":{"usedPercent":100,"title":"5 hours","resetsAt":"` + now.Add(time.Hour).Format(time.RFC3339) + `"}}}]`
+	s, err := quota.ParseCodexBar(strings.NewReader(raw), "codex", now)
+	must(t, err)
+	zeroCredits := 0.0
+	s.Credits, s.CreditsAt = &zeroCredits, now
+	must(t, quota.SaveSubscription(home, "", "ch-main", s))
+	for _, path := range []string{"/channels?tab=quota", "/api/channels?tab=quota"} {
+		rr := do(t, http.MethodGet, path)
+		body := rr.Body.String()
+		if rr.Code != http.StatusOK || strings.Contains(body, "secret-sentinel") || !strings.Contains(body, "codex-cli") {
+			t.Fatalf("%s %d %s", path, rr.Code, body)
+		}
+	}
+	body := do(t, http.MethodGet, "/channels?tab=quota").Body.String()
+	for _, want := range []string{"订阅剩余 0%", "有效快照", "unknown（未接入）", "15 分钟内有效", "不是供应商余额", `time data-measured datetime="` + now.Format(time.RFC3339)} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+	if strings.Count(body, "time data-measured ") != 2 || !strings.Contains(body, "0 credits") {
+		t.Fatal("measurement timestamps need localization without a reset countdown; zero credits must remain visible")
+	}
+	s.CapturedAt = now.Add(-quota.SubscriptionMaxAge - time.Second)
+	s.CreditsAt = s.CapturedAt
+	must(t, quota.SaveSubscription(home, "", "ch-main", s))
+	body = do(t, http.MethodGet, "/channels?tab=quota").Body.String()
+	if !strings.Contains(body, "unknown（快照过期）") || strings.Contains(body, "订阅剩余 0%") {
+		t.Fatal("stale subscription remained visible as known")
+	}
+	files, err := filepath.Glob(filepath.Join(home, "subscription-usage", "*.json"))
+	must(t, err)
+	must(t, os.WriteFile(files[0], []byte("secret-sentinel"), 0o600))
+	body = do(t, http.MethodGet, "/channels?tab=quota").Body.String()
+	if !strings.Contains(body, "unknown（快照不可读）") || strings.Contains(body, "secret-sentinel") {
+		t.Fatal("malformed snapshot failed open or leaked content")
+	}
+	if !reflect.DeepEqual(before, snapshot(t, db)) {
+		t.Fatal("read-only board modified database")
+	}
+}
 
 func TestModelActivityGroupsActualRoutes(t *testing.T) {
 	channels := []model.Channel{

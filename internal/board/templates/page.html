@@ -33,7 +33,7 @@
         var minutes = Math.ceil(left / 60000);
         var countdown = left <= 0 ? "已过期" : minutes < 60 ? minutes + " 分钟后" : Math.ceil(minutes / 60) + " 小时后";
         el.title = el.dateTime;
-        el.textContent = date.toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",timeZoneName:"short"}) + " · " + countdown;
+        el.textContent = date.toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",timeZoneName:"short"}) + (el.hasAttribute("data-measured") ? "" : " · " + countdown);
       }
     });
   });
@@ -408,7 +408,12 @@ footer{max-width:1180px;margin:0 auto;padding:0 clamp(20px,3vw,48px) 40px;color:
 <div class="meta">{{range .Models}}<span class="chip">{{.}}</span>{{else}}<span>未配置模型</span>{{end}}</div>
 <div class="kv" style="margin-top:16px"><span>占用 / 本地并发</span><b>{{.Occupied}} / {{if .Concurrency}}{{.Concurrency}}{{else}}不设上限{{end}}</b><span>渠道配置等级</span><b>{{if .Tier}}{{.Tier}}{{else}}unknown{{end}}</b><span>本地额度保留比例</span><b>{{.ReserveLabel}}</b></div>
 {{if .Concurrency}}<div class="bar"><i style="width:{{load .Occupied .Concurrency}}"></i></div>{{end}}
-<div class="subscription"><span>供应商订阅余量</span><b>unknown（未接入）</b></div>
+<div class="subscription"><span>供应商订阅余量{{with .Subscription}} · {{.Provider}}{{end}}</span><b>{{if .Subscription}}{{.Subscription.StateLabel}}{{else}}unknown（未接入）{{end}}</b></div>
+{{with .Subscription}}
+<div class="meta" style="margin-top:10px"><span>来源 CodexBar / {{if .Source}}{{.Source}}{{else}}unknown{{end}}</span><span>采集 {{if .CapturedAt}}<time data-measured datetime="{{.CapturedAt}}">{{.CapturedAt}}</time>{{else}}unknown{{end}}</span></div>
+{{if .Windows}}<ul class="rows" style="margin-top:6px">{{range .Windows}}<li class="win"><div class="grow"><div class="win-top"><b>{{.Name}}</b><span>订阅剩余 {{.PercentLabel}}</span></div><div class="bar{{if not .Remaining}} unknown{{end}}"><i style="width:{{pct .Remaining}}"></i></div><div class="meta"><span>重置 {{if .ResetAt}}<time datetime="{{.ResetAt}}">{{.ResetAt}}</time>{{else}}unknown{{end}}</span></div></div></li>{{end}}</ul>{{end}}
+{{if .Credits}}<div class="meta" style="margin-top:10px"><span>Codex 额外额度 {{.CreditsLabel}}（不是美元余额）</span><span>采集 <time data-measured datetime="{{.CreditsAt}}">{{.CreditsAt}}</time></span></div>{{end}}
+{{end}}
 <p class="quota-caption">以下为 CardeX 本地窗口快照，不是供应商余额。</p>
 <span class="k">health {{.Health}} redline {{.Redline}} occupied {{.Occupied}} concurrency {{.Concurrency}}</span>
 {{if .Windows}}<ul class="rows" style="margin-top:6px">
@@ -418,7 +423,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 clamp(20px,3vw,48px) 40px;color:
 </article>
 {{else}}<div class="panel"><div class="empty">还没有配置渠道，订阅余量 unknown。</div></div>{{end}}
 </div>
-<p class="resource-note"><strong>额度不猜测。</strong>未配置上限、低置信度（≤ 0）、无效数据或已过重置时间的本地记录显示 unknown；共享订阅组不相加，不从任务耗时推算订阅余额。看板只读取本机记录，不登录供应商或调用模型。</p>
+<p class="resource-note"><strong>额度不猜测。</strong>供应商数据来自显式导入的 CodexBar 快照，15 分钟内有效；过期、缺测、估算或未支持的来源显示 unknown，不是实时自动刷新余额。相同订阅组共享一份快照，不相加，也不拆成每个模型的独立余额。以下本地记录与订阅用量分开；看板不读取登录凭据、不登录供应商或调用模型。</p>
 <p class="resource-note"><strong>等级口径</strong><br>{{.TierConvention}}</p>
 {{end}}
 </section>

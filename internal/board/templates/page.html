@@ -26,6 +26,16 @@
     document.querySelectorAll("input.tab").forEach(function (r) {
       r.addEventListener("change", function () { try { localStorage.setItem("cardex.tab", r.id); } catch (e) {} });
     });
+    document.querySelectorAll("time[datetime]").forEach(function (el) {
+      var date = new Date(el.dateTime);
+      if (!Number.isNaN(date.getTime())) {
+        var left = date.getTime() - Date.now();
+        var minutes = Math.ceil(left / 60000);
+        var countdown = left <= 0 ? "已过期" : minutes < 60 ? minutes + " 分钟后" : Math.ceil(minutes / 60) + " 小时后";
+        el.title = el.dateTime;
+        el.textContent = date.toLocaleString("zh-CN", {month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",timeZoneName:"short"}) + " · " + countdown;
+      }
+    });
   });
   setInterval(function () {
     if (document.activeElement && document.activeElement.tagName === "INPUT" && document.activeElement.type !== "radio") { return; }
@@ -185,6 +195,36 @@ ul.mini li{display:flex;gap:12px;justify-content:space-between;font-size:13px}
 .kv b{color:var(--foreground);font-weight:500;font-family:var(--mono)}
 .win-top{display:flex;justify-content:space-between;font-size:12px}
 .win-top span{color:var(--muted-foreground)}
+.page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:20px}
+.page-head .sub{max-width:640px}
+.section-link{font-size:12px;color:var(--muted-foreground);text-decoration:none;margin-left:auto}
+.section-link:hover{color:var(--foreground)}
+.model-summary{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px}
+.model-summary a{text-decoration:none;padding:7px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);font-size:12px}
+.model-summary b{color:var(--live);margin-left:8px}
+.resource-stats{grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:28px}
+.resource-tabs{display:flex;gap:24px;border-bottom:1px solid var(--border);margin-bottom:24px}
+.resource-tabs a{text-decoration:none;color:var(--muted-foreground);padding:10px 0;border-bottom:2px solid transparent}
+.resource-tabs a[aria-current=page]{color:var(--foreground);border-color:var(--foreground);font-weight:600}
+.resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
+.resource-grid>.panel{margin:0;display:flex;flex-direction:column;padding:24px}
+.resource-grid .ch-head{flex-wrap:wrap;align-items:flex-start}
+.channel .ch-head[id]{scroll-margin-top:96px}
+.resource-grid .ch-head .title{overflow-wrap:anywhere}
+.resource-grid .rows{margin-top:18px}
+.resource-grid .meta{overflow-wrap:anywhere}
+.resource-grid .bar.unknown i{width:100%!important}
+.model-count{font:600 25px/1 var(--mono);letter-spacing:-.04em;white-space:nowrap}
+.model-count small{font:12px var(--font);color:var(--muted-foreground);margin-left:5px}
+.resource-note{font-size:12px;color:var(--muted-foreground);line-height:1.8;margin:24px 0 0;padding:16px 18px;border:1px solid var(--border);border-radius:var(--radius);background:var(--card)}
+.resource-note strong{color:var(--foreground);font-weight:550}
+.subscription{display:flex;justify-content:space-between;gap:12px;padding:12px 0;border-block:1px solid var(--border);font-size:12px;margin-top:16px}
+.subscription span{color:var(--muted-foreground)}
+.resource-grid .win-top{flex-wrap:wrap;gap:4px 12px}
+.quota-caption{font-size:12px;color:var(--muted-foreground);margin:12px 0 0}
+@media(max-width:700px){.resource-grid{grid-template-columns:1fr}.resource-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.page-head{display:block}.resource-grid>.panel{padding:20px}}
+@media(max-width:640px){.channel .ch-head[id]{scroll-margin-top:160px}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 /* card page */
 .crumbs{font-size:13px;color:var(--muted-foreground);display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .body{white-space:pre-wrap;font-size:13px;line-height:1.65;max-height:320px;overflow:auto;color:var(--foreground)}
@@ -211,7 +251,7 @@ footer{max-width:1180px;margin:0 auto;padding:0 clamp(20px,3vw,48px) 40px;color:
 <a class="brand" href="/"><span class="logo">C</span>Cardex <small>看板</small></a>
 <nav>
 <a href="/"{{if .Current}} aria-current="page"{{end}}>当前工作</a>
-<a href="/channels"{{if .Channels}} aria-current="page"{{end}}>渠道</a>
+<a href="/channels"{{if .Channels}} aria-current="page"{{end}}>模型与额度</a>
 <a href="/history"{{if .History}} aria-current="page"{{end}}>历史</a>
 </nav>
 <span class="spacer"></span>
@@ -257,8 +297,9 @@ footer{max-width:1180px;margin:0 auto;padding:0 clamp(20px,3vw,48px) 40px;color:
 {{end}}
 
 {{define "overview"}}
+{{if .Models}}<div class="model-summary" aria-label="正在使用的模型">{{range .Models}}<a href="/channels">{{.Name}}<b>{{len .Tasks}} 路</b></a>{{end}}</div>{{end}}
 <div class="panel">
-<h3>正在并行<span class="n">{{len .Lanes}}</span></h3>
+<h3>正在并行<span class="n">{{len .Lanes}}</span><a class="section-link" href="/channels">按模型查看 →</a></h3>
 {{if .Lanes}}<ul class="rows">
 {{range .Lanes}}<li><span class="pill t-live">{{.Channel}}</span><div class="grow">
 <div class="lane-top"><a class="title" href="/cards/{{.Card}}">{{.CardTitle}}</a><span class="lane-time{{if .Over}} over{{end}}">已跑 {{.Elapsed}}{{if .Typical}} · 通常 {{.Typical}}{{end}}</span></div>
@@ -340,21 +381,46 @@ footer{max-width:1180px;margin:0 auto;padding:0 clamp(20px,3vw,48px) 40px;color:
 
 {{define "channels"}}
 <section id="channels">
-<h1>渠道</h1>
-<p class="sub">每个执行工具的健康、占用和额度余量。</p>
-<div class="grid g3">
+<div class="page-head"><div><h1>模型与额度</h1><p class="sub">谁在工作、分了几路，以及每条订阅渠道还有多少可用空间。</p></div><span class="pill t-live">本机实时视图</span></div>
+<div class="groups resource-stats">
+<div class="stat t-live"><b>{{.ActiveModels}}</b><span>模型正在使用</span></div>
+<div class="stat t-live"><b>{{.Running}}</b><span>任务并行执行</span></div>
+<div class="stat"><b>{{.ActiveChannels}} / {{len .Channels}}</b><span>活跃 / 已配置渠道</span></div>
+<div class="stat"><b>{{len .Models}}</b><span>可见模型（含空闲）</span></div>
+</div>
+<div class="resource-tabs" aria-label="资源视图">
+<a href="/channels"{{if ne .Tab "quota"}} aria-current="page"{{end}}>模型运行</a>
+<a href="/channels?tab=quota"{{if eq .Tab "quota"}} aria-current="page"{{end}}>渠道与额度</a>
+</div>
+{{if ne .Tab "quota"}}
+<div class="resource-grid">
+{{range .Models}}<article class="panel model-activity">
+<div class="ch-head"><div class="grow"><div class="title">{{.Name}}</div><div class="meta"><span>{{len .Channels}} 条渠道</span><span>{{if .Tasks}}执行中{{else}}当前空闲{{end}}</span></div></div><div class="model-count">{{len .Tasks}}<small>路并行</small></div></div>
+<div class="meta">{{range .Channels}}<a class="chip" href="/channels?tab=quota#channel-{{.}}">{{.}}</a>{{else}}<span>渠道 unknown（未知）</span>{{end}}</div>
+{{if .Tasks}}<ul class="rows">{{range .Tasks}}<li><div class="grow"><a class="title" href="/cards/{{.Card}}">{{.CardTitle}}</a><div class="meta"><span>{{.Project}} · {{.Objective}}</span></div><div class="meta"><span class="chip">{{if .Channel}}{{.Channel}}{{else}}渠道 unknown{{end}}</span><span>{{label .Status}}</span>{{if .Elapsed}}<span>已跑 {{.Elapsed}}</span>{{end}}</div></div></li>{{end}}</ul>{{else}}<div class="empty">没有正在执行的任务，等待调度。</div>{{end}}
+</article>{{else}}<div class="panel"><div class="empty">还没有模型。配置渠道后会显示可用模型，运行中的实际选路也会显示在这里。</div></div>{{end}}
+</div>
+<p class="resource-note"><strong>按实际选路计数。</strong>一路代表一个未结束的执行尝试，不是模型数量或并发上限。模型下列出当前工作页可见的任务；订阅额度由渠道共享，不重复算成每个模型的独立余额。</p>
+{{else}}
+<div class="resource-grid">
 {{range .Channels}}<article class="panel channel">
-<div class="ch-head"><span class="title">{{.ID}}</span><span class="spacer"></span><span class="pill t-{{tone .Health}}">{{label .Health}}</span></div>
-<div class="kv"><span>占用</span><b>{{.Occupied}} / {{.Concurrency}}</b><span>额度红线</span><b>{{.Redline}}</b></div>
-<div class="bar"><i style="width:{{load .Occupied .Concurrency}}"></i></div>
+<div class="ch-head" id="channel-{{.ID}}"><div class="grow"><div class="title">{{.ID}}</div><div class="meta"><span>{{.Runner}}</span><span>订阅组 {{if .SourceGroup}}{{.SourceGroup}}{{else}}unknown（未标记）{{end}}</span></div></div><span class="pill t-{{tone .Health}}">{{label .Health}}</span></div>
+<div class="meta">{{range .Models}}<span class="chip">{{.}}</span>{{else}}<span>未配置模型</span>{{end}}</div>
+<div class="kv" style="margin-top:16px"><span>占用 / 本地并发</span><b>{{.Occupied}} / {{if .Concurrency}}{{.Concurrency}}{{else}}不设上限{{end}}</b><span>渠道配置等级</span><b>{{if .Tier}}{{.Tier}}{{else}}unknown{{end}}</b><span>本地额度保留比例</span><b>{{.ReserveLabel}}</b></div>
+{{if .Concurrency}}<div class="bar"><i style="width:{{load .Occupied .Concurrency}}"></i></div>{{end}}
+<div class="subscription"><span>供应商订阅余量</span><b>unknown（未接入）</b></div>
+<p class="quota-caption">以下为 CardeX 本地窗口快照，不是供应商余额。</p>
 <span class="k">health {{.Health}} redline {{.Redline}} occupied {{.Occupied}} concurrency {{.Concurrency}}</span>
 {{if .Windows}}<ul class="rows" style="margin-top:6px">
-{{range .Windows}}<li class="win"><div class="grow"><div class="win-top"><b>{{.Name}}</b><span>剩余 {{.RemainingLabel}} · 可信度 {{.Confidence}}</span></div><div class="bar{{if not .Remaining}} unknown{{end}}"><i style="width:{{pct .Remaining}}"></i></div><div class="meta"><span>重置 {{.ResetAt}}</span></div>
+{{range .Windows}}<li class="win"><div class="grow"><div class="win-top"><b>{{.Name}}</b><span>本地剩余 {{.PercentLabel}}</span></div><div class="bar{{if not .CurrentRemaining}} unknown{{end}}"><i style="width:{{pct .CurrentRemaining}}"></i></div><div class="meta"><span>重置 {{if .ResetAt}}<time datetime="{{.ResetAt}}">{{.ResetAt}}</time>{{else}}unknown{{end}}</span><span>本地置信度 {{.Confidence}}</span></div>
 <span class="k">window {{.Name}} remaining {{.RemainingLabel}} confidence {{.Confidence}} reset {{.ResetAt}}</span></div></li>
-{{end}}</ul>{{else}}<div class="empty">没有额度窗口记录。</div>{{end}}
+{{end}}</ul>{{else}}<div class="empty">本地额度 unknown · 没有窗口记录。</div>{{end}}
 </article>
-{{end}}
+{{else}}<div class="panel"><div class="empty">还没有配置渠道，订阅余量 unknown。</div></div>{{end}}
 </div>
+<p class="resource-note"><strong>额度不猜测。</strong>未配置上限、低置信度（≤ 0）、无效数据或已过重置时间的本地记录显示 unknown；共享订阅组不相加，不从任务耗时推算订阅余额。看板只读取本机记录，不登录供应商或调用模型。</p>
+<p class="resource-note"><strong>等级口径</strong><br>{{.TierConvention}}</p>
+{{end}}
 </section>
 {{end}}
 

@@ -3,6 +3,7 @@ package board
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,110 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
+
+func TestModelActivityGroupsActualRoutes(t *testing.T) {
+	channels := []model.Channel{
+		{ID: "sub-b", Models: []string{"grok-code", "gpt-review"}},
+		{ID: "sub-a", Models: []string{"grok-code", "grok-code"}},
+	}
+	lanes := []runningLane{
+		{Attempt: "a1", Card: "c1", Model: "grok-code", Channel: "sub-a"},
+		{Attempt: "a2", Card: "c2", Model: "grok-code", Channel: "sub-a"},
+		{Attempt: "a3", Card: "c3", Model: "grok-code", Channel: "sub-b"},
+		{Attempt: "a4", Card: "c4", Model: "retired-model", Channel: "removed-channel"},
+		{Attempt: "a5", Card: "c5"},
+	}
+	got := buildModelActivity(channels, lanes)
+	if len(got) != 4 || got[0].Name != "grok-code" || len(got[0].Tasks) != 3 || !reflect.DeepEqual(got[0].Channels, []string{"sub-a", "sub-b"}) {
+		t.Fatalf("grouping: %#v", got)
+	}
+	byName := map[string]modelActivity{}
+	for _, m := range got {
+		byName[m.Name] = m
+	}
+	if len(byName["gpt-review"].Tasks) != 0 || len(byName["retired-model"].Tasks) != 1 || len(byName["未知模型"].Tasks) != 1 {
+		t.Fatalf("idle, removed or unknown model lost: %#v", got)
+	}
+	if len(buildModelActivity(nil, nil)) != 0 {
+		t.Fatal("empty activity")
+	}
+}
+
+func TestLocalQuotaDoesNotGuess(t *testing.T) {
+	now := time.Date(2026, 11, 19, 0, 0, 0, 0, time.UTC)
+	valid := model.QuotaWindow{LimitTokens: 100, Remaining: .42, Confidence: 1, ResetAt: now.Add(time.Hour)}
+	cases := []struct {
+		name   string
+		change func(*model.QuotaWindow)
+		want   string
+	}{
+		{"snapshot", func(*model.QuotaWindow) {}, "42%"},
+		{"exhausted", func(w *model.QuotaWindow) { w.Remaining = 0 }, "0%"},
+		{"no-limit", func(w *model.QuotaWindow) { w.LimitTokens = 0 }, "unknown（未知）"},
+		{"request-limit", func(w *model.QuotaWindow) { w.LimitTokens = 0; w.LimitRequests = 20 }, "42%"},
+		{"no-confidence", func(w *model.QuotaWindow) { w.Confidence = 0 }, "unknown（未知）"},
+		{"expired", func(w *model.QuotaWindow) { w.ResetAt = now }, "unknown（未知）"},
+		{"negative", func(w *model.QuotaWindow) { w.Remaining = -.1 }, "unknown（未知）"},
+		{"over-full", func(w *model.QuotaWindow) { w.Remaining = 1.1 }, "unknown（未知）"},
+		{"nan", func(w *model.QuotaWindow) { w.Remaining = math.NaN() }, "unknown（未知）"},
+		{"infinite", func(w *model.QuotaWindow) { w.Remaining = math.Inf(1) }, "unknown（未知）"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := valid
+			tc.change(&w)
+			v := windowView{CurrentRemaining: localWindowRemaining(w, now)}
+			if got := v.PercentLabel(); got != tc.want {
+				t.Fatalf("%s want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestModelAndQuotaViews(t *testing.T) {
+	db, _ := seedCurrent(t)
+	ctx := context.Background()
+	ch, err := db.GetChannel(ctx, "ch-main")
+	must(t, err)
+	ch.Models = []string{"grok-code", "gpt-review"}
+	ch.SourceGroup = "shared-subscription"
+	ch.Concurrency = 0
+	must(t, db.UpdateChannel(ctx, &ch))
+	a, err := db.GetAttempt(ctx, "a-run")
+	must(t, err)
+	a.Route.Model = "grok-code"
+	must(t, db.UpdateAttempt(ctx, &a))
+	before := snapshot(t, db)
+	models := do(t, http.MethodGet, "/channels")
+	assertContains(t, models.Body.String(), "模型与额度", "模型运行", "grok-code", "gpt-review", "路并行", "c-run", "渠道与额度")
+	if strings.Contains(models.Body.String(), "本地窗口快照") {
+		t.Fatal("quota details leaked into model tab")
+	}
+	quota := do(t, http.MethodGet, "/channels?tab=quota")
+	assertContains(t, quota.Body.String(), "shared-subscription", "不设上限", "unknown（未接入）", "本地窗口快照", "旧版编号：T3 最强", "新约定：T1 最强", "T0")
+	assertContains(t, quota.Body.String(), ".channel .ch-head[id]{scroll-margin-top:96px}", ".channel .ch-head[id]{scroll-margin-top:160px}")
+	if strings.Contains(quota.Body.String(), "class=\"model-activity\"") {
+		t.Fatal("model details leaked into quota tab")
+	}
+	view := decode[channelsView](t, do(t, http.MethodGet, "/api/channels"))
+	if view.Running != 1 || view.ActiveModels != 1 || view.ActiveChannels != 1 {
+		t.Fatalf("counts: %#v", view)
+	}
+	assertContains(t, do(t, http.MethodGet, "/").Body.String(), "正在使用的模型", "grok-code", "1 路")
+	if !reflect.DeepEqual(before, snapshot(t, db)) {
+		t.Fatal("resource views changed stored data")
+	}
+}
+
+func TestModelViewsEmpty(t *testing.T) {
+	_, _ = openHome(t)
+	assertContains(t, do(t, http.MethodGet, "/channels").Body.String(), "还没有模型")
+	assertContains(t, do(t, http.MethodGet, "/channels?tab=quota").Body.String(), "还没有配置渠道", "unknown")
+	view := decode[channelsView](t, do(t, http.MethodGet, "/api/channels"))
+	if view.ActiveModels != 0 || view.Running != 0 || len(view.Models) != 0 {
+		t.Fatalf("empty counts: %#v", view)
+	}
+}
 
 func TestViewsHTMLAndJSON(t *testing.T) {
 	t.Chdir(t.TempDir())
@@ -112,7 +217,7 @@ func TestViewsHTMLAndJSON(t *testing.T) {
 		}
 	}
 
-	htmlCh := do(t, http.MethodGet, "/channels")
+	htmlCh := do(t, http.MethodGet, "/channels?tab=quota")
 	jsonCh := do(t, http.MethodGet, "/api/channels")
 	chBody := htmlCh.Body.String()
 	assertContains(t, chBody, "health degraded", "redline 0.25", "occupied 1 concurrency 4",
@@ -797,27 +902,28 @@ func TestHomeLastWins(t *testing.T) {
 func TestQuotaUnknownVersusExhausted(t *testing.T) {
 	db, _ := openHome(t)
 	ctx := context.Background()
+	reset := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
 	must(t, db.CreateChannel(ctx, &model.Channel{
 		ID: "ch-quota", Runner: model.RunnerFake, Family: "fake", Tier: model.TierT1, Health: model.HealthOK,
 		QuotaWindows: []model.QuotaWindow{
-			{Name: "uncapped", Remaining: 0.9, Confidence: 0.2, ResetAt: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)},
-			{Name: "empty", LimitTokens: 100, Remaining: 0, Confidence: 0.3, ResetAt: time.Date(2026, 12, 2, 0, 0, 0, 0, time.UTC)},
-			{Name: "partial", LimitRequests: 10, Remaining: 0.4, Confidence: 0.8, ResetAt: time.Date(2026, 12, 3, 0, 0, 0, 0, time.UTC)},
+			{Name: "uncapped", Remaining: 0.9, Confidence: 0.2, ResetAt: reset},
+			{Name: "empty", LimitTokens: 100, Remaining: 0, Confidence: 0.3, ResetAt: reset.Add(24 * time.Hour)},
+			{Name: "partial", LimitRequests: 10, Remaining: 0.4, Confidence: 0.8, ResetAt: reset.Add(48 * time.Hour)},
 		},
 	}))
 
-	for _, path := range []string{"/channels", "/api/channels"} {
+	for _, path := range []string{"/channels?tab=quota", "/api/channels"} {
 		t.Run(path, func(t *testing.T) {
 			rec := do(t, http.MethodGet, path)
 			body := rec.Body.String()
 			if strings.Contains(body, "0.9") {
 				t.Fatalf("uncapped remaining was shown: %s", body)
 			}
-			if path == "/channels" {
+			if path == "/channels?tab=quota" {
 				assertContains(t, body,
-					"window uncapped remaining 未知 confidence 0.2 reset 2026-12-01T00:00:00Z",
-					"window empty remaining 0 confidence 0.3 reset 2026-12-02T00:00:00Z",
-					"window partial remaining 0.4 confidence 0.8 reset 2026-12-03T00:00:00Z",
+					"window uncapped remaining 未知 confidence 0.2 reset "+formatReset(reset),
+					"window empty remaining 0 confidence 0.3 reset "+formatReset(reset.Add(24*time.Hour)),
+					"window partial remaining 0.4 confidence 0.8 reset "+formatReset(reset.Add(48*time.Hour)),
 				)
 				uncapped := windowLine(t, body, "uncapped")
 				if strings.Contains(uncapped, "remaining 0") {
@@ -835,13 +941,13 @@ func TestQuotaUnknownVersusExhausted(t *testing.T) {
 				t.Fatalf("windows %#v", ch.Windows)
 			}
 			uncapped, empty, partial := ch.Windows[0], ch.Windows[1], ch.Windows[2]
-			if uncapped.Name != "uncapped" || uncapped.Remaining != nil || uncapped.Confidence != 0.2 || uncapped.ResetAt != "2026-12-01T00:00:00Z" {
+			if uncapped.Name != "uncapped" || uncapped.Remaining != nil || uncapped.Confidence != 0.2 || uncapped.ResetAt != formatReset(reset) {
 				t.Fatalf("unknown %#v", uncapped)
 			}
 			if empty.Name != "empty" || empty.Remaining == nil || *empty.Remaining != 0 || empty.Confidence != 0.3 {
 				t.Fatalf("exhausted %#v", empty)
 			}
-			if partial.Remaining == nil || *partial.Remaining != 0.4 || partial.Confidence != 0.8 || partial.ResetAt != "2026-12-03T00:00:00Z" {
+			if partial.Remaining == nil || *partial.Remaining != 0.4 || partial.Confidence != 0.8 || partial.ResetAt != formatReset(reset.Add(48*time.Hour)) {
 				t.Fatalf("partial %#v", partial)
 			}
 			if !strings.Contains(body, `"name":"uncapped"`) || !strings.Contains(body, `"remaining":null`) {

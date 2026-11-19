@@ -902,12 +902,13 @@ func TestHomeLastWins(t *testing.T) {
 func TestQuotaUnknownVersusExhausted(t *testing.T) {
 	db, _ := openHome(t)
 	ctx := context.Background()
+	reset := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
 	must(t, db.CreateChannel(ctx, &model.Channel{
 		ID: "ch-quota", Runner: model.RunnerFake, Family: "fake", Tier: model.TierT1, Health: model.HealthOK,
 		QuotaWindows: []model.QuotaWindow{
-			{Name: "uncapped", Remaining: 0.9, Confidence: 0.2, ResetAt: time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)},
-			{Name: "empty", LimitTokens: 100, Remaining: 0, Confidence: 0.3, ResetAt: time.Date(2026, 12, 2, 0, 0, 0, 0, time.UTC)},
-			{Name: "partial", LimitRequests: 10, Remaining: 0.4, Confidence: 0.8, ResetAt: time.Date(2026, 12, 3, 0, 0, 0, 0, time.UTC)},
+			{Name: "uncapped", Remaining: 0.9, Confidence: 0.2, ResetAt: reset},
+			{Name: "empty", LimitTokens: 100, Remaining: 0, Confidence: 0.3, ResetAt: reset.Add(24 * time.Hour)},
+			{Name: "partial", LimitRequests: 10, Remaining: 0.4, Confidence: 0.8, ResetAt: reset.Add(48 * time.Hour)},
 		},
 	}))
 
@@ -920,9 +921,9 @@ func TestQuotaUnknownVersusExhausted(t *testing.T) {
 			}
 			if path == "/channels?tab=quota" {
 				assertContains(t, body,
-					"window uncapped remaining 未知 confidence 0.2 reset 2026-12-01T00:00:00Z",
-					"window empty remaining 0 confidence 0.3 reset 2026-12-02T00:00:00Z",
-					"window partial remaining 0.4 confidence 0.8 reset 2026-12-03T00:00:00Z",
+					"window uncapped remaining 未知 confidence 0.2 reset "+formatReset(reset),
+					"window empty remaining 0 confidence 0.3 reset "+formatReset(reset.Add(24*time.Hour)),
+					"window partial remaining 0.4 confidence 0.8 reset "+formatReset(reset.Add(48*time.Hour)),
 				)
 				uncapped := windowLine(t, body, "uncapped")
 				if strings.Contains(uncapped, "remaining 0") {
@@ -940,13 +941,13 @@ func TestQuotaUnknownVersusExhausted(t *testing.T) {
 				t.Fatalf("windows %#v", ch.Windows)
 			}
 			uncapped, empty, partial := ch.Windows[0], ch.Windows[1], ch.Windows[2]
-			if uncapped.Name != "uncapped" || uncapped.Remaining != nil || uncapped.Confidence != 0.2 || uncapped.ResetAt != "2026-12-01T00:00:00Z" {
+			if uncapped.Name != "uncapped" || uncapped.Remaining != nil || uncapped.Confidence != 0.2 || uncapped.ResetAt != formatReset(reset) {
 				t.Fatalf("unknown %#v", uncapped)
 			}
 			if empty.Name != "empty" || empty.Remaining == nil || *empty.Remaining != 0 || empty.Confidence != 0.3 {
 				t.Fatalf("exhausted %#v", empty)
 			}
-			if partial.Remaining == nil || *partial.Remaining != 0.4 || partial.Confidence != 0.8 || partial.ResetAt != "2026-12-03T00:00:00Z" {
+			if partial.Remaining == nil || *partial.Remaining != 0.4 || partial.Confidence != 0.8 || partial.ResetAt != formatReset(reset.Add(48*time.Hour)) {
 				t.Fatalf("partial %#v", partial)
 			}
 			if !strings.Contains(body, `"name":"uncapped"`) || !strings.Contains(body, `"remaining":null`) {

@@ -100,7 +100,7 @@ func serveCurrent(w http.ResponseWriter, r *http.Request, asJSON bool) {
 }
 
 func serveChannels(w http.ResponseWriter, r *http.Request, asJSON bool) {
-	db, _, err := openDB()
+	db, home, err := openDB()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -110,6 +110,7 @@ func serveChannels(w http.ResponseWriter, r *http.Request, asJSON bool) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	loadSubscriptions(home, view)
 	view.Tab = "models"
 	if r.URL.Query().Get("tab") == "quota" {
 		view.Tab = "quota"

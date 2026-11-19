@@ -117,7 +117,39 @@ export CARDEX_HOME="$HOME/.cardex-demo"
 - **模型运行**：按实际选路汇总每个模型的并行路数、渠道和正在处理的卡；已配置但空闲的模型也保留。
 - **渠道与额度**：显示执行器、订阅组、本地并发占用、原始渠道等级和本地额度窗口。并发上限为 0 表示不设本地上限，不是没有容量。
 
-额度展示参考 [CodexBar](https://github.com/steipete/CodexBar/blob/main/docs/providers.md) 的渠道隔离、窗口/重置时间和未知值处理，但不依赖或启动 CodexBar，也不读取供应商凭据。当前 CardeX 没有订阅余额采集器，因此供应商余量明确显示 **unknown**；本地额度快照单独标记，未配置上限、置信度不大于 0、无效比例或已过重置时间时也显示 unknown，不把耗时估算冒充订阅余额。同订阅组的数据不累加为总余额。
+额度展示参考 [CodexBar](https://github.com/steipete/CodexBar/blob/main/docs/providers.md) 的渠道隔离、窗口/重置时间和未知值处理。CardeX 可以显式导入其供应商用量 JSON，但不启动 CodexBar、不读取供应商凭据，也不自动采集。未导入时显示 **unknown**；本地额度窗口单独标记，未配置上限、置信度不大于 0、无效比例或已过重置时间时也显示 unknown，不把耗时估算冒充订阅余额。同订阅组的数据不累加为总余额。
+
+#### 导入供应商订阅用量（默认不采集）
+
+```sh
+# 只导入用户已授权的单个 provider、单个账号；不将原始 JSON 保存到 CardeX。
+cardex channel import-usage --id my-codex-channel --provider codex --input /path/to/authorized-usage.json
+```
+
+命令只接受 CodexBar `usage --format json` 的单元素数组，支持 `--input -` 从标准输入读取。由用户把选定的供应商账号映射到已有渠道；CardeX 不保留账号邮箱、身份信息、诊断、原始错误或未知字段，**因此不会自动核验该账号与渠道是否相符**。有 `source_group` 的渠道共用该组的一份快照；未设置订阅组则仅属于当前渠道。不同账号应登记在不同订阅组中，不能把 Cursor 的 Grok 共享池登记为独立 Grok 账户余额。
+
+仅在用户明确授权本地采集后，才由用户或获准的本地采集任务运行以下命令；CardeX 自己不会执行它，也不会替用户创建定时任务：
+
+```sh
+codexbar usage --provider codex --source cli --format json | cardex channel import-usage --id my-codex-channel --provider codex --input -
+```
+
+授权在 CodexBar/对应 CLI 中完成，**不应把 token、Cookie 或 API key 传给 CardeX**。多账号时先在 CodexBar 侧选择对应账号，避免 `--all-accounts`。原始输出可能包含身份和诊断，勿打印、提交或留在共享目录；CardeX 只落盘白名单字段到 `$CARDEX_HOME/subscription-usage/`（默认 `~/.cardex/subscription-usage/`），文件权限为 0600。
+
+快照必须有供应商采集时间，**15 分钟内有效**；未来超出 1 分钟、已过重置时间、缺失比例、超出 0–100、非有限数、synthetic placeholder、`usageKnown: false` 或显式 `estimated`/`unknown` confidence 均显示 unknown。合法 0% 剩余仍显示 0%，不解释为缺测。兼容 CodexBar 省略 confidence 的原生响应，但仍严格校验来源、百分比和时间。采集失败的标准 error payload 会覆盖旧快照为 unknown；无效 JSON 被拒绝，已有快照仅在其原有效期内保留，并始终显示采集时间。页面的 5 秒刷新只重读本地快照，**不代表重新采集**。导入不修改渠道健康、本地 quota ledger 或路由权重。
+
+六家来源审计基于 [CodexBar `1f6da9b`](https://github.com/steipete/CodexBar/tree/1f6da9bec44455288ddee5ef6f3617a803d8eb2a)，未用真实账号探测；“可导入”是对已有采集实现及其 JSON 来源的判断，不保证供应商私有接口持续稳定：
+
+| 供应商 | 已有可靠采集路径 / 本次接受的 JSON `source` | 用户决定授权后如何取得 | 不混淆的边界 |
+|---|---|---|---|
+| [Codex / ChatGPT](https://github.com/steipete/CodexBar/blob/1f6da9bec44455288ddee5ef6f3617a803d8eb2a/docs/codex.md) | 官方 Codex app-server `account/rateLimits/read`：`codex-cli`；wham usage：`oauth` | 已登录 Codex CLI，或授权 CodexBar 复用 OAuth；CLI 模式 `--source cli` | 订阅窗口并非每模型独立余额；额外 `credits` 只按 credits 标记，不换算美元 |
+| [Claude](https://github.com/steipete/CodexBar/blob/1f6da9bec44455288ddee5ef6f3617a803d8eb2a/docs/claude.md) | `/api/oauth/usage`：`oauth` | Claude Code OAuth 需 `user:profile`；CodexBar `--source oauth`；普通推理 key 不够 | 不接受 Admin API 组织 spend；本次不接受 PTY/web 兜底 |
+| [Cursor](https://github.com/steipete/CodexBar/blob/1f6da9bec44455288ddee5ef6f3617a803d8eb2a/docs/cursor.md) | 已登录应用/网站的 usage-summary、usage-status：`web`；私有接口可能变动 | 用户选择是否让 CodexBar 复用 Cursor 会话；CardeX 不读 Cookie | 保留统一周池与窗口名，不拆给各模型；不导入按需 spend 为订阅余额 |
+| [Grok](https://github.com/steipete/CodexBar/blob/1f6da9bec44455288ddee5ef6f3617a803d8eb2a/docs/grok.md) | 官方 CLI ACP `_x.ai/billing`：`grok-cli`；CLI-proxy billing：`grok-cli-proxy` | 已登录 Grok CLI，优先 `--source cli`；代理路径由 CodexBar 管理授权 | 团队账号若只有 identity 则 unknown；不接受浏览器/gRPC-web 兜底 |
+| [Gemini](https://github.com/steipete/CodexBar/blob/1f6da9bec44455288ddee5ef6f3617a803d8eb2a/docs/gemini.md) | Code Assist `retrieveUserQuota`：`oauth-api` | Gemini CLI Google OAuth + quota project；CodexBar `--source api`；部分消费者订阅不支持 | 仅 CLI/Code Assist 池，不混入 Gemini app 网页或 Antigravity |
+| [Kimi Code](https://github.com/steipete/CodexBar/blob/1f6da9bec44455288ddee5ef6f3617a803d8eb2a/docs/kimi.md) | `/coding/v1/usages`：`Kimi Code API key` / `Kimi Code CLI` | 用户可在 [Code Console](https://www.kimi.com/code/console) 创建专用 key，仅交给 CodexBar；或复用已登录 Code CLI | 不是 Moonshot API 余额；本次不接受 `Kimi web cookie`；若不授权 Cookie enrichment，应在 CodexBar 中关掉 Cookie source |
+
+本次不接入浏览器抓取、API 账单金额、本地 token 估算或 CodexBar `cost`。不具备上述来源、未授权、响应不可读或字段不足时继续 unknown。验证适配器而不访问任何真实账号：`go test -v ./internal/quota ./internal/board ./cmd/cardex -run 'Subscription|CodexBar|ChannelImportUsage'`。
 
 等级展示不修改路由或数据库：当前版本沿用 T3 最强的旧编号，并在页内说明目标约定 T1 最强、T0 稀缺且需确认；新版默认设计等级切为 T1 后，说明会随代码切换。旧记录不自动翻号，页面提示也不代替调度器的确认校验。
 

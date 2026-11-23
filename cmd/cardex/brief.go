@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 // briefAttemptLimit is the folded attempt history on card show --brief.
@@ -90,7 +92,7 @@ func parseAttemptsMode(raw string) (all bool, err error) {
 	}
 }
 
-func buildCardBrief(c model.Card, attempts []model.Attempt, events []model.Event, questions []model.Question, showClaims, allAttempts bool) cardBriefView {
+func buildCardBrief(c model.Card, attempts []model.Attempt, events []model.Event, question *cardBriefQuestion, showClaims, allAttempts bool) cardBriefView {
 	sorted := append([]model.Attempt(nil), attempts...)
 	sort.Slice(sorted, func(i, j int) bool { return attemptNewer(sorted[j], sorted[i]) })
 	recent := sorted
@@ -112,7 +114,7 @@ func buildCardBrief(c model.Card, attempts []model.Attempt, events []model.Event
 		Attempt:     selectBriefAttempt(sorted),
 		Attempts:    history,
 		Event:       latestBriefEvent(events),
-		Question:    pendingBriefQuestion(questions, c.ID),
+		Question:    question,
 		Commit:      latestCommit(c, sorted),
 	}
 	if showClaims {
@@ -286,17 +288,12 @@ func clipBriefData(data json.RawMessage) json.RawMessage {
 	return encoded
 }
 
-func pendingBriefQuestion(questions []model.Question, cardID string) *cardBriefQuestion {
-	for _, question := range questions {
-		if question.Answer != "" || question.Scope != cardID {
-			continue
-		}
-		if question.ScopeKind != "" && question.ScopeKind != "card" {
-			continue
-		}
-		return &cardBriefQuestion{ID: question.ID, Line: clipBriefText(question.Text)}
+func pendingBriefQuestion(ctx context.Context, db *store.Store, cardID string) (*cardBriefQuestion, error) {
+	question, err := db.FindPendingCardQuestion(ctx, cardID)
+	if err != nil || question == nil {
+		return nil, err
 	}
-	return nil
+	return &cardBriefQuestion{ID: question.ID, Line: clipBriefText(question.Text)}, nil
 }
 
 func latestCommit(c model.Card, sorted []model.Attempt) string {
@@ -319,7 +316,7 @@ func latestCommit(c model.Card, sorted []model.Attempt) string {
 	return ""
 }
 
-func buildObjectiveBrief(id string, cards []model.Card, questions []model.Question) objectiveBriefView {
+func buildObjectiveBrief(id string, cards []model.Card) objectiveBriefView {
 	counts := make(map[model.CardStatus]int, len(model.AllCardStatuses()))
 	for _, card := range cards {
 		counts[card.Status]++
@@ -343,7 +340,7 @@ func buildObjectiveBrief(id string, cards []model.Card, questions []model.Questi
 		view.Blocked = append(view.Blocked, objectiveBlocked{
 			ID:     card.ID,
 			Status: string(card.Status),
-			Reason: blockedReason(card, questions),
+			Reason: blockedReason(card),
 		})
 	}
 	return view
@@ -365,17 +362,53 @@ func emitObjectiveBrief(stdout io.Writer, asJSON bool, view objectiveBriefView) 
 	return 0
 }
 
-func blockedReason(card model.Card, questions []model.Question) string {
+func blockedReason(card model.Card) string {
 	if line := clipBriefText(card.WaitReason); line != "" {
 		return line
 	}
-	if line := clipBriefText(card.Legacy.Reason); line != "" {
-		return line
+	return clipBriefText(card.Legacy.Reason)
+}
+
+func objectiveFallbackReason(ctx context.Context, db *store.Store, card objectiveBlocked) (string, error) {
+	question, err := pendingBriefQuestion(ctx, db, card.ID)
+	if err != nil {
+		return "", err
 	}
-	if question := pendingBriefQuestion(questions, card.ID); question != nil {
-		return question.Line
+	if question != nil && question.Line != "" {
+		return question.Line, nil
 	}
-	return ""
+	if card.Status == string(model.CardFailed) {
+		attempts, err := db.ListAttempts(ctx, card.ID)
+		if err != nil {
+			return "", err
+		}
+		var latest model.Attempt
+		for _, attempt := range attempts {
+			if latest.ID == "" || attemptNewer(attempt, latest) {
+				latest = attempt
+			}
+		}
+		if reason := clipBriefText(latest.ErrorExcerpt); reason != "" {
+			return reason, nil
+		}
+		if latest.Outcome != "" {
+			return string(latest.Outcome), nil
+		}
+	}
+	events, err := db.ListEvents(ctx, "card:"+card.ID)
+	if err != nil {
+		return "", err
+	}
+	var latest model.Event
+	for _, event := range events {
+		switch event.Type {
+		case "plan_unparsable", "review_unparsable":
+			if latest.ID == "" || eventNewer(event, latest) {
+				latest = event
+			}
+		}
+	}
+	return latest.Type, nil
 }
 
 func sortCardsByID(cards []model.Card) {

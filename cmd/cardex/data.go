@@ -344,32 +344,18 @@ func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Wr
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		questions, err := db.ListQuestions(ctx, o.ID)
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		view := buildObjectiveBrief(o.ID, cards, questions)
+		view := buildObjectiveBrief(o.ID, cards)
 		for i := range view.Blocked {
 			card := &view.Blocked[i]
-			if card.Reason != "" || card.Status != string(model.CardFailed) {
+			if card.Reason != "" {
 				continue
 			}
-			attempts, err := db.ListAttempts(ctx, card.ID)
+			reason, err := objectiveFallbackReason(ctx, db, *card)
 			if err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
-			var latest model.Attempt
-			for _, attempt := range attempts {
-				if latest.ID == "" || attemptNewer(attempt, latest) {
-					latest = attempt
-				}
-			}
-			card.Reason = clipBriefText(latest.ErrorExcerpt)
-			if card.Reason == "" {
-				card.Reason = string(latest.Outcome)
-			}
+			card.Reason = reason
 		}
 		return emitObjectiveBrief(stdout, asJSON, view)
 	}
@@ -605,12 +591,12 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		questions, err := db.ListQuestions(ctx, c.Objective)
+		question, err := pendingBriefQuestion(ctx, db, c.ID)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		return emitCardBrief(stdout, asJSON, buildCardBrief(c, attempts, events, questions, *showClaims, allAttempts))
+		return emitCardBrief(stdout, asJSON, buildCardBrief(c, attempts, events, question, *showClaims, allAttempts))
 	}
 	origin, err := loadCardOrigin(ctx, db, c.ID)
 	if err != nil {

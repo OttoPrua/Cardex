@@ -2,12 +2,15 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/loop"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
@@ -444,6 +447,88 @@ func TestObjectiveShowBriefCountsBlocked(t *testing.T) {
 	if card.Commit != "" {
 		t.Fatalf("branch name reported as a commit: %q", card.Commit)
 	}
+}
+
+func TestBriefReportsHarvestedBlockers(t *testing.T) {
+	home := t.TempDir()
+	db := openBriefDB(t, home)
+	defer db.Close()
+	ctx := t.Context()
+	if err := db.CreateProject(ctx, &model.Project{ID: "p", RepoPath: t.TempDir()}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"o-dev", "o-review"} {
+		if err := db.CreateObjective(ctx, &model.Objective{
+			ID: id, Project: "p", Title: id, Status: model.ObjectiveActive,
+			Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dev := model.Card{ID: "c-dev", Objective: "o-dev", Title: "dev", Kind: model.KindDev, Status: model.CardReviewing}
+	if err := db.CreateCard(ctx, &dev); err != nil {
+		t.Fatal(err)
+	}
+	dispose := func(card model.Card, result string) {
+		t.Helper()
+		if err := db.CreateCard(ctx, &card); err != nil {
+			t.Fatal(err)
+		}
+		worktree := t.TempDir()
+		if err := os.WriteFile(filepath.Join(worktree, ".cardex-result.md"), []byte(result), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		exit := 0
+		attempt := model.Attempt{ID: "a-" + card.ID, Card: card.ID, Worktree: worktree, Exit: &exit, EndedAt: time.Now().UTC()}
+		if err := db.CreateAttempt(ctx, &attempt); err != nil {
+			t.Fatal(err)
+		}
+		disposeCtx := loop.WithAttempt(loop.WithStore(loop.WithHome(ctx, home), db), attempt.ID)
+		if err := loop.Dispose(disposeCtx, &card, harvest.Result{Outcome: model.OutcomePassed, ResultText: result}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dispose(model.Card{ID: "c-review", Objective: "o-review", Title: "review", Kind: model.KindReview, Status: model.CardRunning, Deps: []string{dev.ID}},
+		"## 结论\nok\n\n## 复核结论\nblocked missing evidence\n")
+	dispose(model.Card{ID: "c-plan", Objective: "o-dev", Title: "plan", Kind: model.KindPlan, Status: model.CardRunning},
+		"## 新卡\n```json\n{not json\n```\n")
+	questions, err := db.ListQuestions(ctx, "o-review")
+	if err != nil || len(questions) != 1 || questions[0].Scope != dev.ID || questions[0].Answer != "" {
+		t.Fatalf("cross-objective review questions %+v, err %v", questions, err)
+	}
+	questionID := questions[0].ID
+
+	t.Run("cross-objective review question", func(t *testing.T) {
+		const reason = "review blocked: missing evidence"
+		view := decodeBrief(t, mustHome(t, home, "--json", "card", "show", dev.ID, "--brief"))
+		if view.Status != string(model.CardNeedsInput) || view.WaitReason != "" || view.Question == nil || view.Question.ID != questionID || view.Question.Line != reason {
+			t.Fatalf("blocked dev summary %+v (question %+v)", view, view.Question)
+		}
+		text := mustHome(t, home, "card", "show", dev.ID, "--brief")
+		if !strings.Contains(text, "question\t"+questionID+"\t"+reason+"\n") {
+			t.Fatalf("missing question in %q", text)
+		}
+	})
+	t.Run("objective blocker reasons", func(t *testing.T) {
+		text := mustHome(t, home, "objective", "show", "o-dev", "--brief")
+		raw := mustHome(t, home, "--json", "objective", "show", "o-dev", "--brief")
+		var view objectiveBriefView
+		if err := json.Unmarshal([]byte(raw), &view); err != nil {
+			t.Fatal(err)
+		}
+		want := []objectiveBlocked{
+			{ID: "c-dev", Status: "needs_input", Reason: "review blocked: missing evidence"},
+			{ID: "c-plan", Status: "needs_input", Reason: "plan_unparsable"},
+		}
+		if len(view.Blocked) != len(want) {
+			t.Fatalf("blocked cards %+v", view.Blocked)
+		}
+		for i, blocked := range want {
+			if view.Blocked[i] != blocked || !strings.Contains(text, "blocked\t"+blocked.ID+"\t"+blocked.Status+"\t"+blocked.Reason+"\n") {
+				t.Errorf("missing %+v\ntext:\n%s\nJSON:\n%s", blocked, text, raw)
+			}
+		}
+	})
 }
 
 func TestBriefLatestEventUsesParsedTime(t *testing.T) {

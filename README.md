@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/readme-header-dark.png">
+  <img src="docs/brand/readme-header-light.png" alt="Cardex" width="1280">
+</picture>
+
 # Cardex
 
 **把你订阅的多家 AI 编程工具组成一支施工队：你定目标、拍板，Cardex 负责拆活、派活、验收、合入。**

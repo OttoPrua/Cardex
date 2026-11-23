@@ -2,44 +2,44 @@
   <title id="title">七个特点</title>
   <desc id="description">一眼看懂 Cardex 能做什么</desc>
   <defs>
-    <pattern id="dots" width="15" height="15" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.45" fill="#bcc9e6"/></pattern>
-    <marker id="arrow" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#7387b7"/></marker>
-    <marker id="arrowWarm" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#b8894a"/></marker>
+    <pattern id="dots" width="15" height="15" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.45" fill="#DFDBCF"/></pattern>
+    <marker id="arrow" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#2F5BEA"/></marker>
+    <marker id="arrowWarm" viewBox="0 0 8 8" markerWidth="6.5" markerHeight="6.5" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8L2 4Z" fill="#D9C38E"/></marker>
   </defs>
-  <rect x="1" y="1" width="1198" height="498" rx="25" fill="#f8faff" stroke="#d4def1"/>
+  <rect x="1" y="1" width="1198" height="498" rx="25" fill="#F5F4EF" stroke="#DFDBCF"/>
   <rect x="946" y="22" width="209" height="118" rx="10" fill="url(#dots)" opacity=".71"/>
-  <text x="1034" y="80" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="42" font-weight="600" fill="#aebde2">{{  }}</text>
-  <text x="45" y="50" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="17" font-weight="730" fill="#4052ad">CARDEX   /   HIGHLIGHTS</text>
-  <text x="43" y="100" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="40" font-weight="750" fill="#172744">七个特点</text>
-  <text x="45" y="136" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="19" font-weight="480" fill="#445775">一眼看懂 Cardex 能做什么</text>
-  <rect x="44" y="166" width="266" height="108" rx="18" fill="#fff" stroke="#d4dff1"/>
-  <text x="64" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">01 / TOOLS</text>
-  <text x="64" y="230" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="730" fill="#172744">多工具混用</text>
-  <text x="64" y="258" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">按难度、能力、余量选</text>
-  <rect x="326" y="166" width="266" height="108" rx="18" fill="#fff" stroke="#d4dff1"/>
-  <text x="346" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">02 / PLAN</text>
-  <text x="346" y="230" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="730" fill="#172744">大事它来拆</text>
-  <text x="346" y="258" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">方向你点头才开工</text>
-  <rect x="608" y="166" width="266" height="108" rx="18" fill="#fff" stroke="#d4dff1"/>
-  <text x="628" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">03 / PARALLEL</text>
-  <text x="628" y="230" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="730" fill="#172744">并行不打架</text>
-  <text x="628" y="258" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">每张卡独立工作区</text>
-  <rect x="890" y="166" width="266" height="108" rx="18" fill="#effaf7" stroke="#b9ded7"/>
-  <text x="910" y="196" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#18736b">04 / VERIFY</text>
-  <text x="910" y="230" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="730" fill="#172744">测完再复核</text>
-  <text x="910" y="258" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">过关才合入</text>
-  <rect x="44" y="290" width="360" height="108" rx="18" fill="#fff" stroke="#d4dff1"/>
-  <text x="64" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">05 / QUOTA</text>
-  <text x="64" y="354" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="730" fill="#172744">额度不浪费</text>
-  <text x="64" y="382" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">见底停派，快重置清积压</text>
-  <rect x="420" y="290" width="360" height="108" rx="18" fill="#fff9ed" stroke="#e6d6b6"/>
-  <text x="440" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#8f5a16">06 / ASK</text>
-  <text x="440" y="354" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="730" fill="#172744">该问就问</text>
-  <text x="440" y="382" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">沉默不算同意</text>
-  <rect x="796" y="290" width="360" height="108" rx="18" fill="#fff" stroke="#d4dff1"/>
-  <text x="816" y="320" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,&quot;Noto Sans Mono CJK SC&quot;,monospace" font-size="13.5" font-weight="700" fill="#4052ad">07 / LOCAL</text>
-  <text x="816" y="354" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="22" font-weight="730" fill="#172744">本地不丢</text>
-  <text x="816" y="382" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#445775">数据在本机，重启接着跑</text>
-  <path d="M45 430 H1155" stroke="#d4deef"/>
-  <text x="45" y="466" font-family="-apple-system,BlinkMacSystemFont,&quot;Segoe UI&quot;,&quot;PingFang SC&quot;,&quot;Hiragino Sans GB&quot;,&quot;Noto Sans CJK SC&quot;,sans-serif" font-size="18" font-weight="570" fill="#445775">macOS：系统沙箱隔离 · Linux / Windows：可运行，无沙箱</text>
+  <text x="1034" y="80" font-family="&quot;Geist Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="42" font-weight="600" fill="#C9C4B5">{{  }}</text>
+  <text x="45" y="50" font-family="&quot;Geist Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="17" font-weight="730" fill="#2F5BEA">CARDEX   /   HIGHLIGHTS</text>
+  <text x="43" y="100" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="40" font-weight="750" fill="#16161A">七个特点</text>
+  <text x="45" y="136" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="19" font-weight="480" fill="#45433E">一眼看懂 Cardex 能做什么</text>
+  <rect x="44" y="166" width="266" height="108" rx="18" fill="#FFFEFA" stroke="#DFDBCF"/><rect x="58" y="202" width="238" height="2" fill="#2F5BEA"/>
+  <text x="64" y="196" font-family="&quot;Geist Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#2F5BEA">01 / TOOLS</text>
+  <text x="64" y="230" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="22" font-weight="730" fill="#16161A">多工具混用</text>
+  <text x="64" y="258" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#45433E">按难度、能力、余量选</text>
+  <rect x="326" y="166" width="266" height="108" rx="18" fill="#FFFEFA" stroke="#DFDBCF"/><rect x="340" y="202" width="238" height="2" fill="#2F5BEA"/>
+  <text x="346" y="196" font-family="&quot;Geist Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#2F5BEA">02 / PLAN</text>
+  <text x="346" y="230" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="22" font-weight="730" fill="#16161A">大事它来拆</text>
+  <text x="346" y="258" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#45433E">方向你点头才开工</text>
+  <rect x="608" y="166" width="266" height="108" rx="18" fill="#FFFEFA" stroke="#DFDBCF"/><rect x="622" y="202" width="238" height="2" fill="#2F5BEA"/>
+  <text x="628" y="196" font-family="&quot;Geist Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#2F5BEA">03 / PARALLEL</text>
+  <text x="628" y="230" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="22" font-weight="730" fill="#16161A">并行不打架</text>
+  <text x="628" y="258" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#45433E">每张卡独立工作区</text>
+  <rect x="890" y="166" width="266" height="108" rx="18" fill="#FFFEFA" stroke="#DFDBCF"/><rect x="1091" y="168" width="61" height="12" rx="4" fill="#22B8CF" stroke="#16161A" stroke-opacity="0.12"/><text x="1097" y="177" font-family="&quot;Geist Mono&quot;,ui-monospace,monospace" font-size="8" font-weight="700" fill="#16161A">TESTING</text><rect x="904" y="202" width="238" height="2" fill="#2F5BEA"/>
+  <text x="910" y="196" font-family="&quot;Geist Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#137A4B">04 / VERIFY</text>
+  <text x="910" y="230" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="22" font-weight="730" fill="#16161A">测完再复核</text>
+  <text x="910" y="258" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#45433E">过关才合入</text>
+  <rect x="44" y="290" width="360" height="108" rx="18" fill="#FFFEFA" stroke="#DFDBCF"/><rect x="58" y="326" width="332" height="2" fill="#2F5BEA"/>
+  <text x="64" y="320" font-family="&quot;Geist Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#2F5BEA">05 / QUOTA</text>
+  <text x="64" y="354" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="22" font-weight="730" fill="#16161A">额度不浪费</text>
+  <text x="64" y="382" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#45433E">见底停派，快重置清积压</text>
+  <rect x="420" y="290" width="360" height="108" rx="18" fill="#FFFEFA" stroke="#D9C38E"/><rect x="701" y="292" width="75" height="12" rx="4" fill="#FF7AB6" stroke="#16161A" stroke-opacity="0.12"/><text x="707" y="301" font-family="&quot;Geist Mono&quot;,ui-monospace,monospace" font-size="8" font-weight="700" fill="#16161A">YOUR CALL</text><rect x="434" y="326" width="332" height="2" fill="#2F5BEA"/>
+  <text x="440" y="320" font-family="&quot;Geist Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#C23A1E">06 / ASK</text>
+  <text x="440" y="354" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="22" font-weight="730" fill="#16161A">该问就问</text>
+  <text x="440" y="382" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#45433E">沉默不算同意</text>
+  <rect x="796" y="290" width="360" height="108" rx="18" fill="#FFFEFA" stroke="#DFDBCF"/><rect x="810" y="326" width="332" height="2" fill="#2F5BEA"/>
+  <text x="816" y="320" font-family="&quot;Geist Mono&quot;,ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="13.5" font-weight="700" fill="#2F5BEA">07 / LOCAL</text>
+  <text x="816" y="354" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="22" font-weight="730" fill="#16161A">本地不丢</text>
+  <text x="816" y="382" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="15.5" font-weight="490" fill="#45433E">数据在本机，重启接着跑</text>
+  <path d="M45 430 H1155" stroke="#DFDBCF"/>
+  <text x="45" y="466" font-family="&quot;Manrope&quot;,&quot;PingFang SC&quot;,&quot;Noto Sans SC&quot;,&quot;Hiragino Sans GB&quot;,sans-serif" font-size="18" font-weight="570" fill="#45433E">macOS：系统沙箱隔离 · Linux / Windows：可运行，无沙箱</text>
 </svg>

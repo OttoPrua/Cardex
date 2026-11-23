@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/readme-header-dark.png">
+  <img src="docs/brand/readme-header-light.png" alt="Cardex" width="1280">
+</picture>
+
 # Cardex
 
 **Turn the AI coding tools you already pay for into one crew: you set the goal and make the calls; Cardex splits the work, dispatches it, checks it, and merges it.**

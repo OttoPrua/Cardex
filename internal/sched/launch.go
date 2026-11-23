@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/host"
@@ -14,14 +15,8 @@ import (
 )
 
 func init() {
-	if os.Getenv("CARDEX_SCHED_HOST") != "1" {
-		return
-	}
-	id := attemptFromArgs(os.Args)
-	if id == "" {
-		id = os.Getenv("CARDEX_SCHED_ATTEMPT")
-	}
-	if id == "" {
+	id, ok := schedHostAttempt(os.Getenv, os.Args)
+	if !ok {
 		return
 	}
 	ctx := host.WithWorkspace(context.Background(), workspace.Git{})
@@ -30,6 +25,35 @@ func init() {
 		os.Exit(1)
 	}
 	os.Exit(0)
+}
+
+// schedHostAttempt reports the attempt id when this process is the detached
+// host child. The host exports CARDEX_SCHED_HOST into every descendant,
+// including go test and the fake executor. Those must keep their own main.
+func schedHostAttempt(getenv func(string) string, args []string) (string, bool) {
+	if getenv("CARDEX_SCHED_HOST") != "1" || getenv("CARDEX_FAKE_CHILD") == "1" || goTestArgs(args) {
+		return "", false
+	}
+	id := attemptFromArgs(args)
+	if id == "" {
+		id = getenv("CARDEX_SCHED_ATTEMPT")
+	}
+	if id == "" {
+		return "", false
+	}
+	return id, true
+}
+
+func goTestArgs(args []string) bool {
+	if len(args) < 2 {
+		return false
+	}
+	for _, arg := range args[1:] {
+		if strings.HasPrefix(arg, "-test.") || strings.HasPrefix(arg, "--test.") {
+			return true
+		}
+	}
+	return false
 }
 
 func attemptFromArgs(args []string) string {

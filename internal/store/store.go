@@ -30,7 +30,8 @@ type execer interface {
 
 // Store is a SQLite database opened with WAL and a busy timeout.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	home string
 }
 
 // Open opens or creates the database at path and applies migrations.
@@ -58,7 +59,7 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
-	s := &Store{db: db}
+	s := &Store{db: db, home: filepath.Dir(abs)}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -87,6 +88,14 @@ func Open(path string) (*Store, error) {
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
+// Home is the directory that holds the database file.
+func (s *Store) Home() string {
+	if s == nil {
+		return ""
+	}
+	return s.home
+}
+
 // SchemaVersion returns the applied migration version.
 func (s *Store) SchemaVersion(ctx context.Context) (int, error) {
 	var v int
@@ -102,7 +111,14 @@ func refuseCardexHome(path string) error {
 	return homeguard.Check(filepath.Dir(abs))
 }
 
+type commitNotes struct {
+	fns []func()
+}
+
+type notesKey struct{}
+
 // WithTx runs fn inside a transaction. Nested calls join the outer transaction.
+// Closures registered with afterCommit run only after the outermost commit.
 func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) (err error) {
 	if _, ok := ctx.Value(txKey{}).(execer); ok {
 		return fn(ctx)
@@ -116,11 +132,36 @@ func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) (err
 			_ = tx.Rollback()
 		}
 	}()
+	notes := &commitNotes{}
 	ctx = context.WithValue(ctx, txKey{}, tx)
+	ctx = context.WithValue(ctx, notesKey{}, notes)
 	if err = fn(ctx); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	for _, fn := range notes.fns {
+		func() {
+			defer func() { _ = recover() }()
+			fn()
+		}()
+	}
+	return nil
+}
+
+// afterCommit runs fn after the outermost transaction commits.
+// Outside a transaction it runs immediately. A panic does not escape.
+func (s *Store) afterCommit(ctx context.Context, fn func()) {
+	if fn == nil {
+		return
+	}
+	if notes, ok := ctx.Value(notesKey{}).(*commitNotes); ok && notes != nil {
+		notes.fns = append(notes.fns, fn)
+		return
+	}
+	defer func() { _ = recover() }()
+	fn()
 }
 
 func (s *Store) q(ctx context.Context) execer {
@@ -248,6 +289,33 @@ func (s *Store) migrate(ctx context.Context) error {
 			}
 		}
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (7, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+		current = 7
+	}
+	if current < 8 {
+		// Lifecycle event switch. Empty inherits (project empty means off).
+		for _, table := range []string{"projects", "objectives"} {
+			var has int
+			if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('`+table+`') WHERE name='events'`).Scan(&has); err != nil {
+				return fmt.Errorf("migration 8: %w", err)
+			}
+			if has == 0 {
+				if _, err := conn.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN events TEXT NOT NULL DEFAULT ''`); err != nil {
+					return fmt.Errorf("migration 8: %w", err)
+				}
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS mgmt_reads (
+			origin TEXT NOT NULL,
+			card_id TEXT NOT NULL,
+			command TEXT NOT NULL,
+			n INTEGER NOT NULL,
+			PRIMARY KEY (origin, card_id, command)
+		)`); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (8, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 	}

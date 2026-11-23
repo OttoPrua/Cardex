@@ -46,6 +46,7 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 	design := fs.String("design-dir", "", "design directory")
 	sandboxMode := fs.String("sandbox", "on", "project default for its cards: on, or off to run them outside the Cardex sandbox")
 	reviewMode := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
+	eventsMode := fs.String("events", "", "card lifecycle events: on, or off (default off)")
 	var forbidden stringsFlag
 	fs.Var(&forbidden, "forbidden", "forbidden path")
 	if code, ok := parseSet(fs, args); !ok {
@@ -64,6 +65,7 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 		ForbiddenPaths: forbidden,
 		Sandbox:        *sandboxMode,
 		Review:         *reviewMode,
+		Events:         *eventsMode,
 	}
 	if p.ID == "" {
 		gen, err := newID("p")
@@ -186,6 +188,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	channel := fs.String("channel", "", "explicit channel")
 	modelName := fs.String("model", "", "explicit model")
 	objReview := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
+	eventsMode := fs.String("events", "", "card lifecycle events: on, off, or inherit (empty inherits the project; default off)")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -241,7 +244,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		Budget:     model.Budget{SoftTokens: softTokens, HardTokens: hardTokens},
 		Priority:   priorityVal, Mode: modeVal, FreezeMode: freezeVal,
 		Origin: origin, Status: statusVal, IntegrationBranch: *branch,
-		Channel: *channel, Model: *modelName, Review: *objReview,
+		Channel: *channel, Model: *modelName, Review: *objReview, Events: *eventsMode,
 	}
 	if o.ID == "" {
 		gen, err := newID("o")
@@ -317,8 +320,9 @@ func objectiveList(home string, asJSON bool, args []string, stdout, stderr io.Wr
 }
 
 func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("objective show", "show one stored objective, including its origin", "<id> --json", stdout, stderr)
-	if code, ok := parseSet(fs, args); !ok {
+	fs := newFlagSet("objective show", "show one stored objective, including its origin", "<id> --origin --json", stdout, stderr)
+	acceptOrigin(fs)
+	if code, ok := parseSet(fs, hoistFlags(fs, args)); !ok {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -331,10 +335,20 @@ func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	defer db.Close()
-	o, err := db.GetObjective(context.Background(), fs.Arg(0))
+	ctx := context.Background()
+	o, err := db.GetObjective(ctx, fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if origin := resolvedOrigin(args); origin != "" {
+		if cards, err := db.ListCards(ctx, o.ID); err == nil {
+			ids := make([]string, 0, len(cards))
+			for _, card := range cards {
+				ids = append(ids, card.ID)
+			}
+			noteReads(db, origin, "objective-show", ids)
+		}
 	}
 	line := o.ID + "\t" + o.Title
 	if o.Origin != "" {
@@ -459,9 +473,10 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 }
 
 func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card list", "list stored cards, optionally for one objective", "--json", stdout, stderr)
+	fs := newFlagSet("card list", "list stored cards, optionally for one objective", "--objective --origin --json", stdout, stderr)
 	objective := fs.String("objective", "", "objective id")
-	if code, ok := parseSet(fs, args); !ok {
+	acceptOrigin(fs)
+	if code, ok := parseSet(fs, hoistFlags(fs, args)); !ok {
 		return code
 	}
 	db, err := openStore(home)
@@ -475,6 +490,13 @@ func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if origin := resolvedOrigin(args); origin != "" {
+		ids := make([]string, 0, len(items))
+		for _, card := range items {
+			ids = append(ids, card.ID)
+		}
+		noteReads(db, origin, "card-list", ids)
+	}
 	if asJSON {
 		return writeJSON(stdout, items)
 	}
@@ -485,8 +507,9 @@ func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 }
 
 func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", "<id> --json", stdout, stderr)
-	if code, ok := parseSet(fs, args); !ok {
+	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", "<id> --origin --json", stdout, stderr)
+	acceptOrigin(fs)
+	if code, ok := parseSet(fs, hoistFlags(fs, args)); !ok {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -515,6 +538,7 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	noteReads(db, resolvedOrigin(args), "card-show", []string{c.ID})
 	history, err := cardShowHistory(ctx, db, c.ID)
 	if err != nil {
 		fmt.Fprintln(stderr, err)

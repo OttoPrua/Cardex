@@ -219,6 +219,9 @@ func (r *Runner) Tick(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	// Retry lifecycle events that failed on an earlier tick. A missing ledger
+	// returns immediately, and a delivery error stays out of the tick result.
+	_ = notify.FlushLifecycle(ctx, r.Home)
 	return first
 }
 

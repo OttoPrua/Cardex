@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 )
@@ -22,18 +23,21 @@ func (s *Store) CreateProject(ctx context.Context, p *model.Project) error {
 	if err := normReview("project review", &p.Review); err != nil {
 		return err
 	}
+	if err := normEvents(&p.Events); err != nil {
+		return err
+	}
 	p.ForbiddenPaths = normStrings(p.ForbiddenPaths)
 	raw, err := mustJSON(p.ForbiddenPaths)
 	if err != nil {
 		return err
 	}
-	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO projects(id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review) VALUES (?,?,?,?,?,?,?,?)`,
-		p.ID, p.RepoPath, p.WorktreeRoot, p.TestCmd, p.DesignDir, raw, p.Sandbox, p.Review)
+	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO projects(id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review, events) VALUES (?,?,?,?,?,?,?,?,?)`,
+		p.ID, p.RepoPath, p.WorktreeRoot, p.TestCmd, p.DesignDir, raw, p.Sandbox, p.Review, p.Events)
 	return err
 }
 
 func (s *Store) GetProject(ctx context.Context, id string) (model.Project, error) {
-	row := s.q(ctx).QueryRowContext(ctx, `SELECT id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review FROM projects WHERE id=?`, id)
+	row := s.q(ctx).QueryRowContext(ctx, `SELECT id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review, events FROM projects WHERE id=?`, id)
 	return scanProject(row)
 }
 
@@ -47,13 +51,16 @@ func (s *Store) UpdateProject(ctx context.Context, p *model.Project) error {
 	if err := normReview("project review", &p.Review); err != nil {
 		return err
 	}
+	if err := normEvents(&p.Events); err != nil {
+		return err
+	}
 	p.ForbiddenPaths = normStrings(p.ForbiddenPaths)
 	raw, err := mustJSON(p.ForbiddenPaths)
 	if err != nil {
 		return err
 	}
-	res, err := s.q(ctx).ExecContext(ctx, `UPDATE projects SET repo_path=?, worktree_root=?, test_cmd=?, design_dir=?, forbidden_paths=?, sandbox=?, review=? WHERE id=?`,
-		p.RepoPath, p.WorktreeRoot, p.TestCmd, p.DesignDir, raw, p.Sandbox, p.Review, p.ID)
+	res, err := s.q(ctx).ExecContext(ctx, `UPDATE projects SET repo_path=?, worktree_root=?, test_cmd=?, design_dir=?, forbidden_paths=?, sandbox=?, review=?, events=? WHERE id=?`,
+		p.RepoPath, p.WorktreeRoot, p.TestCmd, p.DesignDir, raw, p.Sandbox, p.Review, p.Events, p.ID)
 	return rowsAffected(res, err)
 }
 
@@ -63,7 +70,7 @@ func (s *Store) DeleteProject(ctx context.Context, id string) error {
 }
 
 func (s *Store) ListProjects(ctx context.Context) ([]model.Project, error) {
-	rows, err := s.q(ctx).QueryContext(ctx, `SELECT id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review FROM projects ORDER BY id`)
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review, events FROM projects ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +91,7 @@ type scanner interface{ Scan(...any) error }
 func scanProject(sc scanner) (model.Project, error) {
 	var p model.Project
 	var forbidden string
-	if err := sc.Scan(&p.ID, &p.RepoPath, &p.WorktreeRoot, &p.TestCmd, &p.DesignDir, &forbidden, &p.Sandbox, &p.Review); err != nil {
+	if err := sc.Scan(&p.ID, &p.RepoPath, &p.WorktreeRoot, &p.TestCmd, &p.DesignDir, &forbidden, &p.Sandbox, &p.Review, &p.Events); err != nil {
 		return p, err
 	}
 	if err := parseJSON(forbidden, &p.ForbiddenPaths); err != nil {
@@ -102,6 +109,21 @@ func normProjectSandbox(p *model.Project) error {
 	case "off":
 	default:
 		return invalid("project sandbox", p.Sandbox)
+	}
+	return nil
+}
+
+// normEvents stores "", "on", or "off". "inherit" is empty.
+func normEvents(v *string) error {
+	switch strings.ToLower(strings.TrimSpace(*v)) {
+	case "", "inherit":
+		*v = ""
+	case "on", "true":
+		*v = "on"
+	case "off", "false":
+		*v = "off"
+	default:
+		return invalid("events", *v)
 	}
 	return nil
 }

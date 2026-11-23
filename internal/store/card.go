@@ -66,6 +66,7 @@ func (s *Store) CreateCard(ctx context.Context, c *model.Card) error {
 				return err
 			}
 		}
+		s.noteStatus(ctx, model.Card{}, *c)
 		return nil
 	})
 }
@@ -114,6 +115,7 @@ func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
 		return fmt.Errorf("card id changed")
 	}
 	return s.WithTx(ctx, func(ctx context.Context) error {
+		prev, prevErr := s.GetCard(ctx, c.ID)
 		requires, err := mustJSON(c.Requires)
 		if err != nil {
 			return err
@@ -142,6 +144,9 @@ func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
 			if err := s.insertClaim(ctx, &c.Claims[i]); err != nil {
 				return err
 			}
+		}
+		if prevErr == nil {
+			s.noteStatus(ctx, prev, *c)
 		}
 		return nil
 	})

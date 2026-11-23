@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 )
 
 func newFlagSet(name, purpose, params string, stdout, stderr io.Writer) *flag.FlagSet {
@@ -21,6 +22,58 @@ func newFlagSet(name, purpose, params string, stdout, stderr io.Writer) *flag.Fl
 		fs.SetOutput(stderr)
 	}
 	return fs
+}
+
+// hoistFlags lets a positional id sit before its flags, which is how
+// wait, card show, and objective show are written. Flag order is preserved,
+// and so is the order of the operands.
+func hoistFlags(fs *flag.FlagSet, args []string) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		name := flagToken(arg)
+		if name == "" {
+			pos = append(pos, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		if strings.Contains(arg, "=") {
+			continue
+		}
+		f := fs.Lookup(name)
+		if f == nil || boolFlag(f) {
+			continue
+		}
+		if i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, pos...)
+}
+
+func flagToken(arg string) string {
+	if arg == "-" || !strings.HasPrefix(arg, "-") {
+		return ""
+	}
+	name := strings.TrimLeft(arg, "-")
+	if name == "" {
+		return ""
+	}
+	if before, _, ok := strings.Cut(name, "="); ok {
+		name = before
+	}
+	return name
+}
+
+func boolFlag(f *flag.Flag) bool {
+	type booler interface{ IsBoolFlag() bool }
+	b, ok := f.Value.(booler)
+	return ok && b.IsBoolFlag()
 }
 
 func parseSet(fs *flag.FlagSet, args []string) (int, bool) {

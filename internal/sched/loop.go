@@ -702,6 +702,11 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err := db.CreateAttempt(ctx, &attempt); err != nil {
 		return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, rt, scratch)
 	}
+	// The workspace was chosen from the cards that exist now. Keep that choice
+	// on the attempt so a subject created later does not receive the verdict.
+	if err := r.pinReviewSubject(ctx, db, card, attempt.ID); err != nil {
+		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, rt, scratch)
+	}
 	card.Status = model.CardRunning
 	card.WaitReason = ""
 	if err := db.UpdateCard(ctx, &card); err != nil {
@@ -1288,6 +1293,18 @@ func (r *Runner) allow(ctx context.Context, db *store.Store, card *model.Card, o
 	if obj.Status != model.ObjectiveActive && obj.Status != model.ObjectiveDoneCandidate {
 		return false, nil
 	}
+	// An explicit subject that is not stored must be parked before the
+	// completion gate. A later paused dependency would otherwise leave the
+	// review ready with an empty wait reason.
+	if missing, err := missingReviewSubject(ctx, db, *card); err != nil || missing != "" {
+		if err != nil {
+			return false, err
+		}
+		if err := r.noteMissingReviewSubject(ctx, db, card, missing); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
 	if !executionDepsDone(ctx, db, *card) {
 		return false, nil
 	}
@@ -1409,7 +1426,7 @@ func canDispatch(card model.Card) bool {
 func executionDepsDone(ctx context.Context, db *store.Store, card model.Card) bool {
 	// Deps[0] is the subject, not a completion gate. An rv- review with no
 	// dependency names its subject by id; that lookup happens at dispatch.
-	// A review whose explicit subject is not stored is parked there.
+	// A missing explicit subject is parked in allow before this gate.
 	skip := ""
 	switch card.Kind {
 	case model.KindReview, model.KindRepair, model.KindRebase, model.KindNormalize:
@@ -1538,6 +1555,33 @@ type missingReviewSubjectError struct {
 
 func (e missingReviewSubjectError) Error() string {
 	return fmt.Sprintf("sched: review %s subject %s does not exist", e.card, e.subject)
+}
+
+// pinReviewSubject records the subject resolved for this attempt.
+// A non-review card is left unchanged. The record is what harvest writes back.
+func (r *Runner) pinReviewSubject(ctx context.Context, db *store.Store, card model.Card, attemptID string) error {
+	if card.Kind != model.KindReview {
+		return nil
+	}
+	subject, missing, err := resolvedReviewSubjectID(ctx, db, card)
+	if err != nil {
+		return err
+	}
+	if missing != "" {
+		return missingReviewSubjectError{card: card.ID, subject: missing}
+	}
+	raw, err := json.Marshal(model.PinnedReviewSubject{
+		Subject:    subject,
+		Standalone: subject == card.ID,
+	})
+	if err != nil {
+		return err
+	}
+	return db.AppendEvent(ctx, &model.Event{
+		Entity: "attempt:" + attemptID,
+		Type:   model.ReviewSubjectEvent,
+		Data:   raw,
+	})
 }
 
 // resolvedReviewSubjectID applies ReviewSubject. An rv- suffix that names no

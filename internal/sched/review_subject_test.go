@@ -2,10 +2,12 @@ package sched
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/store"
@@ -163,6 +165,212 @@ func TestMissingReviewDepParksOnce(t *testing.T) {
 	if n := countEvents(t, db, "", model.EventTickError); n != 0 {
 		t.Fatalf("tick_error count %d", n)
 	}
+}
+
+// Dispatch pins the subject that exists at launch. A card created afterwards
+// keeps its own status when the standalone review passes.
+func TestPinnedStandaloneSurvivesLaterSubject(t *testing.T) {
+	ctx := context.Background()
+	home, db, repo := newHome(t)
+	_, obj := seedRepo(t, db, repo, "true")
+	seedRoutes(t, db)
+	card := model.Card{
+		ID: "rv-future", Objective: obj, Kind: model.KindReview, Title: "standalone", Tier: model.TierT3,
+		Status: model.CardReady, Body: reviewPassScript,
+	}
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	r := New(home)
+	r.Launch = func(context.Context, string, string) (int, error) { return 77, nil }
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	attempt := reviewAttempt(t, db, "rv-future")
+	if rev(t, attempt.Worktree, "HEAD") != rev(t, repo, "main") {
+		t.Fatal("standalone review did not start from main")
+	}
+	if body, err := os.ReadFile(filepath.Join(attempt.Worktree, "unique.txt")); err == nil && strings.Contains(string(body), "candidate-not-on-main") {
+		t.Fatal("standalone review checked out a candidate branch")
+	}
+	pin := pinnedSubjectEvent(t, db, attempt.ID)
+	if !pin.Standalone || pin.Subject != "rv-future" {
+		t.Fatalf("pin %+v", pin)
+	}
+
+	branch(t, repo, obj, "future", "unique.txt", "candidate-not-on-main\n")
+	future := model.Card{
+		ID: "future", Objective: obj, Kind: model.KindDev, Title: "future", Tier: model.TierT2, Status: model.CardPaused,
+	}
+	if err := db.CreateCard(ctx, &future); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(attempt.Worktree, ".cardex-result.md"), []byte("## 复核结论\npass\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exit := 0
+	attempt.Exit = &exit
+	attempt.EndedAt = time.Now().UTC()
+	if err := db.UpdateAttempt(ctx, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetCard(ctx, "future")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.CardPaused {
+		t.Fatalf("future status %s, want paused", got.Status)
+	}
+	if n := countEvents(t, db, "card:future", "review_verdict"); n != 0 {
+		t.Fatalf("future review_verdict count %d", n)
+	}
+	review, err := db.GetCard(ctx, "rv-future")
+	if err != nil || review.Status != model.CardDone {
+		t.Fatalf("review %+v %v", review, err)
+	}
+	if n := countEvents(t, db, "card:rv-future", "review_verdict"); n != 1 {
+		t.Fatalf("review verdict count %d", n)
+	}
+}
+
+// A prefix review launched while the subject exists still reviews that card.
+func TestPinnedPrefixReviewsExistingSubject(t *testing.T) {
+	ctx := context.Background()
+	home, db, repo := newHome(t)
+	_, obj := seedRepo(t, db, repo, "true")
+	seedRoutes(t, db)
+	branch(t, repo, obj, "present", "unique.txt", "candidate-not-on-main\n")
+	for _, card := range []model.Card{
+		{ID: "present", Objective: obj, Kind: model.KindDev, Title: "present", Tier: model.TierT2, Status: model.CardPaused},
+		{ID: "rv-present", Objective: obj, Kind: model.KindReview, Title: "prefix", Tier: model.TierT3, Status: model.CardReady, Body: reviewPassScript},
+	} {
+		if err := db.CreateCard(ctx, &card); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := New(home)
+	r.Launch = func(context.Context, string, string) (int, error) { return 77, nil }
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	attempt := reviewAttempt(t, db, "rv-present")
+	if rev(t, attempt.Worktree, "HEAD") != rev(t, repo, "cardex/"+obj+"/c/present") {
+		t.Fatal("prefix review did not use the subject branch")
+	}
+	pin := pinnedSubjectEvent(t, db, attempt.ID)
+	if pin.Standalone || pin.Subject != "present" {
+		t.Fatalf("pin %+v", pin)
+	}
+	if err := os.WriteFile(filepath.Join(attempt.Worktree, ".cardex-result.md"), []byte("## 复核结论\npass\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exit := 0
+	attempt.Exit = &exit
+	attempt.EndedAt = time.Now().UTC()
+	if err := db.UpdateAttempt(ctx, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the queued subject from being merged in the same tick.
+	stored, err := db.GetObjective(ctx, obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Status = model.ObjectivePaused
+	if err := db.UpdateObjective(ctx, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetCard(ctx, "present")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.CardMergeQueued {
+		t.Fatalf("present status %s, want merge_queued", got.Status)
+	}
+	if n := countEvents(t, db, "card:present", "review_verdict"); n != 1 {
+		t.Fatalf("present review_verdict count %d", n)
+	}
+}
+
+// A missing first dependency is parked before a later dependency can hide it.
+func TestMissingFirstDepBeforeGate(t *testing.T) {
+	ctx := context.Background()
+	home, db, repo := newHome(t)
+	_, obj := seedRepo(t, db, repo, "true")
+	seedRoutes(t, db)
+	cards := []model.Card{
+		{ID: "gate", Objective: obj, Kind: model.KindDev, Title: "gate", Tier: model.TierT2, Status: model.CardPaused},
+		{ID: "dev", Objective: obj, Kind: model.KindDev, Title: "dev", Tier: model.TierT2, Status: model.CardPaused},
+		{ID: "rv-old", Objective: obj, Kind: model.KindReview, Title: "old", Tier: model.TierT3, Status: model.CardReady, Deps: []string{"bad", "gate"}, Body: reviewPassScript},
+		{ID: "rv-ok", Objective: obj, Kind: model.KindReview, Title: "ok", Tier: model.TierT3, Status: model.CardReady, Deps: []string{"dev", "gate"}, Body: reviewPassScript},
+	}
+	for i := range cards {
+		if err := db.CreateCard(ctx, &cards[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := New(home)
+	r.Launch = func(context.Context, string, string) (int, error) { return 77, nil }
+	for i := 0; i < 2; i++ {
+		if err := r.Tick(ctx); err != nil {
+			t.Fatalf("tick %d: %v", i, err)
+		}
+	}
+	old, err := db.GetCard(ctx, "rv-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Status != model.CardNeedsInput || !strings.Contains(old.WaitReason, "bad") || old.WaitReason == "" {
+		t.Fatalf("old status %s reason %q", old.Status, old.WaitReason)
+	}
+	if n := countEvents(t, db, "card:rv-old", "review_subject_missing"); n != 1 {
+		t.Fatalf("review_subject_missing count %d", n)
+	}
+	ok, err := db.GetCard(ctx, "rv-ok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok.Status != model.CardReady || ok.WaitReason != "" {
+		t.Fatalf("gated review status %s reason %q", ok.Status, ok.WaitReason)
+	}
+	if n := countEvents(t, db, "card:rv-ok", "review_subject_missing"); n != 0 {
+		t.Fatalf("valid review missing events %d", n)
+	}
+	attempts, err := db.ListAttempts(ctx, "rv-ok")
+	if err != nil || len(attempts) != 0 {
+		t.Fatalf("gated review attempts %+v %v", attempts, err)
+	}
+	if n := countEvents(t, db, "", model.EventTickError); n != 0 {
+		t.Fatalf("tick_error count %d", n)
+	}
+}
+
+func pinnedSubjectEvent(t *testing.T, db *store.Store, attemptID string) model.PinnedReviewSubject {
+	t.Helper()
+	events, err := db.ListEvents(context.Background(), "attempt:"+attemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found model.PinnedReviewSubject
+	n := 0
+	for _, event := range events {
+		if event.Type != model.ReviewSubjectEvent {
+			continue
+		}
+		n++
+		if err := json.Unmarshal(event.Data, &found); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n != 1 {
+		t.Fatalf("review_subject events %d", n)
+	}
+	return found
 }
 
 func reviewAttempt(t *testing.T, db *store.Store, id string) model.Attempt {

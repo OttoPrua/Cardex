@@ -248,7 +248,7 @@ func historyBefore(attempts []model.Attempt, cur model.Attempt) History {
 
 func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 	for _, other := range st.snap.cards {
-		if other.Kind == model.KindReview && !TerminalCard(other.Status) && (hasDep(other, card.ID) || reviewNames(other, card.ID)) {
+		if reviewCovers(st.snap, other, card.ID) {
 			// An open review (often a paused rv- card) already covers this card.
 			// Still move the card out of running: its attempt is disposed and no
 			// later tick will look at it again.
@@ -1000,7 +1000,7 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 	raw := readResult(attempt)
 	verdict, opinion, parsed := ReviewOf(raw)
 	stored := reviewOpinion(raw)
-	parent, foreign, standalone, missing, err := st.reviewParent(card)
+	parent, foreign, standalone, missing, err := st.reviewParent(card, attempt)
 	if err != nil {
 		return err
 	}
@@ -1427,10 +1427,80 @@ func reviewNames(review model.Card, subjectID string) bool {
 	return !explicit && id == subjectID && id != review.ID
 }
 
+// reviewCovers reports an open review that was launched against subjectID,
+// or an unlaunched rv- review whose prefix names it. A review pinned as
+// standalone does not cover a card created after that attempt.
+func reviewCovers(s *snap, review model.Card, subjectID string) bool {
+	if review.Kind != model.KindReview || subjectID == "" || TerminalCard(review.Status) {
+		return false
+	}
+	if hasDep(review, subjectID) {
+		return true
+	}
+	if subject, standalone, ok := latestPinnedReview(s, review.ID); ok {
+		return !standalone && subject == subjectID
+	}
+	return reviewNames(review, subjectID)
+}
+
+func latestPinnedReview(s *snap, reviewID string) (subject string, standalone, ok bool) {
+	if s == nil || reviewID == "" {
+		return "", false, false
+	}
+	attempts := append([]model.Attempt{}, s.attempts[reviewID]...)
+	sort.Slice(attempts, func(i, j int) bool {
+		if attempts[i].Index != attempts[j].Index {
+			return attempts[i].Index > attempts[j].Index
+		}
+		return attempts[i].ID > attempts[j].ID
+	})
+	if len(attempts) == 0 {
+		return "", false, false
+	}
+	return pinnedReviewSubject(s.events, attempts[0].ID)
+}
+
+func pinnedReviewSubject(events []model.Event, attemptID string) (subject string, standalone, ok bool) {
+	if attemptID == "" {
+		return "", false, false
+	}
+	entity := "attempt:" + attemptID
+	var found model.PinnedReviewSubject
+	seen := false
+	for _, event := range events {
+		if event.Entity != entity || event.Type != model.ReviewSubjectEvent {
+			continue
+		}
+		if json.Unmarshal(event.Data, &found) != nil {
+			continue
+		}
+		seen = true
+	}
+	if !seen {
+		return "", false, false
+	}
+	return found.Subject, found.Standalone, true
+}
+
 // reviewParent resolves the card a review verdict is written to.
-// standalone means the verdict stays on the review. missing is an explicit
-// dependency that is not stored; that id is never written.
-func (st *step) reviewParent(card model.Card) (parent model.Card, foreign, standalone bool, missing string, err error) {
+// A subject pinned on the attempt wins over the cards stored now.
+// standalone means the verdict stays on the review. missing is a subject
+// that is not stored; that id is never written.
+func (st *step) reviewParent(card model.Card, attempt model.Attempt) (parent model.Card, foreign, standalone bool, missing string, err error) {
+	if subject, alone, ok := pinnedReviewSubject(st.snap.events, attempt.ID); ok {
+		if alone || subject == "" || subject == card.ID {
+			return model.Card{}, false, true, "", nil
+		}
+		parent, foreign, ok = st.depCard(subject)
+		if ok {
+			return parent, foreign, false, "", nil
+		}
+		_, getErr := st.db.GetCard(st.ctx, subject)
+		if getErr != nil && !errors.Is(getErr, sql.ErrNoRows) {
+			return model.Card{}, false, false, "", getErr
+		}
+		return model.Card{}, false, false, subject, nil
+	}
 	id, explicit := model.ReviewSubject(card)
 	if !explicit && id == card.ID {
 		return model.Card{}, false, true, "", nil

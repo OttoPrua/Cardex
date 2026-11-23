@@ -84,6 +84,15 @@ func TestCardAddReviewSubjectHint(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("non-review missing dep should still add: %d %s", code, errb)
 	}
+
+	code, _, errb = callCLI(t, []string{"--home", home, "card", "add", "--id", "rv-probe", "--objective", "o", "--title", "probe", "--kind", "review", "--dep", "", "--dep", "missing"})
+	if code == 0 || !strings.Contains(errb, "missing") || !strings.Contains(errb, "does not exist") {
+		t.Fatalf("leading blank dep code %d stderr %q", code, errb)
+	}
+	list = mustHome(t, home, "card", "list", "--objective", "o")
+	if strings.Contains(list, "rv-probe") {
+		t.Fatalf("leading blank dep stored the card\n%s", list)
+	}
 }
 
 func keysOf(m map[string]any) []string {

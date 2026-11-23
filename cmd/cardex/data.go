@@ -465,31 +465,32 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 }
 
 // reviewAddCheck warns when an rv- review has no stored subject, and rejects
-// a --dep that names no stored card. It does not change the card record.
+// every non-empty --dep that names no stored card. A blank --dep does not hide
+// a later one. It does not change the card record.
 func reviewAddCheck(ctx context.Context, db *store.Store, card model.Card, stderr io.Writer) error {
 	if card.Kind != model.KindReview {
 		return nil
 	}
-	id, explicit := model.ReviewSubject(card)
-	if explicit {
-		for _, dep := range card.Deps {
-			dep = strings.TrimSpace(dep)
-			if dep == "" {
-				continue
-			}
-			if _, err := db.GetCard(ctx, dep); err != nil {
-				if errors.Is(err, sql.ErrNoRows) {
-					return fmt.Errorf("review dependency %s does not exist", dep)
-				}
-				return err
-			}
+	for _, dep := range card.Deps {
+		dep = strings.TrimSpace(dep)
+		if dep == "" {
+			continue
 		}
-		return nil
+		if _, err := db.GetCard(ctx, dep); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("review dependency %s does not exist", dep)
+			}
+			return err
+		}
 	}
-	if id == card.ID {
+	id, explicit := model.ReviewSubject(card)
+	if explicit || id == card.ID {
 		return nil
 	}
 	_, err := db.GetCard(ctx, id)
+	if err == nil {
+		return nil
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		fmt.Fprintf(stderr, "review %s: card %s does not exist; this review will be treated as a standalone review. Pass --dep to name the card under review.\n", card.ID, id)
 		return nil

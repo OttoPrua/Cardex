@@ -402,10 +402,12 @@ html[data-switching="1"] #board .board-view{display:block!important;position:abs
 .of-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .of-ct{flex:none;font:700 10.5px/1 var(--cx-font-mono);padding:3px 6px 2px;border-radius:5px;background:var(--of-chip);color:var(--of-chip-fg)}
 .of-desc{margin-top:3px;font:600 12px/16px var(--cx-font-body);color:var(--cx-of-desc);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.of-flap{position:absolute;left:0;right:0;top:calc(var(--of-crease) - 1px);height:var(--of-flap-h);z-index:2;transform-origin:50% 0;transform-style:preserve-3d;transform:perspective(2400px) rotateX(var(--of-angle,0deg))}
+.of-flap{position:absolute;left:0;right:0;top:calc(var(--of-crease) - 1px);height:var(--of-flap-h);z-index:2;transform-origin:50% 0}
 .of-face{position:absolute;inset:0;backface-visibility:hidden;-webkit-backface-visibility:hidden;border:1px solid var(--of-edge)}
 .of-face.in{border-top:0;border-radius:0 0 var(--cx-of-radius) var(--cx-of-radius);background:var(--of-in);box-shadow:0 var(--cx-of-lip) 0 var(--of-lip)}
-.of-face.out{transform:rotateX(180deg);border-radius:var(--cx-of-radius) var(--cx-of-radius) 0 0;border-bottom:0;background:var(--of-out)}
+.of-face.out{display:none;transform:rotateX(180deg);border-radius:var(--cx-of-radius) var(--cx-of-radius) 0 0;border-bottom:0;background:var(--of-out)}
+html[data-open="1"] .of-flap,.of.is-flipping .of-flap{transform-style:preserve-3d;transform:perspective(2400px) rotateX(var(--of-angle,180deg))}
+html[data-open="1"] .of-face.out,.of.is-flipping .of-face.out{display:block}
 .of-cards{position:absolute;inset:0;z-index:3}
 html[data-open="1"] .of{--of-angle:180deg}
 html[data-open="1"] .of-flap, .of.is-closing .of-flap{z-index:4}
@@ -483,8 +485,28 @@ a.ic-title:hover{text-decoration:underline}
     var inset = dark ? "0 1px 0 rgba(255,255,255,.03) inset, " : "0 1px 0 rgba(22,22,26,.06), ";
     return inset + "0 " + y.toFixed(1) + "px " + blur.toFixed(1) + "px -6px rgba(" + (dark ? "0,0,0" : "22,22,26") + "," + alpha.toFixed(3) + ")";
   }
+  function dropAnim(a) {
+    try { a.cancel(); } catch (e) {}
+    try { a.effect = null; } catch (e) {}
+  }
+  function releaseMotion(board) {
+    var pending = window.cardexAnims || [];
+    window.cardexAnims = [];
+    pending.forEach(dropAnim);
+    if (!board) return;
+    board.querySelectorAll(".board-view, .of, .of-tab, .of-shadow, .icard3").forEach(function (el) {
+      if (el.getAnimations) el.getAnimations().forEach(dropAnim);
+      el.style.position = ""; el.style.left = ""; el.style.top = ""; el.style.width = ""; el.style.margin = "";
+      el.style.transform = ""; el.style.opacity = ""; el.style.zIndex = ""; el.style.boxShadow = "";
+    });
+    board.style.height = "";
+    delete document.documentElement.dataset.switching;
+    void board.offsetWidth;
+  }
   function commit(next) {
     var root = document.documentElement;
+    var board = document.getElementById("board");
+    releaseMotion(board);
     root.dataset.view = next;
     delete root.dataset.switching;
     delete root.dataset.open;
@@ -496,33 +518,20 @@ a.ic-title:hover{text-decoration:underline}
       var on = (a.getAttribute("href") || "").indexOf("view=" + next) >= 0;
       a.setAttribute("aria-pressed", on ? "true" : "false");
     });
-    var board = document.getElementById("board");
-    if (board) {
-      board.style.height = "";
-      board.querySelectorAll(".of").forEach(function (el) {
-        el.style.position = ""; el.style.left = ""; el.style.top = ""; el.style.width = "";
-        el.style.transform = ""; el.style.opacity = ""; el.style.zIndex = "";
-        var sh = el.querySelector(".of-shadow");
-        if (sh) sh.style.boxShadow = "";
-        el.querySelectorAll(".icard3").forEach(function (c) { c.style.opacity = ""; c.style.transform = ""; });
-      });
-    }
     if (window.cardexArmRefresh) window.cardexArmRefresh();
   }
   var switchGen = 0;
   function switchView(next, link) {
     var root = document.documentElement;
+    var board = document.getElementById("board");
+    var wasSwitching = root.dataset.switching === "1";
+    releaseMotion(board);
     var cur = root.dataset.view === "project" ? "project" : "status";
-    if (next === cur && !root.dataset.switching) return;
+    if (next === cur) { if (wasSwitching) commit(next); return; }
     var gen = ++switchGen;
-    if (window.cardexAnims) {
-      window.cardexAnims.forEach(function (a) { try { a.finish(); } catch (e) {} });
-    }
-    window.cardexAnims = [];
     if (link) {
       link.animate([{transform:"scale(1)"},{transform:"scale(.965)",offset:.45},{transform:"scale(1)"}], {duration:120, easing:"ease-out"});
     }
-    var board = document.getElementById("board");
     if (!board || reduced()) {
       root.dataset.switching = "1";
       if (board && reduced()) {
@@ -558,6 +567,7 @@ a.ic-title:hover{text-decoration:underline}
     var oldR = measure(oldPanel);
     var oldH = board.offsetHeight;
     root.dataset.view = next;
+    void board.offsetWidth;
     var newPanel = board.querySelector('[data-panel="' + next + '"]');
     var newR = measure(newPanel);
     var h = Math.max(oldH, newPanel.offsetHeight);
@@ -650,14 +660,24 @@ a.ic-title:hover{text-decoration:underline}
       switchView(m[1], a);
     });
   });
+  function boardShown() {
+    var board = document.getElementById("board");
+    var pane = document.getElementById("pane-detail");
+    if (!board || !pane) return false;
+    if (getComputedStyle(pane).display === "none") return false;
+    if (!board.offsetParent) return false;
+    return true;
+  }
+  var openStarted = false;
   function playOpen() {
     var root = document.documentElement;
-    if (root.dataset.open !== "1") return;
+    if (openStarted || root.dataset.open !== "1") return;
     var board = document.getElementById("board");
     if (!board) { delete root.dataset.open; return; }
+    if (!boardShown()) return;
+    openStarted = true;
     try { sessionStorage.setItem("cardex.folderOpen", "1"); } catch (e) {}
     var ease = weightEase();
-    var folders = board.querySelectorAll('.board-view:not([style*="display"]) .of, .board-view .of');
     var visible = [];
     board.querySelectorAll(".board-view").forEach(function (panel) {
       if (getComputedStyle(panel).display === "none") return;
@@ -665,6 +685,7 @@ a.ic-title:hover{text-decoration:underline}
     });
     visible.forEach(function (folder) {
       folder.classList.add("is-closing");
+      folder.classList.add("is-flipping");
       folder.animate([
         {"--of-angle":"180deg", offset:0},
         {"--of-angle":"168deg", offset:70/720},
@@ -686,6 +707,7 @@ a.ic-title:hover{text-decoration:underline}
       delete root.dataset.open;
       visible.forEach(function (folder) {
         folder.classList.remove("is-closing");
+        folder.classList.remove("is-flipping");
         folder.getAnimations().forEach(function (a) { try { a.cancel(); } catch (e) {} });
         folder.querySelectorAll(".icard3").forEach(function (card) {
           card.getAnimations().forEach(function (a) { try { a.cancel(); } catch (e) {} });
@@ -694,7 +716,10 @@ a.ic-title:hover{text-decoration:underline}
       });
     }, 760);
   }
-  playOpen();
+  document.querySelectorAll("input.tab").forEach(function (r) {
+    r.addEventListener("change", function () { requestAnimationFrame(playOpen); });
+  });
+  requestAnimationFrame(playOpen);
 })();
 </script>
 </body>
@@ -705,9 +730,20 @@ a.ic-title:hover{text-decoration:underline}
 <section id="current-work">
 <h1>当前工作</h1>
 <p class="sub">在并行跑什么、每个目标走到哪一步、还有多远，以及哪些事在等你。</p>
-<input class="tab" type="radio" name="tab" id="tab-overview" checked>
+<input class="tab" type="radio" name="tab" id="tab-overview"{{if not .ViewChosen}} checked{{end}}>
 <input class="tab" type="radio" name="tab" id="tab-input">
-<input class="tab" type="radio" name="tab" id="tab-detail">
+<input class="tab" type="radio" name="tab" id="tab-detail"{{if .ViewChosen}} checked{{end}}>
+<script>
+(function () {
+  try {
+    var saved = localStorage.getItem("cardex.tab");
+    var h = location.hash.replace("#", "");
+    if (h === "overview" || h === "input" || h === "detail") saved = "tab-" + h;
+    var el = saved && document.getElementById(saved);
+    if (el) el.checked = true;
+  } catch (e) {}
+})();
+</script>
 <div class="tabs" role="tablist">
 <label for="tab-overview">总览</label>
 <label for="tab-input">待你处理<span class="n{{if .Inbox}} warn{{end}}">{{len .Inbox}}</span></label>

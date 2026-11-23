@@ -107,6 +107,8 @@ func serveCurrent(w http.ResponseWriter, r *http.Request, asJSON bool) {
 	}
 	viewName := boardView(r)
 	view.BoardView = viewName
+	q := r.URL.Query().Get("view")
+	view.ViewChosen = q == "status" || q == "project"
 	render(w, pageData{Title: "当前工作", View: viewName, Current: view})
 }
 

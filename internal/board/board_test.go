@@ -375,6 +375,19 @@ func TestBoardViewAndFolders(t *testing.T) {
 	if !strings.Contains(plain, `data-view="status"`) {
 		t.Fatal("missing view query did not render status")
 	}
+	if !strings.Contains(body, `id="tab-detail" checked`) || strings.Contains(body, `id="tab-overview" checked`) {
+		t.Fatal("explicit project view did not open the detail pane")
+	}
+	statusPage := do(t, http.MethodGet, "/?view=status").Body.String()
+	if !strings.Contains(statusPage, `data-view="status"`) || !strings.Contains(statusPage, `id="tab-detail" checked`) || strings.Contains(statusPage, `id="tab-overview" checked`) {
+		t.Fatal("explicit status view did not open the detail pane")
+	}
+	if strings.Contains(plain, `id="tab-detail" checked`) || !strings.Contains(plain, `id="tab-overview" checked`) {
+		t.Fatal("page without a view query should stay on the overview")
+	}
+	if strings.Contains(bogus, `id="tab-detail" checked`) {
+		t.Fatal("illegal view query opened the detail pane")
+	}
 	assertContains(t, plain,
 		`href="?view=status"`, `href="?view=project"`,
 		`class="cx-nav"`, `class="cx-seg"`,
@@ -472,6 +485,101 @@ func TestBoardViewAndFolders(t *testing.T) {
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("view requests mutated the store")
 	}
+}
+
+func TestReviewFolderSeparateFromStats(t *testing.T) {
+	if statusGroup["reviewing"] != "running" || groupOf("reviewing") != "running" {
+		t.Fatal("statusGroup changed; reviewing must still count as running")
+	}
+	if folderGroup("reviewing") != "review" {
+		t.Fatalf("folder group %s", folderGroup("reviewing"))
+	}
+	t.Chdir(t.TempDir())
+	db, home := openHome(t)
+	ctx := context.Background()
+	must(t, db.CreateProject(ctx, &model.Project{ID: "p1", RepoPath: home}))
+	must(t, db.CreateObjective(ctx, &model.Objective{
+		ID: "o-live", Project: "p1", Title: "退款流程",
+		Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+	}))
+	must(t, db.CreateCard(ctx, &model.Card{
+		ID: "c-review", Objective: "o-live", Title: "退款流程状态机", Kind: model.KindDev, Status: model.CardReviewing,
+	}))
+	must(t, db.CreateCard(ctx, &model.Card{
+		ID: "c-run", Objective: "o-live", Title: "支付回调幂等改造", Kind: model.KindDev, Status: model.CardRunning,
+	}))
+
+	body := do(t, http.MethodGet, "/?view=status").Body.String()
+	review := folderSection(t, body, "review")
+	if !strings.Contains(review, "g-review") || !strings.Contains(review, "复核") || !strings.Contains(review, "交叉评审中") || !strings.Contains(review, "退款流程状态机") {
+		t.Fatalf("review folder missing copy: %s", review)
+	}
+	running := folderSection(t, body, "running")
+	if strings.Contains(running, "退款流程状态机") || strings.Contains(running, "c-review") {
+		t.Fatal("reviewing card was filed in the running folder")
+	}
+
+	view := decode[currentView](t, do(t, http.MethodGet, "/api/work"))
+	var runningCount int
+	for _, g := range view.Groups {
+		if g.Group == "review" {
+			t.Fatal("stats gained a review group")
+		}
+		if g.Group == "running" {
+			runningCount = g.Count
+		}
+	}
+	if runningCount != 2 {
+		t.Fatalf("running stat count %d, want 2 (running + reviewing)", runningCount)
+	}
+}
+
+func TestMotionRestoresBeforeMeasure(t *testing.T) {
+	t.Chdir(t.TempDir())
+	_, _ = openHome(t)
+	body := do(t, http.MethodGet, "/").Body.String()
+	if strings.Contains(body, ".finish()") {
+		t.Fatal("view switch finishes animations and keeps their fill")
+	}
+	if !strings.Contains(body, ".of-face.out{display:none;") {
+		t.Fatal("outer face is painted while the folder is resting")
+	}
+	swAt := strings.Index(body, "function switchView")
+	measureAt := strings.Index(body, "function measure")
+	releaseAt := strings.Index(body, "function releaseMotion")
+	if swAt < 0 || measureAt < 0 || releaseAt < 0 || releaseAt > swAt {
+		t.Fatal("missing motion helpers")
+	}
+	sw := body[swAt:measureAt]
+	if !strings.Contains(sw, "releaseMotion") {
+		t.Fatal("switchView does not release the previous motion before measuring")
+	}
+	dropAt := strings.Index(body, "function dropAnim")
+	if dropAt < 0 || dropAt > releaseAt || !strings.Contains(body[dropAt:swAt], ".cancel()") {
+		t.Fatal("releaseMotion does not cancel animations")
+	}
+	playAt := strings.Index(body, "function playOpen")
+	play := body[playAt:]
+	shown := strings.Index(play, "boardShown()")
+	marker := strings.Index(play, `sessionStorage.setItem("cardex.folderOpen"`)
+	if shown < 0 || marker < 0 || shown > marker {
+		t.Fatal("open marker is written before the folders are visible")
+	}
+}
+
+func folderSection(t *testing.T, body, group string) string {
+	t.Helper()
+	needle := `data-group="` + group + `"`
+	i := strings.Index(body, needle)
+	if i < 0 {
+		t.Fatalf("missing folder %s", group)
+	}
+	start := strings.LastIndex(body[:i], "<section")
+	endRel := strings.Index(body[i:], "</section>")
+	if start < 0 || endRel < 0 {
+		t.Fatalf("unclosed folder %s", group)
+	}
+	return body[start : i+endRel]
 }
 
 func TestPaperForSkipsNeighbour(t *testing.T) {

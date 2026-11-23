@@ -47,6 +47,10 @@ type currentView struct {
 	ProjectFolders []folderColumn `json:"-"`
 	// BoardView is status or project, from ?view=. Empty means status.
 	BoardView string `json:"-"`
+	// ViewChosen is true when the request named ?view=status or ?view=project.
+	// Those links are the no-JS view switch, so the response opens the board
+	// pane instead of the overview.
+	ViewChosen bool `json:"-"`
 	// Inbox is PendingQuestions minus ones the scheduler no longer delivers
 	// (canceled card, or a no-output question on a card that finished since).
 	Inbox  []questionBrief `json:"inbox"`
@@ -495,15 +499,12 @@ func buildBoardFolders(objectives []objectiveView) (status []folderColumn, proje
 	buckets := map[string][]cardRow{}
 	for _, o := range objectives {
 		for _, c := range o.Cards {
-			g := c.Group
-			if g == "" {
-				g = groupOf(c.Status)
-			}
+			g := folderGroup(c.Status)
 			buckets[g] = append(buckets[g], c)
 		}
 	}
 	status = []folderColumn{}
-	for _, g := range groupOrder {
+	for _, g := range folderOrder {
 		cards := buckets[g]
 		if len(cards) == 0 {
 			continue

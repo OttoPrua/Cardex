@@ -124,6 +124,10 @@ var statusGroup = map[string]string{
 
 var groupOrder = []string{"running", "queued", "input", "merging", "failed", "done", "paused"}
 
+// folderOrder is the board column order: 排队 → 在做 → 复核 → 合入, then the
+// remaining display folders. It is not the stats row; groupOrder stays put.
+var folderOrder = []string{"queued", "running", "review", "merging", "done", "input", "failed", "paused"}
+
 var groupText = map[string]string{
 	"queued": "排队", "running": "执行中", "merging": "合并中", "input": "待你处理",
 	"done": "完成", "paused": "暂停或取消", "failed": "失败",
@@ -139,6 +143,16 @@ func groupOf(status string) string {
 		return g
 	}
 	return "queued"
+}
+
+// folderGroup is the open-folder column for a card. Reviewing has its own
+// folder. statusGroup is unchanged, so the stats row still counts reviewing
+// as running.
+func folderGroup(status string) string {
+	if status == "reviewing" {
+		return "review"
+	}
+	return groupOf(status)
 }
 
 // statusTab is the index-tab class and English caption for a card status.
@@ -158,12 +172,12 @@ var statusTab = map[string]struct{ class, text string }{
 	"canceled":     {"s-canceled", "VOID"},
 }
 
-// groupClass is the open-folder colour class for a status group.
-// done shares the merge paper; reviewing stays inside running because
-// statusGroup is unchanged.
+// groupClass is the open-folder colour class. done shares the merge paper.
+// review is a display folder only; statusGroup still maps reviewing to running.
 var groupClass = map[string]string{
 	"queued":  "g-queued",
 	"running": "g-running",
+	"review":  "g-review",
 	"merging": "g-merge",
 	"input":   "g-input",
 	"done":    "g-merge",
@@ -175,6 +189,7 @@ var groupClass = map[string]string{
 var folderLabel = map[string]string{
 	"queued":  "排队",
 	"running": "在做",
+	"review":  "复核",
 	"merging": "合入",
 	"input":   "待你拍板",
 	"done":    "完成",

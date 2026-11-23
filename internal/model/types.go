@@ -150,6 +150,29 @@ type RouteReason struct {
 	Candidates []RouteCandidate    `json:"candidates"` // 候选列表。
 	Filtered   []FilteredCandidate `json:"filtered"`   // 被过滤的候选和原因。
 	Scores     []RouteScore        `json:"scores"`     // 最终分数。
+	Dispatch   *RouteDispatch      `json:"dispatch,omitempty"`
+}
+
+// RouteDispatch snapshots the runner and constraints before fallback updates a card's pin.
+type RouteDispatch struct {
+	Runner     RunnerName `json:"runner"`
+	Channel    string     `json:"expected_channel,omitempty"`
+	Model      string     `json:"expected_model,omitempty"`
+	Tier       Tier       `json:"expected_tier,omitempty"`
+	ActualTier Tier       `json:"actual_tier,omitempty"`
+}
+
+// SelectedTier returns the stored tier of the selected route, when known.
+func (r RouteReason) SelectedTier(selected Route) Tier {
+	if r.Dispatch != nil && r.Dispatch.Tier != TierNone {
+		return r.Dispatch.ActualTier
+	}
+	for _, cand := range r.Candidates {
+		if cand.Channel == selected.Channel && cand.Model == selected.Model && cand.Tier.Rank() > 0 {
+			return cand.Tier
+		}
+	}
+	return TierNone
 }
 
 // Usage is token consumption with where the number came from.

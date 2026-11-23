@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/loop"
@@ -186,104 +185,84 @@ func (r *Runner) writeRouteDropped(ctx context.Context, db *store.Store, cardID 
 	})
 }
 
-// chooseHeldReviewRoute keeps the rework review's tier and model pin.
-// A route that would drop the pin or land below that tier becomes needs_input.
+// chooseHeldReviewRoute enforces the original constraints before invoking the ordinary selector.
 func (r *Runner) chooseHeldReviewRoute(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas, classified model.Tier) (model.Route, model.RouteReason, pinRelease, bool, error) {
-	tier, channel, modelName, _ := loop.ReviewHold(card)
-	if card.Tier.Rank() > 0 && card.Tier.Rank() < tier.Rank() {
-		reason := fmt.Sprintf("review hold unmet: card tier %s is below %s", card.Tier, tier)
-		if err := r.settleNoChannel(ctx, db, card, obj, reason); err != nil {
-			return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
-		}
-		return model.Route{}, model.RouteReason{}, pinRelease{}, true, nil
+	floor, originalChannel, originalModel, _ := loop.ReviewHold(card)
+	probe := card
+	if probe.Tier.Rank() < floor.Rank() {
+		probe.Tier = floor
 	}
-	if !loop.ReviewFloorMet(channels, pos, card.Channel, card.Model, tier) {
-		if err := r.settleHeldReview(ctx, db, card, obj, tier, channel, modelName); err != nil {
-			return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
-		}
-		return model.Route{}, model.RouteReason{}, pinRelease{}, true, nil
+	if probe.Channel == "" && probe.Model == "" && originalChannel == "" && originalModel == "" {
+		probe.Channel, probe.Model = obj.Channel, obj.Model
 	}
+	if (originalChannel != "" && probe.Channel != "" && probe.Channel != originalChannel) ||
+		(originalModel != "" && probe.Model != "" && probe.Model != originalModel) {
+		err := r.settleHeldReview(ctx, db, card, obj, floor, originalChannel, originalModel, "card pin conflicts with the original review")
+		return model.Route{}, model.RouteReason{}, pinRelease{}, err == nil, err
+	}
+	if originalChannel != "" {
+		probe.Channel = originalChannel
+	}
+	if originalModel != "" {
+		probe.Model = originalModel
+	}
+
 	routed := channels
-	if strings.TrimSpace(card.Model) == "" && strings.TrimSpace(card.Channel) != "" {
-		narrowed, ok := narrowHeldChannelModels(channels, pos, card.Channel, tier)
-		if !ok {
-			if err := r.settleHeldReview(ctx, db, card, obj, tier, channel, modelName); err != nil {
+	if probe.Channel != "" || probe.Model != "" {
+		routed = nil
+		for _, ch := range channels {
+			if probe.Channel != "" && ch.ID != probe.Channel {
+				continue
+			}
+			var eligible []string
+			for _, name := range ch.Models {
+				if (probe.Model == "" || probe.Model == name) &&
+					loop.ReviewFloorMet([]model.Channel{ch}, pos, ch.ID, name, probe.Tier) {
+					eligible = append(eligible, name)
+				}
+			}
+			if len(eligible) == 0 || (ch.Concurrency > 0 && inUse[ch.ID] >= ch.Concurrency) {
+				continue
+			}
+			blocked, err := quotaBlocked(ctx, quotas, ch.ID, r.now())
+			if err != nil {
 				return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
 			}
-			return model.Route{}, model.RouteReason{}, pinRelease{}, true, nil
-		}
-		routed = narrowed
-	}
-	rt, reason, err := chooseRoute(ctx, launchRequest(card, obj, routed, pos, inUse, quotas, classified, r.now()))
-	if err == nil && (heldRouteBelow(reason, rt, tier) || !loop.ReviewFloorMet(channels, pos, rt.Channel, rt.Model, tier)) {
-		err = fmt.Errorf("routed below review hold %s", tier)
-	}
-	if err == nil {
-		return rt, reason, pinRelease{}, false, nil
-	}
-	if ctx.Err() != nil {
-		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
-	}
-	if !errors.Is(err, route.ErrNoCandidate) && !errors.Is(err, route.ErrPinnedUnavailable) && !strings.Contains(err.Error(), "review hold") {
-		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
-	}
-	text := fmt.Sprintf("review hold unmet: tier %s channel %s model %s: %v", tier, channel, modelName, err)
-	if err := r.settleNoChannel(ctx, db, card, obj, text); err != nil {
-		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
-	}
-	return model.Route{}, model.RouteReason{}, pinRelease{}, true, nil
-}
-
-func (r *Runner) settleHeldReview(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, tier model.Tier, channel, modelName string) error {
-	text := fmt.Sprintf("review hold unmet: tier %s channel %s model %s is not available without lowering the tier", tier, channel, modelName)
-	return r.settleNoChannel(ctx, db, card, obj, text)
-}
-
-// narrowHeldChannelModels keeps only models on the pinned channel that meet floor.
-// The returned slice is a copy. ok is false when none of that channel's models meet it.
-func narrowHeldChannelModels(channels []model.Channel, rows []model.Positioning, channel string, floor model.Tier) ([]model.Channel, bool) {
-	out := make([]model.Channel, len(channels))
-	copy(out, channels)
-	for i := range out {
-		if out[i].ID != channel {
-			continue
-		}
-		var keep []string
-		for _, name := range out[i].Models {
-			if loop.ReviewFloorMet([]model.Channel{out[i]}, rows, out[i].ID, name, floor) {
-				keep = append(keep, name)
+			if !blocked {
+				ch.Models = eligible
+				routed = append(routed, ch)
 			}
 		}
-		if len(keep) == 0 {
-			return nil, false
-		}
-		out[i].Models = keep
-		return out, true
 	}
-	return nil, false
+
+	req := launchRequest(probe, obj, routed, pos, inUse, quotas, classified, r.now())
+	req.Objective.Channel, req.Objective.Model = "", ""
+	rt, reason, err := chooseRoute(ctx, req)
+	if errors.Is(err, route.ErrNoCandidate) && probe.Tier == model.TierT1 {
+		// The ordinary selector borrows one tier. A held review can also use T3.
+		req.Card.Tier = model.TierT3
+		rt, reason, err = chooseRoute(ctx, req)
+	}
+	if err == nil && reason.SelectedTier(rt).Rank() >= probe.Tier.Rank() &&
+		(probe.Channel == "" || rt.Channel == probe.Channel) &&
+		(probe.Model == "" || rt.Model == probe.Model) &&
+		loop.ReviewFloorMet(routed, pos, rt.Channel, rt.Model, probe.Tier) {
+		return rt, reason, pinRelease{}, false, nil
+	}
+	if err != nil && !errors.Is(err, route.ErrNoCandidate) && !errors.Is(err, route.ErrPinnedUnavailable) {
+		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
+	}
+	detail := "no available channel/model meets the retained tier and pins"
+	if err == nil {
+		detail = "selected route does not meet the retained tier and pins"
+	}
+	err = r.settleHeldReview(ctx, db, card, obj, probe.Tier, probe.Channel, probe.Model, detail)
+	return model.Route{}, model.RouteReason{}, pinRelease{}, err == nil, err
 }
 
-func heldRouteBelow(reason model.RouteReason, rt model.Route, floor model.Tier) bool {
-	if floor.Rank() == 0 {
-		return false
-	}
-	saw := false
-	for _, cand := range reason.Candidates {
-		if rt.Channel != "" && cand.Channel != "" && cand.Channel != rt.Channel {
-			continue
-		}
-		if rt.Model != "" && cand.Model != "" && cand.Model != rt.Model {
-			continue
-		}
-		if cand.Tier.Rank() == 0 {
-			continue
-		}
-		saw = true
-		if cand.Tier.Rank() >= floor.Rank() {
-			return false
-		}
-	}
-	return saw
+func (r *Runner) settleHeldReview(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, tier model.Tier, channel, modelName, reason string) error {
+	text := fmt.Sprintf("review hold unmet: tier %s channel %q model %q: %s", tier, channel, modelName, reason)
+	return r.settleNoChannel(ctx, db, card, obj, text)
 }
 
 // chooseLaunchRoute selects the attempt route.

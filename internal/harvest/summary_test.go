@@ -31,9 +31,9 @@ func TestCompareBaselineCategories(t *testing.T) {
 		"--- FAIL: TestStay",
 		"ctx TestStay line 1",
 		"FAIL",
-	}, "\n"))
+	}, "\n"), 1)
 	base := parsedTests{ok: true, names: []string{"TestGone", "TestStay"}, context: map[string]string{}}
-	got := compareParsed(current, 1, base, 1, true)
+	got := compareParsed(current, base, 1, true)
 	if got.Status != "compared" || got.Exit == nil || *got.Exit != 1 {
 		t.Fatalf("baseline %+v", got)
 	}
@@ -51,11 +51,11 @@ func TestCompareBaselineCategories(t *testing.T) {
 		t.Fatalf("still %+v", got.Still)
 	}
 
-	unparsed := compareParsed(parseGoTestOutput("boom no markers\n"), 2, base, 7, true)
+	unparsed := compareParsed(parseGoTestOutput("boom no markers\n", 2), base, 7, true)
 	if unparsed.Status != "unparsed" || unparsed.Exit == nil || *unparsed.Exit != 7 || unparsed.New != nil || unparsed.Gone != nil || unparsed.Still != nil {
 		t.Fatalf("unparsed %+v", unparsed)
 	}
-	missed := compareParsed(current, 1, parsedTests{}, 0, false)
+	missed := compareParsed(current, parsedTests{}, 0, false)
 	if missed.Status != "unparsed" || missed.Exit != nil || missed.New != nil {
 		t.Fatalf("not ran %+v", missed)
 	}
@@ -67,6 +67,34 @@ func TestGoTestCommand(t *testing.T) {
 	}
 	if isGoTest("echo go test") || isGoTest("go fmt") || isGoTest("gofmt") {
 		t.Fatal("not go test")
+	}
+}
+
+func TestGoTestBaselineKeepsPackageAndSubtestIdentity(t *testing.T) {
+	current := parseGoTestOutput("--- FAIL: TestShared (0.00s)\n    --- FAIL: TestShared/sub (0.00s)\n        retry_test.go:1: first\nFAIL\texample/a\t0.01s\nFAIL\n", 1)
+	base := parseGoTestOutput("--- FAIL: TestShared (0.00s)\nFAIL\texample/b\t0.01s\nFAIL\n", 1)
+	got := compareParsed(current, base, 1, true)
+	if got.Status != "compared" || len(got.New) != 2 || len(got.Gone) != 1 ||
+		got.New[1].Name != "example/a/TestShared/sub" || got.Gone[0] != "example/b/TestShared" ||
+		!strings.Contains(got.New[1].Context, "retry_test.go:1: first") {
+		t.Fatalf("comparison: %+v", got)
+	}
+	broken := parseGoTestOutput("--- FAIL: TestShared (0.00s)\nFAIL\texample/a\t0.01s\nFAIL\texample/b [build failed]\nFAIL\n", 1)
+	if got := compareParsed(broken, base, 1, true); got.Status != "unparsed" || len(got.New)+len(got.Gone)+len(got.Still) != 0 {
+		t.Fatalf("partial comparison for a build failure: %+v", got)
+	}
+
+	jsonOutput := `{"Action":"output","Package":"example/a","Test":"TestShared/sub","Output":"first failure\n"}
+{"Action":"fail","Package":"example/a","Test":"TestShared/sub"}
+{"Action":"output","Package":"example/a","Test":"TestShared/sub","Output":"later failure\n"}
+{"Action":"fail","Package":"example/a","Test":"TestShared/sub"}
+{"Action":"fail","Package":"example/a"}`
+	parsed := parseGoTestOutput(jsonOutput, 1)
+	if !parsed.ok || len(parsed.names) != 1 || parsed.context["example/a/TestShared/sub"] != "first failure" {
+		t.Fatalf("JSON failures: %+v", parsed)
+	}
+	if parseGoTestOutput(jsonOutput+"\n"+`{"Action":"build-fail","ImportPath":"example/b"}`, 1).ok {
+		t.Fatal("JSON build failure produced a partial comparison")
 	}
 }
 
@@ -86,8 +114,8 @@ func TestRouteMatch(t *testing.T) {
 		t.Fatal("tier below hold matched")
 	}
 	in.Attempt.RouteReason.Candidates = nil
-	if !routeMatches(in, "cha", "model-a") {
-		t.Fatal("missing tier info should stay matched")
+	if routeMatches(in, "cha", "model-a") {
+		t.Fatal("missing tier info cannot establish a match")
 	}
 }
 
@@ -117,16 +145,30 @@ func TestParseReviewSummary(t *testing.T) {
 	}
 }
 
+func TestParseReviewSummaryMarkdown(t *testing.T) {
+	got := parseReviewSummary("## 复核结论\r\n**rework**\r\n## 问题\r\n" +
+		"1. **[P1]** `internal/文件.go:12` 关闭会漏写。这里是另一句。\r\n" +
+		"- **P2** `C:\\project dir\\file.go:7` Record the fallback.\r\n" +
+		"- 需要确认 P0 与 P1 定义\r\n## 补测试\r\n- Verify cancellation flushes the buffer\r\n" +
+		"## 测试结果\r\n- go test passed\r\n")
+	if got.Verdict != "rework" || len(got.P0) != 0 || len(got.P1) != 1 || len(got.P2) != 1 ||
+		got.P1[0] != (ReviewIssue{Text: "关闭会漏写。", File: "internal/文件.go", Line: 12}) ||
+		got.P2[0].File != `C:\project dir\file.go` || len(got.Tests) != 1 || got.Tests[0] != "Verify cancellation flushes the buffer" {
+		t.Fatalf("review: %+v", got)
+	}
+}
+
 func TestHarvestWritesSummaryAndBaseline(t *testing.T) {
 	useFakeGo(t)
 	dir, base, head := twoCommitRepo(t)
 	home := t.TempDir()
+	t.Setenv("KIMI_CODE_HOME", t.TempDir())
 	res, err := Harvest(context.Background(), Input{
 		Attempt: model.Attempt{
 			ID: "att", Card: "c", Worktree: dir, BaseCommit: base,
 			Route: model.Route{Channel: "cha", Model: "model-a"},
 		},
-		Card:            model.Card{ID: "c", Kind: model.KindDev, Acceptance: []string{"go test ."}},
+		Card:            model.Card{ID: "c", Kind: model.KindDev, Acceptance: []string{"false", "go test ."}},
 		Exit:            1,
 		Home:            home,
 		Repo:            dir,
@@ -150,10 +192,11 @@ func TestHarvestWritesSummaryAndBaseline(t *testing.T) {
 	if len(sum.Files) != 1 || sum.Files[0].Path != "fails.txt" || sum.Files[0].Added != 1 || sum.Files[0].Deleted != 1 {
 		t.Fatalf("files %+v", sum.Files)
 	}
-	if len(sum.Acceptance) != 1 || sum.Acceptance[0].Command != "go test ." || sum.Acceptance[0].Exit != 1 || sum.Acceptance[0].DurationMS <= 0 {
+	if len(sum.Acceptance) != 2 || sum.Acceptance[0].Command != "false" || sum.Acceptance[0].Exit != 1 ||
+		sum.Acceptance[1].Command != "go test ." || sum.Acceptance[1].Exit != 1 || sum.Acceptance[1].DurationMS <= 0 {
 		t.Fatalf("acceptance %+v", sum.Acceptance)
 	}
-	bl := sum.Acceptance[0].Baseline
+	bl := sum.Acceptance[1].Baseline
 	if bl == nil || bl.Status != "compared" || bl.Exit == nil || *bl.Exit != 1 {
 		t.Fatalf("baseline %+v", bl)
 	}
@@ -358,6 +401,10 @@ import (
 func main() {
 	if len(os.Args) < 2 || os.Args[1] != "test" {
 		fmt.Fprintln(os.Stderr, "not test")
+		os.Exit(2)
+	}
+	if os.Getenv("KIMI_CODE_HOME") != "" {
+		fmt.Fprintln(os.Stderr, "inherited service environment")
 		os.Exit(2)
 	}
 	time.Sleep(30 * time.Millisecond)

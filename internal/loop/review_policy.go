@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -182,6 +183,9 @@ func AppendReviewHold(body string, tier model.Tier, channel, modelName string) s
 // ReviewHold reads the floor written by AppendReviewHold.
 // ok is false when the card has no floor.
 func ReviewHold(card model.Card) (tier model.Tier, channel, modelName string, ok bool) {
+	if card.Kind != "" && card.Kind != model.KindReview {
+		return "", "", "", false
+	}
 	idx := strings.Index(card.Body, ReviewHoldMarker)
 	if idx < 0 {
 		return "", "", "", false
@@ -223,6 +227,13 @@ func ReviewHold(card model.Card) (tier model.Tier, channel, modelName string, ok
 }
 
 func raiseReviewFloor(plan reviewPlan, prior model.Card) reviewPlan {
+	if plan.Mode == model.ReviewOff {
+		plan.Mode = model.ReviewFull
+		if prior.Review == string(model.ReviewCheck) {
+			plan.Mode = model.ReviewCheck
+		}
+		plan.Why = "rework keeps review"
+	}
 	if prior.Review == string(model.ReviewFull) && plan.Mode == model.ReviewCheck {
 		plan.Mode = model.ReviewFull
 		if plan.Why == "completion check" {
@@ -295,6 +306,9 @@ func modelMeetsFloor(rows []model.Positioning, ch model.Channel, name string, fl
 			continue
 		}
 		saw = true
+		if len(row.Kinds) != 0 && !slices.Contains(row.Kinds, model.KindReview) {
+			continue
+		}
 		for _, tier := range row.Tiers {
 			if tier.Rank() >= floor.Rank() {
 				return true

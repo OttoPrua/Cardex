@@ -123,4 +123,20 @@ func TestHeldReviewRouteDoesNotLowerModel(t *testing.T) {
 			t.Fatalf("route %+v asked %v err %v", rt, asked, err)
 		}
 	})
+
+	t.Run("old marker restores a missing model pin", func(t *testing.T) {
+		card := model.Card{
+			ID: "rv-marker", Objective: obj.ID, Kind: model.KindReview, Tier: model.TierT3,
+			Status: model.CardReady, Channel: "cha",
+			Body: loop.AppendReviewHold("held", model.TierT3, "cha", "low"),
+		}
+		if err := db.CreateCard(ctx, &card); err != nil {
+			t.Fatal(err)
+		}
+		rt, _, _, asked, err := r.resolveLaunchRoute(ctx, db, card, obj, channels, pos, nil, nil, model.TierT3)
+		if err != nil || !asked || rt.Model != "" {
+			t.Fatalf("route %+v asked %v err %v", rt, asked, err)
+		}
+		assertOneQuestion(t, ctx, db, obj.ID, card.ID, "review hold unmet")
+	})
 }

@@ -152,30 +152,19 @@ func runAcceptance(ctx context.Context, dir string, commands []string) (acceptSt
 	var all strings.Builder
 	var log bytes.Buffer
 	var runs []commandRun
+	state := acceptOK
 	for _, command := range cmds {
-		cmd := proc.Shell(actx, command)
-		cmd.Dir = dir
-		cmd.Env = os.Environ()
-		proc.NewGroup(cmd)
-		cmd.WaitDelay = time.Second
-		cmd.Cancel = func() error {
-			if cmd.Process == nil {
-				return nil
-			}
-			return host.SignalGroup(cmd.Process.Pid, syscall.SIGKILL)
-		}
-		start := time.Now()
-		out, err := cmd.CombinedOutput()
-		elapsed := time.Since(start)
-		code := exitCode(err)
-		runs = append(runs, commandRun{Command: command, Exit: code, Duration: elapsed, Output: append([]byte(nil), out...)})
+		run, err := runAcceptanceCommand(actx, dir, command)
+		runs = append(runs, run)
 		// A later header starts on its own line. The separator is not part of the raw output.
 		if log.Len() > 0 && log.Bytes()[log.Len()-1] != '\n' {
 			log.WriteByte('\n')
 		}
-		fmt.Fprintf(&log, "command=%s exit=%d duration=%s\n", strconv.Quote(command), code, elapsed)
-		log.Write(out)
-		all.Write(out)
+		fmt.Fprintf(&log, "command=%s exit=%d duration=%s\n", strconv.Quote(command), run.Exit, run.Duration)
+		log.Write(run.Output)
+		if state == acceptOK || err != nil {
+			all.Write(run.Output)
+		}
 		if err == nil {
 			continue
 		}
@@ -187,11 +176,29 @@ func runAcceptance(ctx context.Context, dir string, commands []string) (acceptSt
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return acceptFailed, tail(all.String()), log.Bytes(), runs, nil
+			state = acceptFailed
+			continue
 		}
 		return acceptOK, "", nil, runs, err
 	}
-	return acceptOK, tail(all.String()), log.Bytes(), runs, nil
+	return state, tail(all.String()), log.Bytes(), runs, nil
+}
+
+func runAcceptanceCommand(ctx context.Context, dir, command string) (commandRun, error) {
+	cmd := proc.Shell(ctx, command)
+	cmd.Dir = dir
+	cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
+	proc.NewGroup(cmd)
+	cmd.WaitDelay = time.Second
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return host.SignalGroup(cmd.Process.Pid, syscall.SIGKILL)
+	}
+	start := time.Now()
+	out, err := cmd.CombinedOutput()
+	return commandRun{Command: command, Exit: exitCode(err), Duration: time.Since(start), Output: out}, err
 }
 
 func exitCode(err error) int {

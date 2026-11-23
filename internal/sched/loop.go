@@ -267,6 +267,9 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 				excerpt = "host lost"
 			}
 			res := harvest.Result{Outcome: model.OutcomeNoOutput, Excerpt: excerpt}
+			if err := harvest.WriteUnavailableSummary(ctx, r.harvestInput(ctx, db, card, attempt, 1, nil)); err != nil {
+				_ = noteEvidenceWriteFailed(ctx, db, attempt.ID, err)
+			}
 			if err := r.deliver(ctx, db, &card, &attempt, res); err != nil {
 				if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
 					return err
@@ -321,6 +324,11 @@ func (r *Runner) harvestInput(ctx context.Context, db *store.Store, card model.C
 		ErrorClass: attempt.ErrorClass,
 		Repo:       attempt.Worktree,
 		Home:       r.Home,
+	}
+	if d := attempt.RouteReason.Dispatch; d != nil {
+		in.Runner = string(d.Runner)
+		in.ExpectedChannel, in.ExpectedModel, in.ExpectedTier = d.Channel, d.Model, string(d.Tier)
+		return in
 	}
 	if attempt.Route.Channel != "" {
 		if ch, err := db.GetChannel(ctx, attempt.Route.Channel); err == nil {
@@ -622,6 +630,20 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if settled {
 		return "", nil
 	}
+	d := dispatchExpectation(card, obj, classified)
+	if ch, ok := channelByID(channels, rt.Channel); ok {
+		d.Runner = ch.Runner
+	}
+	if d.Tier != model.TierNone {
+		selected := reason.SelectedTier(rt)
+		for _, tier := range []model.Tier{model.TierT3, model.TierT2, model.TierT1} {
+			if tier.Rank() <= selected.Rank() && loop.ReviewFloorMet(channels, pos, rt.Channel, rt.Model, tier) {
+				d.ActualTier = tier
+				break
+			}
+		}
+	}
+	reason.Dispatch = &d
 	// A script-less fake exits before it can write a design result, and §5
 	// then opens a question. Injected Launch stubs still start.
 	if r.holdFakeDesign(ctx, db, card, rt, channels) {
@@ -732,6 +754,31 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		inUse[rt.Channel]++
 	}
 	return rt.Channel, nil
+}
+
+func dispatchExpectation(card model.Card, obj model.Objective, classified model.Tier) model.RouteDispatch {
+	d := model.RouteDispatch{Channel: card.Channel, Model: card.Model}
+	if d.Channel == "" && d.Model == "" {
+		d.Channel, d.Model = obj.Channel, obj.Model
+	}
+	if card.Kind == model.KindReview {
+		d.Tier = card.Tier
+		if d.Tier == model.TierNone {
+			d.Tier = classified
+		}
+		if d.Tier == model.TierNone {
+			d.Tier = model.DefaultTier(card.Kind)
+		}
+		if tier, channel, name, ok := loop.ReviewHold(card); ok {
+			if tier.Rank() > d.Tier.Rank() {
+				d.Tier = tier
+			}
+			if channel != "" || name != "" {
+				d.Channel, d.Model = channel, name
+			}
+		}
+	}
+	return d
 }
 
 func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, attempt *model.Attempt) (string, error) {

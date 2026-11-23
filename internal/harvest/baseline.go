@@ -8,21 +8,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
-
-	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 type baselineCache struct {
-	Exit   int      `json:"exit"`
-	Parsed bool     `json:"parsed"`
-	Names  []string `json:"names"`
+	Version int      `json:"version"`
+	Exit    int      `json:"exit"`
+	Parsed  bool     `json:"parsed"`
+	Names   []string `json:"names"`
 }
 
 func compareBaseline(ctx context.Context, home, repo, base string, run commandRun) *TestBaseline {
-	current := parseGoTestOutput(string(run.Output))
+	current := parseGoTestOutput(string(run.Output), run.Exit)
 	parsed, exit, ran := loadOrRunBaseline(ctx, home, repo, base, run.Command)
-	return compareParsed(current, run.Exit, parsed, exit, ran)
+	return compareParsed(current, parsed, exit, ran)
 }
 
 func loadOrRunBaseline(ctx context.Context, home, repo, base, command string) (parsedTests, int, bool) {
@@ -37,8 +35,10 @@ func loadOrRunBaseline(ctx context.Context, home, repo, base, command string) (p
 	if !ran {
 		return parsedTests{}, 0, false
 	}
-	parsed := parseGoTestOutput(string(output))
-	_ = writeBaselineCache(home, base, command, baselineCache{Exit: exit, Parsed: parsed.ok, Names: append([]string(nil), parsed.names...)})
+	parsed := parseGoTestOutput(string(output), exit)
+	if parsed.ok {
+		_ = writeBaselineCache(home, base, command, baselineCache{Version: 1, Exit: exit, Parsed: true, Names: parsed.names})
+	}
 	return parsed, exit, true
 }
 
@@ -60,7 +60,7 @@ func readBaselineCache(home, base, command string) (baselineCache, bool) {
 		return baselineCache{}, false
 	}
 	var cache baselineCache
-	if json.Unmarshal(body, &cache) != nil {
+	if json.Unmarshal(body, &cache) != nil || cache.Version != 1 || !cache.Parsed {
 		return baselineCache{}, false
 	}
 	return cache, true
@@ -103,14 +103,11 @@ func runAtBase(ctx context.Context, home, repo, base, command string) (int, []by
 		_, _ = gitExec(context.Background(), repo, "worktree", "remove", "--force", wt)
 		_ = os.RemoveAll(wt)
 	}()
-	if _, err := gitExec(ctx, repo, "worktree", "add", "--detach", wt, base); err != nil {
+	if _, err := gitExec(ctx, repo, "-c", "core.hooksPath="+os.DevNull, "worktree", "add", "--detach", wt, base); err != nil {
 		return 0, nil, false
 	}
-	cctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	cctx, cancel := context.WithTimeout(ctx, defaultAcceptanceTimeout)
 	defer cancel()
-	cmd := proc.Shell(cctx, command)
-	cmd.Dir = wt
-	cmd.Env = os.Environ()
-	out, err := cmd.CombinedOutput()
-	return exitCode(err), out, true
+	run, _ := runAcceptanceCommand(cctx, wt, command)
+	return run.Exit, run.Output, true
 }

@@ -94,6 +94,37 @@ func TestReworkReviewKeepsTier(t *testing.T) {
 		}
 	})
 
+	t.Run("borrowed tier and inherited model survive rework", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		ch := f.channel("borrowed", "fam", "model-a")
+		f.position("model-a", "fam", model.TierT2)
+		dev := f.card(model.Card{ID: "dev", Status: model.CardHarvesting, Tier: model.TierT2})
+		prior := f.card(model.Card{
+			ID: "rev", Kind: model.KindReview, Tier: model.TierT1, Status: model.CardDone,
+			Deps: []string{dev.ID},
+		})
+		reviewAttempt := f.attempt(prior, 0, model.OutcomePassed, ch.ID, "")
+		reviewAttempt.Route.Model = "model-a"
+		reviewAttempt.RouteReason.Dispatch = &model.RouteDispatch{Model: "model-a", Tier: model.TierT1, ActualTier: model.TierT2}
+		reviewAttempt.RouteReason.Candidates = []model.RouteCandidate{{Channel: ch.ID, Model: "model-a", Tier: model.TierT2}}
+		if err := f.db.UpdateAttempt(f.ctx, &reviewAttempt); err != nil {
+			t.Fatal(err)
+		}
+		if err := markDevDisposed(f.ctx, f.db, reviewAttempt, reviewAttempt.Outcome); err != nil {
+			t.Fatal(err)
+		}
+		att := f.attempt(dev, 1, model.OutcomePassed, ch.ID, "")
+		att.Worktree, att.BaseCommit, att.HeadCommit = holdRepo(t)
+		if err := f.db.UpdateAttempt(f.ctx, &att); err != nil {
+			t.Fatal(err)
+		}
+		f.step()
+		fresh := readyReview(t, f, dev.ID)
+		if fresh.Tier != model.TierT2 || fresh.Model != "model-a" {
+			t.Fatalf("review %+v", fresh)
+		}
+	})
+
 	t.Run("first review of a small diff stays T1", func(t *testing.T) {
 		f := newFx(t, model.ModeManual)
 		ch := f.channel("ch-a", "author")

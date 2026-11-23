@@ -24,12 +24,13 @@ type ReviewSummary struct {
 }
 
 var (
-	issueRE = regexp.MustCompile(`(?i)\bP([012])\b`)
-	locRE   = regexp.MustCompile(`([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+):(\d+)`)
-	testRE  = regexp.MustCompile(`(?i)^补测试\s*[:：]\s*(.+)$`)
+	issueRE = regexp.MustCompile(`(?i)^(?:[0-9]+[.)]\s+)?[*_\x60\[（(]*P([012])\b`)
+	locRE   = regexp.MustCompile(`(?:\x60([^\x60]+):(\d+)\x60|((?:[A-Za-z]:)?[\pL\pN_./\\-]+):(\d+))`)
+	testRE  = regexp.MustCompile(`(?i)^(?:补测试|要求补的测试|required tests)\s*[:：]\s*(.+)$`)
 )
 
 func parseReviewSummary(raw string) ReviewSummary {
+	raw = strings.ReplaceAll(strings.TrimPrefix(raw, "\uFEFF"), "\r\n", "\n")
 	out := ReviewSummary{P0: []ReviewIssue{}, P1: []ReviewIssue{}, P2: []ReviewIssue{}, Tests: []string{}}
 	sections := splitSections(raw)
 	var reviewBody string
@@ -37,7 +38,8 @@ func parseReviewSummary(raw string) ReviewSummary {
 		if section.name == "复核结论" {
 			reviewBody = section.body
 		}
-		if strings.Contains(section.name, "测试") || section.name == "tests" {
+		switch section.name {
+		case "测试", "补测试", "要求补的测试", "需要补的测试", "tests", "requiredtests":
 			out.Tests = append(out.Tests, testLines(section.body)...)
 		}
 	}
@@ -48,10 +50,7 @@ func parseReviewSummary(raw string) ReviewSummary {
 	if verdict, ok := reviewVerdict(verdictBody); ok {
 		out.Verdict = verdict
 	}
-	if reviewBody == "" {
-		reviewBody = raw
-	}
-	for _, line := range strings.Split(reviewBody, "\n") {
+	for _, line := range strings.Split(raw, "\n") {
 		issue, ok := issueFromLine(line)
 		if !ok {
 			if item, ok := inlineTest(line); ok {
@@ -78,25 +77,30 @@ type foundIssue struct {
 }
 
 func issueFromLine(line string) (foundIssue, bool) {
+	line = strings.TrimLeft(line, "-+*# \t")
 	match := issueRE.FindStringSubmatchIndex(line)
 	if match == nil {
 		return foundIssue{}, false
 	}
 	sev := line[match[2]:match[3]]
-	rest := strings.TrimSpace(line[match[1]:])
-	rest = strings.TrimLeft(rest, ":：-]) ")
+	rest := strings.TrimLeft(line[match[1]:], "`*_])）")
+	rest = strings.TrimLeft(rest, " \t：:-")
 	item := ReviewIssue{Text: strings.TrimSpace(rest)}
 	if loc := locRE.FindStringSubmatchIndex(rest); loc != nil {
-		item.File = rest[loc[2]:loc[3]]
-		item.Line, _ = strconv.Atoi(rest[loc[4]:loc[5]])
+		i := 2
+		if loc[i] == -1 {
+			i = 6
+		}
+		item.File = rest[loc[i]:loc[i+1]]
+		item.Line, _ = strconv.Atoi(rest[loc[i+2]:loc[i+3]])
 		text := strings.TrimSpace(rest[:loc[0]] + " " + rest[loc[1]:])
-		text = strings.Trim(text, " :：-")
+		text = strings.Trim(text, " :：-`")
 		item.Text = strings.Join(strings.Fields(text), " ")
 	}
-	if item.Text == "" {
-		item.Text = strings.TrimSpace(rest)
+	if first, _, found := strings.Cut(item.Text, "。"); found {
+		item.Text = first + "。"
 	}
-	return foundIssue{sev: sev, item: item}, item.Text != "" || item.File != ""
+	return foundIssue{sev: sev, item: item}, item.Text != "" && item.File != "" && item.Line > 0
 }
 
 func testLines(body string) []string {
@@ -109,9 +113,6 @@ func testLines(body string) []string {
 		}
 		if item, ok := inlineTest(line); ok {
 			out = append(out, item)
-			continue
-		}
-		if strings.Contains(line, " ") && !strings.HasPrefix(line, "Test") {
 			continue
 		}
 		out = append(out, line)

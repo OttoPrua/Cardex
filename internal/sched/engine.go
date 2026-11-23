@@ -170,7 +170,13 @@ func (r *Runner) disposeOpenDesign(ctx context.Context, db *store.Store, objecti
 	if err != nil {
 		return err
 	}
-	return r.deliver(ctx, db, &hitCard, hit, res)
+	if err := r.deliver(ctx, db, &hitCard, hit, res); err != nil {
+		return err
+	}
+	if res.EvidenceErr != nil {
+		_ = noteEvidenceWriteFailed(ctx, db, hit.ID, res.EvidenceErr)
+	}
+	return nil
 }
 
 // namesAttempt reports whether msg contains id as its own token. A longer id

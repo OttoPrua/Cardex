@@ -1,7 +1,7 @@
 package harvest
 
 import (
-	"bytes"
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 // FileChange is one path changed between the attempt's base and its worktree.
@@ -43,6 +44,7 @@ type Summary struct {
 	Runner     string             `json:"runner"`
 	Channel    string             `json:"channel"`
 	Model      string             `json:"model"`
+	Tier       model.Tier         `json:"tier,omitempty"`
 	Expected   ExpectedRun        `json:"expected"`
 	Match      bool               `json:"match"`
 	BaseCommit string             `json:"base_commit"`
@@ -84,6 +86,9 @@ func FormatSummary(sum Summary) string {
 	fmt.Fprintf(&b, "runner %s\n", sum.Runner)
 	fmt.Fprintf(&b, "channel %s\n", sum.Channel)
 	fmt.Fprintf(&b, "model %s\n", sum.Model)
+	if sum.Tier != model.TierNone {
+		fmt.Fprintf(&b, "tier %s\n", sum.Tier)
+	}
 	fmt.Fprintf(&b, "expected channel %s model %s tier %s\n", sum.Expected.Channel, sum.Expected.Model, sum.Expected.Tier)
 	fmt.Fprintf(&b, "match %t\n", sum.Match)
 	fmt.Fprintf(&b, "base %s\n", sum.BaseCommit)
@@ -103,9 +108,11 @@ func FormatSummary(sum Summary) string {
 			fmt.Fprintf(&b, " exit=%d", *cmd.Baseline.Exit)
 		}
 		b.WriteByte('\n')
-		writeFailures(&b, "new", cmd.Baseline.New)
-		writeNames(&b, "gone", cmd.Baseline.Gone)
-		writeNames(&b, "still", cmd.Baseline.Still)
+		if cmd.Baseline.Status == "compared" {
+			writeFailures(&b, "new", cmd.Baseline.New)
+			writeNames(&b, "gone", cmd.Baseline.Gone)
+			writeNames(&b, "still", cmd.Baseline.Still)
+		}
 	}
 	if sum.Review != nil {
 		fmt.Fprintf(&b, "review %s\n", sum.Review.Verdict)
@@ -116,7 +123,9 @@ func FormatSummary(sum Summary) string {
 		for _, name := range sum.Review.Tests {
 			fmt.Fprintf(&b, "  %s\n", name)
 		}
-		fmt.Fprintf(&b, "source %s\n", sum.Review.Source)
+		if sum.Review.Source != "" {
+			fmt.Fprintf(&b, "source %s\n", sum.Review.Source)
+		}
 	}
 	return b.String()
 }
@@ -149,12 +158,16 @@ func writeIssues(b *strings.Builder, label string, items []ReviewIssue) {
 }
 
 func buildSummary(ctx context.Context, in Input, dir, base string, runs []commandRun, raw string, haveResult bool) Summary {
-	head, _ := gitOut(ctx, dir, "rev-parse", "HEAD")
+	head := strings.TrimSpace(in.Attempt.HeadCommit)
+	if head == "" && dir != "" {
+		head, _ = gitOut(ctx, dir, "rev-parse", "HEAD")
+	}
 	sum := Summary{
 		AttemptID:  strings.TrimSpace(in.Attempt.ID),
 		Runner:     strings.TrimSpace(in.Runner),
 		Channel:    strings.TrimSpace(in.Attempt.Route.Channel),
 		Model:      strings.TrimSpace(in.Attempt.Route.Model),
+		Tier:       in.Attempt.RouteReason.SelectedTier(in.Attempt.Route),
 		Expected:   ExpectedRun{Channel: strings.TrimSpace(in.ExpectedChannel), Model: strings.TrimSpace(in.ExpectedModel), Tier: strings.TrimSpace(in.ExpectedTier)},
 		BaseCommit: base,
 		HeadCommit: head,
@@ -172,12 +185,19 @@ func buildSummary(ctx context.Context, in Input, dir, base string, runs []comman
 		review := parseReviewSummary(raw)
 		if haveResult && safeAttemptID(sum.AttemptID) {
 			review.Source = "attempts/" + sum.AttemptID + "/result.md"
-		} else {
+		} else if haveResult {
 			review.Source = ".cardex-result.md"
 		}
 		sum.Review = &review
 	}
 	return sum
+}
+
+// WriteUnavailableSummary records an ended attempt whose checkout could not be harvested.
+func WriteUnavailableSummary(ctx context.Context, in Input) error {
+	sum := buildSummary(ctx, in, "", in.Attempt.BaseCommit, nil, "", false)
+	sum.Match = false
+	return writeSummary(in.Home, in.Attempt.ID, sum)
 }
 
 func routeMatches(in Input, channel, modelName string) bool {
@@ -191,23 +211,7 @@ func routeMatches(in Input, channel, modelName string) bool {
 	if want.Rank() == 0 {
 		return true
 	}
-	saw := false
-	for _, cand := range in.Attempt.RouteReason.Candidates {
-		if channel != "" && cand.Channel != "" && cand.Channel != channel {
-			continue
-		}
-		if modelName != "" && cand.Model != "" && cand.Model != modelName {
-			continue
-		}
-		if cand.Tier.Rank() == 0 {
-			continue
-		}
-		saw = true
-		if cand.Tier.Rank() >= want.Rank() {
-			return true
-		}
-	}
-	return !saw
+	return in.Attempt.RouteReason.SelectedTier(model.Route{Channel: channel, Model: modelName}).Rank() >= want.Rank()
 }
 
 func acceptanceResults(ctx context.Context, in Input, dir, base string, runs []commandRun) []AcceptanceResult {
@@ -230,19 +234,19 @@ func diffFiles(ctx context.Context, dir, base string) []FileChange {
 	if strings.TrimSpace(base) == "" || strings.TrimSpace(dir) == "" {
 		return []FileChange{}
 	}
-	text, err := gitOut(ctx, dir, "diff", "--numstat", "--no-renames", base)
+	text, err := gitExec(ctx, dir, "diff", "--numstat", "-z", "--no-renames", base, "--")
 	if err != nil {
 		return []FileChange{}
 	}
 	var files []FileChange
 	seen := map[string]bool{}
-	for _, line := range strings.Split(text, "\n") {
+	for _, line := range strings.Split(string(text), "\x00") {
 		parts := strings.SplitN(line, "\t", 3)
 		if len(parts) != 3 {
 			continue
 		}
-		path := strings.Trim(parts[2], `"`)
-		if path == "" || seen[path] {
+		path := parts[2]
+		if path == "" || path == ".cardex-result.md" || seen[path] {
 			continue
 		}
 		seen[path] = true
@@ -255,11 +259,10 @@ func diffFiles(ctx context.Context, dir, base string) []FileChange {
 		}
 		files = append(files, item)
 	}
-	others, err := gitOut(ctx, dir, "ls-files", "--others", "--exclude-standard")
+	others, err := gitExec(ctx, dir, "ls-files", "-z", "--others", "--exclude-standard")
 	if err == nil {
-		for _, path := range strings.Split(others, "\n") {
-			path = strings.TrimSpace(path)
-			if path == "" || seen[path] {
+		for _, path := range strings.Split(string(others), "\x00") {
+			if path == "" || path == ".cardex-result.md" || seen[path] {
 				continue
 			}
 			seen[path] = true
@@ -274,24 +277,43 @@ func diffFiles(ctx context.Context, dir, base string) []FileChange {
 
 func untrackedChange(dir, path string) FileChange {
 	item := FileChange{Path: path}
-	body, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(path)))
+	path = filepath.Join(dir, filepath.FromSlash(path))
+	info, err := os.Lstat(path)
 	if err != nil {
 		return item
 	}
-	probe := body
-	if len(probe) > 8192 {
-		probe = probe[:8192]
+	if info.Mode()&os.ModeSymlink != 0 {
+		item.Added = 1
+		return item
 	}
-	if bytes.IndexByte(probe, 0) >= 0 {
+	if !info.Mode().IsRegular() {
+		return item
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return item
+	}
+	defer file.Close()
+	reader := bufio.NewReaderSize(file, 8192)
+	probe, _ := reader.Peek(8192)
+	if strings.IndexByte(string(probe), 0) >= 0 {
 		item.Binary = true
 		return item
 	}
-	if len(body) == 0 {
-		return item
-	}
-	item.Added = bytes.Count(body, []byte("\n"))
-	if body[len(body)-1] != '\n' {
-		item.Added++
+	pending := false
+	for {
+		line, err := reader.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			pending = true
+			continue
+		}
+		if len(line) > 0 || pending {
+			item.Added++
+		}
+		if err != nil {
+			break
+		}
+		pending = false
 	}
 	return item
 }
@@ -320,6 +342,6 @@ func safeAttemptID(id string) bool {
 // gitExec is gitOut's body, split so tests can see the command shape stays portable.
 func gitExec(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
 	return cmd.Output()
 }

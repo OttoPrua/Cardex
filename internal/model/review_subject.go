@@ -6,7 +6,8 @@ import "strings"
 // Harvest uses it so a card created later cannot receive the verdict.
 const ReviewSubjectEvent = "review_subject"
 
-// PinnedReviewSubject is the subject fixed for one review attempt.
+// PinnedReviewSubject is the subject fixed when the attempt's worktree was
+// chosen. Harvest must use this value and not resolve the subject again.
 // Standalone means the verdict stays on the review card.
 type PinnedReviewSubject struct {
 	Subject    string `json:"subject"`

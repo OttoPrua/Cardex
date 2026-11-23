@@ -11,6 +11,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 func TestReviewSubjectResolution(t *testing.T) {
@@ -37,9 +38,9 @@ func TestReviewSubjectResolution(t *testing.T) {
 	if err := db.CreateCard(ctx, &orphan); err != nil {
 		t.Fatal(err)
 	}
-	card, objID, cont, ro, err := r.workspaceTarget(ctx, db, orphan, "o")
-	if err != nil || card != "rv-gone" || objID != "o" || !cont || !ro {
-		t.Fatalf("orphan review target %s %s %v %v %v", card, objID, cont, ro, err)
+	card, objID, cont, ro, pin, err := r.workspaceTarget(ctx, db, orphan, "o")
+	if err != nil || card != "rv-gone" || objID != "o" || !cont || !ro || !pin.Standalone || pin.Subject != "rv-gone" {
+		t.Fatalf("orphan review target %s %s %v %v %+v %v", card, objID, cont, ro, pin, err)
 	}
 	a := model.Attempt{ID: "a-orphan", Card: "rv-gone", Index: 0, BaseCommit: "from-review"}
 	if err := db.CreateAttempt(ctx, &a); err != nil {
@@ -50,19 +51,19 @@ func TestReviewSubjectResolution(t *testing.T) {
 	}
 
 	linked := model.Card{ID: "rv-dev", Objective: "o", Kind: model.KindReview, Title: "prefix", Tier: model.TierT3, Status: model.CardReady}
-	card, objID, _, _, err = r.workspaceTarget(ctx, db, linked, "o")
-	if err != nil || card != "dev" || objID != "o" {
-		t.Fatalf("prefix review target %s %s %v", card, objID, err)
+	card, objID, _, _, pin, err = r.workspaceTarget(ctx, db, linked, "o")
+	if err != nil || card != "dev" || objID != "o" || pin.Standalone || pin.Subject != "dev" {
+		t.Fatalf("prefix review target %s %s %+v %v", card, objID, pin, err)
 	}
 
 	explicit := model.Card{ID: "rv-dev", Objective: "o", Kind: model.KindReview, Title: "dep", Tier: model.TierT3, Deps: []string{"other"}, Status: model.CardReady}
-	card, _, _, _, err = r.workspaceTarget(ctx, db, explicit, "o")
-	if err != nil || card != "other" {
-		t.Fatalf("dep review target %s %v", card, err)
+	card, _, _, _, pin, err = r.workspaceTarget(ctx, db, explicit, "o")
+	if err != nil || card != "other" || pin.Standalone || pin.Subject != "other" {
+		t.Fatalf("dep review target %s %+v %v", card, pin, err)
 	}
 
 	missing := model.Card{ID: "rv-dev", Objective: "o", Kind: model.KindReview, Title: "bad", Tier: model.TierT3, Deps: []string{"nope"}, Status: model.CardReady}
-	_, _, _, _, err = r.workspaceTarget(ctx, db, missing, "o")
+	_, _, _, _, _, err = r.workspaceTarget(ctx, db, missing, "o")
 	if err == nil || strings.Contains(err.Error(), "no rows") || !strings.Contains(err.Error(), "nope") {
 		t.Fatalf("missing dep error %v", err)
 	}
@@ -347,6 +348,247 @@ func TestMissingFirstDepBeforeGate(t *testing.T) {
 	}
 	if n := countEvents(t, db, "", model.EventTickError); n != 0 {
 		t.Fatalf("tick_error count %d", n)
+	}
+}
+
+// A prefix review of a dev card stays ready until that card has a branch,
+// then checks out the branch and pins the dev card.
+func TestPrefixDevWaitsForCandidateBranch(t *testing.T) {
+	ctx := context.Background()
+	home, db, repo := newHome(t)
+	_, obj := seedRepo(t, db, repo, "true")
+	seedRoutes(t, db)
+	cards := []model.Card{
+		{ID: "bare", Objective: obj, Kind: model.KindDev, Title: "bare", Tier: model.TierT2, Status: model.CardPaused},
+		{ID: "rv-bare", Objective: obj, Kind: model.KindReview, Title: "prefix", Tier: model.TierT3, Status: model.CardReady, Body: reviewPassScript},
+	}
+	for i := range cards {
+		if err := db.CreateCard(ctx, &cards[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := New(home)
+	r.Launch = func(context.Context, string, string) (int, error) { return 77, nil }
+	for i := 0; i < 2; i++ {
+		if err := r.Tick(ctx); err != nil {
+			t.Fatalf("tick %d: %v", i, err)
+		}
+	}
+	if attempts, err := db.ListAttempts(ctx, "rv-bare"); err != nil || len(attempts) != 0 {
+		t.Fatalf("prefix attempts before branch %+v %v", attempts, err)
+	}
+	got, err := db.GetCard(ctx, "rv-bare")
+	if err != nil || got.Status != model.CardReady || got.WaitReason != "" {
+		t.Fatalf("prefix status %s reason %q %v", got.Status, got.WaitReason, err)
+	}
+	if n := countEvents(t, db, "", model.EventTickError); n != 0 {
+		t.Fatalf("tick_error count %d", n)
+	}
+
+	branch(t, repo, obj, "bare", "unique.txt", "candidate-not-on-main\n")
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	attempt := reviewAttempt(t, db, "rv-bare")
+	if rev(t, attempt.Worktree, "HEAD") != rev(t, repo, "cardex/"+obj+"/c/bare") {
+		t.Fatal("prefix review did not wait for the candidate branch")
+	}
+	pin := pinnedSubjectEvent(t, db, attempt.ID)
+	if pin.Standalone || pin.Subject != "bare" {
+		t.Fatalf("prefix pin %+v", pin)
+	}
+}
+
+// An explicit dependency still reviews a dev card that has no branch yet.
+func TestExplicitDepReviewsWithoutCandidateBranch(t *testing.T) {
+	ctx := context.Background()
+	home, db, repo := newHome(t)
+	_, obj := seedRepo(t, db, repo, "true")
+	seedRoutes(t, db)
+	cards := []model.Card{
+		{ID: "bare", Objective: obj, Kind: model.KindDev, Title: "bare", Tier: model.TierT2, Status: model.CardPaused},
+		{ID: "rv-explicit", Objective: obj, Kind: model.KindReview, Title: "dep", Tier: model.TierT3, Status: model.CardReady, Deps: []string{"bare"}, Body: reviewPassScript},
+	}
+	for i := range cards {
+		if err := db.CreateCard(ctx, &cards[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := New(home)
+	r.Launch = func(context.Context, string, string) (int, error) { return 77, nil }
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	explicit := reviewAttempt(t, db, "rv-explicit")
+	if rev(t, explicit.Worktree, "HEAD") != rev(t, repo, "main") {
+		t.Fatal("explicit review of a branchless card did not start from main")
+	}
+	pin := pinnedSubjectEvent(t, db, explicit.ID)
+	if pin.Standalone || pin.Subject != "bare" {
+		t.Fatalf("explicit pin %+v", pin)
+	}
+	if n := countEvents(t, db, "", model.EventTickError); n != 0 {
+		t.Fatalf("tick_error count %d", n)
+	}
+}
+
+// A pass written against main does not queue a dev card whose candidate
+// commit appeared, or moved, after the review checked out.
+func TestPrefixPassRequiresCandidateCommit(t *testing.T) {
+	ctx := context.Background()
+	home, db, repo := newHome(t)
+	_, obj := seedRepo(t, db, repo, "true")
+	seedRoutes(t, db)
+	branch(t, repo, obj, "present", "unique.txt", "candidate-not-on-main\n")
+	for _, card := range []model.Card{
+		{ID: "present", Objective: obj, Kind: model.KindDev, Title: "present", Tier: model.TierT2, Status: model.CardPaused},
+		{ID: "rv-present", Objective: obj, Kind: model.KindReview, Title: "prefix", Tier: model.TierT3, Status: model.CardReady, Body: reviewPassScript},
+	} {
+		if err := db.CreateCard(ctx, &card); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := New(home)
+	r.Launch = func(context.Context, string, string) (int, error) { return 77, nil }
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	attempt := reviewAttempt(t, db, "rv-present")
+	reviewed := attempt.BaseCommit
+	if reviewed == "" || reviewed != rev(t, repo, "cardex/"+obj+"/c/present") {
+		t.Fatalf("reviewed %s", reviewed)
+	}
+	name := "cardex/" + obj + "/c/present"
+	git(t, repo, "checkout", name)
+	if err := os.WriteFile(filepath.Join(repo, "unique.txt"), []byte("moved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "add", "unique.txt")
+	git(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "move")
+	git(t, repo, "checkout", "main")
+	if rev(t, repo, name) == reviewed {
+		t.Fatal("candidate commit did not move")
+	}
+	if err := os.WriteFile(filepath.Join(attempt.Worktree, ".cardex-result.md"), []byte("## 复核结论\npass\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exit := 0
+	attempt.Exit = &exit
+	attempt.EndedAt = time.Now().UTC()
+	if err := db.UpdateAttempt(ctx, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := db.GetObjective(ctx, obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Status = model.ObjectivePaused
+	if err := db.UpdateObjective(ctx, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetCard(ctx, "present")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.CardPaused {
+		t.Fatalf("present status %s, want paused", got.Status)
+	}
+	if n := countEvents(t, db, "card:present", "review_verdict"); n != 0 {
+		t.Fatalf("present review_verdict count %d", n)
+	}
+	if n := countEvents(t, db, "card:rv-present", "review_candidate_mismatch"); n != 1 {
+		t.Fatalf("mismatch events %d", n)
+	}
+	review, err := db.GetCard(ctx, "rv-present")
+	if err != nil || review.Status != model.CardDone {
+		t.Fatalf("review %+v %v", review, err)
+	}
+	if n := countEvents(t, db, "card:rv-present", "review_verdict"); n != 1 {
+		t.Fatalf("review verdict count %d", n)
+	}
+}
+
+// The subject is fixed when the worktree is chosen. A card created while the
+// checkout runs does not receive the verdict from that attempt.
+func TestSubjectCreatedDuringWorktreeStaysUnpinned(t *testing.T) {
+	ctx := context.Background()
+	home, db, repo := newHome(t)
+	_, obj := seedRepo(t, db, repo, "true")
+	seedRoutes(t, db)
+	card := model.Card{
+		ID: "rv-late", Objective: obj, Kind: model.KindReview, Title: "standalone", Tier: model.TierT3,
+		Status: model.CardReady, Body: reviewPassScript,
+	}
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	orig := addWorktree
+	t.Cleanup(func() { addWorktree = orig })
+	addWorktree = func(ctx context.Context, req workspace.CreateRequest) (workspace.Worktree, error) {
+		if req.CardID != "rv-late" || !req.Detach {
+			t.Fatalf("worktree request card %s detach %v continue %v", req.CardID, req.Detach, req.Continue)
+		}
+		late := model.Card{
+			ID: "late", Objective: obj, Kind: model.KindDev, Title: "late", Tier: model.TierT2, Status: model.CardPaused,
+		}
+		if err := db.CreateCard(ctx, &late); err != nil {
+			t.Fatal(err)
+		}
+		branch(t, repo, obj, "late", "unique.txt", "candidate-not-on-main\n")
+		return orig(ctx, req)
+	}
+	r := New(home)
+	r.Launch = func(context.Context, string, string) (int, error) { return 77, nil }
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	attempt := reviewAttempt(t, db, "rv-late")
+	if rev(t, attempt.Worktree, "HEAD") != rev(t, repo, "main") {
+		t.Fatal("worktree was not the standalone checkout")
+	}
+	if body, err := os.ReadFile(filepath.Join(attempt.Worktree, "unique.txt")); err == nil && strings.Contains(string(body), "candidate-not-on-main") {
+		t.Fatal("standalone worktree contains the candidate created during checkout")
+	}
+	pin := pinnedSubjectEvent(t, db, attempt.ID)
+	if !pin.Standalone || pin.Subject != "rv-late" {
+		t.Fatalf("pin %+v", pin)
+	}
+	if err := os.WriteFile(filepath.Join(attempt.Worktree, ".cardex-result.md"), []byte("## 复核结论\npass\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exit := 0
+	attempt.Exit = &exit
+	attempt.EndedAt = time.Now().UTC()
+	if err := db.UpdateAttempt(ctx, &attempt); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := db.GetObjective(ctx, obj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored.Status = model.ObjectivePaused
+	if err := db.UpdateObjective(ctx, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetCard(ctx, "late")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.CardPaused {
+		t.Fatalf("late status %s, want paused", got.Status)
+	}
+	if n := countEvents(t, db, "card:late", "review_verdict"); n != 0 {
+		t.Fatalf("late review_verdict count %d", n)
+	}
+	review, err := db.GetCard(ctx, "rv-late")
+	if err != nil || review.Status != model.CardDone {
+		t.Fatalf("review %+v %v", review, err)
 	}
 }
 

@@ -1025,6 +1025,23 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		}
 		return st.event("card:"+card.ID, "review_unparsable", map[string]string{"card": card.ID})
 	}
+	if !standalone && parent.Kind == model.KindDev && reviewNames(card, parent.ID) {
+		reviewed, candidate, checked := st.devCandidateReviewed(parent, attempt)
+		if checked && reviewed != candidate {
+			// The attempt did not read the dev card's current candidate.
+			// Keep the verdict on the review, as a dependency-free review does
+			// when it is not tied to that card.
+			if err := st.event("card:"+card.ID, "review_candidate_mismatch", map[string]string{
+				"card":      card.ID,
+				"subject":   parent.ID,
+				"reviewed":  reviewed,
+				"candidate": candidate,
+			}); err != nil {
+				return err
+			}
+			standalone = true
+		}
+	}
 	if standalone {
 		// A standalone review has no parent to merge or rework: keep the
 		// verdict on the review card itself and finish it.
@@ -2152,6 +2169,53 @@ func mainBranch(repo string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("project %s has no main branch", repo)
+}
+
+// devCandidateReviewed compares the commit a prefix review read with the dev
+// card's candidate branch. checked is false when the project has no git dir,
+// and those verdicts are left unchanged. A missing branch yields an empty
+// candidate, which does not match.
+func (st *step) devCandidateReviewed(parent model.Card, attempt model.Attempt) (reviewed, candidate string, checked bool) {
+	repo := strings.TrimSpace(st.snap.project.RepoPath)
+	if !hasGitDir(repo) {
+		return "", "", false
+	}
+	obj := strings.TrimSpace(parent.Objective)
+	if obj == "" {
+		obj = st.snap.obj.ID
+	}
+	if obj == "" || parent.ID == "" {
+		return "", "", false
+	}
+	out, err := git(repo, "rev-parse", "--verify", "--quiet", "refs/heads/cardex/"+obj+"/c/"+parent.ID)
+	if err != nil {
+		return strings.TrimSpace(attempt.BaseCommit), "", true
+	}
+	candidate = strings.TrimSpace(out)
+	reviewed = strings.TrimSpace(attempt.BaseCommit)
+	if reviewed == "" && hasGitDir(attempt.Worktree) {
+		if head, err := git(attempt.Worktree, "rev-parse", "--verify", "--quiet", "HEAD"); err == nil {
+			reviewed = strings.TrimSpace(head)
+		}
+	}
+	if reviewed == "" {
+		return "", candidate, true
+	}
+	if full, err := git(repo, "rev-parse", "--verify", "--quiet", reviewed+"^{commit}"); err == nil {
+		reviewed = strings.TrimSpace(full)
+	}
+	return reviewed, candidate, true
+}
+
+func hasGitDir(repo string) bool {
+	if strings.TrimSpace(repo) == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(repo, ".git"))
+	if err != nil {
+		return false
+	}
+	return info.IsDir() || info.Mode().IsRegular()
 }
 
 func git(repo string, args ...string) (string, error) {

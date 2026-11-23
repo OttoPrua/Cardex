@@ -1,0 +1,15 @@
+./attempt.go
+./card.go
+./channel.go
+./claim.go
+./event.go
+./id.go
+./lock_unix.go
+./migrate.go
+./node.go
+./objective.go
+./open_question.go
+./positioning.go
+./project.go
+./question.go
+./store.go

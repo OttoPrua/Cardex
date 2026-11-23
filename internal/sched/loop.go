@@ -48,6 +48,12 @@ var (
 	}
 	startHost   = launchDetached
 	chooseRoute = route.Select
+	// addWorktree creates the attempt checkout. Tests replace it to insert a
+	// card in the window after the review subject is chosen and before the
+	// attempt records that choice.
+	addWorktree = func(ctx context.Context, req workspace.CreateRequest) (workspace.Worktree, error) {
+		return workspace.Git{}.Create(ctx, req)
+	}
 )
 
 // Runner is one scheduler pass over a CARDEX_HOME.
@@ -621,7 +627,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err != nil {
 		return "", err
 	}
-	wsCard, wsObj, cont, readOnly, err := r.workspaceTarget(ctx, db, card, obj.ID)
+	wsCard, wsObj, cont, readOnly, pin, err := r.workspaceTarget(ctx, db, card, obj.ID)
 	if err != nil {
 		var missing missingReviewSubjectError
 		if errors.As(err, &missing) {
@@ -637,6 +643,16 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	startPoint := card.Base
 	detached := false
 	if readOnly && !gitRefExists(ctx, project.RepoPath, "refs/heads/"+cardBranchName(wsObj, wsCard)) {
+		// A prefix review of a dev card waits until that card has a candidate
+		// branch. Reviewing main and still naming the dev card lets a later
+		// pass queue a commit this attempt never read.
+		wait, err := prefixDevAwaitingCandidate(ctx, db, card, pin)
+		if err != nil {
+			return "", err
+		}
+		if wait {
+			return "", nil
+		}
 		// The reviewed card left no branch (a read-only card, or one whose
 		// branch is gone). Review its starting commit, detached, instead of
 		// failing on a missing reference or creating a branch in its name.
@@ -652,7 +668,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err != nil {
 		return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, launchScratch{})
 	}
-	wt, err := workspace.Git{}.Create(ctx, workspace.CreateRequest{
+	wt, err := addWorktree(ctx, workspace.CreateRequest{
 		CardID:            wsCard,
 		AttemptID:         attemptID,
 		ObjectiveID:       wsObj,
@@ -702,9 +718,10 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err := db.CreateAttempt(ctx, &attempt); err != nil {
 		return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, rt, scratch)
 	}
-	// The workspace was chosen from the cards that exist now. Keep that choice
-	// on the attempt so a subject created later does not receive the verdict.
-	if err := r.pinReviewSubject(ctx, db, card, attempt.ID); err != nil {
+	// pin is the subject workspaceTarget selected before the worktree existed.
+	// Writing it unchanged keeps a card created during checkout from becoming
+	// the subject of a tree that never contained its branch.
+	if err := r.pinReviewSubject(ctx, db, card, attempt.ID, pin); err != nil {
 		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, rt, scratch)
 	}
 	card.Status = model.CardRunning
@@ -1485,37 +1502,43 @@ func openAttempt(ctx context.Context, db *store.Store, cardID string) (*model.At
 }
 
 // workspaceTarget returns the card and objective whose branch the attempt
-// uses, whether to continue that branch, and whether the worktree is read-only.
+// uses, whether to continue that branch, whether the worktree is read-only,
+// and the review subject resolved by this call. pin is empty for other kinds.
 // A review reads the original card's branch, which is named after that card's
 // own objective; a cross-objective review must not use its own objective.
-func (r *Runner) workspaceTarget(ctx context.Context, db *store.Store, card model.Card, objectiveID string) (string, string, bool, bool, error) {
+// Callers record pin as returned. Resolving again after the worktree exists
+// can name a card created in between.
+func (r *Runner) workspaceTarget(ctx context.Context, db *store.Store, card model.Card, objectiveID string) (string, string, bool, bool, model.PinnedReviewSubject, error) {
 	switch card.Kind {
 	case model.KindReview:
 		// The candidate branch belongs to the original card. A repair or rebase
 		// subject does not have a branch under its own id.
 		subject, missing, err := resolvedReviewSubjectID(ctx, db, card)
 		if err != nil {
-			return "", objectiveID, true, true, err
+			return "", objectiveID, true, true, model.PinnedReviewSubject{}, err
 		}
 		if missing != "" {
-			return "", objectiveID, true, true, missingReviewSubjectError{card: card.ID, subject: missing}
+			return "", objectiveID, true, true, model.PinnedReviewSubject{}, missingReviewSubjectError{card: card.ID, subject: missing}
 		}
 		id, err := reviewBranchCard(ctx, db, subject)
 		if err != nil {
-			return id, objectiveID, true, true, err
+			return id, objectiveID, true, true, model.PinnedReviewSubject{}, err
 		}
 		branchObj := objectiveID
 		if id != card.ID {
-			if subject, err := db.GetCard(ctx, id); err == nil && strings.TrimSpace(subject.Objective) != "" {
-				branchObj = subject.Objective
+			if subjectCard, err := db.GetCard(ctx, id); err == nil && strings.TrimSpace(subjectCard.Objective) != "" {
+				branchObj = subjectCard.Objective
 			}
 		}
-		return id, branchObj, true, true, nil
+		return id, branchObj, true, true, model.PinnedReviewSubject{
+			Subject:    subject,
+			Standalone: subject == card.ID,
+		}, nil
 	case model.KindRepair, model.KindRebase:
 		id, err := rootCardID(ctx, db, card)
-		return id, objectiveID, true, false, err
+		return id, objectiveID, true, false, model.PinnedReviewSubject{}, err
 	default:
-		return card.ID, objectiveID, card.ReworkCount > 0, false, nil
+		return card.ID, objectiveID, card.ReworkCount > 0, false, model.PinnedReviewSubject{}, nil
 	}
 }
 
@@ -1557,23 +1580,16 @@ func (e missingReviewSubjectError) Error() string {
 	return fmt.Sprintf("sched: review %s subject %s does not exist", e.card, e.subject)
 }
 
-// pinReviewSubject records the subject resolved for this attempt.
-// A non-review card is left unchanged. The record is what harvest writes back.
-func (r *Runner) pinReviewSubject(ctx context.Context, db *store.Store, card model.Card, attemptID string) error {
+// pinReviewSubject records the subject workspaceTarget already selected.
+// It does not look the subject up again. A non-review card is left unchanged.
+func (r *Runner) pinReviewSubject(ctx context.Context, db *store.Store, card model.Card, attemptID string, pin model.PinnedReviewSubject) error {
 	if card.Kind != model.KindReview {
 		return nil
 	}
-	subject, missing, err := resolvedReviewSubjectID(ctx, db, card)
-	if err != nil {
-		return err
+	if pin.Subject == "" {
+		return fmt.Errorf("sched: review %s has no resolved subject", card.ID)
 	}
-	if missing != "" {
-		return missingReviewSubjectError{card: card.ID, subject: missing}
-	}
-	raw, err := json.Marshal(model.PinnedReviewSubject{
-		Subject:    subject,
-		Standalone: subject == card.ID,
-	})
+	raw, err := json.Marshal(pin)
 	if err != nil {
 		return err
 	}
@@ -1582,6 +1598,26 @@ func (r *Runner) pinReviewSubject(ctx context.Context, db *store.Store, card mod
 		Type:   model.ReviewSubjectEvent,
 		Data:   raw,
 	})
+}
+
+// prefixDevAwaitingCandidate reports a dependency-free rv- review whose dev
+// card is already stored but has no candidate branch yet. The caller leaves
+// the review ready and does not start it from the integration branch.
+func prefixDevAwaitingCandidate(ctx context.Context, db *store.Store, card model.Card, pin model.PinnedReviewSubject) (bool, error) {
+	if card.Kind != model.KindReview || pin.Standalone || pin.Subject == "" || pin.Subject == card.ID {
+		return false, nil
+	}
+	if _, explicit := model.ReviewSubject(card); explicit {
+		return false, nil
+	}
+	subject, err := db.GetCard(ctx, pin.Subject)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return subject.Kind == model.KindDev, nil
 }
 
 // resolvedReviewSubjectID applies ReviewSubject. An rv- suffix that names no

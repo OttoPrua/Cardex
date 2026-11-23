@@ -3,6 +3,7 @@ package loop
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -262,6 +263,93 @@ func pinReviewAttempt(t *testing.T, f *fx, attemptID, subject string, standalone
 		Data:   raw,
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A prefix pass merges the dev card only when the attempt read that card's
+// current candidate commit. A pass read from main stays on the review.
+func TestPrefixPassMatchesCandidateCommit(t *testing.T) {
+	repo := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	run("init", "-b", "main")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "a.txt")
+	run("commit", "-m", "base")
+	mainHead := run("rev-parse", "HEAD")
+	run("checkout", "-b", "cardex/obj/c/dev")
+	if err := os.WriteFile(filepath.Join(repo, "a.txt"), []byte("candidate\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "a.txt")
+	run("commit", "-m", "candidate")
+	candidate := run("rev-parse", "HEAD")
+	run("checkout", "main")
+	if mainHead == candidate {
+		t.Fatal("candidate commit matches main")
+	}
+
+	for _, tc := range []struct {
+		name   string
+		base   string
+		status model.CardStatus
+	}{
+		{name: "matches", base: candidate, status: model.CardMergeQueued},
+		{name: "main", base: mainHead, status: model.CardPaused},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFx(t, model.ModeManual)
+			proj, err := f.db.GetProject(f.ctx, "p")
+			if err != nil {
+				t.Fatal(err)
+			}
+			proj.RepoPath = repo
+			if err := f.db.UpdateProject(f.ctx, &proj); err != nil {
+				t.Fatal(err)
+			}
+			mkCard(t, f, model.Card{ID: "dev", Kind: model.KindDev, Status: model.CardPaused})
+			mkCard(t, f, model.Card{ID: "rv-dev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardRunning})
+			exit := 0
+			attempt := model.Attempt{ID: "a-rv-dev", Card: "rv-dev", Worktree: f.home, BaseCommit: tc.base, Exit: &exit, EndedAt: time.Now().UTC()}
+			if err := f.db.CreateAttempt(f.ctx, &attempt); err != nil {
+				t.Fatal(err)
+			}
+			pinReviewAttempt(t, f, attempt.ID, "dev", false)
+			text := "## 结论\nok\n\n## 复核结论\npass\n"
+			if err := os.WriteFile(filepath.Join(f.home, ".cardex-result.md"), []byte(text), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			card, _ := f.db.GetCard(f.ctx, "rv-dev")
+			ctx := WithStore(WithAttempt(WithHome(f.ctx, f.home), attempt.ID), f.db)
+			if err := Dispose(ctx, &card, harvest.Result{Outcome: model.OutcomePassed, ResultText: text}); err != nil {
+				t.Fatal(err)
+			}
+			if got := rvCardStatus(t, f, "dev"); got != tc.status {
+				t.Fatalf("dev status %s, want %s", got, tc.status)
+			}
+			if got := rvCardStatus(t, f, "rv-dev"); got != model.CardDone {
+				t.Fatalf("review status %s", got)
+			}
+			onDev := hasCardEvent(t, f, "dev", "review_verdict")
+			if tc.status == model.CardMergeQueued && !onDev {
+				t.Fatal("matching pass did not record the verdict on dev")
+			}
+			if tc.status != model.CardMergeQueued && onDev {
+				t.Fatal("main pass recorded the verdict on dev")
+			}
+			if mismatch := hasCardEvent(t, f, "rv-dev", "review_candidate_mismatch"); mismatch != (tc.status != model.CardMergeQueued) {
+				t.Fatalf("mismatch event %v", mismatch)
+			}
+		})
 	}
 }
 

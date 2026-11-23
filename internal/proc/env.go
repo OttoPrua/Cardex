@@ -52,34 +52,23 @@ func dropAcceptanceEnv(key string) bool {
 	return false
 }
 
-// ExecutorEnv is the environment of a process the dev executor starts.
-// go test under that process must not see CARDEX_SCHED_* (sched's init would
-// enter host.Run before the test) or GIT_* (exec-path and templates break
-// git inside the suite). The same prefixes AcceptanceEnv drops are removed,
-// then agent CLI homes are put back: the executor still has to start the tool
-// with CURSOR_*, KIMI_*, CLAUDE_*, and the other homes it was given. The
-// caller merges the runner's own variables afterwards so those win.
+// ExecutorEnv is the environment of the dev executor process itself.
+// CARDEX_SCHED_* is removed so a cardex binary started as the executor does
+// not re-enter host.Run from sched's init. Tool homes (CURSOR_*, KIMI_*,
+// CLAUDE_*, and the rest) stay, because the CLI needs them to start. GIT_*
+// stays too, so ordinary git commands still see GIT_CONFIG_GLOBAL.
+//
+// go test that this process launches is not cleaned here. The host puts a
+// wrapper ahead of PATH; that wrapper applies AcceptanceEnv only when the
+// go command is test.
 func ExecutorEnv(base []string) []string {
-	out := AcceptanceEnv(base)
+	out := make([]string, 0, len(base))
 	for _, kv := range base {
 		key, _, ok := strings.Cut(kv, "=")
-		if !ok || key == "" || !toolHomeEnv(key) {
+		if !ok || key == "" || strings.HasPrefix(strings.ToUpper(key), "CARDEX_SCHED_") {
 			continue
 		}
 		out = append(out, kv)
 	}
 	return out
-}
-
-func toolHomeEnv(key string) bool {
-	upper := strings.ToUpper(key)
-	for _, prefix := range acceptanceDropPrefixes {
-		if prefix == "CARDEX_SCHED_" || prefix == "GIT_" {
-			continue
-		}
-		if strings.HasPrefix(upper, prefix) {
-			return true
-		}
-	}
-	return false
 }

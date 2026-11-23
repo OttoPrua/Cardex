@@ -103,7 +103,6 @@ func TestExecutorEnvKeepsToolHomes(t *testing.T) {
 		"TMPDIR=/tmp",
 		"GOCACHE=/cache/go",
 		"CARDEX_HOME=/home/builder/.cardex",
-		"ANTHROPIC_BASE_URL=https://api.example",
 		"CURSOR_CONFIG_DIR=/agents/cursor/config",
 		"cursor_data_dir=/agents/cursor/data",
 		"KIMI_CODE_HOME=/agents/kimi/home",
@@ -112,6 +111,9 @@ func TestExecutorEnvKeepsToolHomes(t *testing.T) {
 		"GROK_HOME=/agents/grok",
 		"GEMINI_CLI_HOME=/agents/gemini",
 		"CODEX_HOME=/agents/codex",
+		"GIT_EXEC_PATH=/agents/bin",
+		"GIT_CONFIG_GLOBAL=/agents/gitconfig",
+		"ANTHROPIC_BASE_URL=https://api.example",
 		"KIMI_API_KEY=secret",
 	}
 	if !slices.Equal(got, want) {

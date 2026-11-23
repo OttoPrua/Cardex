@@ -167,6 +167,12 @@ func run(ctx context.Context, home, attemptID string) error {
 	if err != nil {
 		return failStart(ctx, db, &attempt, err)
 	}
+	// The shim is first on PATH. The executor keeps tool homes and GIT_*;
+	// only `go test` is started with AcceptanceEnv.
+	cmd.Env, err = proc.PrependGoTestWrap(cmd.Env, filepath.Join(attemptDir, "go-wrap"))
+	if err != nil {
+		return failStart(ctx, db, &attempt, err)
+	}
 	cmd.Dir = attempt.Worktree
 	// The host appends each chunk to output.log. The attempt directory stays
 	// outside the sandbox write list, and bytes already seen survive a crash.
@@ -368,9 +374,8 @@ func commandFor(argv, extra []string) (*exec.Cmd, error) {
 		base = extra
 		overlay = nil
 	}
-	// AcceptanceEnv's drops, with tool homes restored. A go test this child
-	// starts must not inherit CARDEX_SCHED_* or GIT_*; the CLI still needs
-	// the homes it was launched with, and overlay (the runner's env) wins.
+	// Drop CARDEX_SCHED_* only. Tool homes and GIT_* stay on this process;
+	// PrependGoTestWrap isolates `go test`. Overlay (the runner's env) wins.
 	env := mergeEnv(proc.ExecutorEnv(base), proc.ExecutorEnv(overlay))
 	cmd := &exec.Cmd{}
 	if argv[0] == "fake" {

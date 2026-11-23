@@ -17,7 +17,7 @@ func TestGoCommand(t *testing.T) {
 		{nil, ""},
 	}
 	for _, tc := range cases {
-		if got := goCommand(tc.args); got != tc.want {
+		if got, _ := goCommand(tc.args); got != tc.want {
 			t.Errorf("goCommand(%q) = %q, want %q", tc.args, got, tc.want)
 		}
 	}

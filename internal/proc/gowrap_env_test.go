@@ -19,7 +19,7 @@ func TestGoWrapIsolatesGoTestKeepsGitConfig(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mod, "go.mod"), []byte("module isolatedprobe\n\ngo 1.22\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	src := `package isolatedprobe
+	src := `package main
 
 import (
 	"os"
@@ -43,6 +43,31 @@ func TestNoServeEnv(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mod, "probe_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	main := `package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+)
+
+func main() {
+	if os.Getenv("GIT_CONFIG_GLOBAL") == "" || os.Getenv("CLAUDE_CONFIG_DIR") == "" {
+		fmt.Fprintln(os.Stderr, "go run lost Git or tool configuration")
+		os.Exit(1)
+	}
+	cmd := exec.Command("go", "test", "-count=1", "-mod=mod", ".")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(mod, "main.go"), []byte(main), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	cfg := filepath.Join(t.TempDir(), "gitconfig")
 	if err := os.WriteFile(cfg, []byte("[cardex]\n\tprobe = marker-ok\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -55,7 +80,8 @@ func TestNoServeEnv(t *testing.T) {
 	t.Setenv("GIT_TEMPLATE_DIR", t.TempDir())
 	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
 
-	env, err := proc.PrependGoTestWrap(os.Environ(), t.TempDir())
+	wrapDir := t.TempDir()
+	env, err := proc.PrependGoTestWrap(os.Environ(), wrapDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,24 +91,42 @@ func TestNoServeEnv(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(out)) != "marker-ok" {
 		t.Fatalf("git config: %v\n%s", err, out)
 	}
-	wrapGo := filepath.Join(procWrapDir(t, env), "go")
-	cmd := exec.Command(wrapGo, "test", "-count=1", "-mod=mod", ".")
-	cmd.Dir = mod
-	cmd.Env = env
-	out, err = cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go test: %v\n%s", err, out)
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"test", []string{"test", "-count=1", "-mod=mod", "."}},
+		{"run", []string{"-C", mod, "run", "."}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(filepath.Join(wrapDir, "go"), tc.args...)
+			cmd.Dir = mod
+			cmd.Env = env
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("go %s: %v\n%s", tc.name, err, out)
+			}
+		})
 	}
 }
 
-func procWrapDir(t *testing.T, env []string) string {
-	t.Helper()
-	for _, kv := range env {
-		key, val, ok := strings.Cut(kv, "=")
-		if ok && key == "CARDEX_GO_WRAP_DIR" {
-			return val
-		}
+func TestGoWrapUsesUpdatedPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("wrapper check uses a POSIX go shim")
 	}
-	t.Fatal("CARDEX_GO_WRAP_DIR missing")
-	return ""
+	mod := t.TempDir()
+	wrapDir := filepath.Join(mod, "go-wrap")
+	t.Setenv("PATH", t.TempDir())
+	env, err := proc.PrependGoTestWrap(os.Environ(), wrapDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mod, "go"), []byte("#!/bin/sh\nprintf 'local go %s\\n' \"$1\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join(wrapDir, "go"), "version")
+	cmd.Dir = mod
+	cmd.Env = append(env, "PATH=./go-wrap"+string(os.PathListSeparator)+".")
+	if out, err := cmd.CombinedOutput(); err != nil || string(out) != "local go version\n" {
+		t.Fatalf("go version: %v\n%s", err, out)
+	}
 }

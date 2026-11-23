@@ -26,6 +26,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/prompt"
 	"github.com/OttoPrua/Cardex/internal/question"
 	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/route"
 	"github.com/OttoPrua/Cardex/internal/store"
 	"github.com/OttoPrua/Cardex/internal/workspace"
@@ -274,7 +275,7 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			}
 			continue
 		}
-		output, _ := os.ReadFile(filepath.Join(r.Home, "attempts", attempt.ID, "output.log"))
+		output, _ := os.ReadFile(filepath.Join(roots.AttemptDirFor(r.Home, attempt.ID), "output.log"))
 		exitCode := 1
 		if attempt.Exit != nil {
 			exitCode = *attempt.Exit
@@ -287,6 +288,7 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			ErrorClass: attempt.ErrorClass,
 			Repo:       attempt.Worktree,
 			Home:       r.Home,
+			Scratch:    projectScratch(ctx, db, card.Objective),
 		})
 		if err != nil {
 			if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
@@ -314,18 +316,30 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			continue
 		}
 		if res.EvidenceErr != nil {
-			_ = noteEvidenceWriteFailed(ctx, db, attempt.ID, res.EvidenceErr)
+			_ = noteEvidenceWriteFailed(ctx, db, r.Home, attempt.ID, res.EvidenceErr)
 		}
 	}
 	return first
 }
 
+func projectScratch(ctx context.Context, db *store.Store, objectiveID string) string {
+	obj, err := db.GetObjective(ctx, objectiveID)
+	if err != nil {
+		return ""
+	}
+	p, err := db.GetProject(ctx, obj.Project)
+	if err != nil {
+		return ""
+	}
+	return p.ScratchDir
+}
+
 // noteEvidenceWriteFailed records one event for a failed acceptance.log or
 // result.md write. The payload names the attempt directory, not the file bodies.
-func noteEvidenceWriteFailed(ctx context.Context, db *store.Store, attemptID string, cause error) error {
+func noteEvidenceWriteFailed(ctx context.Context, db *store.Store, home, attemptID string, cause error) error {
 	raw, err := json.Marshal(map[string]string{
 		"attempt_id": attemptID,
-		"path":       "attempts/" + attemptID,
+		"path":       roots.EvidenceRef(home, attemptID, ""),
 		"error":      cause.Error(),
 	})
 	if err != nil {
@@ -671,7 +685,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 			return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, scratch)
 		}
 	}
-	dir := filepath.Join(r.Home, "attempts", attemptID)
+	dir := roots.AttemptDirFor(r.Home, attemptID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, rt, scratch)
 	}
@@ -744,7 +758,7 @@ func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.
 }
 
 func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, repo string, attempt *model.Attempt) error {
-	dir := filepath.Join(r.Home, "attempts", attempt.ID)
+	dir := roots.AttemptDirFor(r.Home, attempt.ID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -1648,7 +1662,7 @@ func quotaReset(home string, a model.Attempt) (time.Time, bool) {
 	if t, ok := findReset(a.ErrorExcerpt); ok {
 		return t, true
 	}
-	body, err := os.ReadFile(filepath.Join(home, "attempts", a.ID, "output.log"))
+	body, err := os.ReadFile(filepath.Join(roots.AttemptDirFor(home, a.ID), "output.log"))
 	if err != nil {
 		return time.Time{}, false
 	}

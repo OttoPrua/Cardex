@@ -7,8 +7,6 @@ import (
 	"errors"
 	"math"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -17,6 +15,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
@@ -729,19 +728,7 @@ func cardHistory(ctx context.Context, db *store.Store, id string) ([]historyEven
 }
 
 func evidencePaths(home, id string) []string {
-	out := []string{}
-	if strings.TrimSpace(home) == "" || !safeID(id) {
-		return out
-	}
-	for _, name := range []string{"output.log", "acceptance.log", "result.md"} {
-		path := filepath.Join(home, "attempts", id, name)
-		info, err := os.Stat(path)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		out = append(out, "attempts/"+id+"/"+name)
-	}
-	return out
+	return roots.EvidenceRefs(home, id)
 }
 
 func loadHistory(ctx context.Context, db *store.Store, query, status string, page int) (*historyView, error) {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
+	"github.com/OttoPrua/Cardex/internal/roots"
 )
 
 // Browser cards.
@@ -359,7 +360,7 @@ func reapBrowser(pgid int, profile string) {
 // The group is signalled only when one of its processes still names this
 // attempt's profile, so a recycled pgid is never killed.
 func reapLostBrowser(home, attemptID string) {
-	attemptDir := filepath.Join(home, "attempts", attemptID)
+	attemptDir := roots.AttemptDirFor(home, attemptID)
 	profile := filepath.Join(attemptDir, browserDirName, "profile")
 	pgidPath := filepath.Join(attemptDir, browserGroupName)
 	if _, err := os.Stat(pgidPath); err != nil {

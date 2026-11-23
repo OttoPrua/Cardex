@@ -19,6 +19,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/proxy"
 	"github.com/OttoPrua/Cardex/internal/pty"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/sandbox"
 	"github.com/OttoPrua/Cardex/internal/store"
@@ -91,7 +92,8 @@ func run(ctx context.Context, home, attemptID string) error {
 	if goalMode {
 		spec.SessionID = attempt.ID
 	}
-	scriptPath := filepath.Join(home, "attempts", attempt.ID, "script.json")
+	attemptDir := roots.AttemptDirFor(home, attempt.ID)
+	scriptPath := filepath.Join(attemptDir, "script.json")
 	if st, err := os.Stat(scriptPath); err == nil && !st.IsDir() {
 		spec.ScriptPath = scriptPath
 	}
@@ -116,7 +118,6 @@ func run(ctx context.Context, home, attemptID string) error {
 		needPTY = chooser.NeedsPTYFor(spec)
 	}
 
-	attemptDir := filepath.Join(home, "attempts", attempt.ID)
 	if err := os.MkdirAll(attempt.Worktree, 0o755); err != nil {
 		return err
 	}
@@ -163,10 +164,16 @@ func run(ctx context.Context, home, attemptID string) error {
 		appendEvent(ctx, db, attempt.ID, "browser_start", map[string]any{"pgid": b.pgid, "cdp": b.httpURL})
 		env = append(env, b.Env(env)...)
 	}
+	scratchDir, cleanupScratch, serr := prepareRunScratch(ctx, db, home, card, attempt.ID)
+	if serr != nil {
+		return failStart(ctx, db, &attempt, serr)
+	}
+	defer cleanupScratch()
 	cmd, err := commandFor(argv, env)
 	if err != nil {
 		return failStart(ctx, db, &attempt, err)
 	}
+	cmd.Env = roots.ApplyTempEnv(cmd.Env, scratchDir)
 	cmd.Dir = attempt.Worktree
 	// The host appends each chunk to output.log. The attempt directory stays
 	// outside the sandbox write list, and bytes already seen survive a crash.
@@ -200,6 +207,9 @@ func run(ctx context.Context, home, attemptID string) error {
 	}
 
 	writable := append([]string{attempt.Worktree}, r.WritablePaths()...)
+	if scratchDir != "" {
+		writable = append(writable, scratchDir)
+	}
 	wrap := sandbox.Wrap
 	if sandboxOff(ctx, db, card) {
 		wrap = func(c *exec.Cmd, _ []string) (*exec.Cmd, error) { return sandbox.Off(c) }
@@ -357,6 +367,26 @@ func run(ctx context.Context, home, attemptID string) error {
 		return err
 	}
 	return finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, nil, driveErr, timedOut, goalStatus)
+}
+
+// prepareRunScratch creates this attempt's temp directory when a scratch root
+// is configured. Project scratch wins over the home scratch_dir. An unset root
+// returns a no-op cleanup and leaves the process temp directory alone.
+func prepareRunScratch(ctx context.Context, db *store.Store, home string, card model.Card, attemptID string) (string, func(), error) {
+	root := roots.Load(home).EffectiveScratch(projectScratch(ctx, db, card))
+	return roots.PrepareAttemptScratch(root, attemptID)
+}
+
+func projectScratch(ctx context.Context, db *store.Store, card model.Card) string {
+	obj, err := db.GetObjective(ctx, card.Objective)
+	if err != nil {
+		return ""
+	}
+	p, err := db.GetProject(ctx, obj.Project)
+	if err != nil {
+		return ""
+	}
+	return p.ScratchDir
 }
 
 func commandFor(argv, extra []string) (*exec.Cmd, error) {

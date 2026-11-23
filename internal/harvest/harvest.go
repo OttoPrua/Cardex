@@ -17,6 +17,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/host"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
+	"github.com/OttoPrua/Cardex/internal/roots"
 )
 
 const defaultAcceptanceTimeout = 10 * time.Minute
@@ -46,7 +47,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	acc, accOut, accLog, err := runAcceptance(ctx, dir, in.Card.Acceptance)
+	acc, accOut, accLog, err := runAcceptance(ctx, dir, in.Card.Acceptance, roots.Load(in.Home).EffectiveScratch(in.Scratch), in.Attempt.ID)
 	if err != nil {
 		return Result{}, err
 	}
@@ -124,7 +125,7 @@ func mergeClaims(card string, declared, actual []model.Claim) []model.Claim {
 	return out
 }
 
-func runAcceptance(ctx context.Context, dir string, commands []string) (acceptState, string, []byte, error) {
+func runAcceptance(ctx context.Context, dir string, commands []string, scratchRoot, attemptID string) (acceptState, string, []byte, error) {
 	var cmds []string
 	for _, c := range commands {
 		if c = strings.TrimSpace(c); c != "" {
@@ -145,12 +146,21 @@ func runAcceptance(ctx context.Context, dir string, commands []string) (acceptSt
 	}
 	actx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	env := os.Environ()
+	if scratchRoot != "" {
+		scratchDir, cleanup, err := roots.PrepareAttemptScratch(scratchRoot, attemptID)
+		if err != nil {
+			return acceptOK, "", nil, err
+		}
+		defer cleanup()
+		env = roots.ApplyTempEnv(env, scratchDir)
+	}
 	var all strings.Builder
 	var log bytes.Buffer
 	for _, command := range cmds {
 		cmd := proc.Shell(actx, command)
 		cmd.Dir = dir
-		cmd.Env = os.Environ()
+		cmd.Env = env
 		proc.NewGroup(cmd)
 		cmd.WaitDelay = time.Second
 		cmd.Cancel = func() error {

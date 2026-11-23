@@ -17,6 +17,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/homeguard"
 	"github.com/OttoPrua/Cardex/internal/proc"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
@@ -230,13 +231,35 @@ func attemptLogPath(home, id string) (string, bool) {
 	if !safeID(id) {
 		return "", false
 	}
-	cleanHome := filepath.Clean(home)
-	joined := filepath.Clean(filepath.Join(cleanHome, "attempts", id, "output.log"))
-	want := cleanHome + string(filepath.Separator) + "attempts" + string(filepath.Separator) + id + string(filepath.Separator) + "output.log"
-	if joined != want {
+	primary := containedAttemptFile(roots.AttemptDirFor(home, id), id, "output.log")
+	if primary == "" {
 		return "", false
 	}
-	return joined, true
+	if info, err := os.Stat(primary); err == nil && !info.IsDir() {
+		return primary, true
+	}
+	legacyDir := filepath.Join(roots.Load(home).Home, "attempts", id)
+	legacy := containedAttemptFile(legacyDir, id, "output.log")
+	if legacy != "" && legacy != primary {
+		if info, err := os.Stat(legacy); err == nil && !info.IsDir() {
+			return legacy, true
+		}
+	}
+	return primary, true
+}
+
+// containedAttemptFile joins dir and name and rejects a path that leaves dir.
+func containedAttemptFile(dir, id, name string) string {
+	if dir == "" || !safeID(id) {
+		return ""
+	}
+	cleanDir := filepath.Clean(dir)
+	joined := filepath.Clean(filepath.Join(cleanDir, name))
+	want := cleanDir + string(filepath.Separator) + name
+	if joined != want {
+		return ""
+	}
+	return joined
 }
 
 func readTail(path string, n int) ([]byte, error) {

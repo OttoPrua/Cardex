@@ -7,14 +7,15 @@ import (
 
 // Project is one repository Cardex drives.
 type Project struct {
-	ID             string   `json:"id"`              // 项目标识。
-	RepoPath       string   `json:"repo_path"`       // 主 checkout 路径。
-	WorktreeRoot   string   `json:"worktree_root"`   // worktree 根目录，默认在项目根的 worktrees/cardex/。
-	TestCmd        string   `json:"test_cmd"`        // 默认的全量测试命令。
-	DesignDir      string   `json:"design_dir"`      // 设计文档目录，默认 docs/design/。
-	ForbiddenPaths []string `json:"forbidden_paths"` // 触碰前需要使用者确认的路径。
-	Sandbox        string   `json:"sandbox"`         // 项目默认：空表示卡在 Cardex 沙箱内跑；"off" 表示卡默认在沙箱外跑。卡上的 on/off 优先。
-	Review         string   `json:"review"`          // 项目默认复核模式：空或 auto、off、check、review。见 docs/review-policy.md。
+	ID             string   `json:"id"`                    // 项目标识。
+	RepoPath       string   `json:"repo_path"`             // 主 checkout 路径。
+	WorktreeRoot   string   `json:"worktree_root"`         // worktree 根目录，默认在项目根的 worktrees/cardex/。
+	TestCmd        string   `json:"test_cmd"`              // 默认的全量测试命令。
+	DesignDir      string   `json:"design_dir"`            // 设计文档目录，默认 docs/design/。
+	ForbiddenPaths []string `json:"forbidden_paths"`       // 触碰前需要使用者确认的路径。
+	Sandbox        string   `json:"sandbox"`               // 项目默认：空表示卡在 Cardex 沙箱内跑；"off" 表示卡默认在沙箱外跑。卡上的 on/off 优先。
+	Review         string   `json:"review"`                // 项目默认复核模式：空或 auto、off、check、review。见 docs/review-policy.md。
+	ScratchDir     string   `json:"scratch_dir,omitempty"` // 本项目派卡与验收的临时目录根。空则用 home 的 scratch_dir，再空则用进程临时目录。
 }
 
 // Acceptance is an objective's commands and checklist. Both are optional.

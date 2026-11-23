@@ -14,10 +14,11 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/positioning"
 	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
-const doctorUsagePurpose = "check the home, database, tools, and channel config, then print only problems and a repair suggestion for each"
+const doctorUsagePurpose = "check the home, database, tools, and channel config, then print storage volumes and only problems with a repair suggestion for each"
 
 type finding struct {
 	problem    string
@@ -29,13 +30,17 @@ func cmdDoctor(home string, args []string, stdout, stderr io.Writer) int {
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
-	for _, item := range collectDoctor(home) {
+	lines, items := collectDoctor(home)
+	for _, line := range lines {
+		fmt.Fprintln(stdout, line)
+	}
+	for _, item := range items {
 		fmt.Fprintf(stdout, "problem: %s\nsuggestion: %s\n", item.problem, item.suggestion)
 	}
 	return 0
 }
 
-func collectDoctor(home string) []finding {
+func collectDoctor(home string) ([]string, []finding) {
 	var out []finding
 	if strings.HasPrefix(buildRevision(), "unknown") {
 		out = append(out, finding{"binary has no commit revision, so the running version cannot be traced", "build from a git checkout, or pass -ldflags \"-X main.revision=$(git rev-parse --short HEAD)\""})
@@ -70,7 +75,53 @@ func collectDoctor(home string) []finding {
 	}
 	out = append(out, toolFindings()...)
 	out = append(out, channelFindings(db, resolved, false)...)
-	return out
+	var storage []string
+	if resolved != "" {
+		var projects []model.Project
+		if db != nil {
+			projects, _ = db.ListProjects(context.Background())
+		}
+		var warnings []finding
+		storage, warnings = storageReport(resolved, projects)
+		out = append(out, warnings...)
+	}
+	return storage, out
+}
+
+func storageReport(home string, projects []model.Project) ([]string, []finding) {
+	layout := roots.Load(home)
+	locs := layout.Locations()
+	for _, p := range projects {
+		if strings.TrimSpace(p.ScratchDir) == "" {
+			continue
+		}
+		dir, ok := roots.ResolveDir(home, p.ScratchDir)
+		if !ok {
+			continue
+		}
+		locs = append(locs, roots.Location{Name: "scratch:" + p.ID, Path: dir})
+	}
+	var lines []string
+	var warnings []finding
+	for _, loc := range locs {
+		info, err := roots.Volume(loc.Path)
+		if err != nil {
+			lines = append(lines, fmt.Sprintf("storage: name=%s path=%s volume= error=%s", loc.Name, loc.Path, err.Error()))
+			warnings = append(warnings, finding{
+				loc.Name + " directory " + loc.Path + " volume cannot be read: " + err.Error(),
+				"create the directory on a mounted volume or fix the path; doctor does not delete anything",
+			})
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("storage: name=%s path=%s volume=%s free=%d", loc.Name, loc.Path, info.Mount, info.Free))
+		if roots.BelowFreeFloor(info.Free, roots.FreeWarnBytes) {
+			warnings = append(warnings, finding{
+				fmt.Sprintf("%s directory %s on volume %s has %d bytes free, below %d", loc.Name, loc.Path, info.Mount, info.Free, roots.FreeWarnBytes),
+				"free space on that volume or point the directory at another disk; doctor does not delete anything",
+			})
+		}
+	}
+	return lines, warnings
 }
 
 func absDB(home string) string {

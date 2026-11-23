@@ -15,7 +15,12 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/OttoPrua/Cardex/internal/homeguard"
+	"github.com/OttoPrua/Cardex/internal/roots"
 )
+
+// latestSchema is the migration applied by Open. BackupBeforeWrite runs only
+// when the on-disk version is older than this.
+const latestSchema = 8
 
 // ErrAppendOnly is returned by event update and delete.
 var ErrAppendOnly = errors.New("event is append-only")
@@ -30,7 +35,8 @@ type execer interface {
 
 // Store is a SQLite database opened with WAL and a busy timeout.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 // Open opens or creates the database at path and applies migrations.
@@ -58,7 +64,7 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
-	s := &Store{db: db}
+	s := &Store{db: db, path: abs}
 	if err := s.migrate(context.Background()); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -157,6 +163,13 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&current); err != nil {
 		return err
 	}
+	if current < latestSchema {
+		// Copy the database before the schema write when backups_dir is set.
+		// An unset directory skips this and leaves the file where it is.
+		if err := roots.BackupBeforeWrite(s.path); err != nil {
+			return fmt.Errorf("backup before schema write: %w", err)
+		}
+	}
 	if current < 1 {
 		for _, stmt := range migration1 {
 			if _, err := conn.ExecContext(ctx, stmt); err != nil {
@@ -248,6 +261,22 @@ func (s *Store) migrate(ctx context.Context) error {
 			}
 		}
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (7, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+		current = 7
+	}
+	if current < 8 {
+		// Optional project scratch directory. Empty inherits the home scratch_dir.
+		var has int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name='scratch_dir'`).Scan(&has); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+		if has == 0 {
+			if _, err := conn.ExecContext(ctx, `ALTER TABLE projects ADD COLUMN scratch_dir TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migration 8: %w", err)
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (8, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 	}

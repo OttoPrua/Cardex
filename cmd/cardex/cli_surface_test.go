@@ -1185,7 +1185,7 @@ func TestDoctorFindingsContinue(t *testing.T) {
 		if line == "" {
 			continue
 		}
-		if !strings.HasPrefix(line, "problem: ") && !strings.HasPrefix(line, "suggestion: ") {
+		if !strings.HasPrefix(line, "problem: ") && !strings.HasPrefix(line, "suggestion: ") && !strings.HasPrefix(line, "storage: ") {
 			t.Fatalf("non-problem line %q\n%s", line, out)
 		}
 	}

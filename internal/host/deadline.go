@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/OttoPrua/Cardex/internal/roots"
 )
 
 const (
@@ -64,7 +66,7 @@ func persistGroupFile(path string, pgid int) error {
 }
 
 func readExecutorGroup(home, attemptID string) int {
-	return readGroupFile(filepath.Join(home, "attempts", attemptID, executorGroupName))
+	return readGroupFile(filepath.Join(roots.AttemptDirFor(home, attemptID), executorGroupName))
 }
 
 func readGroupFile(path string) int {
@@ -176,7 +178,7 @@ func deadlineReached(home string, started time.Time, attemptID string, now time.
 	if started.IsZero() {
 		return false
 	}
-	limit, reason := attemptDeadline(filepath.Join(home, "attempts", attemptID))
+	limit, reason := attemptDeadline(roots.AttemptDirFor(home, attemptID))
 	if reason != "" || limit <= 0 {
 		return false
 	}

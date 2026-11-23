@@ -1,0 +1,293 @@
+package roots
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestLoadDefaultsAndRelativeDirs(t *testing.T) {
+	home := t.TempDir()
+	got := Load(home)
+	if got.CustomBackups || got.CustomAttempts || got.CustomScratch || got.BackupsDir != "" || got.ScratchDir != "" {
+		t.Fatalf("unset layout %+v", got)
+	}
+	if filepath.Clean(got.AttemptsDir) != filepath.Join(got.Home, "attempts") {
+		t.Fatalf("attempts %s home %s", got.AttemptsDir, got.Home)
+	}
+	body := `{
+		"backups_dir": "bak",
+		"attempts_dir": "attempts",
+		"scratch_dir": "scratch",
+		"backups_dir_ignored": 1
+	}`
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got = Load(home)
+	if !got.CustomBackups || got.BackupsDir != filepath.Join(got.Home, "bak") {
+		t.Fatalf("backups %+v", got)
+	}
+	if got.CustomAttempts || got.AttemptsDir != filepath.Join(got.Home, "attempts") {
+		t.Fatalf("default attempts path stayed custom: %+v", got)
+	}
+	if !got.CustomScratch || got.ScratchDir != filepath.Join(got.Home, "scratch") {
+		t.Fatalf("scratch %+v", got)
+	}
+	if dir, ok := ResolveDir(home, "rel"); !ok || dir != filepath.Join(got.Home, "rel") {
+		t.Fatalf("resolve %s %v", dir, ok)
+	}
+	if _, ok := ResolveDir(home, "  "); ok {
+		t.Fatal("empty dir resolved")
+	}
+}
+
+func TestNonStringDirsStayUnset(t *testing.T) {
+	home := t.TempDir()
+	body := `{"backups_dir": 1, "attempts_dir": null, "scratch_dir": "", "engines": {"kimi": {}}}`
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := Load(home)
+	if got.CustomBackups || got.CustomAttempts || got.CustomScratch {
+		t.Fatalf("non-string keys configured the layout: %+v", got)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := Load(home); got.CustomScratch || got.CustomBackups {
+		t.Fatalf("invalid json configured the layout: %+v", got)
+	}
+}
+
+func TestEvidencePathsStayCompatible(t *testing.T) {
+	home := t.TempDir()
+	ext := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"attempts_dir":`+quote(ext)+`}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id := "a1"
+	if got := EvidenceRef(home, id, "output.log"); got != filepath.Join(ext, id, "output.log") {
+		t.Fatalf("new ref %s", got)
+	}
+	if got := EvidenceRef(home, id, ""); got != filepath.Join(ext, id) {
+		t.Fatalf("dir ref %s", got)
+	}
+	legacy := filepath.Join(home, "attempts", id)
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "output.log"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "result.md"), []byte("r"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := AttemptDirFor(home, id); got != legacy {
+		t.Fatalf("legacy dir %s", got)
+	}
+	if got := EvidenceRef(home, id, "output.log"); got != "attempts/"+id+"/output.log" {
+		t.Fatalf("legacy ref %s", got)
+	}
+	refs := EvidenceRefs(home, id)
+	if strings.Join(refs, ",") != "attempts/"+id+"/output.log,attempts/"+id+"/result.md" {
+		t.Fatalf("refs %v", refs)
+	}
+	stored := ResolveStored(home, "attempts/"+id+"/output.log")
+	if stored != filepath.Join(Load(home).Home, "attempts", id, "output.log") {
+		t.Fatalf("resolved %s", stored)
+	}
+	abs := filepath.Join(ext, id, "output.log")
+	if ResolveStored(home, abs) != abs {
+		t.Fatalf("absolute stored path changed")
+	}
+
+	if err := os.MkdirAll(filepath.Join(ext, id), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ext, id, "acceptance.log"), []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := AttemptDirFor(home, id); got != filepath.Join(ext, id) {
+		t.Fatalf("primary dir %s", got)
+	}
+	refs = EvidenceRefs(home, id)
+	want := []string{
+		filepath.Join(ext, id, "acceptance.log"),
+		"attempts/" + id + "/output.log",
+		"attempts/" + id + "/result.md",
+	}
+	if strings.Join(refs, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("mixed refs\n%s", strings.Join(refs, "\n"))
+	}
+}
+
+func TestApplyTempEnvPreservesExplicitKeys(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "attempt")
+	base := []string{"PATH=/bin", "TMPDIR=", "GOTMPDIR=keep", "GOCACHE=set"}
+	out := ApplyTempEnv(base, dir)
+	if len(base) != 4 {
+		t.Fatalf("input mutated: %v", base)
+	}
+	if envValue(out, "TMPDIR") != "" || envValue(out, "GOTMPDIR") != "keep" || envValue(out, "GOCACHE") != "set" {
+		t.Fatalf("explicit keys changed: %v", out)
+	}
+	if len(out) != len(base) {
+		t.Fatalf("extra keys added: %v", out)
+	}
+	fresh := ApplyTempEnv([]string{"PATH=/bin"}, dir)
+	if envValue(fresh, "TMPDIR") != filepath.Join(dir, "tmp") || envValue(fresh, "GOTMPDIR") != filepath.Join(dir, "tmp") {
+		t.Fatalf("tmp %v", fresh)
+	}
+	if envValue(fresh, "GOCACHE") != filepath.Join(dir, "gocache") {
+		t.Fatalf("cache %v", fresh)
+	}
+	if got := ApplyTempEnv([]string{"A=b"}, ""); len(got) != 1 || got[0] != "A=b" {
+		t.Fatalf("empty dir %v", got)
+	}
+}
+
+func TestPrepareAttemptScratchCleansOnlyThatAttempt(t *testing.T) {
+	root := t.TempDir()
+	other := filepath.Join(root, "other")
+	if err := os.MkdirAll(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "keep"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir, cleanup, err := PrepareAttemptScratch(root, "a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "tmp", "f"), []byte("t"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cleanup()
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("attempt scratch still present: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(other, "keep")); err != nil || string(b) != "x" {
+		t.Fatalf("sibling %q %v", b, err)
+	}
+	if dir, cleanup, err := PrepareAttemptScratch("", "a1"); dir != "" || err != nil {
+		t.Fatalf("empty root %q %v", dir, err)
+	} else {
+		cleanup()
+	}
+	if dir, _, err := PrepareAttemptScratch(root, ".."); dir != "" || err != nil {
+		t.Fatalf("unsafe id %q %v", dir, err)
+	}
+}
+
+func TestCopyDBFilesKeepsSourceAndSibling(t *testing.T) {
+	srcDir := t.TempDir()
+	db := filepath.Join(srcDir, "cardex.db")
+	if err := os.WriteFile(db, []byte("db-body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(db+"-wal", []byte("wal-body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dest, "keep.txt"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyDBFiles(db, dest); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(db); err != nil || string(b) != "db-body" {
+		t.Fatalf("source %q %v", b, err)
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, "keep.txt")); err != nil || string(b) != "keep" {
+		t.Fatalf("sibling %q %v", b, err)
+	}
+	copies := backupNames(t, dest, "-cardex.db")
+	if len(copies) != 1 {
+		t.Fatalf("copies %v", copies)
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, copies[0])); err != nil || string(b) != "db-body" {
+		t.Fatalf("copy %q %v", b, err)
+	}
+	wals := backupNames(t, dest, "-cardex.db-wal")
+	if len(wals) != 1 {
+		t.Fatalf("wal copies %v", wals)
+	}
+	if err := CopyDBFiles(db, dest); err != nil {
+		t.Fatal(err)
+	}
+	if again := backupNames(t, dest, "-cardex.db"); len(again) != 2 {
+		t.Fatalf("second copy %v", again)
+	}
+	if b, err := os.ReadFile(filepath.Join(dest, copies[0])); err != nil || string(b) != "db-body" {
+		t.Fatalf("first copy overwritten %q %v", b, err)
+	}
+}
+
+func TestVolumeAndFreeFloor(t *testing.T) {
+	info, err := Volume(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mount == "" || info.Free == 0 || info.Total == 0 {
+		t.Fatalf("volume %+v", info)
+	}
+	missing := filepath.Join(t.TempDir(), "missing", "child")
+	walked, err := Volume(missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if walked.Mount == "" || walked.Free == 0 {
+		t.Fatalf("walked %+v", walked)
+	}
+	if BelowFreeFloor(10, 0) || BelowFreeFloor(11, 11) || !BelowFreeFloor(10, 11) {
+		t.Fatal("floor")
+	}
+}
+
+func TestEffectiveScratchPrefersProject(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"scratch_dir":"home-scratch"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	l := Load(home)
+	if got := l.EffectiveScratch(""); got != filepath.Join(l.Home, "home-scratch") {
+		t.Fatalf("home scratch %s", got)
+	}
+	if got := l.EffectiveScratch("proj"); got != filepath.Join(l.Home, "proj") {
+		t.Fatalf("project scratch %s", got)
+	}
+	if Load(t.TempDir()).EffectiveScratch("") != "" {
+		t.Fatal("unset scratch was not empty")
+	}
+}
+
+func quote(s string) string {
+	return `"` + strings.ReplaceAll(s, `\`, `\\`) + `"`
+}
+
+func envValue(env []string, key string) string {
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if ok && k == key {
+			return v
+		}
+	}
+	return "missing"
+}
+
+func backupNames(t *testing.T, dir, suffix string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), suffix) {
+			names = append(names, e.Name())
+		}
+	}
+	return names
+}

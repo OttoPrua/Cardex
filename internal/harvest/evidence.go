@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/OttoPrua/Cardex/internal/roots"
 )
 
 const (
@@ -46,7 +48,7 @@ func writeEvidence(home, attemptID string, acceptance []byte, haveResult bool, r
 	if attemptID == "." || attemptID == ".." || strings.ContainsAny(attemptID, `/\\`) {
 		return fmt.Errorf("harvest: attempt id %q", attemptID)
 	}
-	dir := filepath.Join(home, "attempts", attemptID)
+	dir := roots.AttemptDirFor(home, attemptID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

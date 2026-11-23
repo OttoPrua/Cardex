@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 )
@@ -23,17 +24,18 @@ func (s *Store) CreateProject(ctx context.Context, p *model.Project) error {
 		return err
 	}
 	p.ForbiddenPaths = normStrings(p.ForbiddenPaths)
+	p.ScratchDir = stringsTrim(p.ScratchDir)
 	raw, err := mustJSON(p.ForbiddenPaths)
 	if err != nil {
 		return err
 	}
-	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO projects(id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review) VALUES (?,?,?,?,?,?,?,?)`,
-		p.ID, p.RepoPath, p.WorktreeRoot, p.TestCmd, p.DesignDir, raw, p.Sandbox, p.Review)
+	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO projects(id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review, scratch_dir) VALUES (?,?,?,?,?,?,?,?,?)`,
+		p.ID, p.RepoPath, p.WorktreeRoot, p.TestCmd, p.DesignDir, raw, p.Sandbox, p.Review, p.ScratchDir)
 	return err
 }
 
 func (s *Store) GetProject(ctx context.Context, id string) (model.Project, error) {
-	row := s.q(ctx).QueryRowContext(ctx, `SELECT id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review FROM projects WHERE id=?`, id)
+	row := s.q(ctx).QueryRowContext(ctx, `SELECT id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review, scratch_dir FROM projects WHERE id=?`, id)
 	return scanProject(row)
 }
 
@@ -48,12 +50,13 @@ func (s *Store) UpdateProject(ctx context.Context, p *model.Project) error {
 		return err
 	}
 	p.ForbiddenPaths = normStrings(p.ForbiddenPaths)
+	p.ScratchDir = stringsTrim(p.ScratchDir)
 	raw, err := mustJSON(p.ForbiddenPaths)
 	if err != nil {
 		return err
 	}
-	res, err := s.q(ctx).ExecContext(ctx, `UPDATE projects SET repo_path=?, worktree_root=?, test_cmd=?, design_dir=?, forbidden_paths=?, sandbox=?, review=? WHERE id=?`,
-		p.RepoPath, p.WorktreeRoot, p.TestCmd, p.DesignDir, raw, p.Sandbox, p.Review, p.ID)
+	res, err := s.q(ctx).ExecContext(ctx, `UPDATE projects SET repo_path=?, worktree_root=?, test_cmd=?, design_dir=?, forbidden_paths=?, sandbox=?, review=?, scratch_dir=? WHERE id=?`,
+		p.RepoPath, p.WorktreeRoot, p.TestCmd, p.DesignDir, raw, p.Sandbox, p.Review, p.ScratchDir, p.ID)
 	return rowsAffected(res, err)
 }
 
@@ -63,7 +66,7 @@ func (s *Store) DeleteProject(ctx context.Context, id string) error {
 }
 
 func (s *Store) ListProjects(ctx context.Context) ([]model.Project, error) {
-	rows, err := s.q(ctx).QueryContext(ctx, `SELECT id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review FROM projects ORDER BY id`)
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review, scratch_dir FROM projects ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -84,14 +87,19 @@ type scanner interface{ Scan(...any) error }
 func scanProject(sc scanner) (model.Project, error) {
 	var p model.Project
 	var forbidden string
-	if err := sc.Scan(&p.ID, &p.RepoPath, &p.WorktreeRoot, &p.TestCmd, &p.DesignDir, &forbidden, &p.Sandbox, &p.Review); err != nil {
+	if err := sc.Scan(&p.ID, &p.RepoPath, &p.WorktreeRoot, &p.TestCmd, &p.DesignDir, &forbidden, &p.Sandbox, &p.Review, &p.ScratchDir); err != nil {
 		return p, err
 	}
 	if err := parseJSON(forbidden, &p.ForbiddenPaths); err != nil {
 		return p, err
 	}
 	p.ForbiddenPaths = normStrings(p.ForbiddenPaths)
+	p.ScratchDir = stringsTrim(p.ScratchDir)
 	return p, nil
+}
+
+func stringsTrim(s string) string {
+	return strings.TrimSpace(s)
 }
 
 // normProjectSandbox stores the project default as "" (sandbox on) or "off".

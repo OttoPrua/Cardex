@@ -362,10 +362,16 @@ func run(ctx context.Context, home, attemptID string) error {
 func commandFor(argv, extra []string) (*exec.Cmd, error) {
 	// ApplyEngineEnv already removed another profile's managed keys. Merging
 	// that list back onto os.Environ() would put those keys back.
-	env := mergeEnv(os.Environ(), extra)
+	base := os.Environ()
+	overlay := extra
 	if completeEngineEnv(extra) {
-		env = mergeEnv(extra, nil)
+		base = extra
+		overlay = nil
 	}
+	// AcceptanceEnv's drops, with tool homes restored. A go test this child
+	// starts must not inherit CARDEX_SCHED_* or GIT_*; the CLI still needs
+	// the homes it was launched with, and overlay (the runner's env) wins.
+	env := mergeEnv(proc.ExecutorEnv(base), proc.ExecutorEnv(overlay))
 	cmd := &exec.Cmd{}
 	if argv[0] == "fake" {
 		exe, err := os.Executable()

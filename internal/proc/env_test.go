@@ -73,3 +73,48 @@ func TestAcceptanceEnvKeepsEntriesWithoutPrefix(t *testing.T) {
 		t.Fatalf("env\n got %q\nwant %q", got, want)
 	}
 }
+
+func TestExecutorEnvKeepsToolHomes(t *testing.T) {
+	in := []string{
+		"PATH=/usr/bin:/bin",
+		"HOME=/home/builder",
+		"TMPDIR=/tmp",
+		"GOCACHE=/cache/go",
+		"CARDEX_HOME=/home/builder/.cardex",
+		"CARDEX_SCHED_HOST=1",
+		"CARDEX_SCHED_ATTEMPT=att-1",
+		"CURSOR_CONFIG_DIR=/agents/cursor/config",
+		"cursor_data_dir=/agents/cursor/data",
+		"KIMI_CODE_HOME=/agents/kimi/home",
+		"CLAUDE_CONFIG_DIR=/agents/claude",
+		"OPENCODE_DB=/agents/opencode/opencode.db",
+		"GROK_HOME=/agents/grok",
+		"GEMINI_CLI_HOME=/agents/gemini",
+		"CODEX_HOME=/agents/codex",
+		"GIT_EXEC_PATH=/agents/bin",
+		"GIT_CONFIG_GLOBAL=/agents/gitconfig",
+		"ANTHROPIC_BASE_URL=https://api.example",
+		"KIMI_API_KEY=secret",
+	}
+	got := proc.ExecutorEnv(in)
+	want := []string{
+		"PATH=/usr/bin:/bin",
+		"HOME=/home/builder",
+		"TMPDIR=/tmp",
+		"GOCACHE=/cache/go",
+		"CARDEX_HOME=/home/builder/.cardex",
+		"ANTHROPIC_BASE_URL=https://api.example",
+		"CURSOR_CONFIG_DIR=/agents/cursor/config",
+		"cursor_data_dir=/agents/cursor/data",
+		"KIMI_CODE_HOME=/agents/kimi/home",
+		"CLAUDE_CONFIG_DIR=/agents/claude",
+		"OPENCODE_DB=/agents/opencode/opencode.db",
+		"GROK_HOME=/agents/grok",
+		"GEMINI_CLI_HOME=/agents/gemini",
+		"CODEX_HOME=/agents/codex",
+		"KIMI_API_KEY=secret",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("env\n got %q\nwant %q", got, want)
+	}
+}

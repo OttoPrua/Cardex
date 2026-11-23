@@ -7,6 +7,8 @@ import (
 )
 
 func TestRunChecksDropsServeEnv(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
 	t.Setenv("CARDEX_SCHED_HOST", "1")
 	t.Setenv("CARDEX_SCHED_ATTEMPT", "att-probe")
 	t.Setenv("CURSOR_CONFIG_DIR", t.TempDir())
@@ -18,7 +20,8 @@ func TestRunChecksDropsServeEnv(t *testing.T) {
 	t.Setenv("CODEX_HOME", t.TempDir())
 	t.Setenv("GIT_EXEC_PATH", t.TempDir())
 	t.Setenv("GIT_TEMPLATE_DIR", t.TempDir())
-	out, failed := runChecks(context.Background(), t.TempDir(), nil, serveEnvProbe)
+	probe := serveEnvProbe + "test \"$TMPDIR\" = '" + tmp + "'\n"
+	out, failed := runChecks(context.Background(), t.TempDir(), nil, probe)
 	if failed {
 		t.Fatalf("test command saw serve environment:\n%s", out)
 	}
@@ -34,5 +37,5 @@ do
 		exit 1
 	fi
 done
-test -n "$PATH" && test -n "$HOME" && test -n "$TMPDIR"
+test -n "$PATH" && test -n "$HOME"
 `

@@ -646,3 +646,99 @@ func denialRoot(t *testing.T, path string) bool {
 	}
 	return true
 }
+
+// Sandbox off still goes through commandFor. The child prints the environment
+// a go test it starts would inherit.
+func TestFakeExecutorDropsSchedEnvKeepsToolConfig(t *testing.T) {
+	cursor := t.TempDir()
+	kimiFromRunner := t.TempDir()
+	t.Setenv("CARDEX_SCHED_HOST", "1")
+	t.Setenv("CARDEX_SCHED_ATTEMPT", "att-probe")
+	t.Setenv("GIT_EXEC_PATH", t.TempDir())
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "gitconfig"))
+	t.Setenv("CURSOR_CONFIG_DIR", cursor)
+	t.Setenv("KIMI_CODE_HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	home, id, _ := seedPreparedCard(t, t.TempDir(), model.RunnerFake, "", 1, func(c *model.Card) {
+		c.Sandbox = "off"
+	}, func(string) any {
+		return map[string]any{
+			"attempts": map[string]any{
+				"0": map[string]any{
+					"echo_env": []string{
+						"CARDEX_SCHED_HOST", "CARDEX_SCHED_ATTEMPT",
+						"GIT_EXEC_PATH", "GIT_CONFIG_GLOBAL",
+						"CURSOR_CONFIG_DIR", "KIMI_CODE_HOME",
+						"PATH", "HOME", "TMPDIR",
+					},
+					"env": map[string]string{"KIMI_CODE_HOME": kimiFromRunner},
+				},
+			},
+		}
+	})
+	if err := host.Run(context.Background(), home, id); err != nil {
+		t.Fatal(err)
+	}
+	logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(logb)
+	for _, key := range []string{"CARDEX_SCHED_HOST", "CARDEX_SCHED_ATTEMPT", "GIT_EXEC_PATH", "GIT_CONFIG_GLOBAL"} {
+		if !strings.Contains(log, key+"=\n") {
+			t.Fatalf("executor kept %s\n%s", key, log)
+		}
+	}
+	for _, want := range []string{
+		"CURSOR_CONFIG_DIR=" + cursor + "\n",
+		"KIMI_CODE_HOME=" + kimiFromRunner + "\n",
+		"PATH=" + os.Getenv("PATH") + "\n",
+		"HOME=" + os.Getenv("HOME") + "\n",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("executor missing %q\n%s", want, log)
+		}
+	}
+	if tmp := os.Getenv("TMPDIR"); tmp != "" && !strings.Contains(log, "TMPDIR="+tmp+"\n") {
+		t.Fatalf("executor dropped TMPDIR\n%s", log)
+	}
+}
+
+func TestEngineChildDropsSchedEnvKeepsClaudeConfig(t *testing.T) {
+	binDir := t.TempDir()
+	stub := filepath.Join(binDir, "claude")
+	body := "#!/bin/sh\nprintf 'SCHED=%s\\n' \"$CARDEX_SCHED_HOST\"\nprintf 'ATTEMPT=%s\\n' \"$CARDEX_SCHED_ATTEMPT\"\nprintf 'GIT=%s\\n' \"$GIT_CONFIG_GLOBAL\"\nprintf 'CLAUDE=%s\\n' \"$CLAUDE_CONFIG_DIR\"\nprintf 'BASE=%s\\n' \"$ANTHROPIC_BASE_URL\"\n"
+	if err := os.WriteFile(stub, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claudeDir := t.TempDir()
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CARDEX_SCHED_HOST", "1")
+	t.Setenv("CARDEX_SCHED_ATTEMPT", "att-engine")
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(t.TempDir(), "gitconfig"))
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+	t.Setenv("KIMI_API_KEY", "secret-kimi-value")
+
+	home, id, _ := seedPreparedCard(t, t.TempDir(), model.RunnerClaude, "kimi", 1, func(c *model.Card) {
+		c.Sandbox = "off"
+	}, nil)
+	if err := host.Run(context.Background(), home, id); err != nil {
+		t.Fatal(err)
+	}
+	logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(logb)
+	for _, want := range []string{
+		"SCHED=\n",
+		"ATTEMPT=\n",
+		"GIT=\n",
+		"CLAUDE=" + claudeDir + "\n",
+		"BASE=https://api.kimi.com/coding/\n",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("child env missing %q\n%s", want, log)
+		}
+	}
+}

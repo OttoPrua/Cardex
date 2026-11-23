@@ -51,3 +51,35 @@ func dropAcceptanceEnv(key string) bool {
 	}
 	return false
 }
+
+// ExecutorEnv is the environment of a process the dev executor starts.
+// go test under that process must not see CARDEX_SCHED_* (sched's init would
+// enter host.Run before the test) or GIT_* (exec-path and templates break
+// git inside the suite). The same prefixes AcceptanceEnv drops are removed,
+// then agent CLI homes are put back: the executor still has to start the tool
+// with CURSOR_*, KIMI_*, CLAUDE_*, and the other homes it was given. The
+// caller merges the runner's own variables afterwards so those win.
+func ExecutorEnv(base []string) []string {
+	out := AcceptanceEnv(base)
+	for _, kv := range base {
+		key, _, ok := strings.Cut(kv, "=")
+		if !ok || key == "" || !toolHomeEnv(key) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+func toolHomeEnv(key string) bool {
+	upper := strings.ToUpper(key)
+	for _, prefix := range acceptanceDropPrefixes {
+		if prefix == "CARDEX_SCHED_" || prefix == "GIT_" {
+			continue
+		}
+		if strings.HasPrefix(upper, prefix) {
+			return true
+		}
+	}
+	return false
+}

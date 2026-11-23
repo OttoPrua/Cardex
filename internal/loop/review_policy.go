@@ -240,6 +240,12 @@ func reviewHoldUnmetReason(tier model.Tier, channel, modelName string) string {
 	return fmt.Sprintf("review hold unmet: tier %s channel %s model %s is not available without lowering the tier", tier, channel, modelName)
 }
 
+// ReviewFloorMet reports whether channel and model can take a review at floor.
+// An empty channel and an empty model means there is no pin to miss.
+func ReviewFloorMet(channels []model.Channel, rows []model.Positioning, channel, modelName string, floor model.Tier) bool {
+	return reviewConstraintMet(channels, rows, channel, modelName, floor)
+}
+
 func reviewConstraintMet(channels []model.Channel, rows []model.Positioning, channel, modelName string, floor model.Tier) bool {
 	if strings.TrimSpace(channel) == "" && strings.TrimSpace(modelName) == "" {
 		return true

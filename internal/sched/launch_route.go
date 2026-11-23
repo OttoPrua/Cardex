@@ -197,8 +197,25 @@ func (r *Runner) chooseHeldReviewRoute(ctx context.Context, db *store.Store, car
 		}
 		return model.Route{}, model.RouteReason{}, pinRelease{}, true, nil
 	}
-	rt, reason, err := chooseRoute(ctx, launchRequest(card, obj, channels, pos, inUse, quotas, classified, r.now()))
-	if err == nil && heldRouteBelow(reason, rt, tier) {
+	if !loop.ReviewFloorMet(channels, pos, card.Channel, card.Model, tier) {
+		if err := r.settleHeldReview(ctx, db, card, obj, tier, channel, modelName); err != nil {
+			return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
+		}
+		return model.Route{}, model.RouteReason{}, pinRelease{}, true, nil
+	}
+	routed := channels
+	if strings.TrimSpace(card.Model) == "" && strings.TrimSpace(card.Channel) != "" {
+		narrowed, ok := narrowHeldChannelModels(channels, pos, card.Channel, tier)
+		if !ok {
+			if err := r.settleHeldReview(ctx, db, card, obj, tier, channel, modelName); err != nil {
+				return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
+			}
+			return model.Route{}, model.RouteReason{}, pinRelease{}, true, nil
+		}
+		routed = narrowed
+	}
+	rt, reason, err := chooseRoute(ctx, launchRequest(card, obj, routed, pos, inUse, quotas, classified, r.now()))
+	if err == nil && (heldRouteBelow(reason, rt, tier) || !loop.ReviewFloorMet(channels, pos, rt.Channel, rt.Model, tier)) {
 		err = fmt.Errorf("routed below review hold %s", tier)
 	}
 	if err == nil {
@@ -215,6 +232,35 @@ func (r *Runner) chooseHeldReviewRoute(ctx context.Context, db *store.Store, car
 		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
 	}
 	return model.Route{}, model.RouteReason{}, pinRelease{}, true, nil
+}
+
+func (r *Runner) settleHeldReview(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, tier model.Tier, channel, modelName string) error {
+	text := fmt.Sprintf("review hold unmet: tier %s channel %s model %s is not available without lowering the tier", tier, channel, modelName)
+	return r.settleNoChannel(ctx, db, card, obj, text)
+}
+
+// narrowHeldChannelModels keeps only models on the pinned channel that meet floor.
+// The returned slice is a copy. ok is false when none of that channel's models meet it.
+func narrowHeldChannelModels(channels []model.Channel, rows []model.Positioning, channel string, floor model.Tier) ([]model.Channel, bool) {
+	out := make([]model.Channel, len(channels))
+	copy(out, channels)
+	for i := range out {
+		if out[i].ID != channel {
+			continue
+		}
+		var keep []string
+		for _, name := range out[i].Models {
+			if loop.ReviewFloorMet([]model.Channel{out[i]}, rows, out[i].ID, name, floor) {
+				keep = append(keep, name)
+			}
+		}
+		if len(keep) == 0 {
+			return nil, false
+		}
+		out[i].Models = keep
+		return out, true
+	}
+	return nil, false
 }
 
 func heldRouteBelow(reason model.RouteReason, rt model.Route, floor model.Tier) bool {

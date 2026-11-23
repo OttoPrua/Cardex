@@ -2,6 +2,8 @@ package loop
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,9 +13,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"crypto/rand"
-	"encoding/hex"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/notify"

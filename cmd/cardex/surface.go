@@ -72,7 +72,7 @@ func nodeList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		return writeJSON(stdout, items)
 	}
 	for _, n := range items {
-		fmt.Fprintf(stdout, "%s\t%s\n", n.ID, n.Status)
+		fmt.Fprintf(stdout, "%s\t%s\n", n.ID, paintStatus(stdout, false, string(n.Status)))
 	}
 	return 0
 }
@@ -97,7 +97,7 @@ func nodeShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	return emit(stdout, asJSON, n, n.ID+"\t"+string(n.Status))
+	return emit(stdout, asJSON, n, n.ID+"\t"+paintStatus(stdout, asJSON, string(n.Status)))
 }
 
 func nodeStatus(home string, asJSON bool, status model.NodeStatus, args []string, stdout, stderr io.Writer) int {
@@ -133,7 +133,7 @@ func nodeStatus(home string, asJSON bool, status model.NodeStatus, args []string
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	return emit(stdout, asJSON, n, n.ID+"\t"+string(n.Status))
+	return emit(stdout, asJSON, n, n.ID+"\t"+paintStatus(stdout, asJSON, string(n.Status)))
 }
 
 func statusVerb(status model.NodeStatus) string {
@@ -954,7 +954,7 @@ func positioningProposals(home string, asJSON bool, args []string, stdout, stder
 		return writeJSON(stdout, items)
 	}
 	for _, item := range items {
-		fmt.Fprintf(stdout, "%s\t%s\n", item.ID, item.Status)
+		fmt.Fprintf(stdout, "%s\t%s\n", item.ID, paintStatus(stdout, false, item.Status))
 	}
 	return 0
 }

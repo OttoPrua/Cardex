@@ -529,6 +529,9 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 	if origin != "" {
 		line += "\t" + origin
 	}
+	if useColor(stdout, asJSON) {
+		line += "\t" + colorStatus(string(c.Status))
+	}
 	return emit(stdout, asJSON, cardView{Card: c, Origin: origin, History: history, Attempts: attempts}, line)
 }
 

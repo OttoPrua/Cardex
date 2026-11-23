@@ -45,7 +45,18 @@ func buildRevision() string {
 	return rev
 }
 
-func cmdVersion(stdout io.Writer) int {
-	fmt.Fprintln(stdout, "cardex", version, buildRevision())
+func cmdVersion(home string, asJSON bool, stdout io.Writer) int {
+	rev := buildRevision()
+	if useColor(stdout, asJSON) {
+		dir := peekHome(home)
+		_ = writeBanner(stdout, bannerView{
+			Mode:    "version",
+			Version: version,
+			Rev:     rev,
+			Home:    dir,
+			Addr:    loadServeAddr(dir),
+		})
+	}
+	fmt.Fprintln(stdout, "cardex", version, rev)
 	return 0
 }

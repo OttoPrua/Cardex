@@ -1,0 +1,1392 @@
+{
+  "meta": {
+    "name": "Cardex VI",
+    "version": "v15 FINAL",
+    "date": "20261123",
+    "concept": "modern index-card / filing skeuomorphism; mark H1 Ink + wordmark U1 unchanged · v13/v14: L3 tactile, folders lie OPEN on a flat base board; nav/switcher are clean buttons (no sticky notes) · v14: flat paper colours, no textures · v15 FINAL: project folders get a deterministic paper colour; no crease line"
+  },
+  "color": {
+    "ink": "#16161A",
+    "paper": "#F5F4EF",
+    "blue": {
+      "50": "#EEF3FF",
+      "100": "#DCE6FF",
+      "200": "#BACDFF",
+      "300": "#8EADFF",
+      "400": "#5B8CFF",
+      "500": "#3F6EF5",
+      "600": "#2F5BEA",
+      "700": "#2447C2",
+      "800": "#1E3A99",
+      "900": "#1B3175"
+    },
+    "neutral": {
+      "0": "#FFFEFA",
+      "50": "#F5F4EF",
+      "100": "#ECE9E0",
+      "200": "#DFDBCF",
+      "300": "#C9C4B5",
+      "400": "#A39E90",
+      "500": "#716D63",
+      "600": "#625F57",
+      "700": "#45433E",
+      "800": "#2A2A2E",
+      "900": "#16161A"
+    },
+    "night": {
+      "desk": "#111114",
+      "drawer": "#18181C",
+      "card": "#212126",
+      "raised": "#2A2A30",
+      "line": "#36363E",
+      "muted": "#A6A39A"
+    },
+    "semantic": {
+      "light": {
+        "success": "#137A4B",
+        "warn": "#8F5B00",
+        "error": "#C42F1F",
+        "info": "#2F5BEA"
+      },
+      "dark": {
+        "success": "#4ADE95",
+        "warn": "#FFC53D",
+        "error": "#FF7A66",
+        "info": "#5B8CFF"
+      }
+    },
+    "tab": {
+      "light": {
+        "ready": "#C9C4B5",
+        "waiting": "#E6E2D6",
+        "running": "#2F5BEA",
+        "harvesting": "#22B8CF",
+        "reviewing": "#FFC53D",
+        "needs_input": "#FF7AB6",
+        "merge_queued": "#9EE6C4",
+        "merged": "#1FAE72",
+        "failed": "#FF5A36",
+        "paused": "#A39E90",
+        "canceled": "#DFDBCF"
+      },
+      "dark": {
+        "ready": "#5E5B54",
+        "waiting": "#3A3830",
+        "running": "#5B8CFF",
+        "harvesting": "#3CCFE4",
+        "reviewing": "#FFC53D",
+        "needs_input": "#FF8CC1",
+        "merge_queued": "#7FDDB3",
+        "merged": "#3DD68C",
+        "failed": "#FF7A5C",
+        "paused": "#6F6C64",
+        "canceled": "#34343B"
+      }
+    },
+    "tab-label": {
+      "light": {
+        "ready": "#16161A",
+        "waiting": "#16161A",
+        "running": "#FFFFFF",
+        "harvesting": "#16161A",
+        "reviewing": "#16161A",
+        "needs_input": "#16161A",
+        "merge_queued": "#16161A",
+        "merged": "#16161A",
+        "failed": "#16161A",
+        "paused": "#16161A",
+        "canceled": "#16161A"
+      },
+      "dark": {
+        "ready": "#FFFFFF",
+        "waiting": "#FFFFFF",
+        "running": "#16161A",
+        "harvesting": "#16161A",
+        "reviewing": "#16161A",
+        "needs_input": "#16161A",
+        "merge_queued": "#16161A",
+        "merged": "#16161A",
+        "failed": "#16161A",
+        "paused": "#FFFFFF",
+        "canceled": "#FFFFFF"
+      }
+    },
+    "material": {
+      "folder": "#F1E4C4",
+      "folder-edge": "#D9C38E",
+      "kraft": "#C9AE73"
+    },
+    "theme": {
+      "light": {
+        "bg/desk": "#F5F4EF",
+        "bg/drawer": "#ECE9E0",
+        "surface/card": "#FFFEFA",
+        "surface/folder": "#F1E4C4",
+        "surface/folder-edge": "#D9C38E",
+        "line/rule": "#DFDBCF",
+        "line/strong": "#C9C4B5",
+        "text/primary": "#16161A",
+        "text/secondary": "#625F57",
+        "text/muted": "#716D63",
+        "brand/blue": "#2F5BEA",
+        "brand/ink": "#16161A",
+        "accent": "#FF5A36",
+        "accent-text": "#C23A1E",
+        "focus": "#2F5BEA",
+        "index-rule": "#2F5BEA",
+        "shadow/card": "0 1px 0 rgba(22,22,26,.06), 0 2px 6px -2px rgba(22,22,26,.14)",
+        "shadow/lift": "0 2px 0 rgba(22,22,26,.05), 0 12px 24px -10px rgba(22,22,26,.28)"
+      },
+      "dark": {
+        "bg/desk": "#111114",
+        "bg/drawer": "#18181C",
+        "surface/card": "#212126",
+        "surface/folder": "#2B2722",
+        "surface/folder-edge": "#4A4134",
+        "line/rule": "#2E2E35",
+        "line/strong": "#36363E",
+        "text/primary": "#F5F4EF",
+        "text/secondary": "#C9C6BD",
+        "text/muted": "#A6A39A",
+        "brand/blue": "#5B8CFF",
+        "brand/ink": "#F5F4EF",
+        "accent": "#FF7A5C",
+        "accent-text": "#FF7A5C",
+        "focus": "#5B8CFF",
+        "index-rule": "#5B8CFF",
+        "shadow/card": "0 1px 0 rgba(255,255,255,.04) inset, 0 2px 8px -2px rgba(0,0,0,.6)",
+        "shadow/lift": "0 1px 0 rgba(255,255,255,.05) inset, 0 14px 28px -10px rgba(0,0,0,.75)"
+      }
+    },
+    "logo": {
+      "light": {
+        "front": "#16161A",
+        "back": "#2F5BEA"
+      },
+      "dark": {
+        "front": "#F5F4EF",
+        "back": "#5B8CFF"
+      },
+      "dark-16px-back": "#7DA6FF"
+    }
+  },
+  "state": [
+    {
+      "id": "ready",
+      "zh": "排队 ready",
+      "stamp": "QUEUED"
+    },
+    {
+      "id": "waiting",
+      "zh": "等待 waiting",
+      "stamp": "WAITING"
+    },
+    {
+      "id": "running",
+      "zh": "进行中 running",
+      "stamp": "RUNNING"
+    },
+    {
+      "id": "harvesting",
+      "zh": "收割/测试 harvesting",
+      "stamp": "TESTING"
+    },
+    {
+      "id": "reviewing",
+      "zh": "复核 reviewing",
+      "stamp": "REVIEW"
+    },
+    {
+      "id": "needs_input",
+      "zh": "待你拍板 needs_input",
+      "stamp": "YOUR CALL"
+    },
+    {
+      "id": "merge_queued",
+      "zh": "合并队列 merge_queued",
+      "stamp": "MERGE Q"
+    },
+    {
+      "id": "merged",
+      "zh": "已合入 merged / done",
+      "stamp": "MERGED"
+    },
+    {
+      "id": "failed",
+      "zh": "失败/返工 failed",
+      "stamp": "RETURNED"
+    },
+    {
+      "id": "paused",
+      "zh": "暂停 paused",
+      "stamp": "PAUSED"
+    },
+    {
+      "id": "canceled",
+      "zh": "取消 canceled",
+      "stamp": "VOID"
+    }
+  ],
+  "radius": {
+    "xs": 4,
+    "sm": 6,
+    "md": 10,
+    "lg": 14,
+    "tab": 8,
+    "card-ratio": 0.27
+  },
+  "space": [
+    0,
+    2,
+    4,
+    8,
+    12,
+    16,
+    20,
+    24,
+    32,
+    40,
+    48,
+    64
+  ],
+  "type": {
+    "family/display": "Manrope, \"Noto Sans SC\", \"PingFang SC\", sans-serif",
+    "family/body": "Manrope, \"Noto Sans SC\", \"PingFang SC\", system-ui, sans-serif",
+    "family/mono": "\"Geist Mono\", ui-monospace, \"SFMono-Regular\", Menlo, monospace",
+    "scale": [
+      {
+        "name": "display-xl",
+        "size": 56,
+        "line": 64,
+        "weight": 800,
+        "tracking_em": -0.03
+      },
+      {
+        "name": "display",
+        "size": 40,
+        "line": 48,
+        "weight": 800,
+        "tracking_em": -0.025
+      },
+      {
+        "name": "h1",
+        "size": 28,
+        "line": 36,
+        "weight": 800,
+        "tracking_em": -0.02
+      },
+      {
+        "name": "h2",
+        "size": 20,
+        "line": 28,
+        "weight": 700,
+        "tracking_em": -0.01
+      },
+      {
+        "name": "h3",
+        "size": 16,
+        "line": 24,
+        "weight": 700,
+        "tracking_em": 0
+      },
+      {
+        "name": "body-lg",
+        "size": 16,
+        "line": 26,
+        "weight": 500,
+        "tracking_em": 0
+      },
+      {
+        "name": "body",
+        "size": 14,
+        "line": 22,
+        "weight": 500,
+        "tracking_em": 0
+      },
+      {
+        "name": "small",
+        "size": 12,
+        "line": 18,
+        "weight": 500,
+        "tracking_em": 0
+      },
+      {
+        "name": "label-mono",
+        "size": 11,
+        "line": 16,
+        "weight": 600,
+        "tracking_em": 0.08
+      },
+      {
+        "name": "code",
+        "size": 12.5,
+        "line": 20,
+        "weight": 450,
+        "tracking_em": 0
+      }
+    ]
+  },
+  "motion": {
+    "ease/file": "cubic-bezier(.2,.8,.2,1)",
+    "ease/flip": "cubic-bezier(.6,0,.2,1)",
+    "ease/settle": "cubic-bezier(.34,1.56,.64,1)",
+    "dur/xs": 120,
+    "dur/sm": 180,
+    "dur/md": 280,
+    "dur/lg": 420,
+    "dur/loading-loop": 1200,
+    "dur/idle-wink": 180,
+    "idle-wink-every": "6–9s",
+    "view-switch/total": 800,
+    "view-switch/gather": 300,
+    "view-switch/resort": 150,
+    "view-switch/fan": 350,
+    "view-switch/stagger": 40,
+    "view-switch/ease-gather": "cubic-bezier(.6,0,.2,1)",
+    "view-switch/ease-fan": "cubic-bezier(.2,.8,.2,1)",
+    "view-switch/reduced": "crossfade 160ms linear",
+    "card-move/total": 520,
+    "view-switch-v14": {
+      "timeline_ms": {
+        "press": [
+          0,
+          120
+        ],
+        "thumb": [
+          0,
+          220
+        ],
+        "gather": [
+          30,
+          380
+        ],
+        "gather-stagger-inner": 30,
+        "relabel": [
+          300,
+          120
+        ],
+        "fan": [
+          450,
+          380
+        ],
+        "fan-stagger": 28,
+        "total": 914
+      },
+      "spring": {
+        "drive-ms": 260,
+        "drive": "easeInOutCubic",
+        "freq-hz": 7.5,
+        "zeta": 0.52,
+        "curve-ms": 380
+      },
+      "stats": {
+        "overshoot": 2.0,
+        "t_peak": 253.0,
+        "settle": 294.0,
+        "t10": 101.0,
+        "t90": 201.0,
+        "vmax": 10.37
+      },
+      "css_linear_easing": "linear(0.0000 0.0%, 0.0000 4.2%, 0.0007 8.4%, 0.0043 12.6%, 0.0141 16.6%, 0.0370 20.8%, 0.0788 25.0%, 0.1459 29.2%, 0.2442 33.4%, 0.3693 37.4%, 0.5297 41.6%, 0.6912 45.8%, 0.8280 50.0%, 0.9265 54.2%, 0.9858 58.4%, 1.0135 62.6%, 1.0200 66.6%, 1.0158 70.8%, 1.0079 75.0%, 1.0013 79.2%, 0.9979 83.4%, 0.9971 87.4%, 0.9978 91.6%, 0.9989 95.8%, 0.9999 100.0%)",
+      "folders_stay_open": true,
+      "reduced": "crossfade 160ms linear, no movement"
+    },
+    "folder-open-v14": {
+      "timeline_ms": {
+        "lift": [
+          0,
+          70,
+          12
+        ],
+        "fall": [
+          70,
+          230
+        ],
+        "restitution": 0.28,
+        "deal": [
+          300,
+          260
+        ],
+        "deal-stagger": 50,
+        "total": 720
+      },
+      "note": "flap lifts 12° (70ms ease-out), falls under constant acceleration (230ms), bounces with restitution .28 (≈13°, then ≈1°); cards deal on the weight curve"
+    }
+  },
+  "contrast": [
+    {
+      "mode": "light",
+      "token": "text/primary",
+      "hex": "#16161A",
+      "against": "card",
+      "ratio": 17.88,
+      "against2": "desk",
+      "ratio2": 16.39
+    },
+    {
+      "mode": "light",
+      "token": "text/secondary",
+      "hex": "#625F57",
+      "against": "card",
+      "ratio": 6.32,
+      "against2": "desk",
+      "ratio2": 5.79
+    },
+    {
+      "mode": "light",
+      "token": "text/muted",
+      "hex": "#716D63",
+      "against": "card",
+      "ratio": 5.11,
+      "against2": "desk",
+      "ratio2": 4.69
+    },
+    {
+      "mode": "light",
+      "token": "brand/blue",
+      "hex": "#2F5BEA",
+      "against": "card",
+      "ratio": 5.47,
+      "against2": "desk",
+      "ratio2": 5.01
+    },
+    {
+      "mode": "light",
+      "token": "accent",
+      "hex": "#FF5A36",
+      "against": "card",
+      "ratio": 3.07,
+      "against2": "desk",
+      "ratio2": 2.82
+    },
+    {
+      "mode": "light",
+      "token": "accent-text",
+      "hex": "#C23A1E",
+      "against": "card",
+      "ratio": 5.31,
+      "against2": "desk",
+      "ratio2": 4.87
+    },
+    {
+      "mode": "light",
+      "token": "semantic/success",
+      "hex": "#137A4B",
+      "against": "card",
+      "ratio": 5.32,
+      "against2": "desk",
+      "ratio2": 4.87
+    },
+    {
+      "mode": "light",
+      "token": "semantic/warn",
+      "hex": "#8F5B00",
+      "against": "card",
+      "ratio": 5.68,
+      "against2": "desk",
+      "ratio2": 5.2
+    },
+    {
+      "mode": "light",
+      "token": "semantic/error",
+      "hex": "#C42F1F",
+      "against": "card",
+      "ratio": 5.51,
+      "against2": "desk",
+      "ratio2": 5.05
+    },
+    {
+      "mode": "light",
+      "token": "semantic/info",
+      "hex": "#2F5BEA",
+      "against": "card",
+      "ratio": 5.47,
+      "against2": "desk",
+      "ratio2": 5.01
+    },
+    {
+      "mode": "light",
+      "token": "tab/ready",
+      "hex": "#C9C4B5",
+      "against": "label #16161A",
+      "ratio": 10.35,
+      "against2": "vs card (graphic)",
+      "ratio2": 1.73
+    },
+    {
+      "mode": "light",
+      "token": "tab/waiting",
+      "hex": "#E6E2D6",
+      "against": "label #16161A",
+      "ratio": 13.93,
+      "against2": "vs card (graphic)",
+      "ratio2": 1.28
+    },
+    {
+      "mode": "light",
+      "token": "tab/running",
+      "hex": "#2F5BEA",
+      "against": "label #FFFFFF",
+      "ratio": 5.52,
+      "against2": "vs card (graphic)",
+      "ratio2": 5.47
+    },
+    {
+      "mode": "light",
+      "token": "tab/harvesting",
+      "hex": "#22B8CF",
+      "against": "label #16161A",
+      "ratio": 7.58,
+      "against2": "vs card (graphic)",
+      "ratio2": 2.36
+    },
+    {
+      "mode": "light",
+      "token": "tab/reviewing",
+      "hex": "#FFC53D",
+      "against": "label #16161A",
+      "ratio": 11.43,
+      "against2": "vs card (graphic)",
+      "ratio2": 1.56
+    },
+    {
+      "mode": "light",
+      "token": "tab/needs_input",
+      "hex": "#FF7AB6",
+      "against": "label #16161A",
+      "ratio": 7.49,
+      "against2": "vs card (graphic)",
+      "ratio2": 2.39
+    },
+    {
+      "mode": "light",
+      "token": "tab/merge_queued",
+      "hex": "#9EE6C4",
+      "against": "label #16161A",
+      "ratio": 12.52,
+      "against2": "vs card (graphic)",
+      "ratio2": 1.43
+    },
+    {
+      "mode": "light",
+      "token": "tab/merged",
+      "hex": "#1FAE72",
+      "against": "label #16161A",
+      "ratio": 6.32,
+      "against2": "vs card (graphic)",
+      "ratio2": 2.83
+    },
+    {
+      "mode": "light",
+      "token": "tab/failed",
+      "hex": "#FF5A36",
+      "against": "label #16161A",
+      "ratio": 5.82,
+      "against2": "vs card (graphic)",
+      "ratio2": 3.07
+    },
+    {
+      "mode": "light",
+      "token": "tab/paused",
+      "hex": "#A39E90",
+      "against": "label #16161A",
+      "ratio": 6.75,
+      "against2": "vs card (graphic)",
+      "ratio2": 2.65
+    },
+    {
+      "mode": "light",
+      "token": "tab/canceled",
+      "hex": "#DFDBCF",
+      "against": "label #16161A",
+      "ratio": 13.04,
+      "against2": "vs card (graphic)",
+      "ratio2": 1.37
+    },
+    {
+      "mode": "dark",
+      "token": "text/primary",
+      "hex": "#F5F4EF",
+      "against": "card",
+      "ratio": 14.55,
+      "against2": "desk",
+      "ratio2": 17.12
+    },
+    {
+      "mode": "dark",
+      "token": "text/secondary",
+      "hex": "#C9C6BD",
+      "against": "card",
+      "ratio": 9.38,
+      "against2": "desk",
+      "ratio2": 11.04
+    },
+    {
+      "mode": "dark",
+      "token": "text/muted",
+      "hex": "#A6A39A",
+      "against": "card",
+      "ratio": 6.36,
+      "against2": "desk",
+      "ratio2": 7.47
+    },
+    {
+      "mode": "dark",
+      "token": "brand/blue",
+      "hex": "#5B8CFF",
+      "against": "card",
+      "ratio": 5.07,
+      "against2": "desk",
+      "ratio2": 5.96
+    },
+    {
+      "mode": "dark",
+      "token": "accent",
+      "hex": "#FF7A5C",
+      "against": "card",
+      "ratio": 6.25,
+      "against2": "desk",
+      "ratio2": 7.35
+    },
+    {
+      "mode": "dark",
+      "token": "accent-text",
+      "hex": "#FF7A5C",
+      "against": "card",
+      "ratio": 6.25,
+      "against2": "desk",
+      "ratio2": 7.35
+    },
+    {
+      "mode": "dark",
+      "token": "semantic/success",
+      "hex": "#4ADE95",
+      "against": "card",
+      "ratio": 9.29,
+      "against2": "desk",
+      "ratio2": 10.93
+    },
+    {
+      "mode": "dark",
+      "token": "semantic/warn",
+      "hex": "#FFC53D",
+      "against": "card",
+      "ratio": 10.16,
+      "against2": "desk",
+      "ratio2": 11.94
+    },
+    {
+      "mode": "dark",
+      "token": "semantic/error",
+      "hex": "#FF7A66",
+      "against": "card",
+      "ratio": 6.28,
+      "against2": "desk",
+      "ratio2": 7.38
+    },
+    {
+      "mode": "dark",
+      "token": "semantic/info",
+      "hex": "#5B8CFF",
+      "against": "card",
+      "ratio": 5.07,
+      "against2": "desk",
+      "ratio2": 5.96
+    },
+    {
+      "mode": "dark",
+      "token": "tab/ready",
+      "hex": "#5E5B54",
+      "against": "label #FFFFFF",
+      "ratio": 6.77,
+      "against2": "vs card (graphic)",
+      "ratio2": 2.37
+    },
+    {
+      "mode": "dark",
+      "token": "tab/waiting",
+      "hex": "#3A3830",
+      "against": "label #FFFFFF",
+      "ratio": 11.74,
+      "against2": "vs card (graphic)",
+      "ratio2": 1.36
+    },
+    {
+      "mode": "dark",
+      "token": "tab/running",
+      "hex": "#5B8CFF",
+      "against": "label #16161A",
+      "ratio": 5.71,
+      "against2": "vs card (graphic)",
+      "ratio2": 5.07
+    },
+    {
+      "mode": "dark",
+      "token": "tab/harvesting",
+      "hex": "#3CCFE4",
+      "against": "label #16161A",
+      "ratio": 9.66,
+      "against2": "vs card (graphic)",
+      "ratio2": 8.58
+    },
+    {
+      "mode": "dark",
+      "token": "tab/reviewing",
+      "hex": "#FFC53D",
+      "against": "label #16161A",
+      "ratio": 11.43,
+      "against2": "vs card (graphic)",
+      "ratio2": 10.16
+    },
+    {
+      "mode": "dark",
+      "token": "tab/needs_input",
+      "hex": "#FF8CC1",
+      "against": "label #16161A",
+      "ratio": 8.4,
+      "against2": "vs card (graphic)",
+      "ratio2": 7.46
+    },
+    {
+      "mode": "dark",
+      "token": "tab/merge_queued",
+      "hex": "#7FDDB3",
+      "against": "label #16161A",
+      "ratio": 11.08,
+      "against2": "vs card (graphic)",
+      "ratio2": 9.84
+    },
+    {
+      "mode": "dark",
+      "token": "tab/merged",
+      "hex": "#3DD68C",
+      "against": "label #16161A",
+      "ratio": 9.62,
+      "against2": "vs card (graphic)",
+      "ratio2": 8.55
+    },
+    {
+      "mode": "dark",
+      "token": "tab/failed",
+      "hex": "#FF7A5C",
+      "against": "label #16161A",
+      "ratio": 7.04,
+      "against2": "vs card (graphic)",
+      "ratio2": 6.25
+    },
+    {
+      "mode": "dark",
+      "token": "tab/paused",
+      "hex": "#6F6C64",
+      "against": "label #FFFFFF",
+      "ratio": 5.24,
+      "against2": "vs card (graphic)",
+      "ratio2": 3.06
+    },
+    {
+      "mode": "dark",
+      "token": "tab/canceled",
+      "hex": "#34343B",
+      "against": "label #FFFFFF",
+      "ratio": 12.35,
+      "against2": "vs card (graphic)",
+      "ratio2": 1.3
+    }
+  ],
+  "variants": {
+    "A": {
+      "key": "manila",
+      "name": "A · Manila & Kraft 牛皮纸档案",
+      "desk": "#EFE6D2",
+      "card": "#FFFCF3",
+      "folder": "#E8CF97",
+      "folder_edge": "#C9A867",
+      "kraft": "#B88A55",
+      "accent": "#B4532A",
+      "accent_d": "#F08A5D",
+      "tabs": {
+        "ready": "#CFC3A6",
+        "waiting": "#E6DCC4",
+        "running": "#2F5BEA",
+        "harvesting": "#6E9C8E",
+        "reviewing": "#D9A43A",
+        "needs_input": "#C96F4A",
+        "merge_queued": "#A8C49A",
+        "merged": "#4F8A5B",
+        "failed": "#B4432F",
+        "paused": "#BDB5A3",
+        "canceled": "#D8D0BE"
+      },
+      "note": "最温暖、最有“档案室”味道；赭石作辅色。风险：容易显旧、偏复古，跟“科技感”有距离。"
+    },
+    "B": {
+      "key": "office",
+      "name": "B · Office Stock 冷灰办公卡纸",
+      "desk": "#E6E8EC",
+      "card": "#FBFCFD",
+      "folder": "#D4D9E1",
+      "folder_edge": "#AEB6C3",
+      "kraft": "#8D97A6",
+      "accent": "#0E7C86",
+      "accent_d": "#3FC6CF",
+      "tabs": {
+        "ready": "#C3C9D3",
+        "waiting": "#DDE1E7",
+        "running": "#2F5BEA",
+        "harvesting": "#0E7C86",
+        "reviewing": "#E3A81B",
+        "needs_input": "#E06C2E",
+        "merge_queued": "#9FD3B8",
+        "merged": "#17915C",
+        "failed": "#D63A2B",
+        "paused": "#B4BBC6",
+        "canceled": "#D3D7DE"
+      },
+      "note": "最“工具感”、最冷静；青作辅色。风险：冷灰 + 蓝 最接近 Kardex AG 的钢蓝工业感（#507295），不推荐。"
+    },
+    "C": {
+      "key": "tabs",
+      "name": "C · Colour Tabs 彩色索引签（推荐）",
+      "desk": "#F5F4EF",
+      "card": "#FFFEFA",
+      "folder": "#F1E4C4",
+      "folder_edge": "#D9C38E",
+      "kraft": "#C9AE73",
+      "accent": "#FF5A36",
+      "accent_d": "#FF7A5C",
+      "tabs": {
+        "ready": "#C9C4B5",
+        "waiting": "#E6E2D6",
+        "running": "#2F5BEA",
+        "harvesting": "#22B8CF",
+        "reviewing": "#FFC53D",
+        "needs_input": "#FF7AB6",
+        "merge_queued": "#9EE6C4",
+        "merged": "#1FAE72",
+        "failed": "#FF5A36",
+        "paused": "#A39E90",
+        "canceled": "#DFDBCF"
+      },
+      "note": "暖白纸面 + 浅马尼拉夹 + 一组鲜亮的索引签；蓝仍是唯一品牌色，签色只表达状态。最现代、最“轻松”，又保留档案的手感。"
+    }
+  },
+  "folder": {
+    "geometry_px": {
+      "tab-h": 34,
+      "tab-w-min": 150,
+      "tab-pad-x": 14,
+      "tab-r": 10,
+      "shoulder-r": 10,
+      "body-r": 14,
+      "edge": 1,
+      "stack-step": 8,
+      "pile-tab-stagger": 0.82
+    },
+    "fill": {
+      "light": {
+        "queued": "#EEEBE4",
+        "running": "#D5DDF7",
+        "review": "#FFF3D4",
+        "merge": "#D2EEDF",
+        "input": "#FFE4EC",
+        "failed": "#FFDDD3",
+        "paused": "#E2DFD8",
+        "project": "#F1E4C4"
+      },
+      "dark": {
+        "queued": "#3B3939",
+        "running": "#2A344F",
+        "review": "#4B3F28",
+        "merge": "#244338",
+        "input": "#4B3443",
+        "failed": "#4B302E",
+        "paused": "#424140",
+        "project": "#2B2722"
+      }
+    },
+    "edge": {
+      "light": {
+        "queued": "#97938A",
+        "running": "#2848B0",
+        "review": "#BE9433",
+        "merge": "#1C8359",
+        "input": "#BE5E8A",
+        "failed": "#BE472E",
+        "paused": "#7C786F",
+        "project": "#D9C38E"
+      },
+      "dark": {
+        "queued": "#2F2E2E",
+        "running": "#2E3F6A",
+        "review": "#685326",
+        "merge": "#245942",
+        "input": "#683F54",
+        "failed": "#683931",
+        "paused": "#353434",
+        "project": "#4A4134"
+      }
+    },
+    "groups": [
+      {
+        "id": "queued",
+        "zh": "排队",
+        "status_colour_from": "ready"
+      },
+      {
+        "id": "running",
+        "zh": "在做",
+        "status_colour_from": "running"
+      },
+      {
+        "id": "review",
+        "zh": "复核",
+        "status_colour_from": "reviewing"
+      },
+      {
+        "id": "merge",
+        "zh": "合入",
+        "status_colour_from": "merged"
+      },
+      {
+        "id": "input",
+        "zh": "待你拍板",
+        "status_colour_from": "needs_input"
+      },
+      {
+        "id": "failed",
+        "zh": "失败",
+        "status_colour_from": "failed"
+      },
+      {
+        "id": "paused",
+        "zh": "暂停/取消",
+        "status_colour_from": "paused"
+      }
+    ],
+    "contrast": {
+      "queued": {
+        "ink_on_light": 15.16,
+        "paper_on_dark": 10.42
+      },
+      "running": {
+        "ink_on_light": 13.33,
+        "paper_on_dark": 11.2
+      },
+      "review": {
+        "ink_on_light": 16.35,
+        "paper_on_dark": 9.34
+      },
+      "merge": {
+        "ink_on_light": 14.64,
+        "paper_on_dark": 9.85
+      },
+      "input": {
+        "ink_on_light": 15.09,
+        "paper_on_dark": 10.19
+      },
+      "failed": {
+        "ink_on_light": 14.21,
+        "paper_on_dark": 10.83
+      },
+      "paused": {
+        "ink_on_light": 13.56,
+        "paper_on_dark": 9.25
+      },
+      "project": {
+        "ink_on_light": 14.29,
+        "paper_on_dark": 13.47
+      }
+    }
+  },
+  "open-folder": {
+    "geometry_px": {
+      "tab-h": 52,
+      "tab-w": 204,
+      "shoulder-w": 30,
+      "radius": 12,
+      "tab-r": 12,
+      "flap-ratio": 0.465,
+      "lip": 2,
+      "card-h": 88,
+      "card-gap": 12,
+      "card-inset": 14,
+      "card-top": 20,
+      "pile-top": 56,
+      "stack-dx": 22,
+      "stack-dy": 14
+    },
+    "groups": {
+      "queued": {
+        "desc": "等待分派给工具的卡",
+        "chip": "ready"
+      },
+      "running": {
+        "desc": "工具正在执行",
+        "chip": "running"
+      },
+      "review": {
+        "desc": "交叉评审中",
+        "chip": "reviewing"
+      },
+      "merge": {
+        "desc": "等待或已合并",
+        "chip": "merged"
+      },
+      "input": {
+        "desc": "需要你拍板才能继续",
+        "chip": "needs_input"
+      },
+      "failed": {
+        "desc": "失败或被退回，待返工",
+        "chip": "failed"
+      },
+      "paused": {
+        "desc": "暂停或取消的卡",
+        "chip": "paused"
+      },
+      "project": {
+        "desc": "(project goal)",
+        "chip": null
+      }
+    },
+    "light": {
+      "in": {
+        "queued": "#ECE7DD",
+        "running": "#D4DAEF",
+        "review": "#FCEFCE",
+        "merge": "#D1EAD9",
+        "input": "#FCE1E5",
+        "failed": "#FCDACD",
+        "paused": "#E0DCD2",
+        "project": "#EFE1BF"
+      },
+      "out": {
+        "queued": "#DBD6CC",
+        "running": "#B2BDE2",
+        "review": "#F0DDAF",
+        "merge": "#ADD5BF",
+        "input": "#F0C7D3",
+        "failed": "#F0BDAD",
+        "paused": "#CCC8BE",
+        "project": "#EBDBB5"
+      },
+      "edge": {
+        "queued": "#BDB9AF",
+        "running": "#758ACC",
+        "review": "#DABD79",
+        "merge": "#6DB193",
+        "input": "#DA99B3",
+        "failed": "#DA8976",
+        "paused": "#A9A59C",
+        "project": "#E3D0A4"
+      },
+      "lip": {
+        "queued": "#CAC6BE",
+        "running": "#B6BBCD",
+        "review": "#D7CCB1",
+        "merge": "#B3C8BA",
+        "input": "#D7C1C5",
+        "failed": "#D7BBB0",
+        "paused": "#C0BCB5",
+        "project": "#CCC1A5"
+      },
+      "desc": "#57534B"
+    },
+    "dark": {
+      "in": {
+        "queued": "#3B3939",
+        "running": "#2A344F",
+        "review": "#4B3F28",
+        "merge": "#244338",
+        "input": "#4B3443",
+        "failed": "#4B302E",
+        "paused": "#424140",
+        "project": "#3A3429"
+      },
+      "out": {
+        "queued": "#333131",
+        "running": "#242D44",
+        "review": "#403622",
+        "merge": "#1F3A30",
+        "input": "#402D3A",
+        "failed": "#402928",
+        "paused": "#393837",
+        "project": "#322D23"
+      },
+      "edge": {
+        "queued": "#323131",
+        "running": "#2D3C63",
+        "review": "#614E26",
+        "merge": "#245440",
+        "input": "#613C50",
+        "failed": "#613730",
+        "paused": "#383737",
+        "project": "#463E31"
+      },
+      "lip": {
+        "queued": "#201F1F",
+        "running": "#171D2B",
+        "review": "#292316",
+        "merge": "#14251F",
+        "input": "#291D25",
+        "failed": "#291A19",
+        "paused": "#242423",
+        "project": "#201D17"
+      },
+      "desc": "#C9C6BD"
+    },
+    "contrast": {
+      "queued": {
+        "ink_on_in_light": 14.64,
+        "desc_on_in_light": 6.21,
+        "paper_on_in_dark": 10.42,
+        "desc_on_in_dark": 6.72
+      },
+      "running": {
+        "ink_on_in_light": 12.95,
+        "desc_on_in_light": 5.49,
+        "paper_on_in_dark": 11.2,
+        "desc_on_in_dark": 7.22
+      },
+      "review": {
+        "ink_on_in_light": 15.79,
+        "desc_on_in_light": 6.7,
+        "paper_on_in_dark": 9.34,
+        "desc_on_in_dark": 6.03
+      },
+      "merge": {
+        "ink_on_in_light": 14.16,
+        "desc_on_in_light": 6.01,
+        "paper_on_in_dark": 9.85,
+        "desc_on_in_dark": 6.35
+      },
+      "input": {
+        "ink_on_in_light": 14.64,
+        "desc_on_in_light": 6.21,
+        "paper_on_in_dark": 10.19,
+        "desc_on_in_dark": 6.57
+      },
+      "failed": {
+        "ink_on_in_light": 13.79,
+        "desc_on_in_light": 5.85,
+        "paper_on_in_dark": 10.83,
+        "desc_on_in_dark": 6.98
+      },
+      "paused": {
+        "ink_on_in_light": 13.18,
+        "desc_on_in_light": 5.59,
+        "paper_on_in_dark": 9.25,
+        "desc_on_in_dark": 5.96
+      },
+      "project": {
+        "ink_on_in_light": 13.91,
+        "desc_on_in_light": 5.9,
+        "paper_on_in_dark": 11.2,
+        "desc_on_in_dark": 7.22
+      }
+    }
+  },
+  "shadow-v13": {
+    "light": {
+      "folder": "0 1px 0 rgba(22,22,26,.06), 0 6px 14px -6px rgba(22,22,26,.20)",
+      "card": "0 1px 0 rgba(22,22,26,.05), 0 3px 8px -3px rgba(22,22,26,.20)",
+      "thumb": "0 1px 0 rgba(22,22,26,.06), 0 2px 5px -1px rgba(22,22,26,.18)"
+    },
+    "dark": {
+      "folder": "0 1px 0 rgba(255,255,255,.03) inset, 0 8px 18px -6px rgba(0,0,0,.60)",
+      "card": "0 1px 0 rgba(255,255,255,.04) inset, 0 3px 9px -3px rgba(0,0,0,.6)",
+      "thumb": "0 1px 0 rgba(255,255,255,.06) inset, 0 2px 6px -1px rgba(0,0,0,.6)"
+    }
+  },
+  "button": {
+    "light": {
+      "tray": "#ECE9E0",
+      "tray-edge": "#DFDBCF",
+      "thumb": "#FFFEFA",
+      "text": "#625F57",
+      "text-on": "#16161A",
+      "pill-on": "#16161A",
+      "pill-on-text": "#F5F4EF",
+      "hover": "#E4E0D4"
+    },
+    "dark": {
+      "tray": "#202026",
+      "tray-edge": "#2E2E35",
+      "thumb": "#34343C",
+      "text": "#C9C6BD",
+      "text-on": "#F5F4EF",
+      "pill-on": "#F5F4EF",
+      "pill-on-text": "#16161A",
+      "hover": "#2A2A30"
+    }
+  },
+  "project-palette": {
+    "order": [
+      "manila",
+      "kraft",
+      "lilac",
+      "pistachio",
+      "clay",
+      "slate",
+      "mauve"
+    ],
+    "names_zh": {
+      "manila": "马尼拉",
+      "kraft": "牛皮",
+      "lilac": "丁香",
+      "pistachio": "开心果",
+      "clay": "陶土",
+      "slate": "石板",
+      "mauve": "藕荷"
+    },
+    "light": {
+      "manila": {
+        "in": "#EFE1BF",
+        "out": "#E2D5B5",
+        "edge": "#C4B89E",
+        "lip": "#CCC1A5"
+      },
+      "kraft": {
+        "in": "#E8D3B6",
+        "out": "#DBC8AD",
+        "edge": "#BEAD97",
+        "lip": "#C6B59D"
+      },
+      "lilac": {
+        "in": "#E3DDF0",
+        "out": "#D7D1E3",
+        "edge": "#BAB5C5",
+        "lip": "#C2BDCE"
+      },
+      "pistachio": {
+        "in": "#E3E8CC",
+        "out": "#D7DBC1",
+        "edge": "#BABEA8",
+        "lip": "#C2C6B0"
+      },
+      "clay": {
+        "in": "#ECD8CF",
+        "out": "#DFCCC4",
+        "edge": "#C1B1AB",
+        "lip": "#CAB9B2"
+      },
+      "slate": {
+        "in": "#DCE2E8",
+        "out": "#D0D6DC",
+        "edge": "#B4B9BF",
+        "lip": "#BCC1C7"
+      },
+      "mauve": {
+        "in": "#EBDAE6",
+        "out": "#DECEDA",
+        "edge": "#C0B3BD",
+        "lip": "#C9BBC5"
+      }
+    },
+    "dark": {
+      "manila": {
+        "in": "#4E4536",
+        "out": "#433B2E",
+        "edge": "#60584A",
+        "lip": "#2B261E"
+      },
+      "kraft": {
+        "in": "#493C31",
+        "out": "#3F342A",
+        "edge": "#5B5046",
+        "lip": "#28211B"
+      },
+      "lilac": {
+        "in": "#3D3850",
+        "out": "#343045",
+        "edge": "#504C62",
+        "lip": "#221F2C"
+      },
+      "pistachio": {
+        "in": "#414534",
+        "out": "#383B2D",
+        "edge": "#545848",
+        "lip": "#24261D"
+      },
+      "clay": {
+        "in": "#493835",
+        "out": "#3F302E",
+        "edge": "#5B4C49",
+        "lip": "#281F1D"
+      },
+      "slate": {
+        "in": "#353B44",
+        "out": "#2E333A",
+        "edge": "#494F57",
+        "lip": "#1D2025"
+      },
+      "mauve": {
+        "in": "#453744",
+        "out": "#3B2F3A",
+        "edge": "#584B57",
+        "lip": "#261E25"
+      }
+    },
+    "hash": "FNV-1a 32-bit over UTF-8 bytes of objective ID",
+    "rule": "colour = PALETTE[ fnv1a32(objective.ID) % 7 ]; if it equals the colour of the folder immediately to the left, use the next one ((i+1) % 7). Deterministic: the same ID keeps its colour across reloads; only a collision with the left neighbour shifts it.",
+    "avoid": "status-tab hues: grey(ready), blue(running), cyan(harvesting), yellow(reviewing), pink(needs_input), mint/green(merge), red-orange(failed)",
+    "contrast": {
+      "manila": {
+        "ink_on_light": 13.91,
+        "desc_on_light": 5.9,
+        "paper_on_dark": 8.56,
+        "desc_on_dark": 5.52
+      },
+      "kraft": {
+        "ink_on_light": 12.39,
+        "desc_on_light": 5.26,
+        "paper_on_dark": 9.66,
+        "desc_on_dark": 6.23
+      },
+      "lilac": {
+        "ink_on_light": 13.63,
+        "desc_on_light": 5.78,
+        "paper_on_dark": 10.14,
+        "desc_on_dark": 6.54
+      },
+      "pistachio": {
+        "ink_on_light": 14.33,
+        "desc_on_light": 6.08,
+        "paper_on_dark": 8.97,
+        "desc_on_dark": 5.78
+      },
+      "clay": {
+        "ink_on_light": 13.14,
+        "desc_on_light": 5.57,
+        "paper_on_dark": 10.03,
+        "desc_on_dark": 6.47
+      },
+      "slate": {
+        "ink_on_light": 13.82,
+        "desc_on_light": 5.86,
+        "paper_on_dark": 10.25,
+        "desc_on_dark": 6.61
+      },
+      "mauve": {
+        "ink_on_light": 13.49,
+        "desc_on_light": 5.72,
+        "paper_on_dark": 10.13,
+        "desc_on_dark": 6.53
+      }
+    },
+    "example": {
+      "ids": [
+        "shop-web",
+        "pay-svc",
+        "search-idx",
+        "ops-tools"
+      ],
+      "colours": [
+        "pistachio",
+        "mauve",
+        "kraft",
+        "manila"
+      ]
+    }
+  }
+}

@@ -269,7 +269,7 @@ func serveDefaultHomeOnce(t *testing.T) {
 	var errb strings.Builder
 	done := make(chan int, 1)
 	go func() {
-		done <- runServe(ctx, "", "127.0.0.1:0", &buf, &errb)
+		done <- runServe(ctx, "", "127.0.0.1:0", false, &buf, &errb)
 	}()
 
 	deadline := time.Now().Add(8 * time.Second)
@@ -339,7 +339,7 @@ func TestServeRefusesV1DefaultHomeBeforeListen(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	var out, errb strings.Builder
-	code := runServe(ctx, "", "127.0.0.1:0", &out, &errb)
+	code := runServe(ctx, "", "127.0.0.1:0", false, &out, &errb)
 	if code == 0 || !strings.Contains(errb.String(), "import-legacy") {
 		t.Fatalf("code %d\n%s\n%s", code, out.String(), errb.String())
 	}
@@ -351,7 +351,7 @@ func TestServeRefusesV1DefaultHomeBeforeListen(t *testing.T) {
 func runServeText(t *testing.T, home, addr string) (int, string, string) {
 	t.Helper()
 	var out, errb strings.Builder
-	code := runServe(context.Background(), home, addr, &out, &errb)
+	code := runServe(context.Background(), home, addr, false, &out, &errb)
 	return code, out.String(), errb.String()
 }
 

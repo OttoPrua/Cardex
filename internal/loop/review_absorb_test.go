@@ -3,6 +3,7 @@ package loop
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,65 @@ func TestStandaloneReviewVerdictFinishes(t *testing.T) {
 				t.Fatal("verdict not recorded")
 			}
 		})
+	}
+}
+
+// An rv- review with no dependency writes the verdict to the prefixed card
+// when that card is stored.
+func TestRVPrefixReviewWritesExistingSubject(t *testing.T) {
+	f := newFx(t, model.ModeManual)
+	mkCard(t, f, model.Card{ID: "dev", Kind: model.KindDev, Status: model.CardReviewing})
+	mkCard(t, f, model.Card{ID: "rv-dev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardRunning})
+	disposeReviewText(t, f, "rv-dev", "## 结论\nok\n\n## 复核结论\npass\n")
+	if got := rvCardStatus(t, f, "rv-dev"); got != model.CardDone {
+		t.Fatalf("review status %s", got)
+	}
+	if got := rvCardStatus(t, f, "dev"); got != model.CardMergeQueued {
+		t.Fatalf("dev status %s, want merge_queued", got)
+	}
+	if !hasCardEvent(t, f, "dev", "review_verdict") {
+		t.Fatal("verdict not recorded on dev")
+	}
+}
+
+// An explicit dependency that is not stored does not receive the verdict.
+func TestMissingReviewDepDoesNotWriteParent(t *testing.T) {
+	f := newFx(t, model.ModeManual)
+	mkCard(t, f, model.Card{ID: "rv-dev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardRunning, Deps: []string{"missing"}})
+	disposeReviewText(t, f, "rv-dev", "## 结论\nok\n\n## 复核结论\npass\n")
+	got, err := f.db.GetCard(f.ctx, "rv-dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != model.CardNeedsInput || !strings.Contains(got.WaitReason, "missing") {
+		t.Fatalf("status %s reason %q", got.Status, got.WaitReason)
+	}
+	if _, err := f.db.GetCard(f.ctx, "missing"); err == nil {
+		t.Fatal("missing subject was created")
+	}
+	if hasCardEvent(t, f, "missing", "review_verdict") {
+		t.Fatal("verdict written to a card that does not exist")
+	}
+	if !hasCardEvent(t, f, "rv-dev", "review_subject_missing") {
+		t.Fatal("missing subject was not recorded")
+	}
+}
+
+// --dep wins over an rv- prefix when the verdict is written back.
+func TestReviewDepWinsOverPrefix(t *testing.T) {
+	f := newFx(t, model.ModeManual)
+	mkCard(t, f, model.Card{ID: "dev", Kind: model.KindDev, Status: model.CardReviewing})
+	mkCard(t, f, model.Card{ID: "other", Kind: model.KindDev, Status: model.CardReviewing})
+	mkCard(t, f, model.Card{ID: "rv-dev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardRunning, Deps: []string{"other"}})
+	disposeReviewText(t, f, "rv-dev", "## 结论\nok\n\n## 复核结论\npass\n")
+	if got := rvCardStatus(t, f, "other"); got != model.CardMergeQueued {
+		t.Fatalf("other status %s", got)
+	}
+	if got := rvCardStatus(t, f, "dev"); got != model.CardReviewing {
+		t.Fatalf("dev status %s", got)
+	}
+	if !hasCardEvent(t, f, "other", "review_verdict") || hasCardEvent(t, f, "dev", "review_verdict") {
+		t.Fatal("verdict landed on the wrong card")
 	}
 }
 

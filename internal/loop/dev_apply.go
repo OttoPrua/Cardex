@@ -2,7 +2,9 @@ package loop
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -246,7 +248,7 @@ func historyBefore(attempts []model.Attempt, cur model.Attempt) History {
 
 func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 	for _, other := range st.snap.cards {
-		if other.Kind == model.KindReview && hasDep(other, card.ID) && !TerminalCard(other.Status) {
+		if other.Kind == model.KindReview && !TerminalCard(other.Status) && (hasDep(other, card.ID) || reviewNames(other, card.ID)) {
 			// An open review (often a paused rv- card) already covers this card.
 			// Still move the card out of running: its attempt is disposed and no
 			// later tick will look at it again.
@@ -996,16 +998,34 @@ func (st *step) absorbPlan(card model.Card, attempt model.Attempt) error {
 
 func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 	raw := readResult(attempt)
-	verdict, opinion, ok := ReviewOf(raw)
+	verdict, opinion, parsed := ReviewOf(raw)
 	stored := reviewOpinion(raw)
-	if !ok {
+	parent, foreign, standalone, missing, err := st.reviewParent(card)
+	if err != nil {
+		return err
+	}
+	if missing != "" {
+		// The named parent is not stored. Keep the conclusion off that id.
+		card.Status = model.CardNeedsInput
+		card.WaitReason = "review subject " + missing + " does not exist"
+		if err := st.saveCard(card); err != nil {
+			return err
+		}
+		payload := map[string]any{"card": card.ID, "subject": missing, "error": card.WaitReason}
+		if parsed {
+			payload["verdict"] = verdict
+			payload["opinion"] = stored
+		}
+		return st.event("card:"+card.ID, "review_subject_missing", payload)
+	}
+	if !parsed {
 		card.Status = model.CardNeedsInput
 		if err := st.saveCard(card); err != nil {
 			return err
 		}
 		return st.event("card:"+card.ID, "review_unparsable", map[string]string{"card": card.ID})
 	}
-	if len(card.Deps) == 0 {
+	if standalone {
 		// A standalone review has no parent to merge or rework: keep the
 		// verdict on the review card itself and finish it.
 		if err := st.noteReviewVerdict(card, card, attempt, verdict, stored, false); err != nil {
@@ -1013,10 +1033,6 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		}
 		card.Status = model.CardDone
 		return st.saveCard(card)
-	}
-	parent, foreign, ok := st.depCard(card.Deps[0])
-	if !ok {
-		return fmt.Errorf("review %s missing card %s", card.ID, card.Deps[0])
 	}
 	if parent.Status == model.CardCanceled {
 		// Keep the verdict on record but leave the canceled card alone.
@@ -1399,6 +1415,38 @@ func hasDep(card model.Card, id string) bool {
 		}
 	}
 	return false
+}
+
+// reviewNames reports an rv- review whose prefix, not an explicit dependency,
+// names subjectID. The caller uses it only for a card that is already stored.
+func reviewNames(review model.Card, subjectID string) bool {
+	if review.Kind != model.KindReview || subjectID == "" {
+		return false
+	}
+	id, explicit := model.ReviewSubject(review)
+	return !explicit && id == subjectID && id != review.ID
+}
+
+// reviewParent resolves the card a review verdict is written to.
+// standalone means the verdict stays on the review. missing is an explicit
+// dependency that is not stored; that id is never written.
+func (st *step) reviewParent(card model.Card) (parent model.Card, foreign, standalone bool, missing string, err error) {
+	id, explicit := model.ReviewSubject(card)
+	if !explicit && id == card.ID {
+		return model.Card{}, false, true, "", nil
+	}
+	parent, foreign, ok := st.depCard(id)
+	if ok {
+		return parent, foreign, false, "", nil
+	}
+	_, getErr := st.db.GetCard(st.ctx, id)
+	if getErr != nil && !errors.Is(getErr, sql.ErrNoRows) {
+		return model.Card{}, false, false, "", getErr
+	}
+	if explicit {
+		return model.Card{}, false, false, id, nil
+	}
+	return model.Card{}, false, true, "", nil
 }
 
 func readResult(attempt model.Attempt) string {

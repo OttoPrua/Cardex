@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 // isTTY reports whether w is the process stdout and a terminal.
@@ -215,19 +217,23 @@ func displayHome(path string) string {
 	if path == "" {
 		return ""
 	}
-	u, err := os.UserHomeDir()
+	u, err := proc.UserHome()
 	if err == nil && u != "" && (path == u || strings.HasPrefix(path, u+string(os.PathSeparator))) {
 		return "~" + strings.TrimPrefix(path, u)
 	}
 	return path
 }
 
+// peekHome is the directory serve would use, without creating it.
+// CARDEX_HOME or an explicit home wins; otherwise proc.UserHome, the same
+// choice as resolveHome. On Windows os.UserHomeDir reads only USERPROFILE,
+// so a set HOME must not send the banner to a different directory.
 func peekHome(home string) string {
 	if home == "" {
 		home = os.Getenv("CARDEX_HOME")
 	}
 	if home == "" {
-		u, err := os.UserHomeDir()
+		u, err := proc.UserHome()
 		if err != nil {
 			return ""
 		}

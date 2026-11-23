@@ -5,10 +5,13 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
@@ -287,5 +290,105 @@ func TestStatusColorFallbacks(t *testing.T) {
 	mark = markFor(16)
 	if strings.Contains(mark, "38;2;") || !strings.Contains(mark, "\x1b[94m") {
 		t.Fatal("16 mark fallback")
+	}
+}
+
+func TestVersionBannerHomeMatchesServe(t *testing.T) {
+	restoreTerm(t)
+	withoutNoColor(t)
+	isTTY = func(io.Writer) bool { return true }
+	colorBits = func() int { return 24 }
+
+	homeRoot := t.TempDir()
+	profileRoot := t.TempDir()
+	t.Setenv("HOME", homeRoot)
+	t.Setenv("USERPROFILE", profileRoot)
+	t.Setenv("CARDEX_HOME", "")
+
+	got := peekHome("")
+	if _, err := os.Stat(got); !os.IsNotExist(err) {
+		t.Fatalf("peekHome created %s: %v", got, err)
+	}
+	user, err := proc.UserHome()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.Abs(filepath.Join(user, ".cardex"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("peekHome %s, serve default %s", got, want)
+	}
+	if show := displayHome(got); show != "~"+string(os.PathSeparator)+".cardex" {
+		t.Fatalf("displayHome %q", show)
+	}
+	resolved, err := resolveHome("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != resolved {
+		t.Fatalf("banner home %s, serve home %s", got, resolved)
+	}
+
+	if err := os.WriteFile(filepath.Join(got, "serve-addr"), []byte("127.0.0.1:4242\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	decoy := filepath.Join(profileRoot, ".cardex")
+	if err := os.MkdirAll(decoy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(decoy, "serve-addr"), []byte("10.9.8.7:1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if code := cmdVersion("", false, &out); code != 0 {
+		t.Fatalf("version %d", code)
+	}
+	text := out.String()
+	if !strings.Contains(text, "http://127.0.0.1:4242") {
+		t.Fatalf("banner missed the serve address\n%s", text)
+	}
+	if strings.Contains(text, "10.9.8.7") {
+		t.Fatalf("banner read USERPROFILE home\n%s", text)
+	}
+	if !strings.HasSuffix(text, plainVersion()) {
+		t.Fatalf("plain version line changed\n%q", text)
+	}
+	if runtime.GOOS == "windows" {
+		u, err := os.UserHomeDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if filepath.Clean(u) == filepath.Clean(homeRoot) {
+			t.Fatal("os.UserHomeDir followed HOME; Windows split was not set up")
+		}
+		if strings.HasPrefix(filepath.Clean(got), filepath.Clean(profileRoot)) {
+			t.Fatalf("peekHome used USERPROFILE %s", got)
+		}
+	}
+
+	t.Setenv("CARDEX_HOME", filepath.Join(profileRoot, "from-env"))
+	envAbs, err := filepath.Abs(filepath.Join(profileRoot, "from-env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envHome := peekHome(""); envHome != envAbs {
+		t.Fatalf("CARDEX_HOME %s want %s", envHome, envAbs)
+	}
+	if _, err := os.Stat(envAbs); !os.IsNotExist(err) {
+		t.Fatalf("CARDEX_HOME peek created %s: %v", envAbs, err)
+	}
+	flag := filepath.Join(homeRoot, "flag-home")
+	flagAbs, err := filepath.Abs(flag)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if peekHome(flag) != flagAbs {
+		t.Fatalf("flag home %s", peekHome(flag))
+	}
+	if _, err := os.Stat(flagAbs); !os.IsNotExist(err) {
+		t.Fatalf("--home peek created %s: %v", flagAbs, err)
 	}
 }

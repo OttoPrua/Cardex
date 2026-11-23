@@ -42,25 +42,6 @@ func withoutNoColor(t *testing.T) {
 	})
 }
 
-func stripANSI(s string) string {
-	var b strings.Builder
-	in := false
-	for _, r := range s {
-		if in {
-			if r == 'm' {
-				in = false
-			}
-			continue
-		}
-		if r == 0x1b {
-			in = true
-			continue
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
 func TestVersionNonTTYAndJSONMatchPlainBytes(t *testing.T) {
 	restoreTerm(t)
 	withoutNoColor(t)
@@ -212,44 +193,37 @@ func TestStatusPlainJSONAndColorBytes(t *testing.T) {
 		if err := db.CreateNode(context.Background(), &node); err != nil {
 			t.Fatal(err)
 		}
-		seedNodeCard(t, db, "c1", obj, "n1", model.KindDev, model.CardRunning)
+		seedNodeCard(t, db, "c1", obj, "n1", model.KindDev, model.CardReady)
+		seedNodeCard(t, db, "c2", obj, "n1", model.KindDev, model.CardRunning)
 	})
 
+	run := func(want string, args ...string) string {
+		t.Helper()
+		code, out, errb := callCLI(t, append([]string{"--home", home}, args...))
+		if code != 0 || errb != "" || out == "" || (want != "" && out != want) {
+			t.Fatalf("%v: exit %d, stdout %q, want %q, stderr %q", args, code, out, want, errb)
+		}
+		return out
+	}
+
 	isTTY = func(io.Writer) bool { return false }
-	code, nodePlain, errb := callCLI(t, []string{"--home", home, "node", "list"})
-	if code != 0 || nodePlain != "n1\tfrozen\n" {
-		t.Fatalf("node list %d %q %s", code, nodePlain, errb)
-	}
-	_, jsonPlain, errb := callCLI(t, []string{"--home", home, "--json", "node", "list"})
-	if errb != "" && jsonPlain == "" {
-		t.Fatal(errb)
-	}
-	code, showPlain, errb := callCLI(t, []string{"--home", home, "card", "show", "c1"})
-	if code != 0 || showPlain != "c1\tc1\n" {
-		t.Fatalf("card show %d %q %s", code, showPlain, errb)
-	}
-	code, pausePlain, errb := callCLI(t, []string{"--home", home, "card", "pause", "c1"})
-	if code != 0 || pausePlain != "c1\tpaused\n" {
-		t.Fatalf("card pause %d %q %s", code, pausePlain, errb)
-	}
+	nodePlain := run("n1\tfrozen\n", "node", "list")
+	nodeJSON := run("", "--json", "node", "list")
+	showPlain := run("c1\tc1\n", "card", "show", "c1")
+	showJSON := run("", "--json", "card", "show", "c1")
+	pausePlain := run("c2\tpaused\n", "card", "pause", "c2")
 
 	isTTY = func(io.Writer) bool { return true }
 	colorBits = func() int { return 24 }
-	_, jsonTTY, _ := callCLI(t, []string{"--home", home, "--json", "node", "list"})
-	if jsonTTY != jsonPlain || strings.Contains(jsonTTY, "\x1b") {
-		t.Fatalf("json bytes changed")
-	}
-	_, showTTY, _ := callCLI(t, []string{"--home", home, "card", "show", "c1"})
-	if showTTY != showPlain {
-		t.Fatalf("card show tty %q plain %q", showTTY, showPlain)
-	}
-	_, pauseTTY, _ := callCLI(t, []string{"--home", home, "card", "pause", "c1"})
-	if stripANSI(pauseTTY) != "c1\tpaused\n" {
-		t.Fatalf("pause text %q", stripANSI(pauseTTY))
-	}
-	if !strings.Contains(pauseTTY, "48;2;163;158;144") || !strings.Contains(pauseTTY, "paused") {
-		t.Fatalf("pause color\n%s", pauseTTY)
-	}
+	run(nodeJSON, "--json", "node", "list")
+	run(showJSON, "card", "show", "c1", "--json")
+	run("c1\tc1\t\x1b[1;38;2;22;22;26;48;2;201;196;181mready\x1b[0m\n", "card", "show", "c1")
+	run("c2\t\x1b[1;38;2;22;22;26;48;2;163;158;144mpaused\x1b[0m\n", "card", "pause", "c2")
+
+	t.Setenv("NO_COLOR", "")
+	run(nodePlain, "node", "list")
+	run(showPlain, "card", "show", "c1")
+	run(pausePlain, "card", "pause", "c2")
 	if bannerWrites != 0 {
 		t.Fatalf("status commands wrote a banner: %d", bannerWrites)
 	}

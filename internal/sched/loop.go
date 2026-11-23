@@ -335,17 +335,18 @@ func (r *Runner) harvestInput(ctx context.Context, db *store.Store, card model.C
 			in.Runner = string(ch.Runner)
 		}
 	}
-	in.ExpectedChannel = strings.TrimSpace(card.Channel)
-	in.ExpectedModel = strings.TrimSpace(card.Model)
-	if in.ExpectedChannel == "" && in.ExpectedModel == "" && strings.TrimSpace(card.Objective) != "" {
-		if obj, err := db.GetObjective(ctx, card.Objective); err == nil {
-			in.ExpectedChannel = strings.TrimSpace(obj.Channel)
-			in.ExpectedModel = strings.TrimSpace(obj.Model)
+	var obj model.Objective
+	var channels []model.Channel
+	var pos []model.Positioning
+	if card.Channel == "" && card.Model == "" && card.Objective != "" {
+		obj, _ = db.GetObjective(ctx, card.Objective)
+		if obj.Channel != "" || obj.Model != "" {
+			channels, _ = db.ListChannels(ctx)
+			pos, _ = db.ListPositioning(ctx)
 		}
 	}
-	if card.Kind == model.KindReview {
-		in.ExpectedTier = string(card.Tier)
-	}
+	d := dispatchExpectation(card, obj, model.TierNone, channels, pos)
+	in.ExpectedChannel, in.ExpectedModel, in.ExpectedTier = d.Channel, d.Model, string(d.Tier)
 	return in
 }
 
@@ -630,7 +631,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if settled {
 		return "", nil
 	}
-	d := dispatchExpectation(card, obj, classified)
+	d := dispatchExpectation(card, obj, classified, channels, pos)
 	if ch, ok := channelByID(channels, rt.Channel); ok {
 		d.Runner = ch.Runner
 	}
@@ -756,11 +757,8 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	return rt.Channel, nil
 }
 
-func dispatchExpectation(card model.Card, obj model.Objective, classified model.Tier) model.RouteDispatch {
-	d := model.RouteDispatch{Channel: card.Channel, Model: card.Model}
-	if d.Channel == "" && d.Model == "" {
-		d.Channel, d.Model = obj.Channel, obj.Model
-	}
+func dispatchExpectation(card model.Card, obj model.Objective, classified model.Tier, channels []model.Channel, pos []model.Positioning) model.RouteDispatch {
+	var d model.RouteDispatch
 	if card.Kind == model.KindReview {
 		d.Tier = card.Tier
 		if d.Tier == model.TierNone {
@@ -773,11 +771,15 @@ func dispatchExpectation(card model.Card, obj model.Objective, classified model.
 			if tier.Rank() > d.Tier.Rank() {
 				d.Tier = tier
 			}
-			if channel != "" || name != "" {
-				d.Channel, d.Model = channel, name
+			if channel != "" {
+				card.Channel = channel
+			}
+			if name != "" {
+				card.Model = name
 			}
 		}
 	}
+	d.Channel, d.Model = route.EffectivePin(route.Request{Card: card, Objective: obj, Channels: channels, Positioning: pos})
 	return d
 }
 

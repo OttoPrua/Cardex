@@ -365,7 +365,15 @@ func (st *step) priorReview(cardID string) (model.Card, bool) {
 		return best, false
 	}
 	if d := bestAttempt.RouteReason.Dispatch; d != nil {
-		best.Channel, best.Model = d.Channel, d.Model
+		channel, modelName := d.Channel, d.Model
+		if best.Channel == "" && best.Model == "" {
+			// Older attempts could record an objective pin that routing ignored.
+			channel, modelName = route.EffectivePin(route.Request{
+				Card: best, Objective: model.Objective{Channel: channel, Model: modelName},
+				Channels: st.snap.channels, Positioning: st.snap.positioning,
+			})
+		}
+		best.Channel, best.Model = channel, modelName
 		if d.Tier.Rank() > best.Tier.Rank() {
 			best.Tier = d.Tier
 		}

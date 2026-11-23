@@ -42,7 +42,11 @@ func (r *Runner) resolveLaunchRoute(ctx context.Context, db *store.Store, card m
 	if _, _, _, held := loop.ReviewHold(card); held {
 		return r.chooseHeldReviewRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
 	}
-	if effectiveSpecChannel(card, obj) == "" {
+	channel, modelName := route.EffectivePin(launchRequest(card, obj, channels, pos, inUse, quotas, classified, r.now()))
+	if card.Channel == "" && card.Model == "" {
+		obj.Channel, obj.Model = channel, modelName
+	}
+	if channel == "" {
 		saved, ok, err := savedLaunchRoute(ctx, db, card.ID)
 		if err != nil {
 			return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
@@ -52,16 +56,6 @@ func (r *Runner) resolveLaunchRoute(ctx context.Context, db *store.Store, card m
 		}
 	}
 	return r.chooseLaunchRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
-}
-
-// effectiveSpecChannel is the channel of the spec selection uses.
-// A card channel or model wins over the objective. A model-only spec,
-// including a card model that overrides an objective channel, returns "".
-func effectiveSpecChannel(card model.Card, obj model.Objective) string {
-	if card.Channel != "" || card.Model != "" {
-		return card.Channel
-	}
-	return obj.Channel
 }
 
 func (r *Runner) reuseSavedRoute(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, saved model.Route, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas, classified model.Tier) (model.Route, model.RouteReason, pinRelease, bool, error) {
@@ -97,9 +91,19 @@ func (r *Runner) reuseSavedRoute(ctx context.Context, db *store.Store, card mode
 		modelName = ch.Models[0]
 	}
 	rt := model.Route{Channel: ch.ID, Model: modelName}
+	tier := model.TierNone
+	if card.Kind == model.KindReview {
+		// Recover the tier of the retained model, including a borrowed tier.
+		tier = dispatchExpectation(card, obj, classified, channels, pos).Tier
+		ch.Models = []string{modelName}
+		_, proof, err := route.Select(ctx, launchRequest(card, obj, []model.Channel{ch}, pos, nil, nil, classified, r.now()))
+		if err == nil && proof.SelectedTier(rt) != model.TierNone {
+			tier = proof.SelectedTier(rt)
+		}
+	}
 	return rt, model.RouteReason{
 		Candidates: []model.RouteCandidate{{
-			Channel: rt.Channel, Model: rt.Model, Family: ch.Family,
+			Channel: rt.Channel, Model: rt.Model, Family: ch.Family, Tier: tier,
 		}},
 		Filtered: []model.FilteredCandidate{},
 		Scores:   []model.RouteScore{{Channel: rt.Channel, Model: rt.Model}},
@@ -192,9 +196,6 @@ func (r *Runner) chooseHeldReviewRoute(ctx context.Context, db *store.Store, car
 	if probe.Tier.Rank() < floor.Rank() {
 		probe.Tier = floor
 	}
-	if probe.Channel == "" && probe.Model == "" && originalChannel == "" && originalModel == "" {
-		probe.Channel, probe.Model = obj.Channel, obj.Model
-	}
 	if (originalChannel != "" && probe.Channel != "" && probe.Channel != originalChannel) ||
 		(originalModel != "" && probe.Model != "" && probe.Model != originalModel) {
 		err := r.settleHeldReview(ctx, db, card, obj, floor, originalChannel, originalModel, "card pin conflicts with the original review")
@@ -206,6 +207,7 @@ func (r *Runner) chooseHeldReviewRoute(ctx context.Context, db *store.Store, car
 	if originalModel != "" {
 		probe.Model = originalModel
 	}
+	probe.Channel, probe.Model = route.EffectivePin(launchRequest(probe, obj, channels, pos, inUse, quotas, classified, r.now()))
 
 	routed := channels
 	if probe.Channel != "" || probe.Model != "" {
@@ -221,7 +223,7 @@ func (r *Runner) chooseHeldReviewRoute(ctx context.Context, db *store.Store, car
 					eligible = append(eligible, name)
 				}
 			}
-			if len(eligible) == 0 || (ch.Concurrency > 0 && inUse[ch.ID] >= ch.Concurrency) {
+			if len(eligible) == 0 {
 				continue
 			}
 			blocked, err := quotaBlocked(ctx, quotas, ch.ID, r.now())
@@ -237,27 +239,51 @@ func (r *Runner) chooseHeldReviewRoute(ctx context.Context, db *store.Store, car
 
 	req := launchRequest(probe, obj, routed, pos, inUse, quotas, classified, r.now())
 	req.Objective.Channel, req.Objective.Model = "", ""
+	rt, reason, err := selectHeldReviewRoute(ctx, req)
+	if err == nil {
+		return rt, reason, pinRelease{}, false, nil
+	}
+	if !errors.Is(err, route.ErrNoCandidate) && !errors.Is(err, route.ErrPinnedUnavailable) {
+		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
+	}
+	if len(inUse) > 0 {
+		req.InUse = nil
+		_, _, withoutOccupancy := selectHeldReviewRoute(ctx, req)
+		if withoutOccupancy == nil {
+			return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
+		}
+		if !errors.Is(withoutOccupancy, route.ErrNoCandidate) && !errors.Is(withoutOccupancy, route.ErrPinnedUnavailable) {
+			return model.Route{}, model.RouteReason{}, pinRelease{}, false, withoutOccupancy
+		}
+	}
+	err = r.settleHeldReview(ctx, db, card, obj, probe.Tier, probe.Channel, probe.Model, "no available channel/model meets the retained tier and pins")
+	return model.Route{}, model.RouteReason{}, pinRelease{}, err == nil, err
+}
+
+func selectHeldReviewRoute(ctx context.Context, req route.Request) (model.Route, model.RouteReason, error) {
+	card := req.Card
+	if len(req.InUse) > 0 && (card.Channel != "" || card.Model != "") {
+		// Explicit pins bypass the selector's concurrency filter.
+		var free []model.Channel
+		for _, ch := range req.Channels {
+			if ch.Concurrency <= 0 || req.InUse[ch.ID] < ch.Concurrency {
+				free = append(free, ch)
+			}
+		}
+		req.Channels = free
+	}
 	rt, reason, err := chooseRoute(ctx, req)
-	if errors.Is(err, route.ErrNoCandidate) && probe.Tier == model.TierT1 {
+	if errors.Is(err, route.ErrNoCandidate) && card.Tier == model.TierT1 {
 		// The ordinary selector borrows one tier. A held review can also use T3.
 		req.Card.Tier = model.TierT3
 		rt, reason, err = chooseRoute(ctx, req)
 	}
-	if err == nil && reason.SelectedTier(rt).Rank() >= probe.Tier.Rank() &&
-		(probe.Channel == "" || rt.Channel == probe.Channel) &&
-		(probe.Model == "" || rt.Model == probe.Model) &&
-		loop.ReviewFloorMet(routed, pos, rt.Channel, rt.Model, probe.Tier) {
-		return rt, reason, pinRelease{}, false, nil
+	if err == nil && (reason.SelectedTier(rt).Rank() < card.Tier.Rank() ||
+		(card.Channel != "" && rt.Channel != card.Channel) || (card.Model != "" && rt.Model != card.Model) ||
+		!loop.ReviewFloorMet(req.Channels, req.Positioning, rt.Channel, rt.Model, card.Tier)) {
+		err = route.ErrNoCandidate
 	}
-	if err != nil && !errors.Is(err, route.ErrNoCandidate) && !errors.Is(err, route.ErrPinnedUnavailable) {
-		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
-	}
-	detail := "no available channel/model meets the retained tier and pins"
-	if err == nil {
-		detail = "selected route does not meet the retained tier and pins"
-	}
-	err = r.settleHeldReview(ctx, db, card, obj, probe.Tier, probe.Channel, probe.Model, detail)
-	return model.Route{}, model.RouteReason{}, pinRelease{}, err == nil, err
+	return rt, reason, err
 }
 
 func (r *Runner) settleHeldReview(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, tier model.Tier, channel, modelName, reason string) error {

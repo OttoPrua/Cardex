@@ -21,7 +21,7 @@ func Select(ctx context.Context, req Request) (model.Route, model.RouteReason, e
 		now = time.Now().UTC()
 	}
 	tier := resolveTier(req)
-	if channelID, modelName, pinned := explicitPin(req); pinned && !objectivePinConflicts(req, channelID, modelName) {
+	if channelID, modelName := EffectivePin(req); channelID != "" || modelName != "" {
 		ch, chosen, err := matchPinned(req.Channels, channelID, modelName)
 		if err != nil {
 			return model.Route{}, emptyReason(), err
@@ -163,14 +163,16 @@ type cand struct {
 	sameFam   bool // review card and the author's family: kept only as a fallback.
 }
 
-func explicitPin(req Request) (channelID, modelName string, pinned bool) {
+// EffectivePin returns the pin used by selection, before checking availability.
+func EffectivePin(req Request) (channelID, modelName string) {
 	if req.Card.Channel != "" || req.Card.Model != "" {
-		return req.Card.Channel, req.Card.Model, true
+		return req.Card.Channel, req.Card.Model
 	}
-	if req.Objective.Channel != "" || req.Objective.Model != "" {
-		return req.Objective.Channel, req.Objective.Model, true
+	channelID, modelName = req.Objective.Channel, req.Objective.Model
+	if (channelID != "" || modelName != "") && objectivePinConflicts(req, channelID, modelName) {
+		return "", ""
 	}
-	return "", "", false
+	return channelID, modelName
 }
 
 // objectivePinConflicts is true only for an objective pin: the card names no

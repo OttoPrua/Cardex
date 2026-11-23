@@ -125,6 +125,44 @@ func TestReworkReviewKeepsTier(t *testing.T) {
 		}
 	})
 
+	t.Run("legacy author pin does not carry over from a cross-family review", func(t *testing.T) {
+		f := newFx(t, model.ModeManual)
+		author := f.channel("author", "author-family", "draft")
+		reviewer := f.channel("reviewer", "reviewer-family", "strong")
+		f.position("draft", author.Family, model.TierT1)
+		f.position("strong", reviewer.Family, model.TierT3)
+		obj := f.objective()
+		obj.Channel, obj.Model = author.ID, "draft"
+		if err := f.db.UpdateObjective(f.ctx, &obj); err != nil {
+			t.Fatal(err)
+		}
+		dev := f.card(model.Card{ID: "dev", Status: model.CardHarvesting, Tier: model.TierT1})
+		prior := f.card(model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT2, Status: model.CardDone,
+			AuthorFamily: author.Family, Deps: []string{dev.ID}})
+		reviewAttempt := f.attempt(prior, 0, model.OutcomePassed, reviewer.ID, "")
+		reviewAttempt.Route.Model = "strong"
+		reviewAttempt.RouteReason.Dispatch = &model.RouteDispatch{Channel: obj.Channel, Model: obj.Model, Tier: model.TierT2, ActualTier: model.TierT3}
+		if err := f.db.UpdateAttempt(f.ctx, &reviewAttempt); err != nil {
+			t.Fatal(err)
+		}
+		if err := markDevDisposed(f.ctx, f.db, reviewAttempt, reviewAttempt.Outcome); err != nil {
+			t.Fatal(err)
+		}
+		att := f.attempt(dev, 1, model.OutcomePassed, author.ID, "")
+		att.Route.Model = "draft"
+		att.Worktree, att.BaseCommit, att.HeadCommit = holdRepo(t)
+		if err := f.db.UpdateAttempt(f.ctx, &att); err != nil {
+			t.Fatal(err)
+		}
+		f.step()
+		fresh := readyReview(t, f, dev.ID)
+		floor, channel, modelName, held := ReviewHold(fresh)
+		if fresh.AuthorFamily != author.Family || fresh.Tier != model.TierT3 || fresh.Channel != "" || fresh.Model != "" ||
+			!held || floor != fresh.Tier || channel != "" || modelName != "" {
+			t.Fatalf("review %+v", fresh)
+		}
+	})
+
 	t.Run("first review of a small diff stays T1", func(t *testing.T) {
 		f := newFx(t, model.ModeManual)
 		ch := f.channel("ch-a", "author")

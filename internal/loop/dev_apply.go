@@ -272,6 +272,13 @@ func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 		stat = attemptDiff(st.ctx, st.snap.project, attempt)
 	}
 	plan := planReview(card, st.snap.obj, st.snap.project, stat)
+	prior, hasPrior := st.priorReview(card.ID)
+	holdChannel, holdModel := "", ""
+	if hasPrior {
+		plan = raiseReviewFloor(plan, prior)
+		holdChannel = strings.TrimSpace(prior.Channel)
+		holdModel = strings.TrimSpace(prior.Model)
+	}
 	if plan.Mode == model.ReviewOff {
 		card.Status = model.CardMergeQueued
 		card.WaitReason = ""
@@ -279,6 +286,20 @@ func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 			return err
 		}
 		return st.event("card:"+card.ID, "review_skipped", map[string]string{"card": card.ID, "reason": plan.Why})
+	}
+	if hasPrior && !reviewConstraintMet(st.snap.channels, st.snap.positioning, holdChannel, holdModel, plan.Tier) {
+		reason := reviewHoldUnmetReason(plan.Tier, holdChannel, holdModel)
+		card.Status = model.CardNeedsInput
+		card.WaitReason = reason
+		if err := st.saveCard(card); err != nil {
+			return err
+		}
+		if err := st.openQuestion(model.QuestionCustom, card.ID, "card", reason, true); err != nil {
+			return err
+		}
+		return st.event("card:"+card.ID, "review_hold_unmet", map[string]string{
+			"card": card.ID, "tier": string(plan.Tier), "channel": holdChannel, "model": holdModel, "reason": reason,
+		})
 	}
 	card.Status = model.CardReviewing
 	if err := st.saveCard(card); err != nil {
@@ -288,23 +309,56 @@ func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 	if plan.Mode == model.ReviewCheck {
 		title = "check " + card.Title
 	}
+	body := reviewBody(plan, family)
+	if hasPrior {
+		body = AppendReviewHold(body, plan.Tier, holdChannel, holdModel)
+	}
 	review := model.Card{
 		Objective:    card.Objective,
 		Node:         card.Node,
 		Kind:         model.KindReview,
 		Title:        title,
-		Body:         reviewBody(plan, family),
+		Body:         body,
 		Tier:         plan.Tier,
 		Status:       model.CardReady,
 		Deps:         []string{card.ID},
 		AuthorFamily: family,
 		Review:       string(plan.Mode),
+		Channel:      holdChannel,
+		Model:        holdModel,
 	}
 	created, err := st.createCard(review)
 	if err != nil {
 		return err
 	}
 	return st.event("card:"+card.ID, "review_planned", map[string]string{"card": card.ID, "review": created.ID, "mode": string(plan.Mode), "tier": string(plan.Tier), "reason": plan.Why})
+}
+
+// priorReview is the latest finished review of cardID. Canceled and unanswered reviews do not set the floor.
+func (st *step) priorReview(cardID string) (model.Card, bool) {
+	var best model.Card
+	var bestAt time.Time
+	found := false
+	for _, other := range st.snap.cards {
+		if other.Kind != model.KindReview || !hasDep(other, cardID) {
+			continue
+		}
+		if other.Status != model.CardDone && other.Status != model.CardMerged {
+			continue
+		}
+		at := time.Time{}
+		for _, attempt := range st.snap.attempts[other.ID] {
+			if attempt.EndedAt.After(at) {
+				at = attempt.EndedAt
+			}
+		}
+		if !found || at.After(bestAt) || (at.Equal(bestAt) && other.ID > best.ID) {
+			best = other
+			bestAt = at
+			found = true
+		}
+	}
+	return best, found
 }
 
 // reviewFamily is the positioning family of the attempt's model.

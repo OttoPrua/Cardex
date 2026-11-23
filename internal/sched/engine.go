@@ -166,14 +166,7 @@ func (r *Runner) disposeOpenDesign(ctx context.Context, db *store.Store, objecti
 	if hit == nil {
 		return nil
 	}
-	res, err := harvest.Harvest(ctx, harvest.Input{
-		Attempt:    *hit,
-		Card:       hitCard,
-		Exit:       *hit.Exit,
-		ErrorClass: hit.ErrorClass,
-		Repo:       hit.Worktree,
-		Home:       r.Home,
-	})
+	res, err := harvest.Harvest(ctx, r.harvestInput(ctx, db, hitCard, *hit, *hit.Exit, nil))
 	if err != nil {
 		return err
 	}

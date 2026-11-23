@@ -279,15 +279,7 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 		if attempt.Exit != nil {
 			exitCode = *attempt.Exit
 		}
-		res, err := harvest.Harvest(ctx, harvest.Input{
-			Attempt:    attempt,
-			Card:       card,
-			Exit:       exitCode,
-			Output:     output,
-			ErrorClass: attempt.ErrorClass,
-			Repo:       attempt.Worktree,
-			Home:       r.Home,
-		})
+		res, err := harvest.Harvest(ctx, r.harvestInput(ctx, db, card, attempt, exitCode, output))
 		if err != nil {
 			if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
 				return err
@@ -318,6 +310,35 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 		}
 	}
 	return first
+}
+
+func (r *Runner) harvestInput(ctx context.Context, db *store.Store, card model.Card, attempt model.Attempt, exitCode int, output []byte) harvest.Input {
+	in := harvest.Input{
+		Attempt:    attempt,
+		Card:       card,
+		Exit:       exitCode,
+		Output:     output,
+		ErrorClass: attempt.ErrorClass,
+		Repo:       attempt.Worktree,
+		Home:       r.Home,
+	}
+	if attempt.Route.Channel != "" {
+		if ch, err := db.GetChannel(ctx, attempt.Route.Channel); err == nil {
+			in.Runner = string(ch.Runner)
+		}
+	}
+	in.ExpectedChannel = strings.TrimSpace(card.Channel)
+	in.ExpectedModel = strings.TrimSpace(card.Model)
+	if in.ExpectedChannel == "" && in.ExpectedModel == "" && strings.TrimSpace(card.Objective) != "" {
+		if obj, err := db.GetObjective(ctx, card.Objective); err == nil {
+			in.ExpectedChannel = strings.TrimSpace(obj.Channel)
+			in.ExpectedModel = strings.TrimSpace(obj.Model)
+		}
+	}
+	if card.Kind == model.KindReview {
+		in.ExpectedTier = string(card.Tier)
+	}
+	return in
 }
 
 // noteEvidenceWriteFailed records one event for a failed acceptance.log or

@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/OttoPrua/Cardex/internal/loop"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/route"
 	"github.com/OttoPrua/Cardex/internal/store"
@@ -38,6 +40,9 @@ type pinRelease struct {
 // channel at its concurrency limit, or outside this call's candidate set,
 // waits: no attempt, no fallback, and no drop.
 func (r *Runner) resolveLaunchRoute(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas, classified model.Tier) (model.Route, model.RouteReason, pinRelease, bool, error) {
+	if _, _, _, held := loop.ReviewHold(card); held {
+		return r.chooseHeldReviewRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
+	}
 	if effectiveSpecChannel(card, obj) == "" {
 		saved, ok, err := savedLaunchRoute(ctx, db, card.ID)
 		if err != nil {
@@ -181,6 +186,60 @@ func (r *Runner) writeRouteDropped(ctx context.Context, db *store.Store, cardID 
 	})
 }
 
+// chooseHeldReviewRoute keeps the rework review's tier and model pin.
+// A route that would drop the pin or land below that tier becomes needs_input.
+func (r *Runner) chooseHeldReviewRoute(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas, classified model.Tier) (model.Route, model.RouteReason, pinRelease, bool, error) {
+	tier, channel, modelName, _ := loop.ReviewHold(card)
+	if card.Tier.Rank() > 0 && card.Tier.Rank() < tier.Rank() {
+		reason := fmt.Sprintf("review hold unmet: card tier %s is below %s", card.Tier, tier)
+		if err := r.settleNoChannel(ctx, db, card, obj, reason); err != nil {
+			return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
+		}
+		return model.Route{}, model.RouteReason{}, pinRelease{}, true, nil
+	}
+	rt, reason, err := chooseRoute(ctx, launchRequest(card, obj, channels, pos, inUse, quotas, classified, r.now()))
+	if err == nil && heldRouteBelow(reason, rt, tier) {
+		err = fmt.Errorf("routed below review hold %s", tier)
+	}
+	if err == nil {
+		return rt, reason, pinRelease{}, false, nil
+	}
+	if ctx.Err() != nil {
+		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
+	}
+	if !errors.Is(err, route.ErrNoCandidate) && !errors.Is(err, route.ErrPinnedUnavailable) && !strings.Contains(err.Error(), "review hold") {
+		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
+	}
+	text := fmt.Sprintf("review hold unmet: tier %s channel %s model %s: %v", tier, channel, modelName, err)
+	if err := r.settleNoChannel(ctx, db, card, obj, text); err != nil {
+		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
+	}
+	return model.Route{}, model.RouteReason{}, pinRelease{}, true, nil
+}
+
+func heldRouteBelow(reason model.RouteReason, rt model.Route, floor model.Tier) bool {
+	if floor.Rank() == 0 {
+		return false
+	}
+	saw := false
+	for _, cand := range reason.Candidates {
+		if rt.Channel != "" && cand.Channel != "" && cand.Channel != rt.Channel {
+			continue
+		}
+		if rt.Model != "" && cand.Model != "" && cand.Model != rt.Model {
+			continue
+		}
+		if cand.Tier.Rank() == 0 {
+			continue
+		}
+		saw = true
+		if cand.Tier.Rank() >= floor.Rank() {
+			return false
+		}
+	}
+	return saw
+}
+
 // chooseLaunchRoute selects the attempt route.
 // Backlog fill keeps today's route errors so a single-channel probe can move on.
 // Any other card whose stored pin cannot be launched is routed without that pin,
@@ -248,10 +307,6 @@ func launchRequest(card model.Card, obj model.Objective, channels []model.Channe
 	}
 }
 
-// releaseUnusablePin drops an explicit channel or model route would keep launching.
-// A healthy channel that is not blocked until a future reset stays pinned.
-// Remaining quota at or below the red line does not release the pin.
-// The returned card and objective are copies; the stored objective is not updated.
 // releaseUnusablePin drops an explicit channel or model route would keep launching.
 // A pin is unusable only when its channel is missing, health is not ok, or the
 // channel is blocked until a known reset. Remaining quota at or below the red

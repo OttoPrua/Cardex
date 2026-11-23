@@ -213,7 +213,7 @@ purpose: add, list, show, cancel, retry, pause, resume, revive, absorb, or mark 
 parameters:
   add     --id --objective --node --kind --title --body --tier --require --dep --acceptance --claim --base --status --origin
   list    --objective --json
-  show    <id> --json
+  show    <id> --json --summary
   cancel  <id>
   retry   <id>
   pause   <id>

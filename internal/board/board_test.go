@@ -558,12 +558,35 @@ func TestMotionRestoresBeforeMeasure(t *testing.T) {
 	if dropAt < 0 || dropAt > releaseAt || !strings.Contains(body[dropAt:swAt], ".cancel()") {
 		t.Fatal("releaseMotion does not cancel animations")
 	}
+	settleAt := strings.Index(body, "function settleOpen")
+	if settleAt < 0 || settleAt > releaseAt {
+		t.Fatal("missing settleOpen")
+	}
+	relFn := body[releaseAt:swAt]
+	settleCall := strings.Index(relFn, "settleOpen()")
+	cancelAll := strings.Index(relFn, "getAnimations")
+	if settleCall < 0 || cancelAll < 0 || settleCall > cancelAll {
+		t.Fatal("releaseMotion cancels animations before the open motion has settled")
+	}
+	settleFn := body[settleAt:releaseAt]
+	del := strings.Index(settleFn, "delete root.dataset.open")
+	unflip := strings.Index(settleFn, `classList.remove("is-flipping")`)
+	dropOwn := strings.Index(settleFn, "pending.forEach(dropAnim)")
+	if del < 0 || unflip < 0 || dropOwn < 0 || del > dropOwn || unflip > dropOwn {
+		t.Fatal("settleOpen cancels the open animation before leaving the open pose")
+	}
 	playAt := strings.Index(body, "function playOpen")
 	play := body[playAt:]
 	shown := strings.Index(play, "boardShown()")
 	marker := strings.Index(play, `sessionStorage.setItem("cardex.folderOpen"`)
 	if shown < 0 || marker < 0 || shown > marker {
 		t.Fatal("open marker is written before the folders are visible")
+	}
+	if strings.Contains(play, "getAnimations()") {
+		t.Fatal("open cleanup cancels animations it did not start")
+	}
+	if !strings.Contains(play, "openTicket") || !strings.Contains(play, "mine.forEach") {
+		t.Fatal("open cleanup is not limited to its own animations")
 	}
 }
 

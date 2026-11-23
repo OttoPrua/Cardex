@@ -489,7 +489,43 @@ a.ic-title:hover{text-decoration:underline}
     try { a.cancel(); } catch (e) {}
     try { a.effect = null; } catch (e) {}
   }
+  var openTicket = 0;
+  var openAnims = [];
+  var openTimers = [];
+  function openLater(fn, ms) {
+    var id = setTimeout(function () {
+      openTimers = openTimers.filter(function (x) { return x !== id; });
+      fn();
+    }, ms);
+    openTimers.push(id);
+  }
+  function settleOpen() {
+    var root = document.documentElement;
+    var board = document.getElementById("board");
+    var posed = board && board.querySelector(".of.is-flipping, .of.is-closing");
+    if (!openAnims.length && !openTimers.length && root.dataset.open !== "1" && !posed) return;
+    openTicket++;
+    openTimers.forEach(function (id) { clearTimeout(id); });
+    openTimers = [];
+    var pending = openAnims;
+    openAnims = [];
+    delete root.dataset.open;
+    if (board) {
+      board.querySelectorAll(".of").forEach(function (folder) {
+        folder.classList.remove("is-closing");
+        folder.classList.remove("is-flipping");
+      });
+      board.querySelectorAll(".icard3").forEach(function (card) {
+        card.style.opacity = "";
+        card.style.transform = "";
+      });
+    }
+    pending.forEach(dropAnim);
+    openStarted = true;
+    try { sessionStorage.setItem("cardex.folderOpen", "1"); } catch (e) {}
+  }
   function releaseMotion(board) {
+    settleOpen();
     var pending = window.cardexAnims || [];
     window.cardexAnims = [];
     pending.forEach(dropAnim);
@@ -679,6 +715,13 @@ a.ic-title:hover{text-decoration:underline}
     try { sessionStorage.setItem("cardex.folderOpen", "1"); } catch (e) {}
     var ease = weightEase();
     var visible = [];
+    var ticket = openTicket;
+    var mine = [];
+    function own(a) {
+      mine.push(a);
+      openAnims.push(a);
+      return a;
+    }
     board.querySelectorAll(".board-view").forEach(function (panel) {
       if (getComputedStyle(panel).display === "none") return;
       panel.querySelectorAll(".of").forEach(function (el) { visible.push(el); });
@@ -686,7 +729,7 @@ a.ic-title:hover{text-decoration:underline}
     visible.forEach(function (folder) {
       folder.classList.add("is-closing");
       folder.classList.add("is-flipping");
-      folder.animate([
+      own(folder.animate([
         {"--of-angle":"180deg", offset:0},
         {"--of-angle":"168deg", offset:70/720},
         {"--of-angle":"0deg", offset:300/720},
@@ -694,24 +737,32 @@ a.ic-title:hover{text-decoration:underline}
         {"--of-angle":"0deg", offset:560/720},
         {"--of-angle":"1deg", offset:595/720},
         {"--of-angle":"0deg", offset:1}
-      ], {duration:720, easing:"linear", fill:"forwards"});
-      setTimeout(function () { folder.classList.remove("is-closing"); }, 200);
+      ], {duration:720, easing:"linear", fill:"forwards"}));
+      openLater(function () {
+        if (ticket !== openTicket) return;
+        folder.classList.remove("is-closing");
+      }, 200);
       folder.querySelectorAll(".icard3").forEach(function (card, k) {
-        card.animate([
+        own(card.animate([
           {opacity:0, transform:"translate(0px,28px) rotate(-1deg)"},
           {opacity:1, transform:"translate(0px,0px) rotate(0deg)"}
-        ], {duration:260, delay:300 + k * 50, easing:ease, fill:"forwards"});
+        ], {duration:260, delay:300 + k * 50, easing:ease, fill:"forwards"}));
       });
     });
-    setTimeout(function () {
+    openLater(function () {
+      if (ticket !== openTicket) return;
+      mine.forEach(function (a) {
+        var at = openAnims.indexOf(a);
+        if (at >= 0) openAnims.splice(at, 1);
+        dropAnim(a);
+      });
       delete root.dataset.open;
       visible.forEach(function (folder) {
         folder.classList.remove("is-closing");
         folder.classList.remove("is-flipping");
-        folder.getAnimations().forEach(function (a) { try { a.cancel(); } catch (e) {} });
         folder.querySelectorAll(".icard3").forEach(function (card) {
-          card.getAnimations().forEach(function (a) { try { a.cancel(); } catch (e) {} });
-          card.style.opacity = ""; card.style.transform = "";
+          card.style.opacity = "";
+          card.style.transform = "";
         });
       });
     }, 760);

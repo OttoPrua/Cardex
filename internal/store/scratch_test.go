@@ -18,7 +18,7 @@ func TestProjectScratchDirRoundTrip(t *testing.T) {
 		ID:           "p1",
 		RepoPath:     "/repo",
 		WorktreeRoot: "/wt",
-		ScratchDir:   "  /Volumes/scratch  ",
+		ScratchDir:   "  /tmp/scratch  ",
 	}
 	if err := db.CreateProject(ctx, &project); err != nil {
 		t.Fatal(err)
@@ -27,7 +27,7 @@ func TestProjectScratchDirRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.ScratchDir != "/Volumes/scratch" {
+	if got.ScratchDir != "/tmp/scratch" {
 		t.Fatalf("scratch %q", got.ScratchDir)
 	}
 	got.ScratchDir = ""

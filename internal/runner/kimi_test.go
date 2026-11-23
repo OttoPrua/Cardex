@@ -116,6 +116,8 @@ func TestKimiClassifyAndUsage(t *testing.T) {
 func TestKimiWritablePathsAbsent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("KIMI_CODE_HOME", "")
+	t.Setenv("KIMI_CODE_CACHE_DIR", "")
 	got := (runner.Kimi{}).WritablePaths()
 	want := filepath.Join(home, ".kimi-code")
 	if !slices.Equal(got, []string{want}) {

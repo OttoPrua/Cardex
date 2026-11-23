@@ -150,7 +150,7 @@ func runAcceptance(ctx context.Context, dir string, commands []string) (acceptSt
 	for _, command := range cmds {
 		cmd := proc.Shell(actx, command)
 		cmd.Dir = dir
-		cmd.Env = os.Environ()
+		cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
 		proc.NewGroup(cmd)
 		cmd.WaitDelay = time.Second
 		cmd.Cancel = func() error {

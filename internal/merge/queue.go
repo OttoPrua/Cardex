@@ -478,6 +478,7 @@ func runChecks(ctx context.Context, dir string, acceptance []string, testCmd str
 		}
 		cmd := proc.Shell(ctx, command)
 		cmd.Dir = dir
+		cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
 		out, err := cmd.CombinedOutput()
 		fmt.Fprintf(&buf, "$ %s\n%s", command, out)
 		if err != nil {

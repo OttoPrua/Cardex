@@ -2005,7 +2005,7 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 	for _, command := range commands {
 		cmd := proc.Shell(ctx, command)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
 		if err := cmd.Run(); err != nil {
 			return false, nil
 		}
@@ -2048,18 +2048,12 @@ func git(repo string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// gitEnv drops inherited repository pointers so a merge or acceptance
-// worktree always uses the project repo passed to git -C.
+// gitEnv is the acceptance environment plus the git settings Cardex itself
+// needs. AcceptanceEnv already drops GIT_DIR, GIT_EXEC_PATH, GIT_TEMPLATE_DIR,
+// and the rest of GIT_*, so a worktree command cannot follow serve's
+// repository pointers or a template that omits hooks.
 func gitEnv() []string {
-	base := os.Environ()
-	out := make([]string, 0, len(base)+3)
-	for _, env := range base {
-		if strings.HasPrefix(env, "GIT_DIR=") || strings.HasPrefix(env, "GIT_WORK_TREE=") || strings.HasPrefix(env, "GIT_INDEX_FILE=") {
-			continue
-		}
-		out = append(out, env)
-	}
-	return append(out, "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "GIT_PAGER=cat")
+	return append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "GIT_PAGER=cat")
 }
 
 // noOutputDetail names each no-output attempt on the card, with its channel,

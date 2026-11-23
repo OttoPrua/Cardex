@@ -208,30 +208,26 @@ func TestCardListChangedSinceAndFields(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	base := time.Date(2026, 11, 23, 1, 0, 0, 0, time.UTC)
-	cutoff := base.Add(30 * time.Minute)
-	later := cutoff.Add(time.Second)
+	base := time.Now().UTC().Truncate(time.Second).Add(-time.Hour)
 	type spec struct {
 		id, objective string
 		status        model.CardStatus
 		start, end    time.Time
-		eventAt       time.Time
-		eventEntity   string
 	}
 	specs := []spec{
 		{id: "c-old", objective: "o-list", status: model.CardReady, start: base, end: base.Add(time.Minute)},
-		{id: "c-edge", objective: "o-list", status: model.CardReady, start: base, end: cutoff},
-		{id: "c-equal", objective: "o-list", status: model.CardReady, start: cutoff, eventAt: cutoff, eventEntity: "card"},
-		{id: "c-start", objective: "o-list", status: model.CardRunning, start: later},
-		{id: "c-end", objective: "o-list", status: model.CardFailed, start: base, end: later},
-		{id: "c-event", objective: "o-list", status: model.CardNeedsInput, start: base, end: base.Add(time.Minute), eventAt: later, eventEntity: "card"},
-		{id: "c-attev", objective: "o-list", status: model.CardReady, start: base, end: base.Add(time.Minute), eventAt: later, eventEntity: "attempt"},
-		{id: "c-other", objective: "o-other", status: model.CardRunning, start: later},
+		{id: "c-start", objective: "o-list", status: model.CardRunning},
+		{id: "c-end", objective: "o-list", status: model.CardFailed, start: base},
+		{id: "c-node", objective: "o-list", status: model.CardNeedsInput},
+		{id: "c-other", objective: "o-other", status: model.CardRunning},
 	}
 	for _, item := range specs {
 		card := model.Card{ID: item.id, Objective: item.objective, Title: item.id, Kind: model.KindDev, Status: item.status}
 		if err := db.CreateCard(ctx, &card); err != nil {
 			t.Fatal(err)
+		}
+		if item.start.IsZero() {
+			continue
 		}
 		attempt := model.Attempt{ID: "a-" + item.id, Card: item.id, StartedAt: item.start, EndedAt: item.end}
 		if !item.end.IsZero() {
@@ -240,15 +236,39 @@ func TestCardListChangedSinceAndFields(t *testing.T) {
 		if err := db.CreateAttempt(ctx, &attempt); err != nil {
 			t.Fatal(err)
 		}
-		if !item.eventAt.IsZero() {
-			entity := "card:" + item.id
-			if item.eventEntity == "attempt" {
-				entity = "attempt:" + attempt.ID
-			}
-			if err := db.AppendEvent(ctx, &model.Event{ID: "e-" + item.id, TS: item.eventAt, Entity: entity, Type: "note", Data: json.RawMessage(`{}`)}); err != nil {
-				t.Fatal(err)
-			}
+	}
+	cutoff := time.Now().UTC()
+	for _, id := range []string{"c-start", "c-other"} {
+		if err := db.CreateAttempt(ctx, &model.Attempt{Card: id, StartedAt: time.Now()}); err != nil {
+			t.Fatal(err)
 		}
+	}
+	ended, err := db.GetAttempt(ctx, "a-c-end")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended.EndedAt = cutoff // The attempt's write time is newer than its end time.
+	ended.Outcome = model.OutcomePassed
+	if err := db.UpdateAttempt(ctx, &ended); err != nil {
+		t.Fatal(err)
+	}
+	card, err := db.GetCard(ctx, "c-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	card.Status = model.CardPaused
+	if err := db.UpdateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AppendEvent(ctx, &model.Event{Entity: "card:c-old", Type: "note"}); err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := db.GetAttempt(ctx, "a-c-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateAttempt(ctx, &unchanged); err != nil {
+		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
@@ -256,27 +276,25 @@ func TestCardListChangedSinceAndFields(t *testing.T) {
 
 	since := cutoff.Format(time.RFC3339Nano)
 	got := listIDs(t, mustHome(t, home, "--json", "card", "list", "--changed-since", since))
-	if strings.Join(got, ",") != "c-attev,c-end,c-event,c-other,c-start" {
+	if strings.Join(got, ",") != "c-end,c-node,c-other,c-start" {
 		t.Fatalf("changed-since %v", got)
 	}
 	scoped := listIDs(t, mustHome(t, home, "--json", "card", "list", "--objective", "o-list", "--changed-since", since))
-	if strings.Join(scoped, ",") != "c-attev,c-end,c-event,c-start" {
+	if strings.Join(scoped, ",") != "c-end,c-node,c-start" {
 		t.Fatalf("objective filter %v", scoped)
 	}
-	text := mustHome(t, home, "card", "list", "--changed-since", cutoff.Format(time.RFC3339))
-	for _, id := range []string{"c-start", "c-end", "c-event", "c-attev", "c-other"} {
+	text := mustHome(t, home, "card", "list", "--changed-since", since)
+	for _, id := range []string{"c-start", "c-end", "c-node", "c-other"} {
 		if !strings.Contains(text, id+"\t"+id+"\n") {
 			t.Fatalf("text missing %s\n%s", id, text)
 		}
 	}
-	for _, id := range []string{"c-old", "c-edge", "c-equal"} {
-		if strings.Contains(text, id+"\t") {
-			t.Fatalf("text included %s\n%s", id, text)
-		}
+	if strings.Contains(text, "c-old\t") {
+		t.Fatalf("text included unchanged card\n%s", text)
 	}
 
 	fieldsText := mustHome(t, home, "card", "list", "--objective", "o-list", "--changed-since", since, "--fields", "status,id")
-	wantText := "ready\tc-attev\nfailed\tc-end\nneeds_input\tc-event\nrunning\tc-start\n"
+	wantText := "failed\tc-end\npaused\tc-node\nrunning\tc-start\n"
 	if fieldsText != wantText {
 		t.Fatalf("fields text\n%s", fieldsText)
 	}
@@ -288,11 +306,11 @@ func TestCardListChangedSinceAndFields(t *testing.T) {
 	if err := json.Unmarshal([]byte(fieldsJSON), &rows); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 4 || rows[0]["id"] != "c-attev" || rows[0]["status"] != "ready" || len(rows[0]) != 2 {
+	if len(rows) != 3 || rows[0]["id"] != "c-end" || rows[0]["status"] != "failed" || len(rows[0]) != 2 {
 		t.Fatalf("fields json %+v", rows)
 	}
 	plain := mustHome(t, home, "card", "list")
-	if !strings.Contains(plain, "c-old\tc-old\n") || !strings.Contains(plain, "c-equal\tc-equal\n") {
+	if !strings.Contains(plain, "c-old\tc-old\n") {
 		t.Fatalf("unfiltered list\n%s", plain)
 	}
 
@@ -467,8 +485,8 @@ func TestBriefClipsLongEventAndFreeText(t *testing.T) {
 	note := strings.Repeat("N", 64*1024) + "NOTETAIL"
 	mustHome(t, home, "card", "merged", "--note", note, "c-long")
 
-	wait := strings.Repeat("等", 4000) + "WAITTAIL"
-	ask := strings.Repeat("问", 4000) + "QTAIL\nsecond line"
+	wait := "等" + strings.Repeat("😀", 4000) + "WAITTAIL"
+	ask := strings.Repeat(`"`, 4000) + "QTAIL\nsecond line"
 	block := strings.Repeat("阻", 4000) + "BLOCKTAIL"
 	legacy := strings.Repeat("遗", 4000) + "LEGACYTAIL"
 	db := openBriefDB(t, home)
@@ -524,10 +542,10 @@ func TestBriefClipsLongEventAndFreeText(t *testing.T) {
 	if err := json.Unmarshal([]byte(briefJSON), &shown); err != nil {
 		t.Fatal(err)
 	}
-	if utf8.RuneCountInString(shown.WaitReason) != briefTextLimit || !strings.HasPrefix(shown.WaitReason, "等") {
+	if len(shown.WaitReason) != briefTextLimit-1 || !utf8.ValidString(shown.WaitReason) || !strings.HasPrefix(shown.WaitReason, "等") {
 		t.Fatalf("wait %q", shown.WaitReason)
 	}
-	if shown.Question == nil || shown.Question.ID != "q-long" || utf8.RuneCountInString(shown.Question.Line) != briefTextLimit {
+	if shown.Question == nil || shown.Question.ID != "q-long" || len(shown.Question.Line) != briefTextLimit {
 		t.Fatalf("question %+v", shown.Question)
 	}
 	if shown.Event == nil || shown.Event.Type != "card_marked_merged" {
@@ -554,10 +572,10 @@ func TestBriefClipsLongEventAndFreeText(t *testing.T) {
 			t.Fatalf("objective brief leaked %s\n%s", tail, objJSON)
 		}
 	}
-	if !strings.Contains(objText, "blocked\tc-block\tfailed\t"+strings.Repeat("阻", briefTextLimit)+"\n") {
+	if !strings.Contains(objText, "blocked\tc-block\tfailed\t"+strings.Repeat("阻", briefTextLimit/len("阻"))+"\n") {
 		t.Fatalf("objective text\n%s", objText)
 	}
-	if !strings.Contains(objText, "blocked\tc-legacy\tneeds_input\t"+strings.Repeat("遗", briefTextLimit)+"\n") {
+	if !strings.Contains(objText, "blocked\tc-legacy\tneeds_input\t"+strings.Repeat("遗", briefTextLimit/len("遗"))+"\n") {
 		t.Fatalf("legacy reason\n%s", objText)
 	}
 }
@@ -580,7 +598,7 @@ func TestCardListChangedSinceSeesPauseAndNewCard(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	since := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+	since := time.Now().UTC().Format(time.RFC3339Nano)
 	if got := listIDs(t, mustHome(t, home, "--json", "card", "list", "--changed-since", since)); len(got) != 0 {
 		t.Fatalf("unchanged cards %v", got)
 	}
@@ -600,18 +618,10 @@ func TestCardListChangedSinceSeesPauseAndNewCard(t *testing.T) {
 		t.Fatalf("future cutoff %v", got)
 	}
 
-	db = openBriefDB(t, home)
-	defer db.Close()
-	events, err := db.ListEvents(ctx, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	seen := map[string]bool{}
-	for _, event := range events {
-		seen[event.Entity+" "+event.Type] = true
-	}
-	if !seen["card:c-pause card_status"] || !seen["card:c-new card_created"] || !seen["card:c-origin origin"] || seen["card:c-quiet card_status"] {
-		t.Fatalf("events %+v", seen)
+	afterPause := time.Now().UTC().Format(time.RFC3339Nano)
+	mustHome(t, home, "card", "pause", "c-pause")
+	if got := listIDs(t, mustHome(t, home, "--json", "card", "list", "--changed-since", afterPause)); len(got) != 0 {
+		t.Fatalf("repeated pause moved the change time: %v", got)
 	}
 }
 
@@ -632,6 +642,10 @@ func TestDashDashEndsFlags(t *testing.T) {
 	if err := db.CreateCard(ctx, &card); err != nil {
 		t.Fatal(err)
 	}
+	card.ID = "--json"
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -639,6 +653,9 @@ func TestDashDashEndsFlags(t *testing.T) {
 	text := mustHome(t, home, "card", "show", "--", "--brief")
 	if text != "--brief\tdash card\n" {
 		t.Fatalf("card show %q", text)
+	}
+	if got := mustHome(t, home, "card", "show", "--", "--json"); got != "--json\tdash card\n" {
+		t.Fatalf("global flag after terminator: %q", got)
 	}
 	obj := mustHome(t, home, "objective", "show", "--", "--brief")
 	if obj != "--brief\tdash objective\n" {
@@ -649,7 +666,7 @@ func TestDashDashEndsFlags(t *testing.T) {
 		t.Fatalf("brief\n%s", brief)
 	}
 	objBrief := mustHome(t, home, "objective", "show", "--brief", "--", "--brief")
-	if !strings.Contains(objBrief, "id\t--brief\n") || !strings.Contains(objBrief, "ready\t1\n") {
+	if !strings.Contains(objBrief, "id\t--brief\n") || !strings.Contains(objBrief, "ready\t2\n") {
 		t.Fatalf("objective brief\n%s", objBrief)
 	}
 	code, _, errb := callCLI(t, []string{"--home", home, "card", "show", "--brief"})

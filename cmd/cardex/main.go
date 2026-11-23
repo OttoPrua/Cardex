@@ -132,6 +132,8 @@ func splitGlobal(args []string) (home string, asJSON bool, rest []string, err er
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
+		case a == "--":
+			return home, asJSON, append(rest, args[i:]...), nil
 		case a == "--json":
 			asJSON = true
 		case a == "--home":

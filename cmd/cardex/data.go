@@ -319,7 +319,7 @@ func objectiveList(home string, asJSON bool, args []string, stdout, stderr io.Wr
 func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("objective show", "show one stored objective, including its origin", "<id> --json --brief", stdout, stderr)
 	brief := fs.Bool("brief", false, "card counts by status, plus one line each for needs_input and failed cards")
-	if code, ok := parseSet(fs, flagsFirst(args, nil)); !ok {
+	if code, ok := parseSet(fs, flagsFirst(fs, args)); !ok {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -458,13 +458,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		if err := db.CreateCard(ctx, &c); err != nil {
 			return err
 		}
-		if err := saveCardOrigin(ctx, db, c.ID, origin); err != nil {
-			return err
-		}
-		if origin != "" {
-			return nil
-		}
-		return recordCardChange(ctx, db, c.ID, "card_created", map[string]string{"status": string(c.Status)})
+		return saveCardOrigin(ctx, db, c.ID, origin)
 	}); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -479,22 +473,20 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("card list", "list stored cards, optionally for one objective", "--objective --changed-since <RFC3339> --fields <name> --json", stdout, stderr)
 	objective := fs.String("objective", "", "objective id")
-	changedSince := fs.String("changed-since", "", "RFC3339 time; list cards created, status-changed, or with an attempt or event after it")
+	changedSince := fs.String("changed-since", "", "RFC3339 time; list cards created or with a status or attempt change after it")
 	var fieldFlags stringsFlag
 	fs.Var(&fieldFlags, "fields", "card fields to print, comma-separated: "+strings.Join(cardListFields(), ","))
-	if code, ok := parseSet(fs, flagsFirst(args, map[string]bool{"objective": true, "changed-since": true, "fields": true})); !ok {
+	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
-	var since time.Time
-	filterSince := false
+	var since *time.Time
 	if flagSeen(fs, "changed-since") {
 		parsed, err := parseChangedSince(*changedSince)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 2
 		}
-		since = parsed
-		filterSince = true
+		since = &parsed
 	}
 	var fields []string
 	if len(fieldFlags) > 0 {
@@ -512,23 +504,15 @@ func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 	}
 	defer db.Close()
 	ctx := context.Background()
-	items, err := db.ListCards(ctx, *objective)
+	var items []model.Card
+	if since == nil {
+		items, err = db.ListCards(ctx, *objective)
+	} else {
+		items, err = db.ListCardsChangedSince(ctx, *objective, *since)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
-	}
-	if filterSince {
-		attempts, err := db.ListAttempts(ctx, "")
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		events, err := db.ListEvents(ctx, "")
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		items = filterCardsChangedSince(items, newChangeIndex(attempts, events), since)
 	}
 	if len(fields) > 0 {
 		if asJSON {
@@ -551,7 +535,7 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 	brief := fs.Bool("brief", false, "short status: id, objective, status, wait reason, tier, rework count, current attempt, latest event, pending question, commit")
 	showClaims := fs.Bool("claims", false, "with --brief, include the claim list; the default brief prints claims_count only")
 	attemptsMode := fs.String("attempts", "", "with --brief, pass all to list every attempt; the default brief keeps the latest 3")
-	if code, ok := parseSet(fs, flagsFirst(args, map[string]bool{"attempts": true})); !ok {
+	if code, ok := parseSet(fs, flagsFirst(fs, args)); !ok {
 		return code
 	}
 	allAttempts, err := parseAttemptsMode(*attemptsMode)
@@ -580,11 +564,6 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	origin, err := loadCardOrigin(ctx, db, c.ID)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
 	if *brief {
 		// Folding claims or attempts in the default JSON object would drop or
 		// shorten fields that card show --json already publishes. --brief is
@@ -605,6 +584,11 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 			return 1
 		}
 		return emitCardBrief(stdout, asJSON, buildCardBrief(c, attempts, events, questions, *showClaims, allAttempts))
+	}
+	origin, err := loadCardOrigin(ctx, db, c.ID)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
 	}
 	history, err := cardShowHistory(ctx, db, c.ID)
 	if err != nil {

@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 )
@@ -17,7 +21,7 @@ const briefAttemptLimit = 3
 
 // briefTextLimit bounds free text on --brief. A merge note can be several
 // kilobytes and a review opinion is stored up to 64 KiB; the summary keeps
-// the leading runes of each field.
+// the leading bytes of each field without splitting a UTF-8 rune.
 const briefTextLimit = 240
 
 type cardBriefAttempt struct {
@@ -87,9 +91,13 @@ func parseAttemptsMode(raw string) (all bool, err error) {
 
 func buildCardBrief(c model.Card, attempts []model.Attempt, events []model.Event, questions []model.Question, showClaims, allAttempts bool) cardBriefView {
 	sorted := append([]model.Attempt(nil), attempts...)
-	sortAttemptsOldestFirst(sorted)
-	history := make([]cardBriefAttempt, 0, len(sorted))
-	for _, attempt := range sorted {
+	sort.Slice(sorted, func(i, j int) bool { return attemptNewer(sorted[j], sorted[i]) })
+	recent := sorted
+	if !allAttempts && len(recent) > briefAttemptLimit {
+		recent = recent[len(recent)-briefAttemptLimit:]
+	}
+	history := make([]cardBriefAttempt, 0, len(recent))
+	for _, attempt := range recent {
 		history = append(history, briefAttempt(attempt))
 	}
 	view := cardBriefView{
@@ -101,14 +109,13 @@ func buildCardBrief(c model.Card, attempts []model.Attempt, events []model.Event
 		ReworkCount: c.ReworkCount,
 		ClaimsCount: len(c.Claims),
 		Attempt:     selectBriefAttempt(sorted),
-		Attempts:    foldBriefAttempts(history, allAttempts),
+		Attempts:    history,
 		Event:       latestBriefEvent(events),
 		Question:    pendingBriefQuestion(questions, c.ID),
 		Commit:      latestCommit(c, sorted),
 	}
 	if showClaims {
-		claims := append([]model.Claim(nil), c.Claims...)
-		view.Claims = &claims
+		view.Claims = &c.Claims
 	}
 	return view
 }
@@ -126,7 +133,7 @@ func formatCardBrief(view cardBriefView) string {
 	fmt.Fprintf(&b, "id\t%s\n", view.ID)
 	fmt.Fprintf(&b, "objective\t%s\n", view.Objective)
 	fmt.Fprintf(&b, "status\t%s\n", view.Status)
-	fmt.Fprintf(&b, "wait_reason\t%s\n", firstLine(view.WaitReason))
+	fmt.Fprintf(&b, "wait_reason\t%s\n", view.WaitReason)
 	fmt.Fprintf(&b, "tier\t%s\n", view.Tier)
 	fmt.Fprintf(&b, "rework_count\t%d\n", view.ReworkCount)
 	fmt.Fprintf(&b, "claims_count\t%d\n", view.ClaimsCount)
@@ -204,28 +211,6 @@ func selectBriefAttempt(sorted []model.Attempt) *cardBriefAttempt {
 	return &view
 }
 
-func foldBriefAttempts(history []cardBriefAttempt, all bool) []cardBriefAttempt {
-	if history == nil {
-		history = []cardBriefAttempt{}
-	}
-	if all || len(history) <= briefAttemptLimit {
-		return history
-	}
-	return history[len(history)-briefAttemptLimit:]
-}
-
-func sortAttemptsOldestFirst(attempts []model.Attempt) {
-	for i := 1; i < len(attempts); i++ {
-		item := attempts[i]
-		j := i
-		for j > 0 && attemptNewer(attempts[j-1], item) {
-			attempts[j] = attempts[j-1]
-			j--
-		}
-		attempts[j] = item
-	}
-}
-
 func attemptNewer(a, b model.Attempt) bool {
 	if !a.StartedAt.Equal(b.StartedAt) {
 		return a.StartedAt.After(b.StartedAt)
@@ -265,31 +250,38 @@ func eventNewer(a, b model.Event) bool {
 }
 
 func clipBriefText(raw string) string {
-	return clipRunes(firstLine(raw), briefTextLimit)
-}
-
-func clipRunes(s string, n int) string {
-	if s == "" || n <= 0 {
-		return ""
+	if end := strings.IndexAny(raw, "\r\n"); end >= 0 {
+		raw = raw[:end]
 	}
-	r := []rune(s)
-	if len(r) <= n {
-		return s
+	raw = strings.TrimSpace(raw)
+	if len(raw) > briefTextLimit {
+		limit := briefTextLimit
+		for limit > 0 && !utf8.RuneStart(raw[limit]) {
+			limit--
+		}
+		raw = raw[:limit]
 	}
-	return string(r[:n])
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, strings.ToValidUTF8(raw, " "))
 }
 
 // clipBriefData keeps a short payload as JSON. A longer payload becomes a
-// JSON string of its leading runes so the brief stays valid and bounded.
+// JSON string preview. Count formatted bytes because writeJSON indents objects.
 func clipBriefData(data json.RawMessage) json.RawMessage {
-	data = cardEventData(data)
-	if len([]rune(string(data))) <= briefTextLimit {
-		return data
+	if len(data) == 0 {
+		return json.RawMessage(`{}`)
 	}
-	encoded, err := json.Marshal(clipRunes(string(data), briefTextLimit))
-	if err != nil {
-		return json.RawMessage(`""`)
+	if len(data) <= briefTextLimit {
+		var formatted bytes.Buffer
+		if err := json.Indent(&formatted, data, "    ", "  "); err == nil && formatted.Len() <= briefTextLimit {
+			return data
+		}
 	}
+	encoded, _ := json.Marshal(clipBriefText(string(data)))
 	return encoded
 }
 
@@ -385,18 +377,6 @@ func sortCardsByID(cards []model.Card) {
 	}
 }
 
-func firstLine(raw string) string {
-	raw = strings.ReplaceAll(raw, "\r\n", "\n")
-	raw = strings.ReplaceAll(raw, "\r", "\n")
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(strings.ReplaceAll(line, "\t", " "))
-		if line != "" {
-			return line
-		}
-	}
-	return ""
-}
-
 func formatCLITime(t time.Time) string {
 	if t.IsZero() {
 		return ""
@@ -410,9 +390,6 @@ func parseChangedSince(raw string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("--changed-since requires an RFC3339 time")
 	}
 	if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
-		return parsed, nil
-	}
-	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
 		return parsed, nil
 	}
 	return time.Time{}, fmt.Errorf("--changed-since must be RFC3339, got %q", raw)
@@ -513,66 +490,4 @@ func formatCardFields(cards []model.Card, fields []string) string {
 		b.WriteByte('\n')
 	}
 	return b.String()
-}
-
-// changeIndex is the time evidence card list --changed-since can see.
-// Cards have no status-updated column. A card matches when an attempt
-// started or ended after the cutoff, or when an event on that card or one
-// of its attempts did. card add writes card_created when the card has no
-// origin event, and a status verb writes card_status when the status
-// changes, so those writes are events this index can see.
-type changeIndex struct {
-	attempts      map[string][]model.Attempt
-	cardEvents    map[string][]time.Time
-	attemptEvents map[string][]time.Time
-}
-
-func newChangeIndex(attempts []model.Attempt, events []model.Event) changeIndex {
-	index := changeIndex{
-		attempts:      map[string][]model.Attempt{},
-		cardEvents:    map[string][]time.Time{},
-		attemptEvents: map[string][]time.Time{},
-	}
-	for _, attempt := range attempts {
-		index.attempts[attempt.Card] = append(index.attempts[attempt.Card], attempt)
-	}
-	for _, event := range events {
-		if cardID, ok := strings.CutPrefix(event.Entity, "card:"); ok {
-			index.cardEvents[cardID] = append(index.cardEvents[cardID], event.TS)
-			continue
-		}
-		if attemptID, ok := strings.CutPrefix(event.Entity, "attempt:"); ok {
-			index.attemptEvents[attemptID] = append(index.attemptEvents[attemptID], event.TS)
-		}
-	}
-	return index
-}
-
-func (index changeIndex) changed(cardID string, since time.Time) bool {
-	for _, attempt := range index.attempts[cardID] {
-		if attempt.StartedAt.After(since) || (!attempt.EndedAt.IsZero() && attempt.EndedAt.After(since)) {
-			return true
-		}
-		for _, ts := range index.attemptEvents[attempt.ID] {
-			if ts.After(since) {
-				return true
-			}
-		}
-	}
-	for _, ts := range index.cardEvents[cardID] {
-		if ts.After(since) {
-			return true
-		}
-	}
-	return false
-}
-
-func filterCardsChangedSince(cards []model.Card, index changeIndex, since time.Time) []model.Card {
-	out := []model.Card{}
-	for _, card := range cards {
-		if index.changed(card.ID, since) {
-			out = append(out, card)
-		}
-	}
-	return out
 }

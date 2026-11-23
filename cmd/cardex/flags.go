@@ -56,24 +56,29 @@ func finishSoft(stdout, stderr io.Writer, asJSON bool, notes []string, v any, li
 // stops at the first non-flag, but card and objective commands are written
 // with the id first. "--" still ends flag parsing, so an id that looks like
 // an option can be passed as: card show -- --brief.
-func flagsFirst(args []string, valueFlags map[string]bool) []string {
+func flagsFirst(fs *flag.FlagSet, args []string) []string {
 	var flags, pos []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
-			pos = append(pos, args[i:]...)
+			flags = append(flags, a)
+			pos = append(pos, args[i+1:]...)
 			break
 		}
-		name, ok := strings.CutPrefix(a, "--")
-		if !ok || name == "" {
+		if a == "-" || !strings.HasPrefix(a, "-") {
 			pos = append(pos, a)
 			continue
 		}
 		flags = append(flags, a)
-		if _, _, hasValue := strings.Cut(name, "="); hasValue {
+		name, _, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-"), "=")
+		f := fs.Lookup(name)
+		if hasValue || f == nil {
 			continue
 		}
-		if valueFlags[name] && i+1 < len(args) && args[i+1] != "--" && !strings.HasPrefix(args[i+1], "--") {
+		if b, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && b.IsBoolFlag() {
+			continue
+		}
+		if i+1 < len(args) {
 			i++
 			flags = append(flags, args[i])
 		}

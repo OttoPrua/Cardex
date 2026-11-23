@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 )
 
 func newFlagSet(name, purpose, params string, stdout, stderr io.Writer) *flag.FlagSet {
@@ -49,6 +50,34 @@ func finishSoft(stdout, stderr io.Writer, asJSON bool, notes []string, v any, li
 		}
 	}
 	return emit(stdout, asJSON, v, line)
+}
+
+// flagsFirst lets a positional id sit before its flags. The standard library
+// stops at the first non-flag, but card and objective commands are written
+// with the id first.
+func flagsFirst(args []string, valueFlags map[string]bool) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		name, ok := strings.CutPrefix(a, "--")
+		if !ok || name == "" {
+			pos = append(pos, a)
+			continue
+		}
+		flags = append(flags, a)
+		if _, _, hasValue := strings.Cut(name, "="); hasValue {
+			continue
+		}
+		if valueFlags[name] && i+1 < len(args) && args[i+1] != "--" && !strings.HasPrefix(args[i+1], "--") {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, pos...)
 }
 
 func flagSeen(fs *flag.FlagSet, name string) bool {

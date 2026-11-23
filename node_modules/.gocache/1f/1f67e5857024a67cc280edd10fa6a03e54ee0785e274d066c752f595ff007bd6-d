@@ -1,0 +1,9 @@
+./api.go
+./harness.go
+./faults_test.go
+./harness_test.go
+./owner_handoff_test.go
+./prod_wiring_test.go
+./s25_flow_test.go
+./s26_research_test.go
+./scenarios_test.go

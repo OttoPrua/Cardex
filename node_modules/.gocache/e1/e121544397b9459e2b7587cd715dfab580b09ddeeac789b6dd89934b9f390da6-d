@@ -1,0 +1,7 @@
+./api.go
+./data.go
+./progress.go
+./view.go
+./board_test.go
+./card_history_test.go
+./v1home_test.go

@@ -1,0 +1,12 @@
+./browser_test.go
+./cancel_test.go
+./fifo_unix_test.go
+./followup_test.go
+./goal_real_test.go
+./goal_test.go
+./host_test.go
+./kimi_goal_test.go
+./proxy_env_test.go
+./rework_test.go
+./sandbox_off_test.go
+./sleepbin_test.go

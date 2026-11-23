@@ -83,6 +83,8 @@ func TestCursorClassifyAndUsage(t *testing.T) {
 func TestCursorWritablePathsAbsent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CURSOR_CONFIG_DIR", "")
+	t.Setenv("CURSOR_DATA_DIR", "")
 	got := (runner.Cursor{}).WritablePaths()
 	want := filepath.Join(home, ".cursor")
 	if !slices.Equal(got, []string{want}) {

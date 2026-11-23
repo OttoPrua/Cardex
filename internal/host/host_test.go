@@ -646,3 +646,199 @@ func denialRoot(t *testing.T, path string) bool {
 	}
 	return true
 }
+
+// Sandbox off still goes through commandFor. The child prints the environment
+// a go test it starts would inherit.
+func TestFakeExecutorDropsSchedEnvKeepsToolConfig(t *testing.T) {
+	cursor := t.TempDir()
+	kimiFromRunner := t.TempDir()
+	execPath := t.TempDir()
+	gitConfig := filepath.Join(t.TempDir(), "gitconfig")
+	t.Setenv("CARDEX_SCHED_HOST", "1")
+	t.Setenv("CARDEX_SCHED_ATTEMPT", "att-probe")
+	t.Setenv("GIT_EXEC_PATH", execPath)
+	t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
+	t.Setenv("CURSOR_CONFIG_DIR", cursor)
+	t.Setenv("KIMI_CODE_HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	home, id, _ := seedPreparedCard(t, t.TempDir(), model.RunnerFake, "", 1, func(c *model.Card) {
+		c.Sandbox = "off"
+	}, func(string) any {
+		return map[string]any{
+			"attempts": map[string]any{
+				"0": map[string]any{
+					"echo_env": []string{
+						"CARDEX_SCHED_HOST", "CARDEX_SCHED_ATTEMPT",
+						"GIT_EXEC_PATH", "GIT_CONFIG_GLOBAL",
+						"CURSOR_CONFIG_DIR", "KIMI_CODE_HOME",
+						"PATH", "HOME", "TMPDIR",
+					},
+					"env": map[string]string{"KIMI_CODE_HOME": kimiFromRunner},
+				},
+			},
+		}
+	})
+	if err := host.Run(context.Background(), home, id); err != nil {
+		t.Fatal(err)
+	}
+	logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(logb)
+	for _, key := range []string{"CARDEX_SCHED_HOST", "CARDEX_SCHED_ATTEMPT"} {
+		if !strings.Contains(log, key+"=\n") {
+			t.Fatalf("executor kept %s\n%s", key, log)
+		}
+	}
+	for _, want := range []string{
+		"GIT_EXEC_PATH=" + execPath + "\n",
+		"GIT_CONFIG_GLOBAL=" + gitConfig + "\n",
+		"CURSOR_CONFIG_DIR=" + cursor + "\n",
+		"KIMI_CODE_HOME=" + kimiFromRunner + "\n",
+		"HOME=" + os.Getenv("HOME") + "\n",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("executor missing %q\n%s", want, log)
+		}
+	}
+	if !pathEchoKeeps(log, os.Getenv("PATH")) {
+		t.Fatalf("executor dropped PATH\n%s", log)
+	}
+	if tmp := os.Getenv("TMPDIR"); tmp != "" && !strings.Contains(log, "TMPDIR="+tmp+"\n") {
+		t.Fatalf("executor dropped TMPDIR\n%s", log)
+	}
+}
+
+// pathEchoKeeps reports that an echo_env PATH line still contains the
+// process PATH. The go test shim is prepended in front of it.
+func pathEchoKeeps(log, path string) bool {
+	if path == "" {
+		return false
+	}
+	for _, line := range strings.Split(log, "\n") {
+		if strings.HasPrefix(line, "PATH=") && strings.Contains(line, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestEngineChildDropsSchedEnvKeepsClaudeConfig(t *testing.T) {
+	binDir := t.TempDir()
+	stub := filepath.Join(binDir, "claude")
+	body := "#!/bin/sh\nprintf 'SCHED=%s\\n' \"$CARDEX_SCHED_HOST\"\nprintf 'ATTEMPT=%s\\n' \"$CARDEX_SCHED_ATTEMPT\"\nprintf 'GIT=%s\\n' \"$GIT_CONFIG_GLOBAL\"\nprintf 'CLAUDE=%s\\n' \"$CLAUDE_CONFIG_DIR\"\nprintf 'BASE=%s\\n' \"$ANTHROPIC_BASE_URL\"\n"
+	if err := os.WriteFile(stub, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	claudeDir := t.TempDir()
+	gitConfig := filepath.Join(t.TempDir(), "gitconfig")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CARDEX_SCHED_HOST", "1")
+	t.Setenv("CARDEX_SCHED_ATTEMPT", "att-engine")
+	t.Setenv("GIT_CONFIG_GLOBAL", gitConfig)
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+	t.Setenv("KIMI_API_KEY", "secret-kimi-value")
+
+	home, id, _ := seedPreparedCard(t, t.TempDir(), model.RunnerClaude, "kimi", 1, func(c *model.Card) {
+		c.Sandbox = "off"
+	}, nil)
+	if err := host.Run(context.Background(), home, id); err != nil {
+		t.Fatal(err)
+	}
+	logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(logb)
+	for _, want := range []string{
+		"SCHED=\n",
+		"ATTEMPT=\n",
+		"GIT=" + gitConfig + "\n",
+		"CLAUDE=" + claudeDir + "\n",
+		"BASE=https://api.kimi.com/coding/\n",
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("child env missing %q\n%s", want, log)
+		}
+	}
+}
+
+// The fake claude process keeps GIT_CONFIG_GLOBAL, so git config --global
+// still reads it. go test started by that process must not see serve's tool
+// homes, sched flags, or GIT_*.
+func TestFakeClaudeGitConfigAndIsolatedGoTest(t *testing.T) {
+	mod := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mod, "go.mod"), []byte("module isolatedprobe\n\ngo 1.22\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := `package isolatedprobe
+
+import (
+	"os"
+	"testing"
+)
+
+func TestNoServeEnv(t *testing.T) {
+	for _, key := range []string{
+		"CARDEX_SCHED_HOST", "CARDEX_SCHED_ATTEMPT",
+		"CURSOR_CONFIG_DIR", "KIMI_CODE_HOME", "CLAUDE_CONFIG_DIR",
+		"GIT_EXEC_PATH", "GIT_TEMPLATE_DIR", "GIT_CONFIG_GLOBAL",
+	} {
+		if v := os.Getenv(key); v != "" {
+			t.Errorf("leaked %s=%s", key, v)
+		}
+	}
+	if os.Getenv("PATH") == "" || os.Getenv("HOME") == "" {
+		t.Error("PATH or HOME missing")
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(mod, "probe_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(cfg, []byte("[cardex]\n\tprobe = marker-ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binDir := t.TempDir()
+	stub := filepath.Join(binDir, "claude")
+	body := "#!/bin/sh\nmarker=$(git config --global --get cardex.probe) || { echo git-config-failed >&2; exit 1; }\nprintf 'MARKER=%s\\n' \"$marker\"\ncd " + shellQuote(mod) + " || exit 1\nexec go test -count=1 -mod=mod .\n"
+	if err := os.WriteFile(stub, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("CARDEX_SCHED_HOST", "1")
+	t.Setenv("CARDEX_SCHED_ATTEMPT", "att-probe")
+	t.Setenv("CURSOR_CONFIG_DIR", t.TempDir())
+	t.Setenv("KIMI_CODE_HOME", t.TempDir())
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("GIT_EXEC_PATH", t.TempDir())
+	t.Setenv("GIT_TEMPLATE_DIR", t.TempDir())
+	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
+
+	home, id, _ := seedPreparedCard(t, t.TempDir(), model.RunnerClaude, "", 1, func(c *model.Card) {
+		c.Sandbox = "off"
+	}, nil)
+	if err := os.WriteFile(filepath.Join(home, "attempts", id, "hard-duration"), []byte("3m"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Run(context.Background(), home, id); err != nil {
+		t.Fatal(err)
+	}
+	logb, err := os.ReadFile(filepath.Join(home, "attempts", id, "output.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	log := string(logb)
+	if !strings.Contains(log, "MARKER=marker-ok\n") {
+		t.Fatalf("git config did not see GIT_CONFIG_GLOBAL\n%s", log)
+	}
+	if !strings.Contains(log, "ok  \tisolatedprobe") && !strings.Contains(log, "ok\tisolatedprobe") {
+		t.Fatalf("go test did not pass\n%s", log)
+	}
+	attempt, _ := loadAttempt(t, home, id)
+	if attempt.Exit == nil || *attempt.Exit != 0 {
+		t.Fatalf("exit %v\n%s", attempt.Exit, log)
+	}
+}

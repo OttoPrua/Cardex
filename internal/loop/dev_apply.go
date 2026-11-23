@@ -1989,7 +1989,7 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 	if repo == "" || branch == "" {
 		return false, nil
 	}
-	if _, err := git(repo, "rev-parse", "--verify", "--quiet", branch); err != nil {
+	if _, err := acceptGit(repo, "rev-parse", "--verify", "--quiet", branch); err != nil {
 		return false, nil
 	}
 	parent, err := os.MkdirTemp("", "cardex-accept-")
@@ -1998,14 +1998,14 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 	}
 	defer os.RemoveAll(parent)
 	dir := filepath.Join(parent, "wt")
-	if _, err := git(repo, "worktree", "add", "--detach", dir, branch); err != nil {
+	if _, err := acceptGit(repo, "worktree", "add", "--detach", dir, branch); err != nil {
 		return false, err
 	}
-	defer git(repo, "worktree", "remove", "--force", dir)
+	defer acceptGit(repo, "worktree", "remove", "--force", dir)
 	for _, command := range commands {
 		cmd := proc.Shell(ctx, command)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
 		if err := cmd.Run(); err != nil {
 			return false, nil
 		}
@@ -2037,19 +2037,31 @@ func mainBranch(repo string) (string, error) {
 }
 
 func git(repo string, args ...string) (string, error) {
+	return gitWith(repo, gitEnv(), args...)
+}
+
+// acceptGit runs the git commands that prepare an acceptance worktree.
+// Those must not follow serve's GIT_EXEC_PATH, template, or config.
+func acceptGit(repo string, args ...string) (string, error) {
+	return gitWith(repo, acceptGitEnv(), args...)
+}
+
+func gitWith(repo string, env []string, args ...string) (string, error) {
 	cmd := exec.Command("git", append([]string{
 		"-C", repo,
 		"-c", "user.name=cardex",
 		"-c", "user.email=cardex@cardex.invalid",
 		"-c", "commit.gpgsign=false",
 	}, args...)...)
-	cmd.Env = gitEnv()
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 
-// gitEnv drops inherited repository pointers so a merge or acceptance
-// worktree always uses the project repo passed to git -C.
+// gitEnv is the local-merge environment. It drops repository pointers so
+// checkout and merge use the project passed to git -C, and it keeps
+// GIT_CONFIG_GLOBAL (and the rest of the user's git config) so a configured
+// hooks path still runs. Acceptance worktrees use acceptGitEnv instead.
 func gitEnv() []string {
 	base := os.Environ()
 	out := make([]string, 0, len(base)+3)
@@ -2060,6 +2072,13 @@ func gitEnv() []string {
 		out = append(out, env)
 	}
 	return append(out, "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "GIT_PAGER=cat")
+}
+
+// acceptGitEnv is the acceptance environment plus the git settings Cardex
+// itself needs. AcceptanceEnv drops GIT_DIR, GIT_EXEC_PATH, GIT_TEMPLATE_DIR,
+// GIT_CONFIG_GLOBAL, and the rest of GIT_*.
+func acceptGitEnv() []string {
+	return append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true", "GIT_PAGER=cat")
 }
 
 // noOutputDetail names each no-output attempt on the card, with its channel,

@@ -352,13 +352,25 @@ func TestObjectiveShowBriefCountsBlocked(t *testing.T) {
 		{ID: "c-r2", Objective: "o-b", Title: "r2", Kind: model.KindDev, Status: model.CardReady},
 		{ID: "c-run", Objective: "o-b", Title: "run", Kind: model.KindDev, Status: model.CardRunning, Body: "BODYSHOULDNOTAPPEAR" + strings.Repeat("B", 20000)},
 		{ID: "c-fail", Objective: "o-b", Title: "fail", Kind: model.KindDev, Status: model.CardFailed, WaitReason: "disk full\nsecond line", Legacy: model.Legacy{Reason: "LEGACYHIDDEN"}},
-		{ID: "c-need", Objective: "o-b", Title: "need", Kind: model.KindDev, Status: model.CardNeedsInput, Legacy: model.Legacy{Reason: "ask owner\r\nextra"}},
+		{ID: "c-need", Objective: "o-b", Title: "need", Kind: model.KindDev, Status: model.CardNeedsInput},
+		{ID: "c-repair", Objective: "o-b", Title: "repair", Kind: model.KindNormalize, Status: model.CardFailed, Base: "main"},
 		{ID: "c-foreign", Objective: "o-foreign", Title: "foreign", Kind: model.KindDev, Status: model.CardFailed, WaitReason: "FOREIGN"},
 	}
 	for i := range cards {
 		if err := db.CreateCard(ctx, &cards[i]); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := db.CreateQuestion(ctx, &model.Question{
+		ID: "q-need", Objective: "o-b", Scope: "c-need", ScopeKind: "card",
+		Kind: model.QuestionCustom, Text: "ask owner\r\nextra",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateAttempt(ctx, &model.Attempt{
+		ID: "a-repair", Card: "c-repair", Outcome: model.OutcomeTestsFailed, ErrorExcerpt: "verification failed\nextra",
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
@@ -382,11 +394,12 @@ func TestObjectiveShowBriefCountsBlocked(t *testing.T) {
 		"id\to-b\n",
 		"ready\t2\n",
 		"running\t1\n",
-		"failed\t1\n",
+		"failed\t2\n",
 		"needs_input\t1\n",
 		"paused\t0\n",
 		"blocked\tc-fail\tfailed\tdisk full\n",
 		"blocked\tc-need\tneeds_input\task owner\n",
+		"blocked\tc-repair\tfailed\tverification failed\n",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q\n%s", want, text)
@@ -407,7 +420,7 @@ func TestObjectiveShowBriefCountsBlocked(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &view); err != nil {
 		t.Fatal(err)
 	}
-	if view.ID != "o-b" || len(view.Counts) != len(model.AllCardStatuses()) || len(view.Blocked) != 2 {
+	if view.ID != "o-b" || len(view.Counts) != len(model.AllCardStatuses()) || len(view.Blocked) != 3 {
 		t.Fatalf("view %+v", view)
 	}
 	sum := 0
@@ -419,11 +432,17 @@ func TestObjectiveShowBriefCountsBlocked(t *testing.T) {
 		sum += count.Count
 		seen[count.Status] = count.Count
 	}
-	if sum != 5 || seen["ready"] != 2 || seen["running"] != 1 || seen["failed"] != 1 || seen["needs_input"] != 1 || seen["paused"] != 0 {
+	if sum != 6 || seen["ready"] != 2 || seen["running"] != 1 || seen["failed"] != 2 || seen["needs_input"] != 1 || seen["paused"] != 0 {
 		t.Fatalf("counts %+v", seen)
 	}
-	if view.Blocked[0].ID != "c-fail" || view.Blocked[0].Reason != "disk full" || view.Blocked[1].ID != "c-need" || view.Blocked[1].Reason != "ask owner" {
+	if view.Blocked[0].ID != "c-fail" || view.Blocked[0].Reason != "disk full" ||
+		view.Blocked[1].ID != "c-need" || view.Blocked[1].Reason != "ask owner" ||
+		view.Blocked[2].ID != "c-repair" || view.Blocked[2].Reason != "verification failed" {
 		t.Fatalf("blocked %+v", view.Blocked)
+	}
+	card := decodeBrief(t, mustHome(t, home, "--json", "card", "show", "c-repair", "--brief"))
+	if card.Commit != "" {
+		t.Fatalf("branch name reported as a commit: %q", card.Commit)
 	}
 }
 

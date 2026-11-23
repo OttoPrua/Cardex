@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -309,10 +310,16 @@ func latestCommit(c model.Card, sorted []model.Attempt) string {
 			return sorted[i].BaseCommit
 		}
 	}
-	return c.Base
+	// A card may name a branch as its base before the first attempt.
+	if len(c.Base) == 40 || len(c.Base) == 64 {
+		if _, err := hex.DecodeString(c.Base); err == nil {
+			return c.Base
+		}
+	}
+	return ""
 }
 
-func buildObjectiveBrief(id string, cards []model.Card) objectiveBriefView {
+func buildObjectiveBrief(id string, cards []model.Card, questions []model.Question) objectiveBriefView {
 	counts := make(map[model.CardStatus]int, len(model.AllCardStatuses()))
 	for _, card := range cards {
 		counts[card.Status]++
@@ -336,7 +343,7 @@ func buildObjectiveBrief(id string, cards []model.Card) objectiveBriefView {
 		view.Blocked = append(view.Blocked, objectiveBlocked{
 			ID:     card.ID,
 			Status: string(card.Status),
-			Reason: blockedReason(card),
+			Reason: blockedReason(card, questions),
 		})
 	}
 	return view
@@ -358,11 +365,17 @@ func emitObjectiveBrief(stdout io.Writer, asJSON bool, view objectiveBriefView) 
 	return 0
 }
 
-func blockedReason(card model.Card) string {
+func blockedReason(card model.Card, questions []model.Question) string {
 	if line := clipBriefText(card.WaitReason); line != "" {
 		return line
 	}
-	return clipBriefText(card.Legacy.Reason)
+	if line := clipBriefText(card.Legacy.Reason); line != "" {
+		return line
+	}
+	if question := pendingBriefQuestion(questions, card.ID); question != nil {
+		return question.Line
+	}
+	return ""
 }
 
 func sortCardsByID(cards []model.Card) {

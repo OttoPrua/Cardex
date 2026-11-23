@@ -344,7 +344,34 @@ func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Wr
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		return emitObjectiveBrief(stdout, asJSON, buildObjectiveBrief(o.ID, cards))
+		questions, err := db.ListQuestions(ctx, o.ID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		view := buildObjectiveBrief(o.ID, cards, questions)
+		for i := range view.Blocked {
+			card := &view.Blocked[i]
+			if card.Reason != "" || card.Status != string(model.CardFailed) {
+				continue
+			}
+			attempts, err := db.ListAttempts(ctx, card.ID)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			var latest model.Attempt
+			for _, attempt := range attempts {
+				if latest.ID == "" || attemptNewer(attempt, latest) {
+					latest = attempt
+				}
+			}
+			card.Reason = clipBriefText(latest.ErrorExcerpt)
+			if card.Reason == "" {
+				card.Reason = string(latest.Outcome)
+			}
+		}
+		return emitObjectiveBrief(stdout, asJSON, view)
 	}
 	line := o.ID + "\t" + o.Title
 	if o.Origin != "" {

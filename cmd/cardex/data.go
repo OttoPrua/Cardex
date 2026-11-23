@@ -453,11 +453,19 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		return 1
 	}
 	defer db.Close()
-	if err := db.CreateCard(context.Background(), &c); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	if err := saveCardOrigin(context.Background(), db, c.ID, origin); err != nil {
+	ctx := context.Background()
+	if err := db.WithTx(ctx, func(ctx context.Context) error {
+		if err := db.CreateCard(ctx, &c); err != nil {
+			return err
+		}
+		if err := saveCardOrigin(ctx, db, c.ID, origin); err != nil {
+			return err
+		}
+		if origin != "" {
+			return nil
+		}
+		return recordCardChange(ctx, db, c.ID, "card_created", map[string]string{"status": string(c.Status)})
+	}); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -471,7 +479,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("card list", "list stored cards, optionally for one objective", "--objective --changed-since <RFC3339> --fields <name> --json", stdout, stderr)
 	objective := fs.String("objective", "", "objective id")
-	changedSince := fs.String("changed-since", "", "RFC3339 time; list cards whose attempt or recorded card event changed after it")
+	changedSince := fs.String("changed-since", "", "RFC3339 time; list cards created, status-changed, or with an attempt or event after it")
 	var fieldFlags stringsFlag
 	fs.Var(&fieldFlags, "fields", "card fields to print, comma-separated: "+strings.Join(cardListFields(), ","))
 	if code, ok := parseSet(fs, flagsFirst(args, map[string]bool{"objective": true, "changed-since": true, "fields": true})); !ok {

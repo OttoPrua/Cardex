@@ -15,6 +15,11 @@ import (
 // break existing consumers, so the limit applies only to --brief.
 const briefAttemptLimit = 3
 
+// briefTextLimit bounds free text on --brief. A merge note can be several
+// kilobytes and a review opinion is stored up to 64 KiB; the summary keeps
+// the leading runes of each field.
+const briefTextLimit = 240
+
 type cardBriefAttempt struct {
 	ID        string `json:"id"`
 	Status    string `json:"status"`
@@ -91,7 +96,7 @@ func buildCardBrief(c model.Card, attempts []model.Attempt, events []model.Event
 		ID:          c.ID,
 		Objective:   c.Objective,
 		Status:      string(c.Status),
-		WaitReason:  c.WaitReason,
+		WaitReason:  clipBriefText(c.WaitReason),
 		Tier:        string(c.Tier),
 		ReworkCount: c.ReworkCount,
 		ClaimsCount: len(c.Claims),
@@ -235,13 +240,57 @@ func latestBriefEvent(events []model.Event) *cardBriefEvent {
 	if len(events) == 0 {
 		return nil
 	}
-	event := events[len(events)-1]
-	return &cardBriefEvent{
-		ID:   event.ID,
-		TS:   formatCLITime(event.TS),
-		Type: event.Type,
-		Data: cardEventData(event.Data),
+	best := events[0]
+	for _, event := range events[1:] {
+		if eventNewer(event, best) {
+			best = event
+		}
 	}
+	return &cardBriefEvent{
+		ID:   best.ID,
+		TS:   formatCLITime(best.TS),
+		Type: best.Type,
+		Data: clipBriefData(best.Data),
+	}
+}
+
+// eventNewer compares parsed timestamps. SQLite orders event.ts as
+// RFC3339Nano text, and in that order "12:00:00Z" sorts after
+// "12:00:00.5Z", so the last row is not the latest instant.
+func eventNewer(a, b model.Event) bool {
+	if !a.TS.Equal(b.TS) {
+		return a.TS.After(b.TS)
+	}
+	return a.ID > b.ID
+}
+
+func clipBriefText(raw string) string {
+	return clipRunes(firstLine(raw), briefTextLimit)
+}
+
+func clipRunes(s string, n int) string {
+	if s == "" || n <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
+// clipBriefData keeps a short payload as JSON. A longer payload becomes a
+// JSON string of its leading runes so the brief stays valid and bounded.
+func clipBriefData(data json.RawMessage) json.RawMessage {
+	data = cardEventData(data)
+	if len([]rune(string(data))) <= briefTextLimit {
+		return data
+	}
+	encoded, err := json.Marshal(clipRunes(string(data), briefTextLimit))
+	if err != nil {
+		return json.RawMessage(`""`)
+	}
+	return encoded
 }
 
 func pendingBriefQuestion(questions []model.Question, cardID string) *cardBriefQuestion {
@@ -252,7 +301,7 @@ func pendingBriefQuestion(questions []model.Question, cardID string) *cardBriefQ
 		if question.ScopeKind != "" && question.ScopeKind != "card" {
 			continue
 		}
-		return &cardBriefQuestion{ID: question.ID, Line: firstLine(question.Text)}
+		return &cardBriefQuestion{ID: question.ID, Line: clipBriefText(question.Text)}
 	}
 	return nil
 }
@@ -318,10 +367,10 @@ func emitObjectiveBrief(stdout io.Writer, asJSON bool, view objectiveBriefView) 
 }
 
 func blockedReason(card model.Card) string {
-	if line := firstLine(card.WaitReason); line != "" {
+	if line := clipBriefText(card.WaitReason); line != "" {
 		return line
 	}
-	return firstLine(card.Legacy.Reason)
+	return clipBriefText(card.Legacy.Reason)
 }
 
 func sortCardsByID(cards []model.Card) {
@@ -469,7 +518,9 @@ func formatCardFields(cards []model.Card, fields []string) string {
 // changeIndex is the time evidence card list --changed-since can see.
 // Cards have no status-updated column. A card matches when an attempt
 // started or ended after the cutoff, or when an event on that card or one
-// of its attempts did.
+// of its attempts did. card add writes card_created when the card has no
+// origin event, and a status verb writes card_status when the status
+// changes, so those writes are events this index can see.
 type changeIndex struct {
 	attempts      map[string][]model.Attempt
 	cardEvents    map[string][]time.Time

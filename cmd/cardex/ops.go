@@ -244,10 +244,23 @@ func cardTransition(home string, asJSON bool, verb string, args []string, stdout
 		return 1
 	}
 	if !legacyReadOnly(c.Legacy.Status) {
-		c.Status = cardVerbStatus(verb)
-		if err := db.UpdateCard(context.Background(), &c); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
+		from := c.Status
+		next := cardVerbStatus(verb)
+		if next != from {
+			c.Status = next
+			err = db.WithTx(context.Background(), func(ctx context.Context) error {
+				if err := db.UpdateCard(ctx, &c); err != nil {
+					return err
+				}
+				return recordCardChange(ctx, db, c.ID, "card_status", map[string]string{
+					"from":   string(from),
+					"status": string(c.Status),
+				})
+			})
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
 		}
 	}
 	origin, err := loadCardOrigin(context.Background(), db, c.ID)
@@ -257,6 +270,17 @@ func cardTransition(home string, asJSON bool, verb string, args []string, stdout
 	}
 	line := c.ID + "\t" + string(c.Status)
 	return emit(stdout, asJSON, cardView{Card: c, Origin: origin}, line)
+}
+
+// recordCardChange appends the timestamped write --changed-since reads.
+// The card row has no updated-at column, so a status change or a create
+// with no origin event is invisible unless it lands in the event table.
+func recordCardChange(ctx context.Context, db *store.Store, id, eventType string, fields map[string]string) error {
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return err
+	}
+	return db.AppendEvent(ctx, &model.Event{Entity: "card:" + id, Type: eventType, Data: raw})
 }
 
 func cardVerbStatus(verb string) model.CardStatus {

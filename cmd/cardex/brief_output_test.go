@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/store"
@@ -405,6 +406,259 @@ func TestObjectiveShowBriefCountsBlocked(t *testing.T) {
 	}
 	if view.Blocked[0].ID != "c-fail" || view.Blocked[0].Reason != "disk full" || view.Blocked[1].ID != "c-need" || view.Blocked[1].Reason != "ask owner" {
 		t.Fatalf("blocked %+v", view.Blocked)
+	}
+}
+
+func TestBriefLatestEventUsesParsedTime(t *testing.T) {
+	home := t.TempDir()
+	db := openBriefDB(t, home)
+	ctx := t.Context()
+	if err := db.CreateProject(ctx, &model.Project{ID: "p", RepoPath: home}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateObjective(ctx, &model.Objective{
+		ID: "o-time", Project: "p", Title: "time", Status: model.ObjectiveActive,
+		Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	card := model.Card{ID: "c-time", Objective: "o-time", Title: "time", Kind: model.KindDev, Status: model.CardReady}
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	whole := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	events := []model.Event{
+		{ID: "e-a", TS: whole.Add(500 * time.Millisecond), Entity: "card:" + card.ID, Type: "late", Data: json.RawMessage(`{"opinion":"later"}`)},
+		{ID: "e-0", TS: whole.Add(-time.Hour), Entity: "card:" + card.ID, Type: "older", Data: json.RawMessage(`{"opinion":"older"}`)},
+		{ID: "e-z", TS: whole, Entity: "card:" + card.ID, Type: "early", Data: json.RawMessage(`{"opinion":"earlier"}`)},
+	}
+	for i := range events {
+		if err := db.AppendEvent(ctx, &events[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed, err := db.ListEvents(ctx, "card:"+card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 3 || listed[0].Type != "older" || listed[len(listed)-1].Type != "early" {
+		t.Fatalf("text order %+v", listed)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	view := decodeBrief(t, mustHome(t, home, "--json", "card", "show", card.ID, "--brief"))
+	if view.Event == nil || view.Event.Type != "late" || view.Event.Data.Opinion != "later" {
+		t.Fatalf("event %+v", view.Event)
+	}
+	text := mustHome(t, home, "card", "show", card.ID, "--brief")
+	if !strings.Contains(text, "event\t2026-11-24T12:00:00.5Z\tlate\n") {
+		t.Fatalf("text\n%s", text)
+	}
+}
+
+func TestBriefClipsLongEventAndFreeText(t *testing.T) {
+	home := t.TempDir()
+	repo := t.TempDir()
+	mustHome(t, home, "project", "add", "--id", "p", "--repo", repo)
+	mustHome(t, home, "objective", "add", "--id", "o-long", "--project", "p", "--title", "long")
+	mustHome(t, home, "card", "add", "--id", "c-long", "--objective", "o-long", "--title", "long", "--kind", "dev", "--status", "merge_queued")
+	note := strings.Repeat("N", 64*1024) + "NOTETAIL"
+	mustHome(t, home, "card", "merged", "--note", note, "c-long")
+
+	wait := strings.Repeat("等", 4000) + "WAITTAIL"
+	ask := strings.Repeat("问", 4000) + "QTAIL\nsecond line"
+	block := strings.Repeat("阻", 4000) + "BLOCKTAIL"
+	legacy := strings.Repeat("遗", 4000) + "LEGACYTAIL"
+	db := openBriefDB(t, home)
+	ctx := t.Context()
+	card, err := db.GetCard(ctx, "c-long")
+	if err != nil {
+		t.Fatal(err)
+	}
+	card.WaitReason = wait
+	if err := db.UpdateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateQuestion(ctx, &model.Question{
+		ID: "q-long", Objective: "o-long", Scope: "c-long", ScopeKind: "card",
+		Kind: model.QuestionCustom, Text: ask,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	extra := []model.Card{
+		{ID: "c-block", Objective: "o-long", Title: "block", Kind: model.KindDev, Status: model.CardFailed, WaitReason: block},
+		{ID: "c-legacy", Objective: "o-long", Title: "legacy", Kind: model.KindDev, Status: model.CardNeedsInput, Legacy: model.Legacy{Reason: legacy}},
+	}
+	for i := range extra {
+		if err := db.CreateCard(ctx, &extra[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	briefJSON := mustHome(t, home, "--json", "card", "show", "c-long", "--brief")
+	briefText := mustHome(t, home, "card", "show", "c-long", "--brief")
+	if len(briefJSON) > 4096 || len(briefText) > 2048 {
+		t.Fatalf("brief json %d text %d", len(briefJSON), len(briefText))
+	}
+	for _, tail := range []string{"NOTETAIL", "WAITTAIL", "QTAIL", "second line", "BLOCKTAIL", "LEGACYTAIL"} {
+		if strings.Contains(briefJSON, tail) || strings.Contains(briefText, tail) {
+			t.Fatalf("brief leaked %s\n%s", tail, briefJSON)
+		}
+	}
+	var shown struct {
+		WaitReason string `json:"wait_reason"`
+		Event      *struct {
+			Type string          `json:"type"`
+			Data json.RawMessage `json:"data"`
+		} `json:"event"`
+		Question *struct {
+			ID   string `json:"id"`
+			Line string `json:"line"`
+		} `json:"question"`
+	}
+	if err := json.Unmarshal([]byte(briefJSON), &shown); err != nil {
+		t.Fatal(err)
+	}
+	if utf8.RuneCountInString(shown.WaitReason) != briefTextLimit || !strings.HasPrefix(shown.WaitReason, "等") {
+		t.Fatalf("wait %q", shown.WaitReason)
+	}
+	if shown.Question == nil || shown.Question.ID != "q-long" || utf8.RuneCountInString(shown.Question.Line) != briefTextLimit {
+		t.Fatalf("question %+v", shown.Question)
+	}
+	if shown.Event == nil || shown.Event.Type != "card_marked_merged" {
+		t.Fatalf("event %+v", shown.Event)
+	}
+	var payload string
+	if err := json.Unmarshal(shown.Event.Data, &payload); err != nil {
+		t.Fatalf("long event data stayed an object: %s", shown.Event.Data)
+	}
+	if utf8.RuneCountInString(payload) != briefTextLimit || !strings.Contains(payload, "N") || strings.Contains(payload, "NOTETAIL") {
+		t.Fatalf("payload %q", payload)
+	}
+	if !strings.Contains(briefText, "wait_reason\t"+shown.WaitReason+"\n") || !strings.Contains(briefText, "question\tq-long\t"+shown.Question.Line+"\n") {
+		t.Fatalf("text\n%s", briefText)
+	}
+
+	objText := mustHome(t, home, "objective", "show", "o-long", "--brief")
+	objJSON := mustHome(t, home, "--json", "objective", "show", "o-long", "--brief")
+	if len(objText) > 2000 || len(objJSON) > 4000 {
+		t.Fatalf("objective brief text %d json %d", len(objText), len(objJSON))
+	}
+	for _, tail := range []string{"BLOCKTAIL", "LEGACYTAIL", "NOTETAIL"} {
+		if strings.Contains(objText, tail) || strings.Contains(objJSON, tail) {
+			t.Fatalf("objective brief leaked %s\n%s", tail, objJSON)
+		}
+	}
+	if !strings.Contains(objText, "blocked\tc-block\tfailed\t"+strings.Repeat("阻", briefTextLimit)+"\n") {
+		t.Fatalf("objective text\n%s", objText)
+	}
+	if !strings.Contains(objText, "blocked\tc-legacy\tneeds_input\t"+strings.Repeat("遗", briefTextLimit)+"\n") {
+		t.Fatalf("legacy reason\n%s", objText)
+	}
+}
+
+func TestCardListChangedSinceSeesPauseAndNewCard(t *testing.T) {
+	t.Setenv("CARDEX_ORIGIN", "")
+	home := t.TempDir()
+	repo := t.TempDir()
+	mustHome(t, home, "project", "add", "--id", "p", "--repo", repo)
+	mustHome(t, home, "objective", "add", "--id", "o-chg", "--project", "p", "--title", "chg")
+	db := openBriefDB(t, home)
+	ctx := t.Context()
+	for _, id := range []string{"c-pause", "c-quiet"} {
+		card := model.Card{ID: id, Objective: "o-chg", Title: id, Kind: model.KindDev, Status: model.CardReady, Tier: model.TierT1}
+		if err := db.CreateCard(ctx, &card); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	since := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+	if got := listIDs(t, mustHome(t, home, "--json", "card", "list", "--changed-since", since)); len(got) != 0 {
+		t.Fatalf("unchanged cards %v", got)
+	}
+	mustHome(t, home, "card", "pause", "c-pause")
+	mustHome(t, home, "card", "add", "--id", "c-new", "--objective", "o-chg", "--title", "c-new", "--kind", "dev")
+	mustHome(t, home, "card", "add", "--id", "c-origin", "--objective", "o-chg", "--title", "c-origin", "--kind", "dev", "--origin", "file:sess")
+	got := listIDs(t, mustHome(t, home, "--json", "card", "list", "--objective", "o-chg", "--changed-since", since))
+	if strings.Join(got, ",") != "c-new,c-origin,c-pause" {
+		t.Fatalf("changed %v", got)
+	}
+	text := mustHome(t, home, "card", "list", "--objective", "o-chg", "--changed-since", since)
+	if !strings.Contains(text, "c-new\tc-new\n") || !strings.Contains(text, "c-pause\tc-pause\n") || strings.Contains(text, "c-quiet\t") {
+		t.Fatalf("text\n%s", text)
+	}
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	if got := listIDs(t, mustHome(t, home, "--json", "card", "list", "--changed-since", future)); len(got) != 0 {
+		t.Fatalf("future cutoff %v", got)
+	}
+
+	db = openBriefDB(t, home)
+	defer db.Close()
+	events, err := db.ListEvents(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, event := range events {
+		seen[event.Entity+" "+event.Type] = true
+	}
+	if !seen["card:c-pause card_status"] || !seen["card:c-new card_created"] || !seen["card:c-origin origin"] || seen["card:c-quiet card_status"] {
+		t.Fatalf("events %+v", seen)
+	}
+}
+
+func TestDashDashEndsFlags(t *testing.T) {
+	home := t.TempDir()
+	db := openBriefDB(t, home)
+	ctx := t.Context()
+	if err := db.CreateProject(ctx, &model.Project{ID: "p", RepoPath: home}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateObjective(ctx, &model.Objective{
+		ID: "--brief", Project: "p", Title: "dash objective", Status: model.ObjectiveActive,
+		Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	card := model.Card{ID: "--brief", Objective: "--brief", Title: "dash card", Kind: model.KindDev, Status: model.CardReady, Tier: model.TierT1}
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	text := mustHome(t, home, "card", "show", "--", "--brief")
+	if text != "--brief\tdash card\n" {
+		t.Fatalf("card show %q", text)
+	}
+	obj := mustHome(t, home, "objective", "show", "--", "--brief")
+	if obj != "--brief\tdash objective\n" {
+		t.Fatalf("objective show %q", obj)
+	}
+	brief := mustHome(t, home, "card", "show", "--brief", "--", "--brief")
+	if !strings.Contains(brief, "id\t--brief\n") || !strings.Contains(brief, "status\tready\n") {
+		t.Fatalf("brief\n%s", brief)
+	}
+	objBrief := mustHome(t, home, "objective", "show", "--brief", "--", "--brief")
+	if !strings.Contains(objBrief, "id\t--brief\n") || !strings.Contains(objBrief, "ready\t1\n") {
+		t.Fatalf("objective brief\n%s", objBrief)
+	}
+	code, _, errb := callCLI(t, []string{"--home", home, "card", "show", "--brief"})
+	if code != 2 || !strings.Contains(errb, "card show <id>") {
+		t.Fatalf("missing id %d %s", code, errb)
+	}
+	code, _, errb = callCLI(t, []string{"--home", home, "objective", "show", "--brief"})
+	if code != 2 || !strings.Contains(errb, "objective show <id>") {
+		t.Fatalf("missing objective id %d %s", code, errb)
 	}
 }
 

@@ -54,13 +54,14 @@ func finishSoft(stdout, stderr io.Writer, asJSON bool, notes []string, v any, li
 
 // flagsFirst lets a positional id sit before its flags. The standard library
 // stops at the first non-flag, but card and objective commands are written
-// with the id first.
+// with the id first. "--" still ends flag parsing, so an id that looks like
+// an option can be passed as: card show -- --brief.
 func flagsFirst(args []string, valueFlags map[string]bool) []string {
 	var flags, pos []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" {
-			pos = append(pos, args[i+1:]...)
+			pos = append(pos, args[i:]...)
 			break
 		}
 		name, ok := strings.CutPrefix(a, "--")

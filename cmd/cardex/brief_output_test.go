@@ -618,6 +618,16 @@ func TestObjectiveBriefFollowsCurrentPlanBlockerAfterRetry(t *testing.T) {
 	mustHome(t, home, "card", "retry", "c-plan")
 	dispose(plan(), 3, harvest.Result{Outcome: model.OutcomeResultUnparsable})
 	assertReason("result_unparsable")
+
+	// With no parse event for this result, the source-attempt link must still
+	// prevent a later failure of the old normalizer from replacing the reason.
+	mustHome(t, home, "card", "retry", normalize.ID)
+	normalize, err = db.GetCard(ctx, normalize.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispose(normalize, 2, harvest.Result{Outcome: model.OutcomeTimeout})
+	assertReason("result_unparsable")
 }
 
 func TestBriefLatestEventUsesParsedTime(t *testing.T) {

@@ -1,5 +1,0 @@
-./api.go
-./events.go
-./profile.go
-./wrap_darwin.go
-./outer_test.go

@@ -13,16 +13,15 @@ type ReadCount struct {
 	Count   int
 }
 
-// AddRead increments the management read counter. An empty part is ignored.
-func (s *Store) AddRead(ctx context.Context, origin, cardID, command string) error {
-	origin = strings.TrimSpace(origin)
-	cardID = strings.TrimSpace(cardID)
-	command = strings.TrimSpace(command)
-	if s == nil || origin == "" || cardID == "" || command == "" {
-		return nil
+// AddReads records one read per card in a single write.
+func (s *Store) AddReads(ctx context.Context, origin, command string, cards []string) error {
+	ids, err := mustJSON(cards)
+	if err != nil {
+		return err
 	}
-	_, err := s.q(ctx).ExecContext(ctx, `INSERT INTO mgmt_reads(origin, card_id, command, n) VALUES (?,?,?,1)
-		ON CONFLICT(origin, card_id, command) DO UPDATE SET n = n + 1`, origin, cardID, command)
+	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO mgmt_reads(origin, card_id, command, n)
+		SELECT ?, value, ?, 1 FROM json_each(?) WHERE value != ''
+		ON CONFLICT(origin, card_id, command) DO UPDATE SET n = n + 1`, origin, command, ids)
 	return err
 }
 

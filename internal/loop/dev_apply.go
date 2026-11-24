@@ -182,7 +182,9 @@ func (st *step) apply(card model.Card, attempt model.Attempt) error {
 			return err
 		}
 		if updated, ok := st.snap.channel(ch.ID); ok && updated.Health == model.HealthDegraded && beforeHealth != model.HealthDegraded {
-			st.db.NoteLifecycle(st.ctx, card.ID, notify.EventChannelDegraded, updated.LastError, ch.ID)
+			if err := st.db.NoteChannelDegraded(st.ctx, card, attempt, updated.LastError); err != nil {
+				return err
+			}
 		}
 		if err := st.reschedule(card, attempt, dec); err != nil {
 			return err

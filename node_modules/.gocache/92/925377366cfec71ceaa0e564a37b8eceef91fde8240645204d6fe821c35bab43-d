@@ -1,8 +1,0 @@
-./api.go
-./decide.go
-./evidence.go
-./harvest.go
-./parse.go
-./decide_test.go
-./evidence_test.go
-./harvest_test.go

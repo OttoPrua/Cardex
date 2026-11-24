@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"os"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/notify"
@@ -21,6 +22,18 @@ type cardView struct {
 
 func acceptOrigin(fs *flag.FlagSet) {
 	fs.String("origin", "", "management origin kind:id; counted on this read. A present flag wins over CARDEX_ORIGIN")
+}
+
+func readOrigin(fs *flag.FlagSet) string {
+	raw := os.Getenv("CARDEX_ORIGIN")
+	if flagSeen(fs, "origin") {
+		raw = fs.Lookup("origin").Value.String()
+	}
+	kind, id, ok := notify.ParseOrigin(raw)
+	if !ok {
+		return ""
+	}
+	return kind + ":" + id
 }
 
 func resolvedOrigin(args []string) string {

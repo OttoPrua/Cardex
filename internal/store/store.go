@@ -112,13 +112,13 @@ func refuseCardexHome(path string) error {
 }
 
 type commitNotes struct {
-	fns []func()
+	pending []cardNote
 }
 
 type notesKey struct{}
 
 // WithTx runs fn inside a transaction. Nested calls join the outer transaction.
-// Closures registered with afterCommit run only after the outermost commit.
+// Lifecycle events are saved before commit and delivered after it.
 func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) (err error) {
 	if _, ok := ctx.Value(txKey{}).(execer); ok {
 		return fn(ctx)
@@ -132,36 +132,32 @@ func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) (err
 			_ = tx.Rollback()
 		}
 	}()
+	callerCtx := ctx
 	notes := &commitNotes{}
 	ctx = context.WithValue(ctx, txKey{}, tx)
 	ctx = context.WithValue(ctx, notesKey{}, notes)
 	if err = fn(ctx); err != nil {
 		return err
 	}
+	var deliveries []int64
+	for _, note := range notes.pending {
+		ids, noteErr := s.persistLifecycle(ctx, note)
+		if noteErr != nil {
+			return noteErr
+		}
+		deliveries = append(deliveries, ids...)
+	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
-	for _, fn := range notes.fns {
-		func() {
-			defer func() { _ = recover() }()
-			fn()
-		}()
+	if PublishCardNote != nil {
+		for _, id := range deliveries {
+			if id != 0 {
+				PublishCardNote(callerCtx, s, id)
+			}
+		}
 	}
 	return nil
-}
-
-// afterCommit runs fn after the outermost transaction commits.
-// Outside a transaction it runs immediately. A panic does not escape.
-func (s *Store) afterCommit(ctx context.Context, fn func()) {
-	if fn == nil {
-		return
-	}
-	if notes, ok := ctx.Value(notesKey{}).(*commitNotes); ok && notes != nil {
-		notes.fns = append(notes.fns, fn)
-		return
-	}
-	defer func() { _ = recover() }()
-	fn()
 }
 
 func (s *Store) q(ctx context.Context) execer {
@@ -316,6 +312,27 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("migration 8: %w", err)
 		}
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (8, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	if current < 9 {
+		if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS lifecycle_outbox (
+			id INTEGER PRIMARY KEY,
+			event_key TEXT NOT NULL UNIQUE,
+			objective_id TEXT NOT NULL,
+			origin TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			done INTEGER NOT NULL DEFAULT 0,
+			available_at INTEGER NOT NULL DEFAULT 0
+		)`); err != nil {
+			return fmt.Errorf("migration 9: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS lifecycle_outbox_pending
+			ON lifecycle_outbox(done, available_at)`); err != nil {
+			return fmt.Errorf("migration 9: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (9, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
 	}

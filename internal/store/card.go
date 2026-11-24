@@ -66,7 +66,7 @@ func (s *Store) CreateCard(ctx context.Context, c *model.Card) error {
 				return err
 			}
 		}
-		s.noteStatus(ctx, model.Card{}, *c)
+		s.noteStatus(ctx, *c)
 		return nil
 	})
 }
@@ -115,7 +115,6 @@ func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
 		return fmt.Errorf("card id changed")
 	}
 	return s.WithTx(ctx, func(ctx context.Context) error {
-		prev, prevErr := s.GetCard(ctx, c.ID)
 		requires, err := mustJSON(c.Requires)
 		if err != nil {
 			return err
@@ -132,10 +131,24 @@ func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
 		if err != nil {
 			return err
 		}
-		res, err := s.q(ctx).ExecContext(ctx, `UPDATE cards SET objective_id=?, node_id=?, kind=?, title=?, body=?, tier=?, requires=?, deps=?, acceptance=?, base=?, status=?, wait_reason=?, rework_count=?, legacy=?, channel=?, model=?, rework_note=?, author_family=?, soft_tokens=?, hard_tokens=?, review=? WHERE id=?`,
-			c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Review, c.ID)
-		if err := rowsAffected(res, err); err != nil {
-			return err
+		q := `UPDATE cards SET objective_id=?, node_id=?, kind=?, title=?, body=?, tier=?, requires=?, deps=?, acceptance=?, base=?, status=?, wait_reason=?, rework_count=?, legacy=?, channel=?, model=?, rework_note=?, author_family=?, soft_tokens=?, hard_tokens=?, review=? WHERE id=?`
+		args := []any{c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Review, c.ID}
+		var transitioned bool
+		if hasLifecycleStatus(c.Status) {
+			res, err := s.q(ctx).ExecContext(ctx, q+` AND status<>?`, append(args, c.Status)...)
+			if err != nil {
+				return err
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			transitioned = n != 0
+		}
+		if !transitioned {
+			if err := rowsAffected(s.q(ctx).ExecContext(ctx, q, args...)); err != nil {
+				return err
+			}
 		}
 		if _, err := s.q(ctx).ExecContext(ctx, `DELETE FROM claims WHERE card_id=?`, c.ID); err != nil {
 			return err
@@ -145,8 +158,8 @@ func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
 				return err
 			}
 		}
-		if prevErr == nil {
-			s.noteStatus(ctx, prev, *c)
+		if transitioned {
+			s.noteStatus(ctx, *c)
 		}
 		return nil
 	})

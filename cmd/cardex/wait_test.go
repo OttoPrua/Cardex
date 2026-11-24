@@ -13,12 +13,8 @@ import (
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
-func runCLI(t *testing.T, args ...string) (int, string, string) {
-	t.Helper()
-	return callCLI(t, args)
-}
-
 func TestWaitStatusesTimeoutAndReads(t *testing.T) {
+	t.Setenv("CARDEX_ORIGIN", "")
 	home := t.TempDir()
 	repo := t.TempDir()
 	mustHome(t, home, "project", "add", "--id", "p1", "--repo", repo)
@@ -26,7 +22,7 @@ func TestWaitStatusesTimeoutAndReads(t *testing.T) {
 	for _, status := range []string{"merged", "needs_input", "failed", "canceled", "reviewing"} {
 		id := "c-" + status
 		mustHome(t, home, "card", "add", "--id", id, "--objective", "o1", "--title", status, "--status", status)
-		code, out, errb := runCLI(t, "--home", home, "--json", "wait", id, "--until", "merged,needs_input,failed,canceled,reviewing", "--timeout", "1s")
+		code, out, errb := callCLI(t, []string{"--home", home, "--json", "wait", id, "--until", "merged,needs_input,failed,canceled,reviewing", "--timeout", "1s"})
 		if code != 0 || errb != "" {
 			t.Fatalf("%s exit %d\n%s\n%s", status, code, out, errb)
 		}
@@ -51,7 +47,7 @@ func TestWaitStatusesTimeoutAndReads(t *testing.T) {
 		}
 	})
 	started := time.Now()
-	code, out, errb := runCLI(t, "--home", home, "--json", "wait", "c-wait", "--until", "merged", "--timeout", "250ms", "--origin", "file:manager")
+	code, out, errb := callCLI(t, []string{"--home", home, "--json", "wait", "c-wait", "--until", "merged", "--timeout", "250ms", "--origin", "file:manager"})
 	if code == 0 {
 		t.Fatalf("timeout returned success\n%s\n%s", out, errb)
 	}
@@ -80,7 +76,7 @@ func TestWaitStatusesTimeoutAndReads(t *testing.T) {
 			}
 		})
 	}()
-	code, out, errb = runCLI(t, "--home", home, "--json", "wait", "c-wait", "--until", "merged", "--timeout", "2s")
+	code, out, errb = callCLI(t, []string{"--home", home, "--json", "wait", "c-wait", "--until", "merged", "--timeout", "2s"})
 	<-done
 	if code != 0 {
 		t.Fatalf("merged wait exit %d\n%s\n%s", code, out, errb)
@@ -90,7 +86,7 @@ func TestWaitStatusesTimeoutAndReads(t *testing.T) {
 		t.Fatalf("merged pulse %+v", pulse)
 	}
 
-	code, out, errb = runCLI(t, "--home", home, "--json", "wait", "o1", "--until", "done", "--timeout", "300ms")
+	code, out, errb = callCLI(t, []string{"--home", home, "--json", "wait", "o1", "--until", "done", "--timeout", "300ms"})
 	if code == 0 {
 		t.Fatalf("objective wait succeeded early\n%s", out)
 	}
@@ -105,33 +101,37 @@ func TestWaitStatusesTimeoutAndReads(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	code, out, errb = runCLI(t, "--home", home, "--json", "wait", "o1", "--until", "done", "--timeout", "1s")
+	code, out, errb = callCLI(t, []string{"--home", home, "--json", "wait", "o1", "--until", "done", "--timeout", "1s"})
 	if code != 0 {
 		t.Fatalf("objective done exit %d\n%s\n%s", code, out, errb)
 	}
 	pulse = onePulse(t, out)
-	if pulse.ID != "o1" || pulse.Status != "done" {
+	if pulse.ID != "o1" || pulse.Status != "done" || pulse.Model != "fake-model" || pulse.SHA != "abc123" {
 		t.Fatalf("objective pulse %+v", pulse)
 	}
 
-	code, out, errb = runCLI(t, "--home", home, "--json", "card", "show", "c-wait")
+	code, out, errb = callCLI(t, []string{"--home", home, "--json", "card", "show", "c-wait"})
 	if code != 0 {
 		t.Fatal(errb)
 	}
 	t.Setenv("CARDEX_ORIGIN", "envkind:env-session")
-	code, out, errb = runCLI(t, "--home", home, "--json", "card", "show", "c-wait")
+	code, out, errb = callCLI(t, []string{"--home", home, "--json", "card", "show", "c-wait"})
 	if code != 0 {
 		t.Fatal(errb)
 	}
-	code, out, errb = runCLI(t, "--home", home, "--json", "card", "list", "--objective", "o1", "--origin", "file:manager")
+	code, out, errb = callCLI(t, []string{"--home", home, "--json", "card", "list", "--objective", "o1", "--origin", "file:manager"})
 	if code != 0 {
 		t.Fatal(errb)
 	}
-	code, out, errb = runCLI(t, "--home", home, "--json", "objective", "show", "o1", "--origin", "file:manager")
+	code, out, errb = callCLI(t, []string{"--home", home, "--json", "objective", "show", "o1", "--origin", "file:manager"})
 	if code != 0 {
 		t.Fatal(errb)
 	}
-	code, out, errb = runCLI(t, "--home", home, "--json", "reads")
+	code, out, errb = callCLI(t, []string{"--home", home, "--json", "card", "show", "c-wait", "--origin="})
+	if code != 0 {
+		t.Fatal(errb)
+	}
+	code, out, errb = callCLI(t, []string{"--home", home, "--json", "reads"})
 	if code != 0 {
 		t.Fatal(errb)
 	}
@@ -168,29 +168,20 @@ func TestReadCountFailureDoesNotFailShow(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = db.Close()
-	code, out, errb := runCLI(t, "--home", home, "--json", "card", "show", "c1", "--origin", "file:manager")
+	code, out, errb := callCLI(t, []string{"--home", home, "--json", "card", "show", "c1", "--origin", "file:manager"})
 	if code != 0 || !strings.Contains(out, `"id": "c1"`) {
 		t.Fatalf("show exit %d\n%s\n%s", code, out, errb)
 	}
 }
 
-func onePulse(t *testing.T, out string) notifyPulse {
+func onePulse(t *testing.T, out string) store.Pulse {
 	t.Helper()
 	if strings.Count(out, "\n") != 1 {
 		t.Fatalf("want one line, got %q", out)
 	}
-	var pulse notifyPulse
+	var pulse store.Pulse
 	if err := json.Unmarshal([]byte(out), &pulse); err != nil {
 		t.Fatal(err, out)
 	}
 	return pulse
-}
-
-type notifyPulse struct {
-	ID         string `json:"id"`
-	Status     string `json:"status"`
-	Reason     string `json:"reason"`
-	Model      string `json:"model"`
-	SHA        string `json:"sha"`
-	QuestionID string `json:"question_id"`
 }

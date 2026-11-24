@@ -2,26 +2,20 @@ package notify
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
-func TestEventsEnabledDefaultsOff(t *testing.T) {
-	if EventsEnabled("", "") || EventsEnabled("off", "on") || EventsEnabled("", "off") {
-		t.Fatal("lifecycle events must stay off unless a project or objective turns them on")
-	}
-	if !EventsEnabled("on", "") || !EventsEnabled("", "on") || !EventsEnabled("on", "off") {
-		t.Fatal("on must enable, and an objective on/off must beat the project")
-	}
-}
-
-func TestLifecycleIdempotentRetryAndDefaultOff(t *testing.T) {
+func TestLifecycleIdempotentAndDefaultOff(t *testing.T) {
 	ctx := context.Background()
 	home := t.TempDir()
 	db := openLifeDB(t, home)
@@ -35,15 +29,15 @@ func TestLifecycleIdempotentRetryAndDefaultOff(t *testing.T) {
 	if *calls != 0 {
 		t.Fatalf("default off delivered %d", *calls)
 	}
-	if _, err := os.Stat(lifecyclePath(home)); !os.IsNotExist(err) {
-		t.Fatalf("default off wrote a ledger: %v", err)
+	setEvents(t, db, "on", "")
+	if due, err := db.DueLifecycle(ctx, time.Now()); err != nil || len(due) != 0 {
+		t.Fatalf("default off queued events: %v, %v", due, err)
 	}
 
 	card.Status = model.CardReady
 	if err := db.UpdateCard(ctx, &card); err != nil {
 		t.Fatal(err)
 	}
-	setEvents(t, db, "on", "")
 	card.Status = model.CardMerged
 	if err := db.UpdateCard(ctx, &card); err != nil {
 		t.Fatal(err)
@@ -51,7 +45,7 @@ func TestLifecycleIdempotentRetryAndDefaultOff(t *testing.T) {
 	if *calls != 1 {
 		t.Fatalf("project on delivered %d, want 1", *calls)
 	}
-	if err := FlushLifecycle(ctx, home); err != nil {
+	if err := FlushLifecycle(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 	if *calls != 1 {
@@ -100,7 +94,7 @@ func TestLifecycleRetriesThenStops(t *testing.T) {
 	calls := installExec(t)
 	prev := lifecycleExec
 	lifecycleExec = func(context.Context, []string) error {
-		*calls++
+		(*calls)++
 		return errors.New("down")
 	}
 	t.Cleanup(func() { lifecycleExec = prev })
@@ -110,12 +104,12 @@ func TestLifecycleRetriesThenStops(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 4; i++ {
-		if err := FlushLifecycle(ctx, home); err != nil {
+		if err := flushLifecycle(ctx, db, time.Now().Add(time.Duration(i+1)*2*lifecycleRetry)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if *calls != lifecycleMaxAttempts {
-		t.Fatalf("attempts %d, want %d", *calls, lifecycleMaxAttempts)
+	if *calls != store.LifecycleMaxAttempts {
+		t.Fatalf("attempts %d, want %d", *calls, store.LifecycleMaxAttempts)
 	}
 }
 
@@ -132,25 +126,31 @@ func TestLifecycleReworkAndChannelOnce(t *testing.T) {
 	if err := db.UpdateObjective(ctx, &obj); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.CreateQuestion(ctx, &model.Question{
-		ID: "q-rework", Objective: "o1", Scope: "c1", ScopeKind: "card",
-		Kind: model.QuestionCustom, Text: "rework_count would exceed 2 (tests failed)",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.CreateAttempt(ctx, &model.Attempt{
+	attempt := model.Attempt{
 		ID: "a1", Card: "c1", Route: model.Route{Channel: "ch", Model: "real-model"},
 		HeadCommit: "sha-1", ErrorExcerpt: "boom",
-	}); err != nil {
+	}
+	if err := db.CreateAttempt(ctx, &attempt); err != nil {
 		t.Fatal(err)
 	}
 	card := mustLifeCard(t, db)
 	card.Status = model.CardNeedsInput
-	if err := db.UpdateCard(ctx, &card); err != nil {
+	if err := db.WithTx(ctx, func(ctx context.Context) error {
+		if err := db.UpdateCard(ctx, &card); err != nil {
+			return err
+		}
+		return db.CreateQuestion(ctx, &model.Question{
+			ID: "q-rework", Objective: "o1", Scope: "c1", ScopeKind: "card",
+			Kind: model.QuestionCustom, Text: "rework_count would exceed 2 (tests failed)",
+		})
+	}); err != nil {
 		t.Fatal(err)
 	}
-	db.NoteLifecycle(ctx, card.ID, EventChannelDegraded, "unavailable: model real-model", "ch")
-	db.NoteLifecycle(ctx, card.ID, EventChannelDegraded, "unavailable: model real-model", "ch")
+	for i := 0; i < 2; i++ {
+		if err := db.NoteChannelDegraded(ctx, card, attempt, "unavailable: model real-model"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	matches, err := filepath.Glob(filepath.Join(home, "inbox", "*.txt"))
 	if err != nil {
 		t.Fatal(err)
@@ -173,6 +173,85 @@ func TestLifecycleReworkAndChannelOnce(t *testing.T) {
 	}
 	if !strings.Contains(text, "real-model") || !strings.Contains(text, "sha-1") || !strings.Contains(text, "q-rework") {
 		t.Fatalf("pulse fields %s", text)
+	}
+}
+
+func TestLifecyclePersistsAndClaimsAcrossStores(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	home := t.TempDir()
+	db := openLifeDB(t, home)
+	seedLife(t, db, "", "on")
+	card := mustLifeCard(t, db)
+	card.Status = model.CardFailed
+	rollback := errors.New("rollback")
+	published := installExec(t)
+	if err := db.WithTx(ctx, func(ctx context.Context) error {
+		if err := db.UpdateCard(ctx, &card); err != nil {
+			return err
+		}
+		return rollback
+	}); !errors.Is(err, rollback) {
+		t.Fatalf("rollback result: %v", err)
+	}
+	if err := FlushLifecycle(ctx, db); err != nil || *published != 0 {
+		t.Fatalf("rolled-back event was delivered: calls %d, error %v", *published, err)
+	}
+
+	// A writer can exit before delivery begins. A later tick still has the event.
+	hook := store.PublishCardNote
+	store.PublishCardNote = nil
+	err := db.UpdateCard(ctx, &card)
+	store.PublishCardNote = hook
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second := openLifeDB(t, home)
+	entered := make(chan []string, 1)
+	release := make(chan struct{})
+	defer close(release)
+	var calls atomic.Int32
+	exec := lifecycleExec
+	t.Cleanup(func() { lifecycleExec = exec })
+	lifecycleExec = func(ctx context.Context, argv []string) error {
+		if calls.Add(1) == 1 {
+			entered <- argv
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-release:
+			}
+		}
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() { done <- FlushLifecycle(ctx, db) }()
+	var argv []string
+	select {
+	case argv = <-entered:
+	case <-ctx.Done():
+		t.Fatal("no persisted event delivered")
+	}
+	if err := FlushLifecycle(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	var payload store.Pulse
+	if err := json.Unmarshal([]byte(argv[len(argv)-1]), &payload); err != nil || payload.ID != "c1" || payload.Status != "failed" {
+		t.Fatalf("adapter payload: %+v, %v", payload, err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("concurrent delivery count = %d", calls.Load())
+	}
+	release <- struct{}{}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if err := FlushLifecycle(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("recorded event delivered again: %d", calls.Load())
 	}
 }
 

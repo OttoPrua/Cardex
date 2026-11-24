@@ -91,10 +91,10 @@ const objectiveGroupUsage = `objective — read and update objective records
 purpose: add, list, show, set, pause, resume, or cancel an objective
 
 parameters:
-  add     --id --project --title --acceptance --check --soft-tokens --hard-tokens --priority --mode --freeze-mode --origin --status --integration-branch --channel --model --review --events on|off
+  add     --id --project --title --acceptance --check --soft-tokens --hard-tokens --priority --mode --freeze-mode --origin --status --integration-branch --channel --model --review --events on|off|inherit
   list    --project --json
-  show    <id> --origin --json
-  set     --id <id> --mode --freeze-mode --soft-tokens --hard-tokens --priority --review --events on|off
+  show    <id> [--origin <kind:id>] --json
+  set     --id <id> --mode --freeze-mode --soft-tokens --hard-tokens --priority --review --events on|off|inherit
   pause   <id>
   resume  <id>
   cancel  <id>
@@ -220,8 +220,8 @@ purpose: add, list, show, cancel, retry, pause, resume, revive, absorb, or mark 
 
 parameters:
   add     --id --objective --node --kind --title --body --tier --require --dep --acceptance --claim --base --status --origin
-  list    --objective --origin --json
-  show    <id> --origin --json
+  list    --objective [--origin <kind:id>] --json
+  show    <id> [--origin <kind:id>] --json
   cancel  <id>
   retry   <id>
   pause   <id>

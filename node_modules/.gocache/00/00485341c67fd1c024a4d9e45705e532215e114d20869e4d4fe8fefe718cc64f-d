@@ -1,3 +1,0 @@
-./api.go
-./pty_darwin.go
-./pty_unix.go

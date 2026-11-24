@@ -32,7 +32,7 @@ func hoistFlags(fs *flag.FlagSet, args []string) []string {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		if arg == "--" {
-			pos = append(pos, args[i+1:]...)
+			pos = append(pos, args[i:]...)
 			break
 		}
 		name := flagToken(arg)

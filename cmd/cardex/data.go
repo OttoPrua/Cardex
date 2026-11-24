@@ -341,7 +341,7 @@ func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Wr
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if origin := resolvedOrigin(args); origin != "" {
+	if origin := readOrigin(fs); origin != "" {
 		if cards, err := db.ListCards(ctx, o.ID); err == nil {
 			ids := make([]string, 0, len(cards))
 			for _, card := range cards {
@@ -490,7 +490,7 @@ func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if origin := resolvedOrigin(args); origin != "" {
+	if origin := readOrigin(fs); origin != "" {
 		ids := make([]string, 0, len(items))
 		for _, card := range items {
 			ids = append(ids, card.ID)
@@ -538,7 +538,7 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	noteReads(db, resolvedOrigin(args), "card-show", []string{c.ID})
+	noteReads(db, readOrigin(fs), "card-show", []string{c.ID})
 	history, err := cardShowHistory(ctx, db, c.ID)
 	if err != nil {
 		fmt.Fprintln(stderr, err)

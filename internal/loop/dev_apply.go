@@ -132,6 +132,9 @@ func (st *step) apply(card model.Card, attempt model.Attempt) error {
 			return err
 		}
 		if dec.Action == ActionQuestion && reworkLimitQuestion(dec.QuestionText) {
+			if err := st.db.NoteReworkLimit(st.ctx, card, dec.QuestionText); err != nil {
+				return err
+			}
 			if err := st.noteRework(card, attempt, reworkSourceTests, true); err != nil {
 				return err
 			}
@@ -1251,6 +1254,9 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 			text += ": " + opinion
 		}
 		if err := st.openQuestion(dec.QuestionKind, parent.ID, "card", text, true); err != nil {
+			return err
+		}
+		if err := st.db.NoteReworkLimit(st.ctx, parent, text); err != nil {
 			return err
 		}
 	}

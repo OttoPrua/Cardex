@@ -78,7 +78,7 @@ func TestCardShowSummaryOnly(t *testing.T) {
 	}
 
 	var jsonOut, jsonErr bytes.Buffer
-	if code := Main([]string{"--home", home, "--json", "card", "show", id, "--summary"}, &jsonOut, &jsonErr); code != 0 {
+	if code := Main([]string{"--home", home, "--json", "card", "show", id, "--summary", "--origin", "file:summary-test"}, &jsonOut, &jsonErr); code != 0 {
 		t.Fatalf("json %d %s", code, jsonErr.String())
 	}
 	if strings.Contains(jsonOut.String(), "history") || strings.Contains(jsonOut.String(), "Summary title") {
@@ -107,6 +107,10 @@ func TestCardShowSummaryOnly(t *testing.T) {
 	db, err = store.Open(filepath.Join(home, "cardex.db"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	counts, err := db.ListReads(ctx, "file:summary-test")
+	if err != nil || len(counts) != 1 || counts[0].CardID != id || counts[0].Command != "card-show" || counts[0].Count != 1 {
+		t.Fatalf("summary read counts %+v, error %v", counts, err)
 	}
 	if err := db.CreateCard(ctx, &none); err != nil {
 		t.Fatal(err)

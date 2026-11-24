@@ -575,6 +575,7 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	noteReads(db, readOrigin(fs), "card-show", []string{c.ID})
 	if *summaryOnly {
 		attempts, err := db.ListAttempts(ctx, c.ID)
 		if err != nil {
@@ -601,7 +602,6 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	noteReads(db, readOrigin(fs), "card-show", []string{c.ID})
 	history, err := cardShowHistory(ctx, db, c.ID)
 	if err != nil {
 		fmt.Fprintln(stderr, err)

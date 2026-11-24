@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -62,16 +61,17 @@ func cmdWait(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	ids := last.cardIDs
-	if last.obj.ID == "" {
-		ids = []string{last.card.ID}
-	}
-	defer func() {
-		if origin == "" {
-			return
+	counted := make(map[string]struct{})
+	recordCards := func(state waitState) {
+		for _, id := range state.cardIDs {
+			counted[id] = struct{}{}
 		}
-		if last.card.ID != "" && !slices.Contains(ids, last.card.ID) {
-			ids = append(ids, last.card.ID)
+	}
+	recordCards(last)
+	defer func() {
+		ids := make([]string, 0, len(counted))
+		for id := range counted {
+			ids = append(ids, id)
 		}
 		noteReads(db, origin, "wait", ids)
 	}()
@@ -94,10 +94,11 @@ func cmdWait(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		case <-timer.C:
 			var next waitState
 			queryCtx, cancel := context.WithTimeout(ctx, waitPollInterval)
-			next, err = watchOnce(queryCtx, db, id, wanted, false)
+			next, err = watchOnce(queryCtx, db, id, wanted, origin != "")
 			cancel()
 			if err == nil {
 				last = next
+				recordCards(last)
 			} else if ctx.Err() != nil {
 				reason = "interrupted"
 			} else if errors.Is(err, context.DeadlineExceeded) {
@@ -168,8 +169,12 @@ func (s waitState) pulse(ctx context.Context, db *store.Store) (store.Pulse, err
 
 func watchOnce(ctx context.Context, db *store.Store, id string, wanted map[string]bool, collectIDs bool) (waitState, error) {
 	card, err := db.CardWaitState(ctx, id)
-	if err == nil || !errors.Is(err, sql.ErrNoRows) {
-		return waitState{card: card}, err
+	if !errors.Is(err, sql.ErrNoRows) {
+		state := waitState{card: card}
+		if err == nil && collectIDs {
+			state.cardIDs = []string{card.ID}
+		}
+		return state, err
 	}
 	obj, err := db.GetObjective(ctx, id)
 	if err != nil {

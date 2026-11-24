@@ -174,7 +174,7 @@ func TestReadCountFailureDoesNotFailShow(t *testing.T) {
 	}
 }
 
-func TestObjectiveWaitCountsNewMatchingCard(t *testing.T) {
+func TestObjectiveWaitCountsEachObservedCardOnce(t *testing.T) {
 	home := t.TempDir()
 	mustHome(t, home, "project", "add", "--id", "p1", "--repo", t.TempDir())
 	mustHome(t, home, "objective", "add", "--id", "o1", "--project", "p1", "--title", "Obj")
@@ -182,7 +182,14 @@ func TestObjectiveWaitCountsNewMatchingCard(t *testing.T) {
 	withDB(t, home, func(db *store.Store) {
 		created := make(chan error, 1)
 		time.AfterFunc(waitPollInterval/2, func() {
-			created <- db.CreateCard(context.Background(), &model.Card{
+			ctx := context.Background()
+			if err := db.CreateCard(ctx, &model.Card{
+				ID: "c-other", Objective: "o1", Kind: model.KindDev, Title: "Other", Status: model.CardReady,
+			}); err != nil {
+				created <- err
+				return
+			}
+			created <- db.CreateCard(ctx, &model.Card{
 				ID: "c-new", Objective: "o1", Kind: model.KindDev, Title: "New", Status: model.CardMerged,
 			})
 		})
@@ -201,9 +208,10 @@ func TestObjectiveWaitCountsNewMatchingCard(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(counts) != 2 || counts[0].CardID != "c-initial" || counts[1].CardID != "c-new" ||
-			counts[0].Count != 1 || counts[1].Count != 1 {
-			t.Fatalf("wait counts %+v", counts)
+		for i, id := range []string{"c-initial", "c-new", "c-other"} {
+			if len(counts) != 3 || counts[i].CardID != id || counts[i].Count != 1 {
+				t.Fatalf("wait counts %+v", counts)
+			}
 		}
 	})
 }

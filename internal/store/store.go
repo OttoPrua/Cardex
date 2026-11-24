@@ -141,20 +141,20 @@ func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) (err
 	}
 	var deliveries []int64
 	for _, note := range notes.pending {
-		ids, noteErr := s.persistLifecycle(ctx, note)
+		id, noteErr := s.persistLifecycle(ctx, note)
 		if noteErr != nil {
 			return noteErr
 		}
-		deliveries = append(deliveries, ids...)
+		if id != 0 {
+			deliveries = append(deliveries, id)
+		}
 	}
 	if err = tx.Commit(); err != nil {
 		return err
 	}
 	if PublishCardNote != nil {
 		for _, id := range deliveries {
-			if id != 0 {
-				PublishCardNote(callerCtx, s, id)
-			}
+			PublishCardNote(callerCtx, s, id)
 		}
 	}
 	return nil

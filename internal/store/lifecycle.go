@@ -22,7 +22,7 @@ type Pulse struct {
 }
 
 const (
-	EventReworkLimit     = "rework_limit"
+	eventReworkLimit     = "rework_limit"
 	eventChannelDegraded = "channel_degraded"
 	LifecycleMaxAttempts = 3
 )
@@ -80,35 +80,46 @@ func (s *Store) ListCardWaitStates(ctx context.Context, objectiveID string) ([]m
 
 func (s *Store) noteStatus(ctx context.Context, next model.Card) {
 	if hasLifecycleStatus(next.Status) {
-		notes := ctx.Value(notesKey{}).(*commitNotes)
-		notes.pending = append(notes.pending, cardNote{card: next, kind: string(next.Status)})
+		s.queueCardNote(ctx, cardNote{card: next, kind: string(next.Status)})
 	}
+}
+
+// NoteReworkLimit records the explicit rework decision, even if the card was already blocked.
+func (s *Store) NoteReworkLimit(ctx context.Context, card model.Card, reason string) error {
+	return s.WithTx(ctx, func(ctx context.Context) error {
+		s.queueCardNote(ctx, cardNote{card: card, kind: eventReworkLimit, reason: reason})
+		return nil
+	})
 }
 
 // NoteChannelDegraded records the attempt that caused the channel to degrade.
 func (s *Store) NoteChannelDegraded(ctx context.Context, card model.Card, attempt model.Attempt, reason string) error {
 	return s.WithTx(ctx, func(ctx context.Context) error {
-		notes := ctx.Value(notesKey{}).(*commitNotes)
-		notes.pending = append(notes.pending, cardNote{card: card, kind: eventChannelDegraded, reason: reason, attempt: attempt})
+		s.queueCardNote(ctx, cardNote{card: card, kind: eventChannelDegraded, reason: reason, attempt: attempt})
 		return nil
 	})
 }
 
+func (s *Store) queueCardNote(ctx context.Context, note cardNote) {
+	notes := ctx.Value(notesKey{}).(*commitNotes)
+	notes.pending = append(notes.pending, note)
+}
+
 const lifecycleEnabled = `CASE o.events WHEN 'on' THEN 1 WHEN 'off' THEN 0 ELSE COALESCE(p.events = 'on', 0) END`
 
-func (s *Store) persistLifecycle(ctx context.Context, note cardNote) ([]int64, error) {
+func (s *Store) persistLifecycle(ctx context.Context, note cardNote) (int64, error) {
 	var origin string
 	err := s.q(ctx).QueryRowContext(ctx, `SELECT o.origin FROM objectives o
 		LEFT JOIN projects p ON p.id=o.project_id WHERE o.id=? AND `+lifecycleEnabled, note.card.Objective).Scan(&origin)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && strings.TrimSpace(origin) == "") {
-		return nil, nil
+		return 0, nil
 	}
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	pulse, attemptID, rework, err := s.cardPulse(ctx, note.card)
+	pulse, attemptID, err := s.cardPulse(ctx, note.card)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	pulse.Status = note.kind
 	if note.reason != "" {
@@ -119,64 +130,47 @@ func (s *Store) persistLifecycle(ctx context.Context, note cardNote) ([]int64, e
 		pulse.Model = note.attempt.Route.Model
 		pulse.SHA = firstCommit(note.attempt.HeadCommit, note.attempt.BaseCommit)
 	}
-	record := func(pulse Pulse, episode string) (int64, error) {
-		pulse.Reason = compactReason(pulse.Reason)
-		key, err := json.Marshal([]string{pulse.ID, pulse.Status, episode})
-		if err != nil {
-			return 0, err
-		}
-		body, err := json.Marshal(pulse)
-		if err != nil {
-			return 0, err
-		}
-		var id int64
-		err = s.q(ctx).QueryRowContext(ctx, `INSERT INTO lifecycle_outbox(event_key, objective_id, origin, payload)
-			VALUES(?,?,?,?) ON CONFLICT(event_key) DO NOTHING RETURNING id`,
-			string(key), note.card.Objective, origin, string(body)).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			err = nil
-		}
-		return id, err
-	}
 	episode := attemptID
-	if note.kind == string(model.CardNeedsInput) && pulse.QuestionID != "" {
+	if (note.kind == string(model.CardNeedsInput) || note.kind == eventReworkLimit) && pulse.QuestionID != "" {
 		episode = pulse.QuestionID
 	}
-	id, err := record(pulse, episode)
+	pulse.Reason = compactReason(pulse.Reason)
+	key, err := json.Marshal([]string{pulse.ID, pulse.Status, episode})
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	ids := []int64{id}
-	if note.kind == string(model.CardNeedsInput) && rework != "" {
-		pulse.Status = EventReworkLimit
-		pulse.Reason = rework
-		id, err := record(pulse, pulse.QuestionID)
-		if err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
+	body, err := json.Marshal(pulse)
+	if err != nil {
+		return 0, err
 	}
-	return ids, nil
+	var id int64
+	err = s.q(ctx).QueryRowContext(ctx, `INSERT INTO lifecycle_outbox(event_key, objective_id, origin, payload)
+		VALUES(?,?,?,?) ON CONFLICT(event_key) DO NOTHING RETURNING id`,
+		string(key), note.card.Objective, origin, string(body)).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	return id, err
 }
 
 // CardPulse reports observed attempt metadata and unanswered question, if any.
 func (s *Store) CardPulse(ctx context.Context, card model.Card) (Pulse, error) {
-	pulse, _, _, err := s.cardPulse(ctx, card)
+	pulse, _, err := s.cardPulse(ctx, card)
 	return pulse, err
 }
 
-func (s *Store) cardPulse(ctx context.Context, card model.Card) (Pulse, string, string, error) {
+func (s *Store) cardPulse(ctx context.Context, card model.Card) (Pulse, string, error) {
 	pulse := Pulse{ID: card.ID, Status: string(card.Status), Reason: card.WaitReason}
 	attempt, err := scanAttempt(s.q(ctx).QueryRowContext(ctx, attemptSelect+
 		` WHERE card_id=? ORDER BY attempt_index DESC, ended_at DESC, id DESC LIMIT 1`, card.ID))
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return pulse, "", "", err
+		return pulse, "", err
 	}
 	pulse.Model = attempt.Route.Model
 	pulse.SHA = firstCommit(attempt.HeadCommit, attempt.BaseCommit)
 	question, err := s.pendingLifecycleQuestion(ctx, card.Objective, card.ID)
 	if err != nil {
-		return pulse, "", "", err
+		return pulse, "", err
 	}
 	pulse.QuestionID = question.ID
 	if pulse.Reason == "" {
@@ -190,12 +184,8 @@ func (s *Store) cardPulse(ctx context.Context, card model.Card) (Pulse, string, 
 			pulse.Reason = attempt.ErrorExcerpt
 		}
 	}
-	rework := ""
-	if question.Scope == card.ID && strings.HasPrefix(strings.TrimSpace(question.Text), "rework_count would exceed ") {
-		rework = question.Text
-	}
 	pulse.Reason = compactReason(pulse.Reason)
-	return pulse, attempt.ID, rework, nil
+	return pulse, attempt.ID, nil
 }
 
 // ObjectivePulse uses the objective's latest observed attempt when its own state is reported.

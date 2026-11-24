@@ -135,18 +135,22 @@ func TestLifecycleReworkAndChannelOnce(t *testing.T) {
 	}
 	card := mustLifeCard(t, db)
 	card.Status = model.CardNeedsInput
+	const reworkReason = "rework_count would exceed 2 (tests failed)"
 	if err := db.WithTx(ctx, func(ctx context.Context) error {
 		if err := db.UpdateCard(ctx, &card); err != nil {
 			return err
 		}
 		return db.CreateQuestion(ctx, &model.Question{
 			ID: "q-rework", Objective: "o1", Scope: "c1", ScopeKind: "card",
-			Kind: model.QuestionCustom, Text: "rework_count would exceed 2 (tests failed)",
+			Kind: model.QuestionCustom, Text: reworkReason,
 		})
 	}); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
+		if err := db.NoteReworkLimit(ctx, card, reworkReason); err != nil {
+			t.Fatal(err)
+		}
 		if err := db.NoteChannelDegraded(ctx, card, attempt, "unavailable: model real-model"); err != nil {
 			t.Fatal(err)
 		}

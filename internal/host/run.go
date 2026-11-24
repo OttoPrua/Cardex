@@ -167,6 +167,12 @@ func run(ctx context.Context, home, attemptID string) error {
 	if err != nil {
 		return failStart(ctx, db, &attempt, err)
 	}
+	// The shim is first on PATH. The executor keeps tool homes and GIT_*;
+	// only `go test` is started with AcceptanceEnv.
+	cmd.Env, err = proc.PrependGoTestWrap(cmd.Env, filepath.Join(attemptDir, "go-wrap"))
+	if err != nil {
+		return failStart(ctx, db, &attempt, err)
+	}
 	cmd.Dir = attempt.Worktree
 	// The host appends each chunk to output.log. The attempt directory stays
 	// outside the sandbox write list, and bytes already seen survive a crash.
@@ -362,10 +368,15 @@ func run(ctx context.Context, home, attemptID string) error {
 func commandFor(argv, extra []string) (*exec.Cmd, error) {
 	// ApplyEngineEnv already removed another profile's managed keys. Merging
 	// that list back onto os.Environ() would put those keys back.
-	env := mergeEnv(os.Environ(), extra)
+	base := os.Environ()
+	overlay := extra
 	if completeEngineEnv(extra) {
-		env = mergeEnv(extra, nil)
+		base = extra
+		overlay = nil
 	}
+	// Drop CARDEX_SCHED_* only. Tool homes and GIT_* stay on this process;
+	// PrependGoTestWrap isolates `go test`. Overlay (the runner's env) wins.
+	env := mergeEnv(proc.ExecutorEnv(base), proc.ExecutorEnv(overlay))
 	cmd := &exec.Cmd{}
 	if argv[0] == "fake" {
 		exe, err := os.Executable()

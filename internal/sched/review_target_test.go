@@ -30,13 +30,13 @@ func TestReviewTargetUsesSubjectObjective(t *testing.T) {
 		}
 	}
 	r := &Runner{}
-	card, obj, cont, ro, err := r.workspaceTarget(ctx, db, rv, "o-rv")
-	if err != nil || card != "dev" || obj != "o-dev" || !cont || !ro {
-		t.Fatalf("cross-objective review target %s %s %v %v %v", card, obj, cont, ro, err)
+	card, obj, cont, ro, pin, err := r.workspaceTarget(ctx, db, rv, "o-rv")
+	if err != nil || card != "dev" || obj != "o-dev" || !cont || !ro || pin.Standalone || pin.Subject != "dev" {
+		t.Fatalf("cross-objective review target %s %s %v %v %+v %v", card, obj, cont, ro, pin, err)
 	}
-	card, obj, _, _, err = r.workspaceTarget(ctx, db, solo, "o-rv")
-	if err != nil || card != "solo" || obj != "o-rv" {
-		t.Fatalf("standalone review target %s %s %v", card, obj, err)
+	card, obj, _, _, pin, err = r.workspaceTarget(ctx, db, solo, "o-rv")
+	if err != nil || card != "solo" || obj != "o-rv" || !pin.Standalone || pin.Subject != "solo" {
+		t.Fatalf("standalone review target %s %s %+v %v", card, obj, pin, err)
 	}
 
 	if got := reviewFallbackBase(ctx, db, "dev", "own"); got != "own" {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -47,6 +48,12 @@ var (
 	}
 	startHost   = launchDetached
 	chooseRoute = route.Select
+	// addWorktree creates the attempt checkout. Tests replace it to insert a
+	// card in the window after the review subject is chosen and before the
+	// attempt records that choice.
+	addWorktree = func(ctx context.Context, req workspace.CreateRequest) (workspace.Worktree, error) {
+		return workspace.Git{}.Create(ctx, req)
+	}
 )
 
 // Runner is one scheduler pass over a CARDEX_HOME.
@@ -273,6 +280,9 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 				excerpt = "host lost"
 			}
 			res := harvest.Result{Outcome: model.OutcomeNoOutput, Excerpt: excerpt}
+			if err := harvest.WriteUnavailableSummary(ctx, r.harvestInput(ctx, db, card, attempt, 1, nil)); err != nil {
+				_ = noteEvidenceWriteFailed(ctx, db, attempt.ID, err)
+			}
 			if err := r.deliver(ctx, db, &card, &attempt, res); err != nil {
 				if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
 					return err
@@ -285,15 +295,7 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 		if attempt.Exit != nil {
 			exitCode = *attempt.Exit
 		}
-		res, err := harvest.Harvest(ctx, harvest.Input{
-			Attempt:    attempt,
-			Card:       card,
-			Exit:       exitCode,
-			Output:     output,
-			ErrorClass: attempt.ErrorClass,
-			Repo:       attempt.Worktree,
-			Home:       r.Home,
-		})
+		res, err := harvest.Harvest(ctx, r.harvestInput(ctx, db, card, attempt, exitCode, output))
 		if err != nil {
 			if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
 				return err
@@ -324,6 +326,41 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 		}
 	}
 	return first
+}
+
+func (r *Runner) harvestInput(ctx context.Context, db *store.Store, card model.Card, attempt model.Attempt, exitCode int, output []byte) harvest.Input {
+	in := harvest.Input{
+		Attempt:    attempt,
+		Card:       card,
+		Exit:       exitCode,
+		Output:     output,
+		ErrorClass: attempt.ErrorClass,
+		Repo:       attempt.Worktree,
+		Home:       r.Home,
+	}
+	if d := attempt.RouteReason.Dispatch; d != nil {
+		in.Runner = string(d.Runner)
+		in.ExpectedChannel, in.ExpectedModel, in.ExpectedTier = d.Channel, d.Model, string(d.Tier)
+		return in
+	}
+	if attempt.Route.Channel != "" {
+		if ch, err := db.GetChannel(ctx, attempt.Route.Channel); err == nil {
+			in.Runner = string(ch.Runner)
+		}
+	}
+	var obj model.Objective
+	var channels []model.Channel
+	var pos []model.Positioning
+	if card.Channel == "" && card.Model == "" && card.Objective != "" {
+		obj, _ = db.GetObjective(ctx, card.Objective)
+		if obj.Channel != "" || obj.Model != "" {
+			channels, _ = db.ListChannels(ctx)
+			pos, _ = db.ListPositioning(ctx)
+		}
+	}
+	d := dispatchExpectation(card, obj, model.TierNone, channels, pos)
+	in.ExpectedChannel, in.ExpectedModel, in.ExpectedTier = d.Channel, d.Model, string(d.Tier)
+	return in
 }
 
 // noteEvidenceWriteFailed records one event for a failed acceptance.log or
@@ -584,6 +621,12 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		}
 		return r.resumeAttempt(ctx, db, card, obj, open)
 	}
+	if missing, err := missingReviewSubject(ctx, db, card); err != nil || missing != "" {
+		if err != nil {
+			return "", err
+		}
+		return "", r.noteMissingReviewSubject(ctx, db, &card, missing)
+	}
 	project, err := db.GetProject(ctx, obj.Project)
 	if err != nil {
 		return "", err
@@ -607,6 +650,20 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if settled {
 		return "", nil
 	}
+	d := dispatchExpectation(card, obj, classified, channels, pos)
+	if ch, ok := channelByID(channels, rt.Channel); ok {
+		d.Runner = ch.Runner
+	}
+	if d.Tier != model.TierNone {
+		selected := reason.SelectedTier(rt)
+		for _, tier := range []model.Tier{model.TierT3, model.TierT2, model.TierT1} {
+			if tier.Rank() <= selected.Rank() && loop.ReviewFloorMet(channels, pos, rt.Channel, rt.Model, tier) {
+				d.ActualTier = tier
+				break
+			}
+		}
+	}
+	reason.Dispatch = &d
 	// A script-less fake exits before it can write a design result, and §5
 	// then opens a question. Injected Launch stubs still start.
 	if r.holdFakeDesign(ctx, db, card, rt, channels) {
@@ -620,8 +677,12 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err != nil {
 		return "", err
 	}
-	wsCard, wsObj, cont, readOnly, err := r.workspaceTarget(ctx, db, card, obj.ID)
+	wsCard, wsObj, cont, readOnly, pin, err := r.workspaceTarget(ctx, db, card, obj.ID)
 	if err != nil {
+		var missing missingReviewSubjectError
+		if errors.As(err, &missing) {
+			return "", r.noteMissingReviewSubject(ctx, db, &card, missing.subject)
+		}
 		return "", err
 	}
 	// The branch and worktree can exist before the attempt row is stored.
@@ -632,6 +693,16 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	startPoint := card.Base
 	detached := false
 	if readOnly && !gitRefExists(ctx, project.RepoPath, "refs/heads/"+cardBranchName(wsObj, wsCard)) {
+		// A prefix review of a dev card waits until that card has a candidate
+		// branch. Reviewing main and still naming the dev card lets a later
+		// pass queue a commit this attempt never read.
+		wait, err := prefixDevAwaitingCandidate(ctx, db, card, pin)
+		if err != nil {
+			return "", err
+		}
+		if wait {
+			return "", nil
+		}
 		// The reviewed card left no branch (a read-only card, or one whose
 		// branch is gone). Review its starting commit, detached, instead of
 		// failing on a missing reference or creating a branch in its name.
@@ -647,7 +718,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err != nil {
 		return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, launchScratch{})
 	}
-	wt, err := workspace.Git{}.Create(ctx, workspace.CreateRequest{
+	wt, err := addWorktree(ctx, workspace.CreateRequest{
 		CardID:            wsCard,
 		AttemptID:         attemptID,
 		ObjectiveID:       wsObj,
@@ -697,6 +768,12 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err := db.CreateAttempt(ctx, &attempt); err != nil {
 		return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, rt, scratch)
 	}
+	// pin is the subject workspaceTarget selected before the worktree existed.
+	// Writing it unchanged keeps a card created during checkout from becoming
+	// the subject of a tree that never contained its branch.
+	if err := r.pinReviewSubject(ctx, db, card, attempt.ID, pin); err != nil {
+		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, rt, scratch)
+	}
 	card.Status = model.CardRunning
 	card.WaitReason = ""
 	if err := db.UpdateCard(ctx, &card); err != nil {
@@ -717,6 +794,32 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		inUse[rt.Channel]++
 	}
 	return rt.Channel, nil
+}
+
+func dispatchExpectation(card model.Card, obj model.Objective, classified model.Tier, channels []model.Channel, pos []model.Positioning) model.RouteDispatch {
+	var d model.RouteDispatch
+	if card.Kind == model.KindReview {
+		d.Tier = card.Tier
+		if d.Tier == model.TierNone {
+			d.Tier = classified
+		}
+		if d.Tier == model.TierNone {
+			d.Tier = model.DefaultTier(card.Kind)
+		}
+		if tier, channel, name, ok := loop.ReviewHold(card); ok {
+			if tier.Rank() > d.Tier.Rank() {
+				d.Tier = tier
+			}
+			if channel != "" {
+				card.Channel = channel
+			}
+			if name != "" {
+				card.Model = name
+			}
+		}
+	}
+	d.Channel, d.Model = route.EffectivePin(route.Request{Card: card, Objective: obj, Channels: channels, Positioning: pos})
+	return d
 }
 
 func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, attempt *model.Attempt) (string, error) {
@@ -1283,6 +1386,18 @@ func (r *Runner) allow(ctx context.Context, db *store.Store, card *model.Card, o
 	if obj.Status != model.ObjectiveActive && obj.Status != model.ObjectiveDoneCandidate {
 		return false, nil
 	}
+	// An explicit subject that is not stored must be parked before the
+	// completion gate. A later paused dependency would otherwise leave the
+	// review ready with an empty wait reason.
+	if missing, err := missingReviewSubject(ctx, db, *card); err != nil || missing != "" {
+		if err != nil {
+			return false, err
+		}
+		if err := r.noteMissingReviewSubject(ctx, db, card, missing); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
 	if !executionDepsDone(ctx, db, *card) {
 		return false, nil
 	}
@@ -1402,6 +1517,9 @@ func canDispatch(card model.Card) bool {
 }
 
 func executionDepsDone(ctx context.Context, db *store.Store, card model.Card) bool {
+	// Deps[0] is the subject, not a completion gate. An rv- review with no
+	// dependency names its subject by id; that lookup happens at dispatch.
+	// A missing explicit subject is parked in allow before this gate.
 	skip := ""
 	switch card.Kind {
 	case model.KindReview, model.KindRepair, model.KindRebase, model.KindNormalize:
@@ -1460,36 +1578,50 @@ func openAttempt(ctx context.Context, db *store.Store, cardID string) (*model.At
 }
 
 // workspaceTarget returns the card and objective whose branch the attempt
-// uses, whether to continue that branch, and whether the worktree is read-only.
+// uses, whether to continue that branch, whether the worktree is read-only,
+// and the review subject resolved by this call. pin is empty for other kinds.
 // A review reads the original card's branch, which is named after that card's
 // own objective; a cross-objective review must not use its own objective.
-func (r *Runner) workspaceTarget(ctx context.Context, db *store.Store, card model.Card, objectiveID string) (string, string, bool, bool, error) {
+// Callers record pin as returned. Resolving again after the worktree exists
+// can name a card created in between.
+func (r *Runner) workspaceTarget(ctx context.Context, db *store.Store, card model.Card, objectiveID string) (string, string, bool, bool, model.PinnedReviewSubject, error) {
 	switch card.Kind {
 	case model.KindReview:
 		// The candidate branch belongs to the original card. A repair or rebase
 		// subject does not have a branch under its own id.
-		id, err := reviewBranchCard(ctx, db, reviewSubject(card))
+		subject, missing, err := resolvedReviewSubjectID(ctx, db, card)
 		if err != nil {
-			return id, objectiveID, true, true, err
+			return "", objectiveID, true, true, model.PinnedReviewSubject{}, err
+		}
+		if missing != "" {
+			return "", objectiveID, true, true, model.PinnedReviewSubject{}, missingReviewSubjectError{card: card.ID, subject: missing}
+		}
+		id, err := reviewBranchCard(ctx, db, subject)
+		if err != nil {
+			return id, objectiveID, true, true, model.PinnedReviewSubject{}, err
 		}
 		branchObj := objectiveID
 		if id != card.ID {
-			if subject, err := db.GetCard(ctx, id); err == nil && strings.TrimSpace(subject.Objective) != "" {
-				branchObj = subject.Objective
+			if subjectCard, err := db.GetCard(ctx, id); err == nil && strings.TrimSpace(subjectCard.Objective) != "" {
+				branchObj = subjectCard.Objective
 			}
 		}
-		return id, branchObj, true, true, nil
+		return id, branchObj, true, true, model.PinnedReviewSubject{
+			Subject:    subject,
+			Standalone: subject == card.ID,
+		}, nil
 	case model.KindRepair, model.KindRebase:
 		id, err := rootCardID(ctx, db, card)
-		return id, objectiveID, true, false, err
+		return id, objectiveID, true, false, model.PinnedReviewSubject{}, err
 	default:
-		return card.ID, objectiveID, card.ReworkCount > 0, false, nil
+		return card.ID, objectiveID, card.ReworkCount > 0, false, model.PinnedReviewSubject{}, nil
 	}
 }
 
 // reviewFallbackBase is the commit a review starts from when the reviewed card
 // has no branch: that card's latest attempt start, else the review's own base.
-// Empty means the integration branch HEAD.
+// subjectID is the resolved subject, which is the review itself when an rv-
+// suffix does not name a stored card. Empty means the integration branch HEAD.
 func reviewFallbackBase(ctx context.Context, db *store.Store, subjectID, own string) string {
 	if attempts, err := db.ListAttempts(ctx, subjectID); err == nil {
 		for i := len(attempts) - 1; i >= 0; i-- {
@@ -1515,14 +1647,115 @@ func reviewBranchCard(ctx context.Context, db *store.Store, subjectID string) (s
 	return subject.ID, nil
 }
 
-func reviewSubject(card model.Card) string {
-	if len(card.Deps) > 0 && strings.TrimSpace(card.Deps[0]) != "" {
-		return strings.TrimSpace(card.Deps[0])
+type missingReviewSubjectError struct {
+	card    string
+	subject string
+}
+
+func (e missingReviewSubjectError) Error() string {
+	return fmt.Sprintf("sched: review %s subject %s does not exist", e.card, e.subject)
+}
+
+// pinReviewSubject records the subject workspaceTarget already selected.
+// It does not look the subject up again. A non-review card is left unchanged.
+func (r *Runner) pinReviewSubject(ctx context.Context, db *store.Store, card model.Card, attemptID string, pin model.PinnedReviewSubject) error {
+	if card.Kind != model.KindReview {
+		return nil
 	}
-	if strings.HasPrefix(card.ID, "rv-") {
-		return strings.TrimPrefix(card.ID, "rv-")
+	if pin.Subject == "" {
+		return fmt.Errorf("sched: review %s has no resolved subject", card.ID)
 	}
-	return card.ID
+	raw, err := json.Marshal(pin)
+	if err != nil {
+		return err
+	}
+	return db.AppendEvent(ctx, &model.Event{
+		Entity: "attempt:" + attemptID,
+		Type:   model.ReviewSubjectEvent,
+		Data:   raw,
+	})
+}
+
+// prefixDevAwaitingCandidate reports a dependency-free rv- review whose dev
+// card is already stored but has no candidate branch yet. The caller leaves
+// the review ready and does not start it from the integration branch.
+func prefixDevAwaitingCandidate(ctx context.Context, db *store.Store, card model.Card, pin model.PinnedReviewSubject) (bool, error) {
+	if card.Kind != model.KindReview || pin.Standalone || pin.Subject == "" || pin.Subject == card.ID {
+		return false, nil
+	}
+	if _, explicit := model.ReviewSubject(card); explicit {
+		return false, nil
+	}
+	subject, err := db.GetCard(ctx, pin.Subject)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return subject.Kind == model.KindDev, nil
+}
+
+// resolvedReviewSubjectID applies ReviewSubject. An rv- suffix that names no
+// stored card resolves to the review itself. An explicit dependency that names
+// no stored card is returned as missing and is not replaced.
+func resolvedReviewSubjectID(ctx context.Context, db *store.Store, card model.Card) (id, missing string, err error) {
+	id, explicit := model.ReviewSubject(card)
+	if !explicit && id == card.ID {
+		return card.ID, "", nil
+	}
+	if _, err = db.GetCard(ctx, id); err == nil {
+		return id, "", nil
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return "", "", err
+	} else if explicit {
+		return "", id, nil
+	}
+	return card.ID, "", nil
+}
+
+func missingReviewSubject(ctx context.Context, db *store.Store, card model.Card) (string, error) {
+	if card.Kind != model.KindReview {
+		return "", nil
+	}
+	_, missing, err := resolvedReviewSubjectID(ctx, db, card)
+	return missing, err
+}
+
+func (r *Runner) noteMissingReviewSubject(ctx context.Context, db *store.Store, card *model.Card, subject string) error {
+	if card == nil {
+		return fmt.Errorf("sched: review subject %s does not exist", subject)
+	}
+	reason := "review subject " + subject + " does not exist"
+	fresh, err := db.GetCard(ctx, card.ID)
+	if err != nil {
+		return err
+	}
+	already := fresh.Status == model.CardNeedsInput && fresh.WaitReason == reason
+	if !already {
+		fresh.Status = model.CardNeedsInput
+		fresh.WaitReason = reason
+		if err := db.UpdateCard(ctx, &fresh); err != nil {
+			return err
+		}
+	}
+	*card = fresh
+	if already {
+		return nil
+	}
+	raw, err := json.Marshal(map[string]string{
+		"card":    card.ID,
+		"subject": subject,
+		"error":   reason,
+	})
+	if err != nil {
+		return err
+	}
+	return db.AppendEvent(ctx, &model.Event{
+		Entity: "card:" + card.ID,
+		Type:   "review_subject_missing",
+		Data:   raw,
+	})
 }
 
 func rootCardID(ctx context.Context, db *store.Store, card model.Card) (string, error) {

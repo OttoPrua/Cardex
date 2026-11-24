@@ -21,6 +21,10 @@ func TestHeldReviewDoesNotDropPin(t *testing.T) {
 	_, obj := seedRepo(t, db, repo, "true")
 	addPinChannel(t, db, pinChannel{id: "cha", modelName: "model-a", health: model.HealthAuthFailed, pref: 0})
 	addPinChannel(t, db, pinChannel{id: "chb", modelName: "model-b", pref: 9})
+	dev := model.Card{ID: "dev", Objective: obj, Kind: model.KindDev, Title: "dev", Status: model.CardReviewing}
+	if err := db.CreateCard(ctx, &dev); err != nil {
+		t.Fatal(err)
+	}
 	card := model.Card{
 		ID: "rv", Objective: obj, Kind: model.KindReview, Title: "rework review", Tier: model.TierT3,
 		Status: model.CardReady, Channel: "cha", Model: "model-a",

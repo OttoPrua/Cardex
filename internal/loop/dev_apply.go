@@ -2,7 +2,9 @@ package loop
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -246,7 +248,7 @@ func historyBefore(attempts []model.Attempt, cur model.Attempt) History {
 
 func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 	for _, other := range st.snap.cards {
-		if other.Kind == model.KindReview && hasDep(other, card.ID) && !TerminalCard(other.Status) {
+		if reviewCovers(st.snap, other, card.ID) {
 			// An open review (often a paused rv- card) already covers this card.
 			// Still move the card out of running: its attempt is disposed and no
 			// later tick will look at it again.
@@ -1084,16 +1086,55 @@ func (st *step) absorbPlan(card model.Card, attempt model.Attempt) error {
 
 func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 	raw := readResult(attempt)
-	verdict, opinion, ok := ReviewOf(raw)
+	verdict, opinion, parsed := ReviewOf(raw)
 	stored := reviewOpinion(raw)
-	if !ok {
+	parent, foreign, standalone, missing, err := st.reviewParent(card, attempt)
+	if err != nil {
+		return err
+	}
+	if missing != "" {
+		// The named parent is not stored. Keep the conclusion off that id.
+		card.Status = model.CardNeedsInput
+		card.WaitReason = "review subject " + missing + " does not exist"
+		if err := st.saveCard(card); err != nil {
+			return err
+		}
+		payload := map[string]any{"card": card.ID, "subject": missing, "error": card.WaitReason}
+		if parsed {
+			payload["verdict"] = verdict
+			payload["opinion"] = stored
+		}
+		return st.event("card:"+card.ID, "review_subject_missing", payload)
+	}
+	if !parsed {
 		card.Status = model.CardNeedsInput
 		if err := st.saveCard(card); err != nil {
 			return err
 		}
 		return st.event("card:"+card.ID, "review_unparsable", map[string]string{"card": card.ID})
 	}
-	if len(card.Deps) == 0 {
+	if !standalone && parent.Kind == model.KindDev && reviewNames(card, parent.ID) {
+		reviewed, candidate := st.devCandidateReviewed(parent, attempt)
+		if reviewed == "" || candidate == "" || reviewed != candidate {
+			if err := st.event("card:"+card.ID, "review_candidate_mismatch", map[string]any{
+				"card":      card.ID,
+				"subject":   parent.ID,
+				"reviewed":  reviewed,
+				"candidate": candidate,
+				"requeued":  parent.Status == model.CardReviewing,
+			}); err != nil {
+				return err
+			}
+			if parent.Status == model.CardReviewing {
+				// The current delivery may have reused this in-flight review.
+				card.Status = model.CardReady
+				card.WaitReason = ""
+				return st.saveCard(card)
+			}
+			standalone = true
+		}
+	}
+	if standalone {
 		// A standalone review has no parent to merge or rework: keep the
 		// verdict on the review card itself and finish it.
 		if err := st.noteReviewVerdict(card, card, attempt, verdict, stored, false); err != nil {
@@ -1101,10 +1142,6 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		}
 		card.Status = model.CardDone
 		return st.saveCard(card)
-	}
-	parent, foreign, ok := st.depCard(card.Deps[0])
-	if !ok {
-		return fmt.Errorf("review %s missing card %s", card.ID, card.Deps[0])
 	}
 	if parent.Status == model.CardCanceled {
 		// Keep the verdict on record but leave the canceled card alone.
@@ -1487,6 +1524,105 @@ func hasDep(card model.Card, id string) bool {
 		}
 	}
 	return false
+}
+
+// reviewNames reports an rv- review whose prefix, not an explicit dependency,
+// names subjectID. The caller uses it only for a card that is already stored.
+func reviewNames(review model.Card, subjectID string) bool {
+	if review.Kind != model.KindReview || subjectID == "" {
+		return false
+	}
+	id, explicit := model.ReviewSubject(review)
+	return !explicit && id == subjectID && id != review.ID
+}
+
+// reviewCovers reports whether an open review targets subjectID. A subject
+// pinned at launch takes precedence over the card's current deps or prefix.
+func reviewCovers(s *snap, review model.Card, subjectID string) bool {
+	if review.Kind != model.KindReview || subjectID == "" || TerminalCard(review.Status) {
+		return false
+	}
+	if subject, standalone, ok := latestPinnedReview(s, review.ID); ok {
+		return !standalone && subject == subjectID
+	}
+	subject, _ := model.ReviewSubject(review)
+	return subject == subjectID && subject != review.ID
+}
+
+func latestPinnedReview(s *snap, reviewID string) (subject string, standalone, ok bool) {
+	if s == nil || reviewID == "" {
+		return "", false, false
+	}
+	attempts := append([]model.Attempt{}, s.attempts[reviewID]...)
+	sort.Slice(attempts, func(i, j int) bool {
+		if attempts[i].Index != attempts[j].Index {
+			return attempts[i].Index > attempts[j].Index
+		}
+		return attempts[i].ID > attempts[j].ID
+	})
+	if len(attempts) == 0 {
+		return "", false, false
+	}
+	return pinnedReviewSubject(s.events, attempts[0].ID)
+}
+
+func pinnedReviewSubject(events []model.Event, attemptID string) (subject string, standalone, ok bool) {
+	if attemptID == "" {
+		return "", false, false
+	}
+	entity := "attempt:" + attemptID
+	var found model.PinnedReviewSubject
+	seen := false
+	for _, event := range events {
+		if event.Entity != entity || event.Type != model.ReviewSubjectEvent {
+			continue
+		}
+		if json.Unmarshal(event.Data, &found) != nil {
+			continue
+		}
+		seen = true
+	}
+	if !seen {
+		return "", false, false
+	}
+	return found.Subject, found.Standalone, true
+}
+
+// reviewParent resolves the card a review verdict is written to.
+// A subject pinned on the attempt wins over the cards stored now.
+// standalone means the verdict stays on the review. missing is a subject
+// that is not stored; that id is never written.
+func (st *step) reviewParent(card model.Card, attempt model.Attempt) (parent model.Card, foreign, standalone bool, missing string, err error) {
+	if subject, alone, ok := pinnedReviewSubject(st.snap.events, attempt.ID); ok {
+		if alone || subject == "" || subject == card.ID {
+			return model.Card{}, false, true, "", nil
+		}
+		parent, foreign, ok = st.depCard(subject)
+		if ok {
+			return parent, foreign, false, "", nil
+		}
+		_, getErr := st.db.GetCard(st.ctx, subject)
+		if getErr != nil && !errors.Is(getErr, sql.ErrNoRows) {
+			return model.Card{}, false, false, "", getErr
+		}
+		return model.Card{}, false, false, subject, nil
+	}
+	id, explicit := model.ReviewSubject(card)
+	if !explicit && id == card.ID {
+		return model.Card{}, false, true, "", nil
+	}
+	parent, foreign, ok := st.depCard(id)
+	if ok {
+		return parent, foreign, false, "", nil
+	}
+	_, getErr := st.db.GetCard(st.ctx, id)
+	if getErr != nil && !errors.Is(getErr, sql.ErrNoRows) {
+		return model.Card{}, false, false, "", getErr
+	}
+	if explicit {
+		return model.Card{}, false, false, id, nil
+	}
+	return model.Card{}, false, true, "", nil
 }
 
 func readResult(attempt model.Attempt) string {
@@ -2122,6 +2258,29 @@ func mainBranch(repo string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("project %s has no main branch", repo)
+}
+
+// devCandidateReviewed resolves the recorded checkout and the candidate tip.
+// A mutable worktree HEAD cannot establish what an attempt started from.
+func (st *step) devCandidateReviewed(parent model.Card, attempt model.Attempt) (reviewed, candidate string) {
+	repo := strings.TrimSpace(st.snap.project.RepoPath)
+	obj := strings.TrimSpace(parent.Objective)
+	if obj == "" {
+		obj = st.snap.obj.ID
+	}
+	if repo == "" || obj == "" || parent.ID == "" {
+		return "", ""
+	}
+	ref := "refs/heads/cardex/" + obj + "/c/" + parent.ID
+	if out, err := git(repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err == nil {
+		candidate = strings.TrimSpace(out)
+	}
+	if base := strings.TrimSpace(attempt.BaseCommit); base != "" {
+		if out, err := git(repo, "rev-parse", "--verify", "--quiet", "--end-of-options", base+"^{commit}"); err == nil {
+			reviewed = strings.TrimSpace(out)
+		}
+	}
+	return reviewed, candidate
 }
 
 func git(repo string, args ...string) (string, error) {

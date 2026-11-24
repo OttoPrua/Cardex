@@ -68,7 +68,7 @@ func AbsorbPassed(ctx context.Context, db *store.Store, home, cardID string) (Ab
 		res.Status = saved.Status
 	}
 	for _, other := range st.snap.cards {
-		if other.Kind == model.KindReview && hasDep(other, card.ID) && !TerminalCard(other.Status) {
+		if reviewCovers(st.snap, other, card.ID) {
 			res.Review, res.ReviewStatus = other.ID, other.Status
 		}
 	}

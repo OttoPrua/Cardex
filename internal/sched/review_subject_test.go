@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OttoPrua/Cardex/internal/harvest"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/store"
 	"github.com/OttoPrua/Cardex/internal/workspace"
@@ -432,8 +433,8 @@ func TestExplicitDepReviewsWithoutCandidateBranch(t *testing.T) {
 	}
 }
 
-// A pass written against main does not queue a dev card whose candidate
-// commit appeared, or moved, after the review checked out.
+// If a dev card reuses a running review, advancing the candidate requires a
+// new attempt before the verdict can be applied to the dev card.
 func TestPrefixPassRequiresCandidateCommit(t *testing.T) {
 	ctx := context.Background()
 	home, db, repo := newHome(t)
@@ -441,7 +442,7 @@ func TestPrefixPassRequiresCandidateCommit(t *testing.T) {
 	seedRoutes(t, db)
 	branch(t, repo, obj, "present", "unique.txt", "candidate-not-on-main\n")
 	for _, card := range []model.Card{
-		{ID: "present", Objective: obj, Kind: model.KindDev, Title: "present", Tier: model.TierT2, Status: model.CardPaused},
+		{ID: "present", Objective: obj, Kind: model.KindDev, Title: "present", Tier: model.TierT2, Status: model.CardRunning},
 		{ID: "rv-present", Objective: obj, Kind: model.KindReview, Title: "prefix", Tier: model.TierT3, Status: model.CardReady, Body: reviewPassScript},
 	} {
 		if err := db.CreateCard(ctx, &card); err != nil {
@@ -466,26 +467,37 @@ func TestPrefixPassRequiresCandidateCommit(t *testing.T) {
 	git(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "add", "unique.txt")
 	git(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "move")
 	git(t, repo, "checkout", "main")
-	if rev(t, repo, name) == reviewed {
+	candidate := rev(t, repo, name)
+	if candidate == reviewed {
 		t.Fatal("candidate commit did not move")
 	}
-	if err := os.WriteFile(filepath.Join(attempt.Worktree, ".cardex-result.md"), []byte("## 复核结论\npass\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	exit := 0
-	attempt.Exit = &exit
-	attempt.EndedAt = time.Now().UTC()
-	if err := db.UpdateAttempt(ctx, &attempt); err != nil {
-		t.Fatal(err)
-	}
-	stored, err := db.GetObjective(ctx, obj)
+	dev, err := db.GetCard(ctx, "present")
 	if err != nil {
 		t.Fatal(err)
 	}
-	stored.Status = model.ObjectivePaused
-	if err := db.UpdateObjective(ctx, &stored); err != nil {
+	exit := 0
+	devAttempt := model.Attempt{ID: "a-new-dev", Card: dev.ID, Branch: name, HeadCommit: candidate, Exit: &exit, EndedAt: time.Now().UTC()}
+	if err := db.CreateAttempt(ctx, &devAttempt); err != nil {
 		t.Fatal(err)
 	}
+	if err := r.deliver(ctx, db, &dev, &devAttempt, harvest.Result{Outcome: model.OutcomePassed}); err != nil {
+		t.Fatal(err)
+	}
+	if n := countEvents(t, db, "card:present", "review_reused"); dev.Status != model.CardReviewing || n != 1 {
+		t.Fatalf("dev status %s, review_reused count %d", dev.Status, n)
+	}
+	finish := func(attempt model.Attempt) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(attempt.Worktree, ".cardex-result.md"), []byte("## 复核结论\npass\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		attempt.Exit = &exit
+		attempt.EndedAt = time.Now().UTC()
+		if err := db.UpdateAttempt(ctx, &attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finish(attempt)
 	if err := r.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -493,8 +505,8 @@ func TestPrefixPassRequiresCandidateCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != model.CardPaused {
-		t.Fatalf("present status %s, want paused", got.Status)
+	if got.Status != model.CardReviewing {
+		t.Fatalf("present status %s, want reviewing", got.Status)
 	}
 	if n := countEvents(t, db, "card:present", "review_verdict"); n != 0 {
 		t.Fatalf("present review_verdict count %d", n)
@@ -502,12 +514,27 @@ func TestPrefixPassRequiresCandidateCommit(t *testing.T) {
 	if n := countEvents(t, db, "card:rv-present", "review_candidate_mismatch"); n != 1 {
 		t.Fatalf("mismatch events %d", n)
 	}
-	review, err := db.GetCard(ctx, "rv-present")
-	if err != nil || review.Status != model.CardDone {
-		t.Fatalf("review %+v %v", review, err)
+	attempts, err := db.ListAttempts(ctx, "rv-present")
+	if err != nil || len(attempts) != 2 {
+		t.Fatalf("attempt count %d, want a replacement review: %v", len(attempts), err)
 	}
-	if n := countEvents(t, db, "card:rv-present", "review_verdict"); n != 1 {
-		t.Fatalf("review verdict count %d", n)
+	replacement := attempts[0]
+	if replacement.ID == attempt.ID {
+		replacement = attempts[1]
+	}
+	if replacement.BaseCommit != candidate {
+		t.Fatalf("replacement base %s, want %s", replacement.BaseCommit, candidate)
+	}
+	finish(replacement)
+	if err := r.harvest(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	got, err = db.GetCard(ctx, "present")
+	if err != nil || got.Status != model.CardMergeQueued {
+		t.Fatalf("present status %s, want merge_queued: %v", got.Status, err)
+	}
+	if n := countEvents(t, db, "card:present", "review_verdict"); n != 1 {
+		t.Fatalf("present review_verdict count %d, want 1", n)
 	}
 }
 

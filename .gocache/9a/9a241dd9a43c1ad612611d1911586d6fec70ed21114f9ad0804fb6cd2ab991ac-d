@@ -1,8 +1,0 @@
-./api.go
-./git.go
-./hooks.go
-./ref.go
-./detach_test.go
-./git_test.go
-./ref_test.go
-./startpoint_test.go

@@ -1,8 +1,0 @@
-./enums.go
-./login.go
-./open_question.go
-./review_subject.go
-./types.go
-./model_test.go
-./owner_legacy_test.go
-./review_subject_test.go

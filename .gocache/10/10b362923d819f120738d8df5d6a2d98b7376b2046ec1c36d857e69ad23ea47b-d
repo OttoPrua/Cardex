@@ -1,6 +1,0 @@
-./api.go
-./home.go
-./starter.go
-./home_test.go
-./starter_test.go
-./v1home_test.go

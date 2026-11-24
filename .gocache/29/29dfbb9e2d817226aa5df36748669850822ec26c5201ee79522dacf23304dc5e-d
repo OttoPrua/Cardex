@@ -1,4 +1,0 @@
-./defs.go
-./hooks.go
-./mutex.go
-./sqlite_windows.go

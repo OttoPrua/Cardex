@@ -1026,18 +1026,22 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		return st.event("card:"+card.ID, "review_unparsable", map[string]string{"card": card.ID})
 	}
 	if !standalone && parent.Kind == model.KindDev && reviewNames(card, parent.ID) {
-		reviewed, candidate, checked := st.devCandidateReviewed(parent, attempt)
-		if checked && reviewed != candidate {
-			// The attempt did not read the dev card's current candidate.
-			// Keep the verdict on the review, as a dependency-free review does
-			// when it is not tied to that card.
-			if err := st.event("card:"+card.ID, "review_candidate_mismatch", map[string]string{
+		reviewed, candidate := st.devCandidateReviewed(parent, attempt)
+		if reviewed == "" || candidate == "" || reviewed != candidate {
+			if err := st.event("card:"+card.ID, "review_candidate_mismatch", map[string]any{
 				"card":      card.ID,
 				"subject":   parent.ID,
 				"reviewed":  reviewed,
 				"candidate": candidate,
+				"requeued":  parent.Status == model.CardReviewing,
 			}); err != nil {
 				return err
+			}
+			if parent.Status == model.CardReviewing {
+				// The current delivery may have reused this in-flight review.
+				card.Status = model.CardReady
+				card.WaitReason = ""
+				return st.saveCard(card)
 			}
 			standalone = true
 		}
@@ -1444,20 +1448,17 @@ func reviewNames(review model.Card, subjectID string) bool {
 	return !explicit && id == subjectID && id != review.ID
 }
 
-// reviewCovers reports an open review that was launched against subjectID,
-// or an unlaunched rv- review whose prefix names it. A review pinned as
-// standalone does not cover a card created after that attempt.
+// reviewCovers reports whether an open review targets subjectID. A subject
+// pinned at launch takes precedence over the card's current deps or prefix.
 func reviewCovers(s *snap, review model.Card, subjectID string) bool {
 	if review.Kind != model.KindReview || subjectID == "" || TerminalCard(review.Status) {
 		return false
 	}
-	if hasDep(review, subjectID) {
-		return true
-	}
 	if subject, standalone, ok := latestPinnedReview(s, review.ID); ok {
 		return !standalone && subject == subjectID
 	}
-	return reviewNames(review, subjectID)
+	subject, _ := model.ReviewSubject(review)
+	return subject == subjectID && subject != review.ID
 }
 
 func latestPinnedReview(s *snap, reviewID string) (subject string, standalone, ok bool) {
@@ -2171,51 +2172,27 @@ func mainBranch(repo string) (string, error) {
 	return "", fmt.Errorf("project %s has no main branch", repo)
 }
 
-// devCandidateReviewed compares the commit a prefix review read with the dev
-// card's candidate branch. checked is false when the project has no git dir,
-// and those verdicts are left unchanged. A missing branch yields an empty
-// candidate, which does not match.
-func (st *step) devCandidateReviewed(parent model.Card, attempt model.Attempt) (reviewed, candidate string, checked bool) {
+// devCandidateReviewed resolves the recorded checkout and the candidate tip.
+// A mutable worktree HEAD cannot establish what an attempt started from.
+func (st *step) devCandidateReviewed(parent model.Card, attempt model.Attempt) (reviewed, candidate string) {
 	repo := strings.TrimSpace(st.snap.project.RepoPath)
-	if !hasGitDir(repo) {
-		return "", "", false
-	}
 	obj := strings.TrimSpace(parent.Objective)
 	if obj == "" {
 		obj = st.snap.obj.ID
 	}
-	if obj == "" || parent.ID == "" {
-		return "", "", false
+	if repo == "" || obj == "" || parent.ID == "" {
+		return "", ""
 	}
-	out, err := git(repo, "rev-parse", "--verify", "--quiet", "refs/heads/cardex/"+obj+"/c/"+parent.ID)
-	if err != nil {
-		return strings.TrimSpace(attempt.BaseCommit), "", true
+	ref := "refs/heads/cardex/" + obj + "/c/" + parent.ID
+	if out, err := git(repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err == nil {
+		candidate = strings.TrimSpace(out)
 	}
-	candidate = strings.TrimSpace(out)
-	reviewed = strings.TrimSpace(attempt.BaseCommit)
-	if reviewed == "" && hasGitDir(attempt.Worktree) {
-		if head, err := git(attempt.Worktree, "rev-parse", "--verify", "--quiet", "HEAD"); err == nil {
-			reviewed = strings.TrimSpace(head)
+	if base := strings.TrimSpace(attempt.BaseCommit); base != "" {
+		if out, err := git(repo, "rev-parse", "--verify", "--quiet", "--end-of-options", base+"^{commit}"); err == nil {
+			reviewed = strings.TrimSpace(out)
 		}
 	}
-	if reviewed == "" {
-		return "", candidate, true
-	}
-	if full, err := git(repo, "rev-parse", "--verify", "--quiet", reviewed+"^{commit}"); err == nil {
-		reviewed = strings.TrimSpace(full)
-	}
-	return reviewed, candidate, true
-}
-
-func hasGitDir(repo string) bool {
-	if strings.TrimSpace(repo) == "" {
-		return false
-	}
-	info, err := os.Stat(filepath.Join(repo, ".git"))
-	if err != nil {
-		return false
-	}
-	return info.IsDir() || info.Mode().IsRegular()
+	return reviewed, candidate
 }
 
 func git(repo string, args ...string) (string, error) {

@@ -1,9 +1,0 @@
-./adapters_test.go
-./agy_test.go
-./cursor_test.go
-./fake_test.go
-./followup_test.go
-./grok_test.go
-./kimi_test.go
-./rework_test.go
-./writable_env_test.go

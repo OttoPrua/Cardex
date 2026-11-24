@@ -85,8 +85,11 @@ func TestEvidencePathsStayCompatible(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(legacy, "result.md"), []byte("r"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := AttemptDirFor(home, id); got != legacy {
+	if got := AttemptDir(home, id, ""); got != legacy {
 		t.Fatalf("legacy dir %s", got)
+	}
+	if got := AttemptDirFor(home, id); got != filepath.Join(ext, id) {
+		t.Fatalf("new attempt reused legacy dir %s", got)
 	}
 	if got := EvidenceRef(home, id, "", "output.log"); got != "attempts/"+id+"/output.log" {
 		t.Fatalf("legacy ref %s", got)
@@ -110,7 +113,7 @@ func TestEvidencePathsStayCompatible(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ext, id, "acceptance.log"), []byte("new"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := AttemptDirFor(home, id); got != filepath.Join(ext, id) {
+	if got := AttemptDir(home, id, ""); got != filepath.Join(ext, id) {
 		t.Fatalf("primary dir %s", got)
 	}
 	refs = EvidenceRefs(home, id, "")

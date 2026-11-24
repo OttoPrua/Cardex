@@ -111,23 +111,14 @@ func (l Layout) Locations() []Location {
 	}
 }
 
-// AttemptDirFor locates evidence for a new attempt or a historical record
-// with no canonical prompt path.
+// AttemptDirFor locates evidence for a new attempt.
 func AttemptDirFor(home, id string) string {
-	layout := Load(home)
-	legacy := filepath.Join(layout.Home, "attempts", id)
-	if !safeSegment(id) || !layout.CustomAttempts {
-		return legacy
-	}
-	dir := filepath.Join(layout.AttemptsDir, id)
-	if !isDir(dir) && isDir(legacy) {
-		return legacy
-	}
-	return dir
+	return filepath.Join(Load(home).AttemptsDir, id)
 }
 
 // AttemptDir keeps a scheduled attempt next to its persisted prompt if the
-// configuration changes. Custom prompts elsewhere do not determine the root.
+// configuration changes. Old records without a canonical prompt can still
+// use their original home-relative evidence directory.
 func AttemptDir(home, id, prompt string) string {
 	if safeSegment(id) && filepath.Base(prompt) == "prompt.txt" {
 		dir := filepath.Dir(ResolveStored(home, prompt))
@@ -135,7 +126,16 @@ func AttemptDir(home, id, prompt string) string {
 			return dir
 		}
 	}
-	return AttemptDirFor(home, id)
+	layout := Load(home)
+	legacy := filepath.Join(layout.Home, "attempts", id)
+	if !safeSegment(id) {
+		return legacy
+	}
+	dir := filepath.Join(layout.AttemptsDir, id)
+	if layout.CustomAttempts && !isDir(dir) && isDir(legacy) {
+		return legacy
+	}
+	return dir
 }
 
 // EvidenceRef retains the historical home-relative form for the default tree.

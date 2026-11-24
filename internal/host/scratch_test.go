@@ -41,10 +41,10 @@ func TestRunScratchInjectsUnsetTempEnvAndCleansOnlyThatAttempt(t *testing.T) {
 }
 
 func TestRunScratchKeepsExplicitTMPDIR(t *testing.T) {
-	sentinel := filepath.Join(t.TempDir(), "explicit-tmp")
-	t.Setenv("TMPDIR", sentinel)
+	sentinel := t.TempDir()
 	scratch := t.TempDir()
 	home, id, _ := seedScratchAttempt(t, echoEnvScript)
+	t.Setenv("TMPDIR", sentinel)
 	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"scratch_dir":`+jsonString(scratch)+`}`), 0o644); err != nil {
 		t.Fatal(err)
 	}

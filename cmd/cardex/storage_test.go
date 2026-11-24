@@ -74,10 +74,14 @@ func TestDoctorReportsStorageAndDoesNotDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := t.TempDir()
-	projScratch := t.TempDir()
+	projScratch := filepath.Join(t.TempDir(), "not-created")
 	var errb bytes.Buffer
 	if code := Main([]string{"--home", home, "project", "add", "--id", "p1", "--repo", repo, "--scratch-dir", projScratch}, io.Discard, &errb); code != 0 {
 		t.Fatalf("project %d %s", code, errb.String())
+	}
+	before, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatal(err)
 	}
 	prev := roots.FreeWarnBytes
 	roots.FreeWarnBytes = ^uint64(0)
@@ -94,17 +98,37 @@ func TestDoctorReportsStorageAndDoesNotDelete(t *testing.T) {
 	if !strings.Contains(out, "volume=") || !strings.Contains(out, "free=") {
 		t.Fatalf("volume line missing\n%s", out)
 	}
-	if !strings.Contains(out, "below") || !strings.Contains(out, "doctor does not delete anything") {
+	if !strings.Contains(out, "below") {
 		t.Fatalf("warning missing\n%s", out)
 	}
 	if b, err := os.ReadFile(marker); err != nil || string(b) != "keep" {
 		t.Fatalf("marker %q %v", b, err)
 	}
-	if _, err := os.Stat(projScratch); err != nil {
-		t.Fatal(err)
+	if _, err := os.Stat(projScratch); !os.IsNotExist(err) {
+		t.Fatalf("doctor created project scratch: %v", err)
+	}
+	after, err := os.ReadDir(home)
+	if err != nil || len(after) != len(before) {
+		t.Fatalf("doctor changed home entries from %v to %v: %v", before, after, err)
+	}
+	for i := range before {
+		if before[i].Name() != after[i].Name() {
+			t.Fatalf("doctor replaced %s with %s", before[i].Name(), after[i].Name())
+		}
 	}
 }
 
 func jsonQuote(s string) string {
 	return `"` + strings.ReplaceAll(s, `\`, `\\`) + `"`
+}
+
+func TestDoctorDoesNotInitializeHomeOrDatabase(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "not-created")
+	code, out, errText := callCLI(t, []string{"--home", home, "doctor"})
+	if code != 0 || !strings.Contains(out, "storage: name=attempts") || !strings.Contains(out, "database cannot be inspected") {
+		t.Fatalf("doctor %d\n%s\n%s", code, out, errText)
+	}
+	if _, err := os.Stat(home); !os.IsNotExist(err) {
+		t.Fatalf("doctor created home: %v", err)
+	}
 }

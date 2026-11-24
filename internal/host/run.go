@@ -50,6 +50,7 @@ func run(ctx context.Context, home, attemptID string) error {
 	if err != nil {
 		return fmt.Errorf("host: load attempt: %w", err)
 	}
+	promptPath := roots.ResolveStored(home, attempt.PromptPath)
 	card, err := db.GetCard(ctx, attempt.Card)
 	if err != nil {
 		return fmt.Errorf("host: load card: %w", err)
@@ -69,8 +70,8 @@ func run(ctx context.Context, home, attemptID string) error {
 	var goalRunner runner.Runner
 	if gr, isGoal := r.(runner.GoalRunner); isGoal && requiresGoal(card) {
 		launch := runner.GoalLaunch{WorkDir: attempt.Worktree, AttemptID: attempt.ID}
-		if attempt.PromptPath != "" {
-			body, err := os.ReadFile(attempt.PromptPath)
+		if promptPath != "" {
+			body, err := os.ReadFile(promptPath)
 			if err != nil {
 				return fmt.Errorf("host: goal prompt: %w", err)
 			}
@@ -86,13 +87,13 @@ func run(ctx context.Context, home, attemptID string) error {
 		AttemptID:    attempt.ID,
 		AttemptIndex: attempt.Index,
 		WorkDir:      attempt.Worktree,
-		PromptPath:   attempt.PromptPath,
+		PromptPath:   promptPath,
 		Model:        attempt.Route.Model,
 	}
 	if goalMode {
 		spec.SessionID = attempt.ID
 	}
-	attemptDir := roots.AttemptDirFor(home, attempt.ID)
+	attemptDir := roots.AttemptDir(home, attempt.ID, attempt.PromptPath)
 	scriptPath := filepath.Join(attemptDir, "script.json")
 	if st, err := os.Stat(scriptPath); err == nil && !st.IsDir() {
 		spec.ScriptPath = scriptPath
@@ -164,7 +165,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		appendEvent(ctx, db, attempt.ID, "browser_start", map[string]any{"pgid": b.pgid, "cdp": b.httpURL})
 		env = append(env, b.Env(env)...)
 	}
-	scratchDir, cleanupScratch, serr := prepareRunScratch(ctx, db, home, card, attempt.ID)
+	scratchDir, cleanupScratch, serr := prepareRunScratch(ctx, db, home, card, attempt.ID, attemptDir)
 	if serr != nil {
 		return failStart(ctx, db, &attempt, serr)
 	}
@@ -185,8 +186,8 @@ func run(ctx context.Context, home, attemptID string) error {
 	var logRead, logWrite *os.File
 	var copied chan struct{}
 	if !needPTY {
-		if attempt.PromptPath != "" {
-			prompt, err := openPrompt(ctx, attempt.PromptPath)
+		if promptPath != "" {
+			prompt, err := openPrompt(ctx, promptPath)
 			if err != nil {
 				return failStart(ctx, db, &attempt, err)
 			}
@@ -237,7 +238,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		"runner":      r.Name(),
 		"pty":         needPTY,
 		"drive":       needPTY,
-		"prompt_path": attempt.PromptPath,
+		"prompt_path": promptPath,
 		"argv":        argv,
 	})
 
@@ -367,14 +368,6 @@ func run(ctx context.Context, home, attemptID string) error {
 		return err
 	}
 	return finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, nil, driveErr, timedOut, goalStatus)
-}
-
-// prepareRunScratch creates this attempt's temp directory when a scratch root
-// is configured. Project scratch wins over the home scratch_dir. An unset root
-// returns a no-op cleanup and leaves the process temp directory alone.
-func prepareRunScratch(ctx context.Context, db *store.Store, home string, card model.Card, attemptID string) (string, func(), error) {
-	root := roots.Load(home).EffectiveScratch(projectScratch(ctx, db, card))
-	return roots.PrepareAttemptScratch(root, attemptID)
 }
 
 func projectScratch(ctx context.Context, db *store.Store, card model.Card) string {

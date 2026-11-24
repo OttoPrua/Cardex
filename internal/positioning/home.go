@@ -40,9 +40,10 @@ var currentAfterContent func()
 // The unapproved seed is config.json's positioning section. Proposals are files.
 // An approval publishes the next table version in one transaction on home/cardex.db.
 type Home struct {
-	mu  sync.Mutex
-	dir string
-	db  *store.Store
+	mu      sync.Mutex
+	dir     string
+	db      *store.Store
+	inspect bool
 }
 
 type configFile struct {
@@ -70,6 +71,11 @@ func Open(home string) (*Home, error) {
 		return nil, err
 	}
 	return &Home{dir: abs, db: db}, nil
+}
+
+// Inspect binds positioning reads to the store already used by the caller.
+func Inspect(home string, db *store.Store) *Home {
+	return &Home{dir: home, db: db, inspect: true}
 }
 
 // Close closes the shared home database.
@@ -182,6 +188,9 @@ func (h *Home) seedLocked() ([]model.Positioning, error) {
 // A missing table or row is zero. The connection is closed before the caller
 // starts a write transaction.
 func (h *Home) independentVersion() (int, error) {
+	if h.inspect {
+		return h.db.LegacyPositioningVersion(context.Background(), positioningMetaID)
+	}
 	return readIndependentVersion(filepath.Join(h.dir, "cardex.db"))
 }
 

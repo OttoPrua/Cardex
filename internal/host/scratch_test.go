@@ -13,7 +13,6 @@ import (
 )
 
 func TestRunScratchInjectsUnsetTempEnvAndCleansOnlyThatAttempt(t *testing.T) {
-	restoreUnset(t, "TMPDIR", "GOTMPDIR", "GOCACHE")
 	scratch := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(scratch, "other"), 0o755); err != nil {
 		t.Fatal(err)
@@ -25,17 +24,16 @@ func TestRunScratchInjectsUnsetTempEnvAndCleansOnlyThatAttempt(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"scratch_dir":`+jsonString(scratch)+`}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	restoreUnset(t, "TMPDIR", "GOTMPDIR", "GOCACHE")
 	if err := host.Run(context.Background(), home, id); err != nil {
 		t.Fatal(err)
 	}
 	log := readAttemptLog(t, filepath.Join(home, "attempts", id, "output.log"))
-	wantTmp := filepath.Join(scratch, id, "tmp")
-	wantCache := filepath.Join(scratch, id, "gocache")
+	dir := checkScratchLog(t, scratch, id, log)
+	wantTmp := filepath.Join(dir, "tmp")
+	wantCache := filepath.Join(dir, "gocache")
 	if !strings.Contains(log, "TMPDIR="+wantTmp) || !strings.Contains(log, "GOTMPDIR="+wantTmp) || !strings.Contains(log, "GOCACHE="+wantCache) {
 		t.Fatalf("log\n%s", log)
-	}
-	if _, err := os.Stat(filepath.Join(scratch, id)); !os.IsNotExist(err) {
-		t.Fatalf("attempt scratch remains: %v", err)
 	}
 	if b, err := os.ReadFile(filepath.Join(scratch, "other", "keep")); err != nil || string(b) != "x" {
 		t.Fatalf("sibling %q %v", b, err)
@@ -57,13 +55,12 @@ func TestRunScratchKeepsExplicitTMPDIR(t *testing.T) {
 	if !strings.Contains(log, "TMPDIR="+sentinel) {
 		t.Fatalf("log\n%s", log)
 	}
-	if strings.Contains(log, "TMPDIR="+filepath.Join(scratch, id, "tmp")) {
+	if strings.Contains(log, "TMPDIR="+scratch+string(os.PathSeparator)) {
 		t.Fatalf("scratch overwrote TMPDIR\n%s", log)
 	}
 }
 
 func TestRunProjectScratchOverridesHome(t *testing.T) {
-	restoreUnset(t, "TMPDIR", "GOTMPDIR", "GOCACHE")
 	homeScratch := t.TempDir()
 	projScratch := t.TempDir()
 	home, id, _ := seedScratchAttempt(t, echoEnvScript)
@@ -71,18 +68,17 @@ func TestRunProjectScratchOverridesHome(t *testing.T) {
 		t.Fatal(err)
 	}
 	attachProjectScratch(t, home, projScratch)
+	restoreUnset(t, "TMPDIR", "GOTMPDIR", "GOCACHE")
 	if err := host.Run(context.Background(), home, id); err != nil {
 		t.Fatal(err)
 	}
 	log := readAttemptLog(t, filepath.Join(home, "attempts", id, "output.log"))
-	if !strings.Contains(log, "TMPDIR="+filepath.Join(projScratch, id, "tmp")) {
-		t.Fatalf("log\n%s", log)
-	}
+	checkScratchLog(t, projScratch, id, log)
 	if strings.Contains(log, homeScratch) {
 		t.Fatalf("home scratch used\n%s", log)
 	}
-	if _, err := os.Stat(filepath.Join(homeScratch, id)); !os.IsNotExist(err) {
-		t.Fatalf("home scratch attempt dir: %v", err)
+	if entries, err := os.ReadDir(homeScratch); err != nil || len(entries) != 0 {
+		t.Fatalf("home scratch entries %v, error %v", entries, err)
 	}
 }
 
@@ -104,6 +100,26 @@ func TestRunCustomAttemptsDirWritesThere(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(home, "attempts", id, "output.log")); !os.IsNotExist(err) {
 		t.Fatalf("home attempts gained a new log: %v", err)
 	}
+}
+
+func checkScratchLog(t *testing.T, root, id, log string) string {
+	t.Helper()
+	for _, line := range strings.Split(log, "\n") {
+		tmp, ok := strings.CutPrefix(strings.TrimSpace(line), "TMPDIR=")
+		if !ok {
+			continue
+		}
+		dir := filepath.Dir(tmp)
+		if filepath.Dir(dir) != root || !strings.HasPrefix(filepath.Base(dir), "cardex-"+id+"-") || filepath.Base(tmp) != "tmp" {
+			t.Fatalf("TMPDIR %q is outside attempt scratch %s", tmp, root)
+		}
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("attempt scratch remains: %v", err)
+		}
+		return dir
+	}
+	t.Fatalf("missing TMPDIR in log\n%s", log)
+	return ""
 }
 
 func seedScratchAttempt(t *testing.T, build func(work string) any) (home, id, work string) {

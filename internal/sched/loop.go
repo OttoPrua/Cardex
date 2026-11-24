@@ -46,7 +46,6 @@ var (
 	deliverMsg  = func(ctx context.Context, msg notify.Message) error {
 		return notify.Stub{}.Deliver(ctx, msg)
 	}
-	startHost   = launchDetached
 	chooseRoute = route.Select
 )
 
@@ -275,7 +274,7 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			}
 			continue
 		}
-		output, _ := os.ReadFile(filepath.Join(roots.AttemptDirFor(r.Home, attempt.ID), "output.log"))
+		output, _ := os.ReadFile(filepath.Join(roots.AttemptDir(r.Home, attempt.ID, attempt.PromptPath), "output.log"))
 		exitCode := 1
 		if attempt.Exit != nil {
 			exitCode = *attempt.Exit
@@ -316,7 +315,7 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			continue
 		}
 		if res.EvidenceErr != nil {
-			_ = noteEvidenceWriteFailed(ctx, db, r.Home, attempt.ID, res.EvidenceErr)
+			_ = noteEvidenceWriteFailed(ctx, db, r.Home, attempt, res.EvidenceErr)
 		}
 	}
 	return first
@@ -336,17 +335,17 @@ func projectScratch(ctx context.Context, db *store.Store, objectiveID string) st
 
 // noteEvidenceWriteFailed records one event for a failed acceptance.log or
 // result.md write. The payload names the attempt directory, not the file bodies.
-func noteEvidenceWriteFailed(ctx context.Context, db *store.Store, home, attemptID string, cause error) error {
+func noteEvidenceWriteFailed(ctx context.Context, db *store.Store, home string, attempt model.Attempt, cause error) error {
 	raw, err := json.Marshal(map[string]string{
-		"attempt_id": attemptID,
-		"path":       roots.EvidenceRef(home, attemptID, ""),
+		"attempt_id": attempt.ID,
+		"path":       roots.EvidenceRef(home, attempt.ID, attempt.PromptPath, ""),
 		"error":      cause.Error(),
 	})
 	if err != nil {
 		return err
 	}
 	return db.AppendEvent(ctx, &model.Event{
-		Entity: "attempt:" + attemptID,
+		Entity: "attempt:" + attempt.ID,
 		Type:   "evidence_write_failed",
 		Data:   raw,
 	})
@@ -758,7 +757,7 @@ func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.
 }
 
 func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, repo string, attempt *model.Attempt) error {
-	dir := roots.AttemptDirFor(r.Home, attempt.ID)
+	dir := roots.AttemptDir(r.Home, attempt.ID, attempt.PromptPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -830,11 +829,14 @@ func stripEmptyFacts(text string) string {
 }
 
 func (r *Runner) startAttempt(ctx context.Context, db *store.Store, attempt *model.Attempt) error {
-	launch := startHost
+	var pid int
+	var err error
 	if r.Launch != nil {
-		launch = func(home, id string) (int, error) { return r.Launch(ctx, home, id) }
+		pid, err = r.Launch(ctx, r.Home, attempt.ID)
+	} else {
+		dir := roots.AttemptDir(r.Home, attempt.ID, attempt.PromptPath)
+		pid, err = launchDetached(r.Home, attempt.ID, dir)
 	}
-	pid, err := launch(r.Home, attempt.ID)
 	if err != nil {
 		return err
 	}
@@ -1662,7 +1664,7 @@ func quotaReset(home string, a model.Attempt) (time.Time, bool) {
 	if t, ok := findReset(a.ErrorExcerpt); ok {
 		return t, true
 	}
-	body, err := os.ReadFile(filepath.Join(roots.AttemptDirFor(home, a.ID), "output.log"))
+	body, err := os.ReadFile(filepath.Join(roots.AttemptDir(home, a.ID, a.PromptPath), "output.log"))
 	if err != nil {
 		return time.Time{}, false
 	}

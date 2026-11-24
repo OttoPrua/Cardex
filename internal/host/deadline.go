@@ -11,8 +11,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"github.com/OttoPrua/Cardex/internal/roots"
 )
 
 const (
@@ -63,10 +61,6 @@ func persistGroupFile(path string, pgid int) error {
 		return serr
 	}
 	return cerr
-}
-
-func readExecutorGroup(home, attemptID string) int {
-	return readGroupFile(filepath.Join(roots.AttemptDirFor(home, attemptID), executorGroupName))
 }
 
 func readGroupFile(path string) int {
@@ -174,11 +168,11 @@ func waitGroupGone(pgid int, bound time.Duration) bool {
 
 // deadlineReached reports that this attempt's own hard duration has elapsed
 // since it started. A missing or unusable file has not elapsed.
-func deadlineReached(home string, started time.Time, attemptID string, now time.Time) bool {
+func deadlineReached(dir string, started, now time.Time) bool {
 	if started.IsZero() {
 		return false
 	}
-	limit, reason := attemptDeadline(roots.AttemptDirFor(home, attemptID))
+	limit, reason := attemptDeadline(dir)
 	if reason != "" || limit <= 0 {
 		return false
 	}

@@ -2,11 +2,28 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 )
+
+// LegacyPositioningVersion reads the publication marker from older databases.
+func (s *Store) LegacyPositioningVersion(ctx context.Context, id string) (int, error) {
+	var present int
+	if err := s.q(ctx).QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='positioning_meta'`).Scan(&present); err != nil || present == 0 {
+		return 0, err
+	}
+	var version int
+	err := s.q(ctx).QueryRowContext(ctx, `SELECT version FROM positioning_meta WHERE id=?`, id).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && version <= 0) {
+		return 0, nil
+	}
+	return version, err
+}
 
 func preparePositioning(p *model.Positioning) error {
 	if p == nil {

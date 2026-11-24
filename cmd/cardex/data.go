@@ -573,14 +573,10 @@ func cardShowAttempts(ctx context.Context, db *store.Store, home, cardID string)
 	for _, attempt := range attempts {
 		out = append(out, cardAttemptView{
 			ID:       attempt.ID,
-			Evidence: cardEvidencePaths(home, attempt.ID),
+			Evidence: roots.EvidenceRefs(home, attempt.ID, attempt.PromptPath),
 		})
 	}
 	return out, nil
-}
-
-func cardEvidencePaths(home, id string) []string {
-	return roots.EvidenceRefs(home, id)
 }
 
 func cardSafeID(id string) bool {

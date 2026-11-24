@@ -3,12 +3,16 @@
 package roots
 
 import (
+	"os"
 	"path/filepath"
 
 	"golang.org/x/sys/windows"
 )
 
 func statVolume(path string) (VolumeInfo, error) {
+	if _, err := os.Stat(path); err != nil {
+		return VolumeInfo{}, err
+	}
 	p, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return VolumeInfo{}, err

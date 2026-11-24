@@ -40,7 +40,7 @@ func truncateEvidence(in []byte) []byte {
 // writeEvidence writes acceptance.log for a harvested attempt and, when the
 // result file was present, result.md. A blank home or attempt id skips both.
 // The home path is joined as given; only the emptiness check trims it.
-func writeEvidence(home, attemptID string, acceptance []byte, haveResult bool, result []byte) error {
+func writeEvidence(home, attemptID, prompt string, acceptance []byte, haveResult bool, result []byte) error {
 	attemptID = strings.TrimSpace(attemptID)
 	if strings.TrimSpace(home) == "" || attemptID == "" {
 		return nil
@@ -48,7 +48,7 @@ func writeEvidence(home, attemptID string, acceptance []byte, haveResult bool, r
 	if attemptID == "." || attemptID == ".." || strings.ContainsAny(attemptID, `/\\`) {
 		return fmt.Errorf("harvest: attempt id %q", attemptID)
 	}
-	dir := roots.AttemptDirFor(home, attemptID)
+	dir := roots.AttemptDir(home, attemptID, prompt)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}

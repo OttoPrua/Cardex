@@ -27,7 +27,7 @@ func statVolume(path string) (VolumeInfo, error) {
 }
 
 func linuxMount(path string) string {
-	abs, err := filepath.Abs(path)
+	abs, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		abs = path
 	}
@@ -36,12 +36,13 @@ func linuxMount(path string) string {
 		return ""
 	}
 	best := ""
+	unescape := strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
 	for _, line := range strings.Split(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 5 {
 			continue
 		}
-		mnt := fields[4]
+		mnt := unescape.Replace(fields[4])
 		if abs == mnt || strings.HasPrefix(abs, strings.TrimRight(mnt, "/")+"/") {
 			if len(mnt) > len(best) {
 				best = mnt

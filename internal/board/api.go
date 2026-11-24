@@ -171,7 +171,8 @@ func serveLog(w http.ResponseWriter, r *http.Request, id string) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if _, err := db.GetAttempt(r.Context(), id); err != nil {
+	attempt, err := db.GetAttempt(r.Context(), id)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.NotFound(w, r)
 			return
@@ -179,12 +180,11 @@ func serveLog(w http.ResponseWriter, r *http.Request, id string) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	path, ok := attemptLogPath(home, id)
-	if !ok {
-		http.NotFound(w, r)
-		return
+	dir := roots.AttemptDir(home, id, attempt.PromptPath)
+	body, err := readTail(dir, logTailBytes)
+	if legacy := filepath.Join(home, "attempts", id); errors.Is(err, os.ErrNotExist) && legacy != dir {
+		body, err = readTail(legacy, logTailBytes)
 	}
-	body, err := readTail(path, logTailBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
@@ -227,43 +227,13 @@ func parsePage(raw string) int {
 	return int(n)
 }
 
-func attemptLogPath(home, id string) (string, bool) {
-	if !safeID(id) {
-		return "", false
+func readTail(dir string, n int) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
 	}
-	primary := containedAttemptFile(roots.AttemptDirFor(home, id), id, "output.log")
-	if primary == "" {
-		return "", false
-	}
-	if info, err := os.Stat(primary); err == nil && !info.IsDir() {
-		return primary, true
-	}
-	legacyDir := filepath.Join(roots.Load(home).Home, "attempts", id)
-	legacy := containedAttemptFile(legacyDir, id, "output.log")
-	if legacy != "" && legacy != primary {
-		if info, err := os.Stat(legacy); err == nil && !info.IsDir() {
-			return legacy, true
-		}
-	}
-	return primary, true
-}
-
-// containedAttemptFile joins dir and name and rejects a path that leaves dir.
-func containedAttemptFile(dir, id, name string) string {
-	if dir == "" || !safeID(id) {
-		return ""
-	}
-	cleanDir := filepath.Clean(dir)
-	joined := filepath.Clean(filepath.Join(cleanDir, name))
-	want := cleanDir + string(filepath.Separator) + name
-	if joined != want {
-		return ""
-	}
-	return joined
-}
-
-func readTail(path string, n int) ([]byte, error) {
-	f, err := os.Open(path)
+	defer root.Close()
+	f, err := root.Open("output.log")
 	if err != nil {
 		return nil, err
 	}
@@ -271,6 +241,9 @@ func readTail(path string, n int) ([]byte, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, os.ErrNotExist
 	}
 	start := int64(0)
 	if info.Size() > int64(n) {

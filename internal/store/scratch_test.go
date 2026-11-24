@@ -66,10 +66,21 @@ func TestBackupRunsOnlyOnRemigration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"backups_dir":"bak"}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dropSchemaVersion(t, dbPath, 8)
-	before, err := os.ReadFile(dbPath)
+	// Hold a connection open so the last committed pages are still in the WAL.
+	raw, err := sql.Open("sqlite", sqliteURI(dbPath))
 	if err != nil {
 		t.Fatal(err)
+	}
+	defer raw.Close()
+	for _, stmt := range []string{
+		`PRAGMA wal_autocheckpoint=0`,
+		`DELETE FROM schema_migrations WHERE version=8`,
+		`CREATE TABLE backup_probe(value TEXT)`,
+		`INSERT INTO backup_probe VALUES ('wal row')`,
+	} {
+		if _, err := raw.Exec(stmt); err != nil {
+			t.Fatal(err)
+		}
 	}
 	db, err = Open(dbPath)
 	if err != nil {
@@ -82,12 +93,21 @@ func TestBackupRunsOnlyOnRemigration(t *testing.T) {
 	if len(copies) != 1 {
 		t.Fatalf("copies %v", copies)
 	}
-	copied, err := os.ReadFile(copies[0])
-	if err != nil {
-		t.Fatal(err)
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(copies[0] + suffix); !os.IsNotExist(err) {
+			t.Fatalf("unexpected backup sidecar %s: %v", suffix, err)
+		}
 	}
-	if string(copied) != string(before) {
-		t.Fatalf("copy len %d source len %d", len(copied), len(before))
+	if err := Inspect(copies[0], func(backup *Store) {
+		if version, err := backup.SchemaVersion(context.Background()); err != nil || version != 7 {
+			t.Errorf("backup schema version %d, error %v", version, err)
+		}
+		var row string
+		if err := backup.db.QueryRow(`SELECT value FROM backup_probe`).Scan(&row); err != nil || row != "wal row" {
+			t.Errorf("backup row %q, error %v", row, err)
+		}
+	}); err != nil {
+		t.Fatal(err)
 	}
 	still, err := os.ReadFile(dbPath)
 	if err != nil || len(still) == 0 {
@@ -108,14 +128,19 @@ func TestBackupRunsOnlyOnRemigration(t *testing.T) {
 	}
 }
 
-func dropSchemaVersion(t *testing.T, dbPath string, version int) {
-	t.Helper()
-	raw, err := sql.Open("sqlite", "file:"+filepath.ToSlash(dbPath))
-	if err != nil {
+func TestInspectReadsProjectsCommittedInWAL(t *testing.T) {
+	db := openDB(t)
+	ctx := context.Background()
+	project := model.Project{ID: "inspect", RepoPath: t.TempDir(), ScratchDir: "external"}
+	if err := db.CreateProject(ctx, &project); err != nil {
 		t.Fatal(err)
 	}
-	defer raw.Close()
-	if _, err := raw.Exec(`DELETE FROM schema_migrations WHERE version=?`, version); err != nil {
+	if err := Inspect(db.path, func(reader *Store) {
+		got, err := reader.GetProject(ctx, project.ID)
+		if err != nil || got.ScratchDir != project.ScratchDir {
+			t.Errorf("inspected project %+v, error %v", got, err)
+		}
+	}); err != nil {
 		t.Fatal(err)
 	}
 }

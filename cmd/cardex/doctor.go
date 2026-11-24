@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/OttoPrua/Cardex/internal/proc"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,12 +11,13 @@ import (
 	"github.com/OttoPrua/Cardex/internal/homeguard"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/positioning"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/quota"
 	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
-const doctorUsagePurpose = "check the home, database, tools, and channel config, then print storage volumes and only problems with a repair suggestion for each"
+const doctorUsagePurpose = "inspect the home, database, tools, channel config, and storage volumes"
 
 type finding struct {
 	problem    string
@@ -45,7 +44,10 @@ func collectDoctor(home string) ([]string, []finding) {
 	if strings.HasPrefix(buildRevision(), "unknown") {
 		out = append(out, finding{"binary has no commit revision, so the running version cannot be traced", "build from a git checkout, or pass -ldflags \"-X main.revision=$(git rev-parse --short HEAD)\""})
 	}
-	resolved, err := resolveHome(home)
+	resolved, err := homePath(home)
+	if err == nil {
+		err = homeguard.Check(resolved)
+	}
 	if err != nil {
 		suggestion := "pass a writable --home"
 		if homeguard.IsV1(err) {
@@ -53,34 +55,37 @@ func collectDoctor(home string) ([]string, []finding) {
 		}
 		out = append(out, finding{err.Error(), suggestion})
 		resolved = ""
-	} else if problem, suggestion, bad := homeWritable(resolved); bad {
-		out = append(out, finding{problem, suggestion})
 	}
-	var db *store.Store
+	var projects []model.Project
+	var dbFindings []finding
+	ctx := context.Background()
 	if resolved == "" {
 		out = append(out, finding{"database cannot be opened because the home is unavailable", "pass a writable --home"})
-		out = append(out, finding{"migration version cannot be read because the database is not open", "pass a writable --home so migrations can be read"})
 	} else {
-		opened, oerr := store.Open(absDB(resolved))
-		if oerr != nil {
-			out = append(out, finding{"database cannot be opened: " + oerr.Error(), "check that the home is a directory and cardex.db is not corrupt"})
-			out = append(out, finding{"migration version cannot be read because the database did not open", "repair cardex.db or pass a new --home"})
-		} else {
-			db = opened
-			defer db.Close()
-			if _, verr := db.SchemaVersion(context.Background()); verr != nil {
-				out = append(out, finding{"migration version cannot be read: " + verr.Error(), "open this home with the current cardex binary so the migration table can be read"})
+		err = store.Inspect(absDB(resolved), func(db *store.Store) {
+			if _, verr := db.SchemaVersion(ctx); verr != nil {
+				dbFindings = append(dbFindings, finding{"migration version cannot be read: " + verr.Error(), "open this home with the current cardex binary so the migration table can be read"})
 			}
+			var perr error
+			projects, perr = db.ListProjects(ctx)
+			if perr != nil {
+				dbFindings = append(dbFindings, finding{"project scratch configuration cannot be read: " + perr.Error(), "open this home with the current cardex binary and run doctor again"})
+			}
+			dbFindings = append(dbFindings, channelFindings(db, resolved, false)...)
+		})
+		if err != nil {
+			out = append(out, finding{"database cannot be inspected: " + err.Error(), "check the database or rerun doctor when the home is ready"})
 		}
 	}
+	if resolved == "" || err != nil {
+		out = append(out, finding{"migration version cannot be read because the database was unavailable", "pass a home with an initialized database"})
+		dbFindings = channelFindings(nil, resolved, false)
+		projects = nil
+	}
 	out = append(out, toolFindings()...)
-	out = append(out, channelFindings(db, resolved, false)...)
+	out = append(out, dbFindings...)
 	var storage []string
 	if resolved != "" {
-		var projects []model.Project
-		if db != nil {
-			projects, _ = db.ListProjects(context.Background())
-		}
 		var warnings []finding
 		storage, warnings = storageReport(resolved, projects)
 		out = append(out, warnings...)
@@ -109,7 +114,7 @@ func storageReport(home string, projects []model.Project) ([]string, []finding) 
 			lines = append(lines, fmt.Sprintf("storage: name=%s path=%s volume= error=%s", loc.Name, loc.Path, err.Error()))
 			warnings = append(warnings, finding{
 				loc.Name + " directory " + loc.Path + " volume cannot be read: " + err.Error(),
-				"create the directory on a mounted volume or fix the path; doctor does not delete anything",
+				"create the directory on a mounted volume or fix the path",
 			})
 			continue
 		}
@@ -117,7 +122,7 @@ func storageReport(home string, projects []model.Project) ([]string, []finding) 
 		if roots.BelowFreeFloor(info.Free, roots.FreeWarnBytes) {
 			warnings = append(warnings, finding{
 				fmt.Sprintf("%s directory %s on volume %s has %d bytes free, below %d", loc.Name, loc.Path, info.Mount, info.Free, roots.FreeWarnBytes),
-				"free space on that volume or point the directory at another disk; doctor does not delete anything",
+				"free space on that volume or point the directory at another disk",
 			})
 		}
 	}
@@ -126,19 +131,6 @@ func storageReport(home string, projects []model.Project) ([]string, []finding) 
 
 func absDB(home string) string {
 	return filepath.Join(home, "cardex.db")
-}
-
-func homeWritable(home string) (problem, suggestion string, bad bool) {
-	f, err := os.CreateTemp(home, ".doctor-write-*")
-	if err != nil {
-		return "home is not writable", "choose a --home the current user can write, or fix the directory permissions", true
-	}
-	name := f.Name()
-	_ = f.Close()
-	if err := os.Remove(name); err != nil {
-		return "home write probe could not be removed", "check permissions on " + home, true
-	}
-	return "", "", false
 }
 
 func toolFindings() []finding {
@@ -158,7 +150,7 @@ func lookupFinding(name, suggestion string) []finding {
 func channelFindings(db *store.Store, home string, runProbes bool) []finding {
 	var out []finding
 	if db == nil {
-		out = append(out, finding{"channel config cannot be read", "open a home whose database can be created"})
+		out = append(out, finding{"channel config cannot be read", "pass a home with an initialized database"})
 		for _, tier := range model.AllTiers() {
 			out = append(out, tierFinding(tier))
 		}
@@ -173,9 +165,10 @@ func channelFindings(db *store.Store, home string, runProbes bool) []finding {
 	if err == nil {
 		out = append(out, cliFindings(ctx, channels, runProbes)...)
 	}
-	unapproved := approvalFindings(ctx, home)
+	h := positioning.Inspect(home, db)
+	unapproved := approvalFindings(ctx, h)
 	out = append(out, unapproved...)
-	pos, perr := loadPositioning(ctx, home)
+	pos, perr := h.Current(ctx)
 	if perr != nil {
 		out = append(out, finding{"positioning table cannot be read: " + perr.Error(), "open the home with positioning.Open and approve a proposal"})
 		pos = nil
@@ -211,18 +204,6 @@ func tierFinding(tier model.Tier) finding {
 		fmt.Sprintf("tier %s has no healthy channel whose model the positioning table places on that tier", tier),
 		"add a healthy channel and approve a positioning row whose tiers include " + string(tier),
 	}
-}
-
-func loadPositioning(ctx context.Context, home string) ([]model.Positioning, error) {
-	if home == "" {
-		return nil, fmt.Errorf("home is unavailable")
-	}
-	h, err := positioning.Open(home)
-	if err != nil {
-		return nil, err
-	}
-	defer h.Close()
-	return h.Current(ctx)
 }
 
 func tierAvailable(channels []model.Channel, pos []model.Positioning, tier model.Tier) bool {
@@ -269,15 +250,7 @@ func windowAccepted(name, rule string) bool {
 
 // approvalFindings reports a table that is shown but not routed: the scheduler
 // dispatches only from an approved positioning table.
-func approvalFindings(ctx context.Context, home string) []finding {
-	if home == "" {
-		return nil
-	}
-	h, err := positioning.Open(home)
-	if err != nil {
-		return nil
-	}
-	defer h.Close()
+func approvalFindings(ctx context.Context, h *positioning.Home) []finding {
 	ok, err := h.Approved(ctx)
 	if err != nil || ok {
 		return nil

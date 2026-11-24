@@ -79,7 +79,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if outcome == model.OutcomeTimeout && acc == acceptTimeout && !runnerClass(in.ErrorClass) {
 		res.ErrorClass = model.ErrorTimeout
 	}
-	if werr := writeEvidence(in.Home, in.Attempt.ID, accLog, result != resultMissing, []byte(raw)); werr != nil {
+	if werr := writeEvidence(in.Home, in.Attempt.ID, in.Attempt.PromptPath, accLog, result != resultMissing, []byte(raw)); werr != nil {
 		res.EvidenceErr = werr
 	}
 	return res, nil

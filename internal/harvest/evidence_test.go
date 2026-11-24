@@ -46,6 +46,42 @@ func TestTruncateEvidence(t *testing.T) {
 	assertTruncated(t, nl, truncateEvidence(nl))
 }
 
+func TestHarvestUsesProjectScratchAndRecordedEvidenceRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell command is POSIX")
+	}
+	dir, head := newRepo(t)
+	home := t.TempDir()
+	original := filepath.Join(t.TempDir(), "att")
+	scratch := t.TempDir()
+	write(t, home, "config.json", `{"attempts_dir":"new-attempts","scratch_dir":"home-scratch"}`)
+	t.Setenv("GOTMPDIR", "")
+	if err := os.Unsetenv("GOTMPDIR"); err != nil {
+		t.Fatal(err)
+	}
+	in := harvestInput(dir, head, model.Card{ID: "c", Kind: model.KindDev, Acceptance: []string{
+		`test -d "$GOTMPDIR" && printf '%s' "$GOTMPDIR"`,
+	}}, 0, nil, "")
+	in.Home, in.Scratch = home, scratch
+	in.Attempt.PromptPath = filepath.Join(original, "prompt.txt")
+	res, err := Harvest(context.Background(), in)
+	if err != nil || res.EvidenceErr != nil {
+		t.Fatalf("harvest %v evidence %v", err, res.EvidenceErr)
+	}
+	log, err := os.ReadFile(filepath.Join(original, "acceptance.log"))
+	if err != nil || !strings.Contains(string(log), scratch+string(os.PathSeparator)+"cardex-att-") {
+		t.Fatalf("acceptance log %q, error %v", log, err)
+	}
+	for _, path := range []string{"new-attempts", "home-scratch"} {
+		if _, err := os.Stat(filepath.Join(home, path)); !os.IsNotExist(err) {
+			t.Fatalf("unexpected directory %s: %v", path, err)
+		}
+	}
+	if entries, err := os.ReadDir(scratch); err != nil || len(entries) != 0 {
+		t.Fatalf("scratch entries %v, error %v", entries, err)
+	}
+}
+
 func TestHarvestEvidenceFiles(t *testing.T) {
 	t.Run("kinds copy a result and still record an empty acceptance log", func(t *testing.T) {
 		cases := []struct {

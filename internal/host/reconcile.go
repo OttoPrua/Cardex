@@ -8,12 +8,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func reconcile(ctx context.Context, home string) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	home, err := filepath.Abs(home)
+	if err != nil {
+		return err
 	}
 	db, err := store.Open(filepath.Join(home, "cardex.db"))
 	if err != nil {
@@ -33,8 +38,9 @@ func reconcile(ctx context.Context, home string) error {
 		// A dead host is not a finished executor. A group still inside its
 		// hard duration stays recorded as running. Once that duration has
 		// passed, reap the group and store the attempt only after it is gone.
-		if pgid := readExecutorGroup(home, a.ID); processGroupAlive(pgid) {
-			if !deadlineReached(home, a.StartedAt, a.ID, now) {
+		dir := roots.AttemptDir(home, a.ID, a.PromptPath)
+		if pgid := readGroupFile(filepath.Join(dir, executorGroupName)); processGroupAlive(pgid) {
+			if !deadlineReached(dir, a.StartedAt, now) {
 				continue
 			}
 			killGroup(pgid)
@@ -43,7 +49,10 @@ func reconcile(ctx context.Context, home string) error {
 			}
 		}
 		// The executor group is gone, so its browser is an orphan.
-		reapLostBrowser(home, a.ID)
+		reapLostBrowser(dir)
+		if err := reapRunScratch(dir, a.ID); err != nil {
+			appendEvent(ctx, db, a.ID, "scratch_cleanup_failed", map[string]string{"error": err.Error()})
+		}
 		a.EndedAt = now
 		if a.ErrorExcerpt == "" {
 			a.ErrorExcerpt = "host process exited before recording a result"

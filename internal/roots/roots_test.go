@@ -68,10 +68,10 @@ func TestEvidencePathsStayCompatible(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := "a1"
-	if got := EvidenceRef(home, id, "output.log"); got != filepath.Join(ext, id, "output.log") {
+	if got := EvidenceRef(home, id, "", "output.log"); got != filepath.Join(ext, id, "output.log") {
 		t.Fatalf("new ref %s", got)
 	}
-	if got := EvidenceRef(home, id, ""); got != filepath.Join(ext, id) {
+	if got := EvidenceRef(home, id, "", ""); got != filepath.Join(ext, id) {
 		t.Fatalf("dir ref %s", got)
 	}
 	legacy := filepath.Join(home, "attempts", id)
@@ -87,10 +87,10 @@ func TestEvidencePathsStayCompatible(t *testing.T) {
 	if got := AttemptDirFor(home, id); got != legacy {
 		t.Fatalf("legacy dir %s", got)
 	}
-	if got := EvidenceRef(home, id, "output.log"); got != "attempts/"+id+"/output.log" {
+	if got := EvidenceRef(home, id, "", "output.log"); got != "attempts/"+id+"/output.log" {
 		t.Fatalf("legacy ref %s", got)
 	}
-	refs := EvidenceRefs(home, id)
+	refs := EvidenceRefs(home, id, "")
 	if strings.Join(refs, ",") != "attempts/"+id+"/output.log,attempts/"+id+"/result.md" {
 		t.Fatalf("refs %v", refs)
 	}
@@ -112,7 +112,7 @@ func TestEvidencePathsStayCompatible(t *testing.T) {
 	if got := AttemptDirFor(home, id); got != filepath.Join(ext, id) {
 		t.Fatalf("primary dir %s", got)
 	}
-	refs = EvidenceRefs(home, id)
+	refs = EvidenceRefs(home, id, "")
 	want := []string{
 		filepath.Join(ext, id, "acceptance.log"),
 		"attempts/" + id + "/output.log",
@@ -176,52 +176,35 @@ func TestPrepareAttemptScratchCleansOnlyThatAttempt(t *testing.T) {
 	} else {
 		cleanup()
 	}
-	if dir, _, err := PrepareAttemptScratch(root, ".."); dir != "" || err != nil {
+	if dir, _, err := PrepareAttemptScratch(root, ".."); dir != "" || err == nil {
 		t.Fatalf("unsafe id %q %v", dir, err)
 	}
 }
 
-func TestCopyDBFilesKeepsSourceAndSibling(t *testing.T) {
-	srcDir := t.TempDir()
-	db := filepath.Join(srcDir, "cardex.db")
-	if err := os.WriteFile(db, []byte("db-body"), 0o644); err != nil {
+func TestScratchWithSameIDDoesNotReuseExistingData(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "a1")
+	if err := os.Mkdir(existing, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(db+"-wal", []byte("wal-body"), 0o644); err != nil {
+	first, cleanFirst, err := PrepareAttemptScratch(root, "a1")
+	if err != nil {
 		t.Fatal(err)
 	}
-	dest := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dest, "keep.txt"), []byte("keep"), 0o644); err != nil {
+	defer cleanFirst()
+	second, cleanSecond, err := PrepareAttemptScratch(root, "a1")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := CopyDBFiles(db, dest); err != nil {
-		t.Fatal(err)
+	defer cleanSecond()
+	if first == second || first == existing || second == existing {
+		t.Fatalf("reused paths %s and %s", first, second)
 	}
-	if b, err := os.ReadFile(db); err != nil || string(b) != "db-body" {
-		t.Fatalf("source %q %v", b, err)
-	}
-	if b, err := os.ReadFile(filepath.Join(dest, "keep.txt")); err != nil || string(b) != "keep" {
-		t.Fatalf("sibling %q %v", b, err)
-	}
-	copies := backupNames(t, dest, "-cardex.db")
-	if len(copies) != 1 {
-		t.Fatalf("copies %v", copies)
-	}
-	if b, err := os.ReadFile(filepath.Join(dest, copies[0])); err != nil || string(b) != "db-body" {
-		t.Fatalf("copy %q %v", b, err)
-	}
-	wals := backupNames(t, dest, "-cardex.db-wal")
-	if len(wals) != 1 {
-		t.Fatalf("wal copies %v", wals)
-	}
-	if err := CopyDBFiles(db, dest); err != nil {
-		t.Fatal(err)
-	}
-	if again := backupNames(t, dest, "-cardex.db"); len(again) != 2 {
-		t.Fatalf("second copy %v", again)
-	}
-	if b, err := os.ReadFile(filepath.Join(dest, copies[0])); err != nil || string(b) != "db-body" {
-		t.Fatalf("first copy overwritten %q %v", b, err)
+	cleanFirst()
+	for _, path := range []string{existing, second} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -275,19 +258,4 @@ func envValue(env []string, key string) string {
 		}
 	}
 	return "missing"
-}
-
-func backupNames(t *testing.T, dir, suffix string) []string {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var names []string
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), suffix) {
-			names = append(names, e.Name())
-		}
-	}
-	return names
 }

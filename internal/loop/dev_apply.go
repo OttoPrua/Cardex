@@ -2,8 +2,6 @@ package loop
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1166,7 +1164,7 @@ func (st *step) noteRework(card model.Card, attempt model.Attempt, source string
 		"question_opened": questionOpened,
 	}
 	if source == reworkSourceTests {
-		data["acceptance_log"] = roots.EvidenceRef(st.home, attempt.ID, "acceptance.log")
+		data["acceptance_log"] = roots.EvidenceRef(st.home, attempt.ID, attempt.PromptPath, "acceptance.log")
 		data["excerpt"] = st.existingExcerpt(attempt)
 	}
 	return st.event("card:"+card.ID, "rework", data)
@@ -2006,7 +2004,7 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 		}
 		cleanup = func() { _ = os.RemoveAll(parent) }
 	} else {
-		dir, clean, err := roots.PrepareAttemptScratch(scratchRoot, acceptScratchID())
+		dir, clean, err := roots.PrepareAttemptScratch(scratchRoot, "accept")
 		if err != nil {
 			return false, err
 		}
@@ -2029,14 +2027,6 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 		}
 	}
 	return true, nil
-}
-
-func acceptScratchID() string {
-	var b [4]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "accept-fallback"
-	}
-	return "accept-" + hex.EncodeToString(b[:])
 }
 
 func mergeLocal(repo, integration string) error {

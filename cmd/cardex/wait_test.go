@@ -174,6 +174,40 @@ func TestReadCountFailureDoesNotFailShow(t *testing.T) {
 	}
 }
 
+func TestObjectiveWaitCountsNewMatchingCard(t *testing.T) {
+	home := t.TempDir()
+	mustHome(t, home, "project", "add", "--id", "p1", "--repo", t.TempDir())
+	mustHome(t, home, "objective", "add", "--id", "o1", "--project", "p1", "--title", "Obj")
+	mustHome(t, home, "card", "add", "--id", "c-initial", "--objective", "o1", "--title", "Initial")
+	withDB(t, home, func(db *store.Store) {
+		created := make(chan error, 1)
+		time.AfterFunc(waitPollInterval/2, func() {
+			created <- db.CreateCard(context.Background(), &model.Card{
+				ID: "c-new", Objective: "o1", Kind: model.KindDev, Title: "New", Status: model.CardMerged,
+			})
+		})
+		code, out, errb := callCLI(t, []string{"--home", home, "--json", "wait", "o1",
+			"--until", "merged", "--timeout", "3s", "--origin", "file:objective-wait"})
+		if err := <-created; err != nil {
+			t.Fatal(err)
+		}
+		if code != 0 || errb != "" {
+			t.Fatalf("wait exit %d\n%s\n%s", code, out, errb)
+		}
+		if pulse := onePulse(t, out); pulse.ID != "c-new" || pulse.Status != "merged" {
+			t.Fatalf("wait pulse %+v", pulse)
+		}
+		counts, err := db.ListReads(context.Background(), "file:objective-wait")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(counts) != 2 || counts[0].CardID != "c-initial" || counts[1].CardID != "c-new" ||
+			counts[0].Count != 1 || counts[1].Count != 1 {
+			t.Fatalf("wait counts %+v", counts)
+		}
+	})
+}
+
 func onePulse(t *testing.T, out string) store.Pulse {
 	t.Helper()
 	if strings.Count(out, "\n") != 1 {

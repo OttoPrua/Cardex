@@ -47,6 +47,37 @@ func hasLifecycleStatus(status model.CardStatus) bool {
 	}
 }
 
+// CardWaitState reads only the fields needed by wait and CardPulse.
+func (s *Store) CardWaitState(ctx context.Context, id string) (model.Card, error) {
+	return scanCardWaitState(s.q(ctx).QueryRowContext(ctx, cardWaitSelect+` WHERE id=?`, id))
+}
+
+const cardWaitSelect = `SELECT id, objective_id, status, wait_reason FROM cards`
+
+func scanCardWaitState(row scanner) (model.Card, error) {
+	var card model.Card
+	err := row.Scan(&card.ID, &card.Objective, &card.Status, &card.WaitReason)
+	return card, err
+}
+
+// ListCardWaitStates avoids fetching claims and card bodies on each wait check.
+func (s *Store) ListCardWaitStates(ctx context.Context, objectiveID string) ([]model.Card, error) {
+	rows, err := s.q(ctx).QueryContext(ctx, cardWaitSelect+` WHERE objective_id=? ORDER BY id`, objectiveID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var cards []model.Card
+	for rows.Next() {
+		card, err := scanCardWaitState(rows)
+		if err != nil {
+			return nil, err
+		}
+		cards = append(cards, card)
+	}
+	return cards, rows.Err()
+}
+
 func (s *Store) noteStatus(ctx context.Context, next model.Card) {
 	if hasLifecycleStatus(next.Status) {
 		notes := ctx.Value(notesKey{}).(*commitNotes)

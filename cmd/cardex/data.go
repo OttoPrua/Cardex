@@ -342,7 +342,7 @@ func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	if origin := readOrigin(fs); origin != "" {
-		if cards, err := db.ListCards(ctx, o.ID); err == nil {
+		if cards, err := db.ListCardWaitStates(ctx, o.ID); err == nil {
 			ids := make([]string, 0, len(cards))
 			for _, card := range cards {
 				ids = append(ids, card.ID)

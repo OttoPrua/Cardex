@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -61,13 +62,19 @@ func cmdWait(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if origin != "" {
-		ids := last.cardIDs
-		if last.obj.ID == "" {
-			ids = []string{last.card.ID}
+	ids := last.cardIDs
+	if last.obj.ID == "" {
+		ids = []string{last.card.ID}
+	}
+	defer func() {
+		if origin == "" {
+			return
+		}
+		if last.card.ID != "" && !slices.Contains(ids, last.card.ID) {
+			ids = append(ids, last.card.ID)
 		}
 		noteReads(db, origin, "wait", ids)
-	}
+	}()
 	reason := ""
 	for !wanted[last.status()] {
 		remain := time.Until(deadline)
@@ -160,7 +167,7 @@ func (s waitState) pulse(ctx context.Context, db *store.Store) (store.Pulse, err
 }
 
 func watchOnce(ctx context.Context, db *store.Store, id string, wanted map[string]bool, collectIDs bool) (waitState, error) {
-	card, err := db.GetCard(ctx, id)
+	card, err := db.CardWaitState(ctx, id)
 	if err == nil || !errors.Is(err, sql.ErrNoRows) {
 		return waitState{card: card}, err
 	}
@@ -173,7 +180,7 @@ func watchOnce(ctx context.Context, db *store.Store, id string, wanted map[strin
 	if objectiveMatched && !collectIDs {
 		return state, nil
 	}
-	cards, err := db.ListCards(ctx, obj.ID)
+	cards, err := db.ListCardWaitStates(ctx, obj.ID)
 	if err != nil {
 		return waitState{}, err
 	}

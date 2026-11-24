@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/OttoPrua/Cardex/internal/loop"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
@@ -387,47 +389,78 @@ func objectiveFallbackReason(ctx context.Context, db *store.Store, card objectiv
 		}
 		return string(latest.Outcome), nil
 	}
-	// Both parse events and normalization belong to the attempt that produced
-	// the result. A retry can leave earlier events and failed normalizers intact.
-	since := attemptResultTime(latest)
-	if since.IsZero() {
+	if latest.ID == "" {
 		return "", nil
 	}
 	events, err := db.ListEvents(ctx, "card:"+card.ID)
 	if err != nil {
 		return "", err
 	}
+	since := attemptResultTime(latest)
 	var parseFailure model.Event
 	for _, event := range events {
 		switch event.Type {
 		case "plan_unparsable", "review_unparsable":
-			if !event.TS.Before(since) && (parseFailure.ID == "" || eventNewer(event, parseFailure)) {
+			var source struct {
+				Attempt string `json:"attempt"`
+			}
+			if err := json.Unmarshal(event.Data, &source); err != nil {
+				continue
+			}
+			// Older parse events lack an attempt ID.
+			matches := source.Attempt == latest.ID ||
+				(source.Attempt == "" && !since.IsZero() && !event.TS.Before(since))
+			if matches && (parseFailure.ID == "" || eventNewer(event, parseFailure)) {
 				parseFailure = event
 			}
 		}
 	}
-	var failure model.Attempt
-	for _, id := range failedNormalizers {
-		attempt, err := latestStoredAttempt(ctx, db, id)
+	if parseFailure.ID != "" {
+		return parseFailure.Type, nil
+	}
+	if len(failedNormalizers) > 0 {
+		reason, err := normalizeFallbackReason(ctx, db, latest.ID, failedNormalizers)
+		if err != nil || reason != "" {
+			return reason, err
+		}
+	}
+	if latest.Outcome == model.OutcomeResultUnparsable {
+		return string(latest.Outcome), nil
+	}
+	return "", nil
+}
+
+func normalizeFallbackReason(ctx context.Context, db *store.Store, attemptID string, failedNormalizers []string) (string, error) {
+	// The plan records which result the normalizer belongs to. Retrying a
+	// normalizer changes its attempt times without changing that association.
+	events, err := db.ListEvents(ctx, "attempt:"+attemptID)
+	if err != nil {
+		return "", err
+	}
+	for _, event := range events {
+		if event.Type != loop.NormalizePlannedEvent {
+			continue
+		}
+		var plan struct {
+			Normalize string `json:"normalize"`
+		}
+		if err := json.Unmarshal(event.Data, &plan); err != nil || !slices.Contains(failedNormalizers, plan.Normalize) {
+			continue
+		}
+		failure, err := latestStoredAttempt(ctx, db, plan.Normalize)
 		if err != nil {
 			return "", err
 		}
-		if attempt.Outcome == "" || attempt.Outcome == model.OutcomePassed || attempt.StartedAt.Before(since) {
+		if failure.Outcome == "" || failure.Outcome == model.OutcomePassed {
 			continue
 		}
-		finished := attemptResultTime(attempt)
-		if finished.After(parseFailure.TS) && (failure.ID == "" || finished.After(attemptResultTime(failure))) {
-			failure = attempt
-		}
-	}
-	if failure.ID != "" {
 		reason := "normalize " + failure.Card + ": " + string(failure.Outcome)
 		if excerpt := clipBriefText(failure.ErrorExcerpt); excerpt != "" {
 			reason += " (" + excerpt + ")"
 		}
 		return clipBriefText(reason), nil
 	}
-	return parseFailure.Type, nil
+	return "", nil
 }
 
 func latestStoredAttempt(ctx context.Context, db *store.Store, cardID string) (model.Attempt, error) {

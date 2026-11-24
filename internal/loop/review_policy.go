@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -157,6 +158,167 @@ func reviewBody(plan reviewPlan, family string) string {
 		fmt.Fprintf(&b, "作者模型族：%s。优先换族复核；没有别族可用时允许同族，最后才是同模型新会话。\n", family)
 	}
 	return b.String()
+}
+
+// ReviewHoldMarker starts the floor a rework review must keep.
+const ReviewHoldMarker = "<!-- cardex-review-hold -->"
+
+// AppendReviewHold records the tier and model pin a later launch must not lower.
+func AppendReviewHold(body string, tier model.Tier, channel, modelName string) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimRight(body, "\n"))
+	b.WriteByte('\n')
+	b.WriteString(ReviewHoldMarker)
+	b.WriteByte('\n')
+	fmt.Fprintf(&b, "tier=%s\n", tier)
+	if channel != "" {
+		fmt.Fprintf(&b, "channel=%s\n", channel)
+	}
+	if modelName != "" {
+		fmt.Fprintf(&b, "model=%s\n", modelName)
+	}
+	return b.String()
+}
+
+// ReviewHold reads the floor written by AppendReviewHold.
+// ok is false when the card has no floor.
+func ReviewHold(card model.Card) (tier model.Tier, channel, modelName string, ok bool) {
+	if card.Kind != "" && card.Kind != model.KindReview {
+		return "", "", "", false
+	}
+	idx := strings.Index(card.Body, ReviewHoldMarker)
+	if idx < 0 {
+		return "", "", "", false
+	}
+	rest := card.Body[idx+len(ReviewHoldMarker):]
+	for _, line := range strings.Split(rest, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if tier != "" {
+				break
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "<!--") {
+			break
+		}
+		key, val, found := strings.Cut(line, "=")
+		if !found {
+			break
+		}
+		switch strings.TrimSpace(key) {
+		case "tier":
+			tier = model.Tier(strings.TrimSpace(val))
+		case "channel":
+			channel = strings.TrimSpace(val)
+		case "model":
+			modelName = strings.TrimSpace(val)
+		default:
+			if tier != "" {
+				return tier, channel, modelName, tier.Rank() > 0
+			}
+			return "", "", "", false
+		}
+	}
+	if tier.Rank() == 0 {
+		return "", "", "", false
+	}
+	return tier, channel, modelName, true
+}
+
+func raiseReviewFloor(plan reviewPlan, prior model.Card) reviewPlan {
+	if plan.Mode == model.ReviewOff {
+		plan.Mode = model.ReviewFull
+		if prior.Review == string(model.ReviewCheck) {
+			plan.Mode = model.ReviewCheck
+		}
+		plan.Why = "rework keeps review"
+	}
+	if prior.Review == string(model.ReviewFull) && plan.Mode == model.ReviewCheck {
+		plan.Mode = model.ReviewFull
+		if plan.Why == "completion check" {
+			plan.Why = "rework keeps review"
+		}
+	}
+	if prior.Tier.Rank() > plan.Tier.Rank() {
+		plan.Tier = prior.Tier
+		plan.Why = "rework keeps " + string(prior.Tier) + "; " + plan.Why
+	}
+	return plan
+}
+
+func reviewHoldUnmetReason(tier model.Tier, channel, modelName string) string {
+	return fmt.Sprintf("review hold unmet: tier %s channel %s model %s is not available without lowering the tier", tier, channel, modelName)
+}
+
+// ReviewFloorMet reports whether channel and model can take a review at floor.
+// An empty channel and an empty model means there is no pin to miss.
+func ReviewFloorMet(channels []model.Channel, rows []model.Positioning, channel, modelName string, floor model.Tier) bool {
+	return reviewConstraintMet(channels, rows, channel, modelName, floor)
+}
+
+func reviewConstraintMet(channels []model.Channel, rows []model.Positioning, channel, modelName string, floor model.Tier) bool {
+	if strings.TrimSpace(channel) == "" && strings.TrimSpace(modelName) == "" {
+		return true
+	}
+	if floor.Rank() == 0 {
+		return false
+	}
+	for _, ch := range channels {
+		if channel != "" && ch.ID != channel {
+			continue
+		}
+		if ch.Health != "" && ch.Health != model.HealthOK {
+			if channel != "" {
+				return false
+			}
+			continue
+		}
+		names := ch.Models
+		if modelName != "" {
+			if !channelOffersModel(ch, modelName) {
+				continue
+			}
+			names = []string{modelName}
+		}
+		for _, name := range names {
+			if modelMeetsFloor(rows, ch, name, floor) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func channelOffersModel(ch model.Channel, name string) bool {
+	for _, item := range ch.Models {
+		if item == name {
+			return true
+		}
+	}
+	return false
+}
+
+func modelMeetsFloor(rows []model.Positioning, ch model.Channel, name string, floor model.Tier) bool {
+	saw := false
+	for _, row := range rows {
+		if row.Model == "" || row.Model != name {
+			continue
+		}
+		saw = true
+		if len(row.Kinds) != 0 && !slices.Contains(row.Kinds, model.KindReview) {
+			continue
+		}
+		for _, tier := range row.Tiers {
+			if tier.Rank() >= floor.Rank() {
+				return true
+			}
+		}
+	}
+	if saw {
+		return false
+	}
+	return ch.Tier.Rank() >= floor.Rank()
 }
 
 func upTier(t model.Tier) (model.Tier, bool) {

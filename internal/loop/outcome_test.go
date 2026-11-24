@@ -882,7 +882,7 @@ func TestDevStepAbsorption(t *testing.T) {
 		ch2 := f2.channel("ch-a", "a")
 		dev2 := f2.card(model.Card{ID: "dev", Status: model.CardReviewing, Channel: ch2.ID})
 		worked := f2.attempt(dev2, 0, "", ch2.ID, "")
-		dir2 := writeResult(t, "## 复核结论\nrework\nfix the boundary check\n")
+		dir2 := writeResult(t, "## 复核结论\nrework\nfix the boundary check\n- 补测试：cover an empty request\n")
 		review2 := f2.card(model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardHarvesting, Deps: []string{"dev"}})
 		attempt2 := f2.attempt(review2, 0, model.OutcomePassed, ch2.ID, "")
 		attempt2.Worktree = dir2
@@ -891,7 +891,7 @@ func TestDevStepAbsorption(t *testing.T) {
 		}
 		f2.step()
 		got := f2.mustCard("dev")
-		if got.Status != model.CardReady || got.ReworkCount != 1 || got.ReworkNote != "fix the boundary check" || got.Base != worked.Branch {
+		if got.Status != model.CardReady || got.ReworkCount != 1 || got.ReworkNote != "fix the boundary check - 补测试：cover an empty request" || got.Base != worked.Branch {
 			t.Fatalf("rework %+v", got)
 		}
 		if len(f2.questions()) != 0 {

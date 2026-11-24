@@ -166,18 +166,17 @@ func (r *Runner) disposeOpenDesign(ctx context.Context, db *store.Store, objecti
 	if hit == nil {
 		return nil
 	}
-	res, err := harvest.Harvest(ctx, harvest.Input{
-		Attempt:    *hit,
-		Card:       hitCard,
-		Exit:       *hit.Exit,
-		ErrorClass: hit.ErrorClass,
-		Repo:       hit.Worktree,
-		Home:       r.Home,
-	})
+	res, err := harvest.Harvest(ctx, r.harvestInput(ctx, db, hitCard, *hit, *hit.Exit, nil))
 	if err != nil {
 		return err
 	}
-	return r.deliver(ctx, db, &hitCard, hit, res)
+	if err := r.deliver(ctx, db, &hitCard, hit, res); err != nil {
+		return err
+	}
+	if res.EvidenceErr != nil {
+		_ = noteEvidenceWriteFailed(ctx, db, hit.ID, res.EvidenceErr)
+	}
+	return nil
 }
 
 // namesAttempt reports whether msg contains id as its own token. A longer id

@@ -606,6 +606,18 @@ func TestObjectiveBriefFollowsCurrentPlanBlockerAfterRetry(t *testing.T) {
 	mustHome(t, home, "card", "retry", "c-plan")
 	dispose(plan(), 2, malformed)
 	assertReason("plan_unparsable")
+
+	mustHome(t, home, "card", "retry", normalize.ID)
+	normalize, err = db.GetCard(ctx, normalize.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispose(normalize, 1, harvest.Result{Outcome: model.OutcomeTimeout, Excerpt: "old normalize timed out again"})
+	assertReason("plan_unparsable")
+
+	mustHome(t, home, "card", "retry", "c-plan")
+	dispose(plan(), 3, harvest.Result{Outcome: model.OutcomeResultUnparsable})
+	assertReason("result_unparsable")
 }
 
 func TestBriefLatestEventUsesParsedTime(t *testing.T) {

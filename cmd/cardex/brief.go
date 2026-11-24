@@ -369,7 +369,7 @@ func blockedReason(card model.Card) string {
 	return clipBriefText(card.Legacy.Reason)
 }
 
-func objectiveFallbackReason(ctx context.Context, db *store.Store, card objectiveBlocked) (string, error) {
+func objectiveFallbackReason(ctx context.Context, db *store.Store, card objectiveBlocked, failedNormalizers []string) (string, error) {
 	question, err := pendingBriefQuestion(ctx, db, card.ID)
 	if err != nil {
 		return "", err
@@ -377,38 +377,75 @@ func objectiveFallbackReason(ctx context.Context, db *store.Store, card objectiv
 	if question != nil && question.Line != "" {
 		return question.Line, nil
 	}
+	latest, err := latestStoredAttempt(ctx, db, card.ID)
+	if err != nil {
+		return "", err
+	}
 	if card.Status == string(model.CardFailed) {
-		attempts, err := db.ListAttempts(ctx, card.ID)
-		if err != nil {
-			return "", err
-		}
-		var latest model.Attempt
-		for _, attempt := range attempts {
-			if latest.ID == "" || attemptNewer(attempt, latest) {
-				latest = attempt
-			}
-		}
 		if reason := clipBriefText(latest.ErrorExcerpt); reason != "" {
 			return reason, nil
 		}
-		if latest.Outcome != "" {
-			return string(latest.Outcome), nil
-		}
+		return string(latest.Outcome), nil
+	}
+	// Both parse events and normalization belong to the attempt that produced
+	// the result. A retry can leave earlier events and failed normalizers intact.
+	since := attemptResultTime(latest)
+	if since.IsZero() {
+		return "", nil
 	}
 	events, err := db.ListEvents(ctx, "card:"+card.ID)
 	if err != nil {
 		return "", err
 	}
-	var latest model.Event
+	var parseFailure model.Event
 	for _, event := range events {
 		switch event.Type {
 		case "plan_unparsable", "review_unparsable":
-			if latest.ID == "" || eventNewer(event, latest) {
-				latest = event
+			if !event.TS.Before(since) && (parseFailure.ID == "" || eventNewer(event, parseFailure)) {
+				parseFailure = event
 			}
 		}
 	}
-	return latest.Type, nil
+	var failure model.Attempt
+	for _, id := range failedNormalizers {
+		attempt, err := latestStoredAttempt(ctx, db, id)
+		if err != nil {
+			return "", err
+		}
+		if attempt.Outcome == "" || attempt.Outcome == model.OutcomePassed || attempt.StartedAt.Before(since) {
+			continue
+		}
+		finished := attemptResultTime(attempt)
+		if finished.After(parseFailure.TS) && (failure.ID == "" || finished.After(attemptResultTime(failure))) {
+			failure = attempt
+		}
+	}
+	if failure.ID != "" {
+		reason := "normalize " + failure.Card + ": " + string(failure.Outcome)
+		if excerpt := clipBriefText(failure.ErrorExcerpt); excerpt != "" {
+			reason += " (" + excerpt + ")"
+		}
+		return clipBriefText(reason), nil
+	}
+	return parseFailure.Type, nil
+}
+
+func latestStoredAttempt(ctx context.Context, db *store.Store, cardID string) (model.Attempt, error) {
+	attempts, err := db.ListAttempts(ctx, cardID)
+	var latest model.Attempt
+	for _, attempt := range attempts {
+		if latest.ID == "" || attemptNewer(attempt, latest) {
+			latest = attempt
+		}
+	}
+	return latest, err
+}
+
+func attemptResultTime(attempt model.Attempt) time.Time {
+	if !attempt.EndedAt.IsZero() {
+		return attempt.EndedAt
+	}
+	return attempt.StartedAt
 }
 
 func sortCardsByID(cards []model.Card) {

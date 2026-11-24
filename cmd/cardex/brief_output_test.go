@@ -531,6 +531,83 @@ func TestBriefReportsHarvestedBlockers(t *testing.T) {
 	})
 }
 
+func TestObjectiveBriefFollowsCurrentPlanBlockerAfterRetry(t *testing.T) {
+	home := t.TempDir()
+	mustHome(t, home, "project", "add", "--id", "p", "--repo", t.TempDir())
+	mustHome(t, home, "objective", "add", "--id", "o-plan", "--project", "p", "--title", "plan")
+	mustHome(t, home, "card", "add", "--id", "c-plan", "--objective", "o-plan", "--kind", "plan", "--title", "plan", "--status", "running")
+	db := openBriefDB(t, home)
+	defer db.Close()
+	ctx := t.Context()
+	dispose := func(card model.Card, index int, result harvest.Result) {
+		t.Helper()
+		worktree := t.TempDir()
+		if err := os.WriteFile(filepath.Join(worktree, ".cardex-result.md"), []byte(result.ResultText), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		exit := 0
+		attempt := model.Attempt{Card: card.ID, Index: index, Worktree: worktree, Exit: &exit, StartedAt: time.Now().UTC(), EndedAt: time.Now().UTC()}
+		if err := db.CreateAttempt(ctx, &attempt); err != nil {
+			t.Fatal(err)
+		}
+		disposeCtx := loop.WithAttempt(loop.WithStore(loop.WithHome(ctx, home), db), attempt.ID)
+		if err := loop.Dispose(disposeCtx, &card, result); err != nil {
+			t.Fatal(err)
+		}
+		attempt.Outcome, attempt.ErrorExcerpt = result.Outcome, result.Excerpt
+		if err := db.UpdateAttempt(ctx, &attempt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan := func() model.Card {
+		t.Helper()
+		card, err := db.GetCard(ctx, "c-plan")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return card
+	}
+	assertReason := func(reason string) {
+		t.Helper()
+		args := []string{"objective", "show", "o-plan", "--brief"}
+		text := mustHome(t, home, args...)
+		raw := mustHome(t, home, append([]string{"--json"}, args...)...)
+		var view objectiveBriefView
+		if err := json.Unmarshal([]byte(raw), &view); err != nil {
+			t.Fatal(err)
+		}
+		want := objectiveBlocked{ID: "c-plan", Status: "needs_input", Reason: reason}
+		if len(view.Blocked) == 0 || view.Blocked[0] != want || !strings.Contains(text, "blocked\tc-plan\tneeds_input\t"+reason+"\n") {
+			t.Fatalf("want %+v, got %+v\n%s", want, view.Blocked, text)
+		}
+	}
+
+	malformed := harvest.Result{Outcome: model.OutcomePassed, ResultText: "## 新卡\n```json\n{not json\n```\n"}
+	dispose(plan(), 0, malformed)
+	assertReason("plan_unparsable")
+	mustHome(t, home, "card", "retry", "c-plan")
+	dispose(plan(), 1, harvest.Result{Outcome: model.OutcomeResultUnparsable})
+	cards, err := db.ListCards(ctx, "o-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var normalize model.Card
+	for _, card := range cards {
+		if card.Kind == model.KindNormalize && len(card.Deps) == 1 && card.Deps[0] == "c-plan" {
+			normalize = card
+		}
+	}
+	if normalize.ID == "" {
+		t.Fatalf("retry did not produce a linked normalize card: %+v", cards)
+	}
+	dispose(normalize, 0, harvest.Result{Outcome: model.OutcomeTimeout, Excerpt: "executor exceeded its deadline\nmore detail"})
+	assertReason("normalize " + normalize.ID + ": timeout (executor exceeded its deadline)")
+
+	mustHome(t, home, "card", "retry", "c-plan")
+	dispose(plan(), 2, malformed)
+	assertReason("plan_unparsable")
+}
+
 func TestBriefLatestEventUsesParsedTime(t *testing.T) {
 	home := t.TempDir()
 	db := openBriefDB(t, home)

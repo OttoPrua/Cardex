@@ -345,12 +345,18 @@ func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Wr
 			return 1
 		}
 		view := buildObjectiveBrief(o.ID, cards)
+		failedNormalizers := make(map[string][]string)
+		for _, card := range cards {
+			if card.Kind == model.KindNormalize && card.Status == model.CardFailed && len(card.Deps) > 0 {
+				failedNormalizers[card.Deps[0]] = append(failedNormalizers[card.Deps[0]], card.ID)
+			}
+		}
 		for i := range view.Blocked {
 			card := &view.Blocked[i]
 			if card.Reason != "" {
 				continue
 			}
-			reason, err := objectiveFallbackReason(ctx, db, *card)
+			reason, err := objectiveFallbackReason(ctx, db, *card, failedNormalizers[card.ID])
 			if err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1

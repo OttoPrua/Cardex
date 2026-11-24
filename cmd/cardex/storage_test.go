@@ -65,12 +65,20 @@ func TestProjectScratchDirFlagRoundTrip(t *testing.T) {
 
 func TestDoctorReportsStorageAndDoesNotDelete(t *testing.T) {
 	home := t.TempDir()
+	backups := filepath.Join(t.TempDir(), "backups")
+	attempts := filepath.Join(t.TempDir(), "attempts")
 	scratch := t.TempDir()
 	marker := filepath.Join(scratch, "keep.txt")
 	if err := os.WriteFile(marker, []byte("keep"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"scratch_dir":`+jsonQuote(scratch)+`}`), 0o644); err != nil {
+	cfg, err := json.Marshal(map[string]string{
+		"backups_dir": backups, "attempts_dir": attempts, "scratch_dir": scratch,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.json"), cfg, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	repo := t.TempDir()
@@ -90,9 +98,11 @@ func TestDoctorReportsStorageAndDoesNotDelete(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("doctor %d\n%s\n%s", code, out, errText)
 	}
-	for _, name := range []string{"name=backups", "name=attempts", "name=scratch", "name=scratch:p1"} {
-		if !strings.Contains(out, "storage: "+name) {
-			t.Fatalf("missing %s\n%s", name, out)
+	for name, path := range map[string]string{
+		"backups": backups, "attempts": attempts, "scratch": scratch, "scratch:p1": projScratch,
+	} {
+		if !strings.Contains(out, "storage: name="+name+" path="+path+" volume=") {
+			t.Fatalf("missing %s at %s\n%s", name, path, out)
 		}
 	}
 	if !strings.Contains(out, "volume=") || !strings.Contains(out, "free=") {
@@ -104,8 +114,10 @@ func TestDoctorReportsStorageAndDoesNotDelete(t *testing.T) {
 	if b, err := os.ReadFile(marker); err != nil || string(b) != "keep" {
 		t.Fatalf("marker %q %v", b, err)
 	}
-	if _, err := os.Stat(projScratch); !os.IsNotExist(err) {
-		t.Fatalf("doctor created project scratch: %v", err)
+	for _, dir := range []string{backups, attempts, projScratch} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("doctor created %s: %v", dir, err)
+		}
 	}
 	after, err := os.ReadDir(home)
 	if err != nil || len(after) != len(before) {
@@ -116,10 +128,6 @@ func TestDoctorReportsStorageAndDoesNotDelete(t *testing.T) {
 			t.Fatalf("doctor replaced %s with %s", before[i].Name(), after[i].Name())
 		}
 	}
-}
-
-func jsonQuote(s string) string {
-	return `"` + strings.ReplaceAll(s, `\`, `\\`) + `"`
 }
 
 func TestDoctorDoesNotInitializeHomeOrDatabase(t *testing.T) {

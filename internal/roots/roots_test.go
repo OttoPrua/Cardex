@@ -3,6 +3,7 @@ package roots
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -123,6 +124,19 @@ func TestEvidencePathsStayCompatible(t *testing.T) {
 	}
 }
 
+func TestAttemptDirWithRelativeHome(t *testing.T) {
+	parent := t.TempDir()
+	t.Chdir(parent)
+	home := "home"
+	want := filepath.Join(parent, home, "attempts", "a1")
+	if got := AttemptDirFor(home, "a1"); got != want {
+		t.Fatalf("new attempt directory %q, want %q", got, want)
+	}
+	if got := AttemptDir(home, "a1", "attempts/a1/prompt.txt"); got != want {
+		t.Fatalf("legacy attempt directory %q, want %q", got, want)
+	}
+}
+
 func TestApplyTempEnvPreservesExplicitKeys(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "attempt")
 	base := []string{"PATH=/bin", "TMPDIR=", "GOTMPDIR=keep", "GOCACHE=set"}
@@ -142,6 +156,17 @@ func TestApplyTempEnvPreservesExplicitKeys(t *testing.T) {
 	}
 	if envValue(fresh, "GOCACHE") != filepath.Join(dir, "gocache") {
 		t.Fatalf("cache %v", fresh)
+	}
+	if runtime.GOOS == "windows" {
+		for _, key := range []string{"TMP", "TEMP"} {
+			if envValue(fresh, key) != filepath.Join(dir, "tmp") {
+				t.Fatalf("%s missing from %v", key, fresh)
+			}
+		}
+		explicit := ApplyTempEnv([]string{"Temp=explicit"}, dir)
+		if hasEnv(explicit, "TMP") || envValue(explicit, "Temp") != "explicit" {
+			t.Fatalf("explicit Windows temp location changed: %v", explicit)
+		}
 	}
 	if got := ApplyTempEnv([]string{"A=b"}, ""); len(got) != 1 || got[0] != "A=b" {
 		t.Fatalf("empty dir %v", got)
@@ -164,7 +189,9 @@ func TestPrepareAttemptScratchCleansOnlyThatAttempt(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "tmp", "f"), []byte("t"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cleanup()
+	if err := cleanup(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("attempt scratch still present: %v", err)
 	}
@@ -178,6 +205,30 @@ func TestPrepareAttemptScratchCleansOnlyThatAttempt(t *testing.T) {
 	}
 	if dir, _, err := PrepareAttemptScratch(root, ".."); dir != "" || err == nil {
 		t.Fatalf("unsafe id %q %v", dir, err)
+	}
+}
+
+func TestScratchCleanupPreservesReplacementDirectory(t *testing.T) {
+	root := t.TempDir()
+	dir, cleanup, err := PrepareAttemptScratch(root, "a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(dir, filepath.Join(root, "original")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "keep")
+	if err := os.WriteFile(marker, []byte("existing data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanup(); err == nil {
+		t.Fatal("cleanup accepted a replacement directory")
+	}
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "existing data" {
+		t.Fatalf("replacement marker %q, error %v", got, err)
 	}
 }
 

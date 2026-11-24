@@ -1994,7 +1994,7 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 		return false, nil
 	}
 	var parent string
-	var cleanup func()
+	var cleanup func() error
 	env := os.Environ()
 	if strings.TrimSpace(scratchRoot) == "" {
 		var err error
@@ -2002,7 +2002,7 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 		if err != nil {
 			return false, err
 		}
-		cleanup = func() { _ = os.RemoveAll(parent) }
+		cleanup = func() error { return os.RemoveAll(parent) }
 	} else {
 		dir, clean, err := roots.PrepareAttemptScratch(scratchRoot, "accept")
 		if err != nil {

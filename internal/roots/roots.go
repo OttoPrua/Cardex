@@ -115,7 +115,7 @@ func (l Layout) Locations() []Location {
 // with no canonical prompt path.
 func AttemptDirFor(home, id string) string {
 	layout := Load(home)
-	legacy := filepath.Join(home, "attempts", id)
+	legacy := filepath.Join(layout.Home, "attempts", id)
 	if !safeSegment(id) || !layout.CustomAttempts {
 		return legacy
 	}
@@ -182,15 +182,15 @@ func ResolveStored(home, stored string) string {
 	if stored == "" || filepath.IsAbs(stored) {
 		return stored
 	}
-	return filepath.Join(home, filepath.FromSlash(stored))
+	return filepath.Join(absPath(home), filepath.FromSlash(stored))
 }
 
 // PrepareAttemptScratch allocates a private directory for one invocation.
 // The unique directory keeps a retry or concurrent acceptance check from
 // inheriting or deleting someone else's files.
-func PrepareAttemptScratch(root, attemptID string) (string, func(), error) {
+func PrepareAttemptScratch(root, attemptID string) (string, func() error, error) {
 	if root == "" {
-		return "", func() {}, nil
+		return "", func() error { return nil }, nil
 	}
 	if !safeSegment(attemptID) {
 		return "", nil, fmt.Errorf("invalid scratch id %q", attemptID)
@@ -202,31 +202,56 @@ func PrepareAttemptScratch(root, attemptID string) (string, func(), error) {
 	if err != nil {
 		return "", nil, err
 	}
-	cleanup := func() { _ = os.RemoveAll(dir) }
+	f, err := os.Open(dir)
+	if err != nil {
+		_ = os.Remove(dir)
+		return "", nil, err
+	}
+	created, err := f.Stat()
+	_ = f.Close()
+	if err != nil {
+		_ = os.Remove(dir)
+		return "", nil, err
+	}
+	cleanup := func() error {
+		current, err := os.Lstat(dir)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !current.IsDir() || !os.SameFile(created, current) {
+			return fmt.Errorf("attempt scratch directory was replaced: %s", dir)
+		}
+		return os.RemoveAll(dir)
+	}
 	for _, name := range []string{"tmp", "gocache"} {
 		if err := os.Mkdir(filepath.Join(dir, name), 0o700); err != nil {
-			cleanup()
+			_ = cleanup()
 			return "", nil, err
 		}
 	}
 	return dir, cleanup, nil
 }
 
-// ApplyTempEnv sets TMPDIR, GOTMPDIR, and GOCACHE to dir/tmp and dir/gocache
-// when that key is absent from env. Keys already present are left unchanged.
-// An empty dir returns env as given.
+// ApplyTempEnv supplies scratch defaults for missing temp and Go cache keys.
+// Windows programs also use TMP and TEMP for their temporary directory.
 func ApplyTempEnv(env []string, dir string) []string {
 	if dir == "" {
 		return env
 	}
 	tmp := filepath.Join(dir, "tmp")
 	cache := filepath.Join(dir, "gocache")
-	var extra []string
-	if !hasEnv(env, "TMPDIR") {
-		extra = append(extra, "TMPDIR="+tmp)
+	tempKeys := []string{"TMPDIR", "GOTMPDIR"}
+	if runtime.GOOS == "windows" && !hasEnv(env, "TMP") && !hasEnv(env, "TEMP") {
+		tempKeys = append(tempKeys, "TMP", "TEMP")
 	}
-	if !hasEnv(env, "GOTMPDIR") {
-		extra = append(extra, "GOTMPDIR="+tmp)
+	var extra []string
+	for _, key := range tempKeys {
+		if !hasEnv(env, key) {
+			extra = append(extra, key+"="+tmp)
+		}
 	}
 	if !hasEnv(env, "GOCACHE") {
 		extra = append(extra, "GOCACHE="+cache)

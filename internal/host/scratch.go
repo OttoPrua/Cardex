@@ -18,15 +18,22 @@ const scratchOwner = ".cardex-attempt"
 func prepareRunScratch(ctx context.Context, db *store.Store, home string, card model.Card, attemptID, attemptDir string) (string, func(), error) {
 	root := roots.Load(home).EffectiveScratch(projectScratch(ctx, db, card))
 	dir, cleanup, err := roots.PrepareAttemptScratch(root, attemptID)
-	if err != nil || dir == "" {
-		return dir, cleanup, err
+	if err != nil {
+		return "", nil, err
+	}
+	if dir == "" {
+		return "", func() {}, nil
 	}
 	if err := recordRunScratch(attemptDir, dir); err != nil {
-		cleanup()
+		_ = cleanup()
 		return "", nil, err
 	}
 	return dir, func() {
-		if err := reapRunScratch(attemptDir, attemptID); err != nil {
+		err := cleanup()
+		if err == nil {
+			err = os.Remove(filepath.Join(attemptDir, scratchRecord))
+		}
+		if err != nil {
 			appendEvent(context.Background(), db, attemptID, "scratch_cleanup_failed", map[string]string{"error": err.Error()})
 		}
 	}, nil

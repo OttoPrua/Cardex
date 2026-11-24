@@ -8,8 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 type baselineCache struct {
@@ -19,13 +17,13 @@ type baselineCache struct {
 	Names   []string `json:"names"`
 }
 
-func compareBaseline(ctx context.Context, home, repo, base string, run commandRun) *TestBaseline {
+func compareBaseline(ctx context.Context, home, repo, base string, run commandRun, env []string, scratch string) *TestBaseline {
 	current := parseGoTestOutput(string(run.Output), run.Exit)
-	parsed, exit, ran := loadOrRunBaseline(ctx, home, repo, base, run.Command)
+	parsed, exit, ran := loadOrRunBaseline(ctx, home, repo, base, run.Command, env, scratch)
 	return compareParsed(current, parsed, exit, ran)
 }
 
-func loadOrRunBaseline(ctx context.Context, home, repo, base, command string) (parsedTests, int, bool) {
+func loadOrRunBaseline(ctx context.Context, home, repo, base, command string, env []string, scratch string) (parsedTests, int, bool) {
 	base = strings.TrimSpace(base)
 	if base == "" || strings.TrimSpace(repo) == "" || ctx.Err() != nil {
 		return parsedTests{}, 0, false
@@ -33,7 +31,11 @@ func loadOrRunBaseline(ctx context.Context, home, repo, base, command string) (p
 	if cache, ok := readBaselineCache(home, base, command); ok {
 		return parsedTests{ok: cache.Parsed, names: cache.Names, context: map[string]string{}}, cache.Exit, true
 	}
-	exit, output, ran := runAtBase(ctx, home, repo, base, command)
+	parent := scratch
+	if parent == "" {
+		parent = strings.TrimSpace(home)
+	}
+	exit, output, ran := runAtBase(ctx, parent, repo, base, command, env)
 	if !ran {
 		return parsedTests{}, 0, false
 	}
@@ -83,8 +85,7 @@ func writeBaselineCache(home, base, command string, cache baselineCache) error {
 	return os.WriteFile(path, append(body, '\n'), 0o644)
 }
 
-func runAtBase(ctx context.Context, home, repo, base, command string) (int, []byte, bool) {
-	parent := strings.TrimSpace(home)
+func runAtBase(ctx context.Context, parent, repo, base, command string, env []string) (int, []byte, bool) {
 	if parent == "" {
 		var err error
 		parent, err = os.MkdirTemp("", "cardex-baseline-")
@@ -110,6 +111,6 @@ func runAtBase(ctx context.Context, home, repo, base, command string) (int, []by
 	}
 	cctx, cancel := context.WithTimeout(ctx, defaultAcceptanceTimeout)
 	defer cancel()
-	run, _ := runAcceptanceCommand(cctx, wt, command, proc.AcceptanceEnv(os.Environ()))
+	run, _ := runAcceptanceCommand(cctx, wt, command, env)
 	return run.Exit, run.Output, true
 }

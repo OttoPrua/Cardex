@@ -344,7 +344,7 @@ func reviewSample() string {
 
 func readSummary(t *testing.T, home, id string) Summary {
 	t.Helper()
-	sum, err := LoadSummary(SummaryPath(home, id))
+	sum, err := LoadSummary(SummaryPath(home, model.Attempt{ID: id}))
 	if err != nil {
 		t.Fatal(err)
 	}

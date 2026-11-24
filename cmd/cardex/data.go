@@ -624,21 +624,30 @@ func hoistFlags(args []string) []string {
 
 func latestSummary(home string, attempts []model.Attempt) (harvest.Summary, bool, error) {
 	best := -1
+	var bestPath string
 	for i, attempt := range attempts {
 		if !cardSafeID(attempt.ID) {
 			continue
 		}
-		if _, err := os.Stat(harvest.SummaryPath(home, attempt.ID)); err != nil {
+		path := harvest.SummaryPath(home, attempt)
+		_, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			// Earlier versions always wrote summaries under home.
+			path = filepath.Join(home, "attempts", attempt.ID, "summary.json")
+			_, err = os.Stat(path)
+		}
+		if err != nil {
 			continue
 		}
 		if best < 0 || attempt.Index > attempts[best].Index || (attempt.Index == attempts[best].Index && attempt.EndedAt.After(attempts[best].EndedAt)) {
 			best = i
+			bestPath = path
 		}
 	}
 	if best < 0 {
 		return harvest.Summary{}, false, nil
 	}
-	sum, err := harvest.LoadSummary(harvest.SummaryPath(home, attempts[best].ID))
+	sum, err := harvest.LoadSummary(bestPath)
 	if err != nil {
 		return harvest.Summary{}, false, err
 	}

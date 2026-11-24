@@ -42,16 +42,20 @@ func TestCardShowSummaryOnly(t *testing.T) {
 	}
 	early := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	later := early.Add(time.Hour)
+	external := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"attempts_dir":"current-attempts"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, attempt := range []model.Attempt{
-		{ID: "a1", Card: id, Index: 1, EndedAt: later},
-		{ID: "a2", Card: id, Index: 3, EndedAt: early},
+		{ID: "a1", Card: id, Index: 1, EndedAt: later, PromptPath: filepath.Join(external, "a1", "prompt.txt")},
+		{ID: "a2", Card: id, Index: 3, EndedAt: early, PromptPath: filepath.Join(external, "a2", "prompt.txt")},
 		{ID: "a4", Card: id, Index: 9, EndedAt: later},
 	} {
 		if err := db.CreateAttempt(ctx, &attempt); err != nil {
 			t.Fatal(err)
 		}
 	}
-	writeSummaryFile(t, home, "a1", harvest.Summary{AttemptID: "a1", Runner: "old"})
+	writeSummaryFile(t, filepath.Join(home, "attempts", "a1"), harvest.Summary{AttemptID: "a1", Runner: "old"})
 	want := harvest.Summary{
 		AttemptID: "a2", Runner: "fake", Channel: "cha", Model: "model-a",
 		Expected:   harvest.ExpectedRun{Channel: "cha", Model: "model-a", Tier: "T2"},
@@ -60,7 +64,7 @@ func TestCardShowSummaryOnly(t *testing.T) {
 		Files:      []harvest.FileChange{{Path: "a.go", Added: 3, Deleted: 1}},
 		Acceptance: []harvest.AcceptanceResult{{Command: "go test ./...", Exit: 0, DurationMS: 15}},
 	}
-	writeSummaryFile(t, home, "a2", want)
+	writeSummaryFile(t, filepath.Join(external, "a2"), want)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -100,6 +104,12 @@ func TestCardShowSummaryOnly(t *testing.T) {
 	if !strings.Contains(raw, `"history"`) || !strings.Contains(raw, "Summary title") || strings.Contains(raw, `"attempt_id"`) {
 		t.Fatalf("default json %s", raw)
 	}
+	legacy, ok, err := latestSummary(home, []model.Attempt{
+		{ID: "a1", PromptPath: filepath.Join(external, "a1", "prompt.txt")},
+	})
+	if err != nil || !ok || legacy.Runner != "old" {
+		t.Fatalf("legacy summary %+v, found %t, error %v", legacy, ok, err)
+	}
 
 	none := model.Card{
 		ID: "c-none", Objective: "o", Title: "empty", Kind: model.KindDev, Tier: model.TierT1, Status: model.CardReady,
@@ -120,9 +130,8 @@ func TestCardShowSummaryOnly(t *testing.T) {
 	}
 }
 
-func writeSummaryFile(t *testing.T, home, id string, sum harvest.Summary) {
+func writeSummaryFile(t *testing.T, dir string, sum harvest.Summary) {
 	t.Helper()
-	dir := filepath.Join(home, "attempts", id)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

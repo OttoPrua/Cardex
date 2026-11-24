@@ -13,6 +13,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
+	"github.com/OttoPrua/Cardex/internal/roots"
 )
 
 // FileChange is one path changed between the attempt's base and its worktree.
@@ -61,9 +62,9 @@ type commandRun struct {
 	Output   []byte
 }
 
-// SummaryPath is attempts/<id>/summary.json under home.
-func SummaryPath(home, attemptID string) string {
-	return filepath.Join(home, "attempts", attemptID, "summary.json")
+// SummaryPath keeps the summary alongside the attempt's other evidence.
+func SummaryPath(home string, attempt model.Attempt) string {
+	return filepath.Join(roots.AttemptDir(home, attempt.ID, attempt.PromptPath), "summary.json")
 }
 
 // LoadSummary reads a summary file.
@@ -157,7 +158,7 @@ func writeIssues(b *strings.Builder, label string, items []ReviewIssue) {
 	}
 }
 
-func buildSummary(ctx context.Context, in Input, dir, base string, runs []commandRun, raw string, haveResult bool) Summary {
+func buildSummary(ctx context.Context, in Input, dir, base string, acceptance []AcceptanceResult, raw string, haveResult bool) Summary {
 	head := strings.TrimSpace(in.Attempt.HeadCommit)
 	if head == "" && dir != "" {
 		head, _ = gitOut(ctx, dir, "rev-parse", "HEAD")
@@ -172,7 +173,7 @@ func buildSummary(ctx context.Context, in Input, dir, base string, runs []comman
 		BaseCommit: base,
 		HeadCommit: head,
 		Files:      diffFiles(ctx, dir, base),
-		Acceptance: acceptanceResults(ctx, in, dir, base, runs),
+		Acceptance: acceptance,
 	}
 	if sum.Files == nil {
 		sum.Files = []FileChange{}
@@ -184,7 +185,7 @@ func buildSummary(ctx context.Context, in Input, dir, base string, runs []comman
 	if in.Card.Kind == model.KindReview {
 		review := parseReviewSummary(raw)
 		if haveResult && safeAttemptID(sum.AttemptID) {
-			review.Source = "attempts/" + sum.AttemptID + "/result.md"
+			review.Source = roots.EvidenceRef(in.Home, sum.AttemptID, in.Attempt.PromptPath, "result.md")
 		} else if haveResult {
 			review.Source = ".cardex-result.md"
 		}
@@ -196,7 +197,7 @@ func buildSummary(ctx context.Context, in Input, dir, base string, runs []comman
 // WriteUnavailableSummary records an ended attempt whose checkout could not be harvested.
 func WriteUnavailableSummary(ctx context.Context, in Input) error {
 	sum := buildSummary(ctx, in, "", in.Attempt.BaseCommit, nil, "", false)
-	return writeSummary(in.Home, in.Attempt.ID, sum)
+	return writeSummary(in.Home, in.Attempt, sum)
 }
 
 func routeMatches(in Input, channel, modelName string) bool {
@@ -213,7 +214,7 @@ func routeMatches(in Input, channel, modelName string) bool {
 	return in.Attempt.RouteReason.SelectedTier(model.Route{Channel: channel, Model: modelName}).Rank() >= want.Rank()
 }
 
-func acceptanceResults(ctx context.Context, in Input, dir, base string, runs []commandRun) []AcceptanceResult {
+func acceptanceResults(ctx context.Context, home, dir, base string, runs []commandRun, env []string, scratch string) []AcceptanceResult {
 	out := make([]AcceptanceResult, 0, len(runs))
 	for _, run := range runs {
 		item := AcceptanceResult{
@@ -222,7 +223,7 @@ func acceptanceResults(ctx context.Context, in Input, dir, base string, runs []c
 			DurationMS: run.Duration.Milliseconds(),
 		}
 		if isGoTest(run.Command) {
-			item.Baseline = compareBaseline(ctx, in.Home, dir, base, run)
+			item.Baseline = compareBaseline(ctx, home, dir, base, run, env, scratch)
 		}
 		out = append(out, item)
 	}
@@ -317,13 +318,13 @@ func untrackedChange(dir, path string) FileChange {
 	return item
 }
 
-func writeSummary(home, attemptID string, sum Summary) error {
-	attemptID = strings.TrimSpace(attemptID)
-	if strings.TrimSpace(home) == "" || !safeAttemptID(attemptID) {
+func writeSummary(home string, attempt model.Attempt, sum Summary) error {
+	attempt.ID = strings.TrimSpace(attempt.ID)
+	if strings.TrimSpace(home) == "" || !safeAttemptID(attempt.ID) {
 		return nil
 	}
-	dir := filepath.Join(home, "attempts", attemptID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	path := SummaryPath(home, attempt)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	body, err := json.MarshalIndent(sum, "", "  ")
@@ -331,7 +332,7 @@ func writeSummary(home, attemptID string, sum Summary) error {
 		return err
 	}
 	body = append(body, '\n')
-	return os.WriteFile(filepath.Join(dir, "summary.json"), body, 0o644)
+	return os.WriteFile(path, body, 0o644)
 }
 
 func safeAttemptID(id string) bool {

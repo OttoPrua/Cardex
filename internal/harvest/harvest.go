@@ -47,7 +47,20 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	acc, accOut, accLog, runs, err := runAcceptance(ctx, dir, in.Card.Acceptance, roots.Load(in.Home).EffectiveScratch(in.Scratch), in.Attempt.ID)
+	acceptRan := hasAcceptance(in.Card.Acceptance)
+	env := proc.AcceptanceEnv(os.Environ())
+	var scratchDir string
+	if acceptRan {
+		var cleanup func() error
+		root := roots.Load(in.Home).EffectiveScratch(in.Scratch)
+		scratchDir, cleanup, err = roots.PrepareAttemptScratch(root, in.Attempt.ID)
+		if err != nil {
+			return Result{}, err
+		}
+		defer cleanup()
+		env = roots.ApplyTempEnv(env, scratchDir)
+	}
+	acc, accOut, accLog, runs, err := runAcceptance(ctx, dir, in.Card.Acceptance, env)
 	if err != nil {
 		return Result{}, err
 	}
@@ -59,7 +72,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 		ProducesCode: producesCode(in.Card.Kind),
 		HasChanges:   len(changed) > 0,
 		Acceptance:   acc,
-		AcceptRan:    hasAcceptance(in.Card.Acceptance),
+		AcceptRan:    acceptRan,
 		Result:       result,
 		Class:        in.ErrorClass,
 		Exit:         in.Exit,
@@ -82,8 +95,9 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if werr := writeEvidence(in.Home, in.Attempt.ID, in.Attempt.PromptPath, accLog, result != resultMissing, []byte(raw)); werr != nil {
 		res.EvidenceErr = werr
 	}
-	sum := buildSummary(ctx, in, dir, base, runs, raw, result != resultMissing)
-	if werr := writeSummary(in.Home, in.Attempt.ID, sum); werr != nil {
+	acceptance := acceptanceResults(ctx, in.Home, dir, base, runs, env, scratchDir)
+	sum := buildSummary(ctx, in, dir, base, acceptance, raw, result != resultMissing)
+	if werr := writeSummary(in.Home, in.Attempt, sum); werr != nil {
 		res.EvidenceErr = errors.Join(res.EvidenceErr, werr)
 	}
 	return res, nil
@@ -129,7 +143,7 @@ func mergeClaims(card string, declared, actual []model.Claim) []model.Claim {
 	return out
 }
 
-func runAcceptance(ctx context.Context, dir string, commands []string, scratchRoot, attemptID string) (acceptState, string, []byte, []commandRun, error) {
+func runAcceptance(ctx context.Context, dir string, commands []string, env []string) (acceptState, string, []byte, []commandRun, error) {
 	var cmds []string
 	for _, c := range commands {
 		if c = strings.TrimSpace(c); c != "" {
@@ -150,15 +164,6 @@ func runAcceptance(ctx context.Context, dir string, commands []string, scratchRo
 	}
 	actx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	env := proc.AcceptanceEnv(os.Environ())
-	if scratchRoot != "" {
-		scratchDir, cleanup, err := roots.PrepareAttemptScratch(scratchRoot, attemptID)
-		if err != nil {
-			return acceptOK, "", nil, nil, err
-		}
-		defer cleanup()
-		env = roots.ApplyTempEnv(env, scratchDir)
-	}
 	var all strings.Builder
 	var log bytes.Buffer
 	var runs []commandRun

@@ -54,14 +54,29 @@ func TestHarvestUsesProjectScratchAndRecordedEvidenceRoot(t *testing.T) {
 	home := t.TempDir()
 	original := filepath.Join(t.TempDir(), "att")
 	scratch := t.TempDir()
+	physicalScratch, err := filepath.EvalSymlinks(scratch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	write(t, bin, "go", `#!/bin/sh
+test -d "$GOTMPDIR" || exit 1
+printf '%s\t%s\n' "$(pwd -P)" "$GOTMPDIR" >> "$GO_CALLS"
+printf 'ok\texample\t0.001s\n'
+`)
+	if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GO_CALLS", calls)
 	write(t, home, "config.json", `{"attempts_dir":"new-attempts","scratch_dir":"home-scratch"}`)
 	t.Setenv("GOTMPDIR", "")
 	if err := os.Unsetenv("GOTMPDIR"); err != nil {
 		t.Fatal(err)
 	}
-	in := harvestInput(dir, head, model.Card{ID: "c", Kind: model.KindDev, Acceptance: []string{
-		`test -d "$GOTMPDIR" && printf '%s' "$GOTMPDIR"`,
-	}}, 0, nil, "")
+	write(t, dir, ".cardex-result.md", "## 复核结论\npass\n")
+	in := harvestInput(dir, head, model.Card{ID: "c", Kind: model.KindReview, Acceptance: []string{"go test ./..."}}, 0, nil, "")
 	in.Home, in.Scratch = home, scratch
 	in.Attempt.PromptPath = filepath.Join(original, "prompt.txt")
 	res, err := Harvest(context.Background(), in)
@@ -69,10 +84,30 @@ func TestHarvestUsesProjectScratchAndRecordedEvidenceRoot(t *testing.T) {
 		t.Fatalf("harvest %v evidence %v", err, res.EvidenceErr)
 	}
 	log, err := os.ReadFile(filepath.Join(original, "acceptance.log"))
-	if err != nil || !strings.Contains(string(log), scratch+string(os.PathSeparator)+"cardex-att-") {
+	if err != nil || !strings.Contains(string(log), "ok\texample") {
 		t.Fatalf("acceptance log %q, error %v", log, err)
 	}
-	for _, path := range []string{"new-attempts", "home-scratch"} {
+	sum, err := LoadSummary(filepath.Join(original, "summary.json"))
+	if err != nil || sum.Review == nil || sum.Review.Source != filepath.Join(original, "result.md") ||
+		len(sum.Acceptance) != 1 || sum.Acceptance[0].Baseline == nil || sum.Acceptance[0].Baseline.Status != "compared" {
+		t.Fatalf("summary %+v, error %v", sum, err)
+	}
+	called, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(called)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want acceptance and baseline commands, got %q", called)
+	}
+	_, tmp, _ := strings.Cut(lines[0], "\t")
+	baseline, baselineTmp, _ := strings.Cut(lines[1], "\t")
+	baselineRoot := filepath.Join(physicalScratch, filepath.Base(filepath.Dir(tmp)), "baseline")
+	if filepath.Dir(filepath.Dir(tmp)) != scratch || baselineTmp != tmp ||
+		!strings.HasPrefix(baseline, baselineRoot+string(os.PathSeparator)) {
+		t.Fatalf("commands did not share attempt scratch: %q", called)
+	}
+	for _, path := range []string{"attempts", "new-attempts", "home-scratch", filepath.Join("baseline", "wt")} {
 		if _, err := os.Stat(filepath.Join(home, path)); !os.IsNotExist(err) {
 			t.Fatalf("unexpected directory %s: %v", path, err)
 		}

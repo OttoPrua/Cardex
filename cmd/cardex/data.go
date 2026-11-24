@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/OttoPrua/Cardex/internal/harvest"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
@@ -445,6 +449,10 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		return 1
 	}
 	defer db.Close()
+	if err := reviewAddCheck(context.Background(), db, c, stderr); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	if err := db.CreateCard(context.Background(), &c); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -458,6 +466,40 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		line += "\t" + origin
 	}
 	return emit(stdout, asJSON, cardView{Card: c, Origin: origin}, line)
+}
+
+// reviewAddCheck warns when an rv- review has no stored subject, and rejects
+// every non-empty --dep that names no stored card. A blank --dep does not hide
+// a later one. It does not change the card record.
+func reviewAddCheck(ctx context.Context, db *store.Store, card model.Card, stderr io.Writer) error {
+	if card.Kind != model.KindReview {
+		return nil
+	}
+	for _, dep := range card.Deps {
+		dep = strings.TrimSpace(dep)
+		if dep == "" {
+			continue
+		}
+		if _, err := db.GetCard(ctx, dep); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("review dependency %s does not exist", dep)
+			}
+			return err
+		}
+	}
+	id, explicit := model.ReviewSubject(card)
+	if explicit || id == card.ID {
+		return nil
+	}
+	_, err := db.GetCard(ctx, id)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		fmt.Fprintf(stderr, "review %s: card %s does not exist; this review will be treated as a standalone review. Pass --dep to name the card under review.\n", card.ID, id)
+		return nil
+	}
+	return err
 }
 
 func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
@@ -487,8 +529,9 @@ func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 }
 
 func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", "<id> --json", stdout, stderr)
-	if code, ok := parseSet(fs, args); !ok {
+	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", "<id> --json --summary", stdout, stderr)
+	summaryOnly := fs.Bool("summary", false, "print only the structured result summary")
+	if code, ok := parseSet(fs, hoistFlags(args)); !ok {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -511,6 +554,27 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if *summaryOnly {
+		attempts, err := db.ListAttempts(ctx, c.ID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		sum, ok, err := latestSummary(dir, attempts)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if !ok {
+			fmt.Fprintf(stderr, "no summary for %s\n", c.ID)
+			return 1
+		}
+		if asJSON {
+			return writeJSON(stdout, sum)
+		}
+		fmt.Fprint(stdout, harvest.FormatSummary(sum))
+		return 0
 	}
 	origin, err := loadCardOrigin(ctx, db, c.ID)
 	if err != nil {
@@ -543,6 +607,42 @@ type cardHistoryItem struct {
 type cardAttemptView struct {
 	ID       string   `json:"id"`
 	Evidence []string `json:"evidence"`
+}
+
+// hoistFlags lets `card show <id> --summary` work. The flag parser stops at the first positional.
+func hoistFlags(args []string) []string {
+	var flags, pos []string
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			flags = append(flags, arg)
+			continue
+		}
+		pos = append(pos, arg)
+	}
+	return append(flags, pos...)
+}
+
+func latestSummary(home string, attempts []model.Attempt) (harvest.Summary, bool, error) {
+	best := -1
+	for i, attempt := range attempts {
+		if !cardSafeID(attempt.ID) {
+			continue
+		}
+		if _, err := os.Stat(harvest.SummaryPath(home, attempt.ID)); err != nil {
+			continue
+		}
+		if best < 0 || attempt.Index > attempts[best].Index || (attempt.Index == attempts[best].Index && attempt.EndedAt.After(attempts[best].EndedAt)) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return harvest.Summary{}, false, nil
+	}
+	sum, err := harvest.LoadSummary(harvest.SummaryPath(home, attempts[best].ID))
+	if err != nil {
+		return harvest.Summary{}, false, err
+	}
+	return sum, true, nil
 }
 
 func cardShowHistory(ctx context.Context, db *store.Store, id string) ([]cardHistoryItem, error) {

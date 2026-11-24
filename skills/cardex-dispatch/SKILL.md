@@ -34,6 +34,8 @@ The objective stores origin on the objective, and `objective show` prints it. Th
 
 `objective list` and `objective show` for the objective. `card list` and `card show` for cards. `question list` and `question show` for questions. `question list` includes questions that already have an answer. `node list` and `node show` for design nodes. `channel list` and `channel show` for channels. `route explain <card>` prints the route already stored on that card. `doctor` reports channel, window, and positioning problems.
 
+For a card's result, read `card show <id> --summary` by default. Open the original review or acceptance evidence when the summary leaves a specific question unresolved.
+
 ## Answering a question
 
 Answering a question uses `question answer <id> <option>`. Read the stored text, options, and answer with `cardex --json question show <id>` first. Plain `question show` prints the id and the answer and does not include the options. The option must already be on that question; an empty answer is refused.

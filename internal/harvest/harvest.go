@@ -47,7 +47,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	acc, accOut, accLog, err := runAcceptance(ctx, dir, in.Card.Acceptance, roots.Load(in.Home).EffectiveScratch(in.Scratch), in.Attempt.ID)
+	acc, accOut, accLog, runs, err := runAcceptance(ctx, dir, in.Card.Acceptance, roots.Load(in.Home).EffectiveScratch(in.Scratch), in.Attempt.ID)
 	if err != nil {
 		return Result{}, err
 	}
@@ -81,6 +81,10 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	}
 	if werr := writeEvidence(in.Home, in.Attempt.ID, in.Attempt.PromptPath, accLog, result != resultMissing, []byte(raw)); werr != nil {
 		res.EvidenceErr = werr
+	}
+	sum := buildSummary(ctx, in, dir, base, runs, raw, result != resultMissing)
+	if werr := writeSummary(in.Home, in.Attempt.ID, sum); werr != nil {
+		res.EvidenceErr = errors.Join(res.EvidenceErr, werr)
 	}
 	return res, nil
 }
@@ -125,7 +129,7 @@ func mergeClaims(card string, declared, actual []model.Claim) []model.Claim {
 	return out
 }
 
-func runAcceptance(ctx context.Context, dir string, commands []string, scratchRoot, attemptID string) (acceptState, string, []byte, error) {
+func runAcceptance(ctx context.Context, dir string, commands []string, scratchRoot, attemptID string) (acceptState, string, []byte, []commandRun, error) {
 	var cmds []string
 	for _, c := range commands {
 		if c = strings.TrimSpace(c); c != "" {
@@ -133,7 +137,7 @@ func runAcceptance(ctx context.Context, dir string, commands []string, scratchRo
 		}
 	}
 	if len(cmds) == 0 {
-		return acceptOK, "", nil, nil
+		return acceptOK, "", nil, nil, nil
 	}
 	timeout := defaultAcceptanceTimeout
 	if dl, ok := ctx.Deadline(); ok {
@@ -146,54 +150,65 @@ func runAcceptance(ctx context.Context, dir string, commands []string, scratchRo
 	}
 	actx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	env := os.Environ()
+	env := proc.AcceptanceEnv(os.Environ())
 	if scratchRoot != "" {
 		scratchDir, cleanup, err := roots.PrepareAttemptScratch(scratchRoot, attemptID)
 		if err != nil {
-			return acceptOK, "", nil, err
+			return acceptOK, "", nil, nil, err
 		}
 		defer cleanup()
 		env = roots.ApplyTempEnv(env, scratchDir)
 	}
 	var all strings.Builder
 	var log bytes.Buffer
+	var runs []commandRun
+	state := acceptOK
 	for _, command := range cmds {
-		cmd := proc.Shell(actx, command)
-		cmd.Dir = dir
-		cmd.Env = env
-		proc.NewGroup(cmd)
-		cmd.WaitDelay = time.Second
-		cmd.Cancel = func() error {
-			if cmd.Process == nil {
-				return nil
-			}
-			return host.SignalGroup(cmd.Process.Pid, syscall.SIGKILL)
-		}
-		start := time.Now()
-		out, err := cmd.CombinedOutput()
+		run, err := runAcceptanceCommand(actx, dir, command, env)
+		runs = append(runs, run)
 		// A later header starts on its own line. The separator is not part of the raw output.
 		if log.Len() > 0 && log.Bytes()[log.Len()-1] != '\n' {
 			log.WriteByte('\n')
 		}
-		fmt.Fprintf(&log, "command=%s exit=%d duration=%s\n", strconv.Quote(command), exitCode(err), time.Since(start))
-		log.Write(out)
-		all.Write(out)
+		fmt.Fprintf(&log, "command=%s exit=%d duration=%s\n", strconv.Quote(command), run.Exit, run.Duration)
+		log.Write(run.Output)
+		if state == acceptOK || err != nil {
+			all.Write(run.Output)
+		}
 		if err == nil {
 			continue
 		}
 		if ctx.Err() == context.Canceled && actx.Err() != context.DeadlineExceeded {
-			return acceptOK, "", nil, ctx.Err()
+			return acceptOK, "", nil, runs, ctx.Err()
 		}
 		if actx.Err() == context.DeadlineExceeded {
-			return acceptTimeout, tail(all.String()), log.Bytes(), nil
+			return acceptTimeout, tail(all.String()), log.Bytes(), runs, nil
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return acceptFailed, tail(all.String()), log.Bytes(), nil
+			state = acceptFailed
+			continue
 		}
-		return acceptOK, "", nil, err
+		return acceptOK, "", nil, runs, err
 	}
-	return acceptOK, tail(all.String()), log.Bytes(), nil
+	return state, tail(all.String()), log.Bytes(), runs, nil
+}
+
+func runAcceptanceCommand(ctx context.Context, dir, command string, env []string) (commandRun, error) {
+	cmd := proc.Shell(ctx, command)
+	cmd.Dir = dir
+	cmd.Env = append(append([]string{}, env...), "GIT_TERMINAL_PROMPT=0")
+	proc.NewGroup(cmd)
+	cmd.WaitDelay = time.Second
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return host.SignalGroup(cmd.Process.Pid, syscall.SIGKILL)
+	}
+	start := time.Now()
+	out, err := cmd.CombinedOutput()
+	return commandRun{Command: command, Exit: exitCode(err), Duration: time.Since(start), Output: out}, err
 }
 
 func exitCode(err error) int {
@@ -256,9 +271,7 @@ func resultLabel(s resultState) string {
 }
 
 func gitOut(ctx context.Context, dir string, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	out, err := cmd.Output()
+	out, err := gitExec(ctx, dir, args...)
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(ee.Stderr)))

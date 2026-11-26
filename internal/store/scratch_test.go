@@ -43,6 +43,66 @@ func TestProjectScratchDirRoundTrip(t *testing.T) {
 	}
 }
 
+func TestOpenCompletesEitherV8Schema(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		drops   []string
+		scratch string
+	}{
+		{"changed-at only", []string{`ALTER TABLE projects DROP COLUMN scratch_dir`}, ""},
+		{"scratch only", []string{
+			`ALTER TABLE cards DROP COLUMN changed_at`,
+			`ALTER TABLE attempts DROP COLUMN changed_at`,
+			`DROP INDEX events_entity_type`,
+		}, "external"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			db := openDB(t)
+			project := model.Project{ID: "p", RepoPath: t.TempDir(), ScratchDir: "external"}
+			if err := db.CreateProject(ctx, &project); err != nil {
+				t.Fatal(err)
+			}
+			for _, stmt := range tc.drops {
+				if _, err := db.db.ExecContext(ctx, stmt); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			home := filepath.Dir(db.path)
+			if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"backups_dir":"bak"}`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				reopened, err := Open(db.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer reopened.Close()
+				if version, err := reopened.SchemaVersion(ctx); err != nil || version != 8 {
+					t.Fatalf("schema version %d, error %v", version, err)
+				}
+				got, err := reopened.GetProject(ctx, project.ID)
+				if err != nil || got.ScratchDir != tc.scratch {
+					t.Fatalf("opened project %+v, error %v", got, err)
+				}
+				if _, err := reopened.db.ExecContext(ctx, `SELECT cards.changed_at, attempts.changed_at FROM cards, attempts`); err != nil {
+					t.Fatal(err)
+				}
+				var indexes int
+				if err := reopened.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE name='events_entity_type'`).Scan(&indexes); err != nil || indexes != 1 {
+					t.Fatalf("events_entity_type count %d, error %v", indexes, err)
+				}
+			}
+			if backups := dbCopies(t, filepath.Join(home, "bak")); len(backups) != 1 {
+				t.Fatalf("backups %v", backups)
+			}
+		})
+	}
+}
+
 func TestBackupRunsOnlyOnRemigration(t *testing.T) {
 	home := t.TempDir()
 	dbPath := filepath.Join(home, "cardex.db")

@@ -222,7 +222,22 @@ func (s *Store) migrate(ctx context.Context, backupDir string) error {
 			return err
 		}
 	}
-	if current < latestSchema && backupDir != "" {
+	var missingScratch bool
+	if err := conn.QueryRowContext(ctx, `SELECT NOT EXISTS (
+		SELECT 1 FROM pragma_table_info('projects') WHERE name='scratch_dir'
+	)`).Scan(&missingScratch); err != nil {
+		return err
+	}
+	var scratchOnlyV8 bool
+	if current == 8 {
+		// An earlier storage candidate recorded v8 without the changed_at migration.
+		if err := conn.QueryRowContext(ctx, `SELECT NOT EXISTS (
+			SELECT 1 FROM sqlite_schema WHERE type='index' AND name='events_entity_type'
+		)`).Scan(&scratchOnlyV8); err != nil {
+			return err
+		}
+	}
+	if (current < latestSchema || missingScratch || scratchOnlyV8) && backupDir != "" {
 		if err := s.backup(ctx, backupDir); err != nil {
 			return fmt.Errorf("backup before schema write: %w", err)
 		}
@@ -243,6 +258,18 @@ func (s *Store) migrate(ctx context.Context, backupDir string) error {
 			return err
 		}
 		current = 1
+	}
+	if missingScratch {
+		if _, err := conn.ExecContext(ctx, `ALTER TABLE projects ADD COLUMN scratch_dir TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+	}
+	if scratchOnlyV8 {
+		// Replace the old marker in the same transaction as the full v8 migration.
+		if _, err := conn.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=8`); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+		current = 7
 	}
 	if current < 2 {
 		if err := migrateOpenQuestions(ctx, conn); err != nil {
@@ -326,21 +353,24 @@ func (s *Store) migrate(ctx context.Context, backupDir string) error {
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (7, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
-		current = 7
 	}
 	if current < 8 {
-		// Optional project scratch directory. Empty inherits the home scratch_dir.
-		var has int
-		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('projects') WHERE name='scratch_dir'`).Scan(&has); err != nil {
-			return fmt.Errorf("migration 8: %w", err)
-		}
-		if has == 0 {
-			if _, err := conn.ExecContext(ctx, `ALTER TABLE projects ADD COLUMN scratch_dir TEXT NOT NULL DEFAULT ''`); err != nil {
+		for _, table := range []string{"cards", "attempts"} {
+			var has int
+			if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('`+table+`') WHERE name='changed_at'`).Scan(&has); err != nil {
 				return fmt.Errorf("migration 8: %w", err)
 			}
+			if has == 0 {
+				if _, err := conn.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN changed_at TEXT NOT NULL DEFAULT ''`); err != nil {
+					return fmt.Errorf("migration 8: %w", err)
+				}
+			}
 		}
-		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (8, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-			return err
+		if _, err := conn.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS events_entity_type ON events(entity, event_type)`); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (8, ?)`, formatTime(time.Now())); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
 		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {

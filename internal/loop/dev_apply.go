@@ -149,7 +149,7 @@ func (st *step) apply(card model.Card, attempt model.Attempt) error {
 			return err
 		}
 	case ActionNormalize:
-		if err := st.createNormalize(card); err != nil {
+		if err := st.createNormalize(card, attempt.ID); err != nil {
 			return err
 		}
 	case ActionQuotaMove:
@@ -418,7 +418,7 @@ func (st *step) reviewFamily(attempt model.Attempt) string {
 	return ""
 }
 
-func (st *step) createNormalize(card model.Card) error {
+func (st *step) createNormalize(card model.Card, attemptID string) error {
 	for _, other := range st.snap.cards {
 		if other.Kind == model.KindNormalize && hasDep(other, card.ID) && !TerminalCard(other.Status) {
 			return nil
@@ -438,7 +438,10 @@ func (st *step) createNormalize(card model.Card) error {
 	}
 	card.Status = model.CardWaiting
 	card.WaitReason = "normalize:" + created.ID
-	return st.saveCard(card)
+	if err := st.saveCard(card); err != nil {
+		return err
+	}
+	return (Deps{Store: st.db}).noteNormalizePlan(st.ctx, attemptID, created.ID)
 }
 
 func (st *step) failNormalize(card model.Card) error {
@@ -966,7 +969,7 @@ func (st *step) absorbListed(card model.Card, attempt model.Attempt, apply func(
 	text := readResult(attempt)
 	if attempt.Card == card.ID && judgeResultFreeze(text) == freezeUnclear {
 		d := Deps{Store: st.db, WS: workspace.Git{}, Notify: notify.Stub{}}
-		if _, err := d.recoverUnparsed(st.ctx, st.snap.obj, card); err != nil {
+		if _, err := d.recoverUnparsed(st.ctx, st.snap.obj, card, attempt.ID); err != nil {
 			return err
 		}
 		if cards, err := st.db.ListCards(st.ctx, st.snap.obj.ID); err == nil {
@@ -1038,7 +1041,7 @@ func (st *step) absorbPlan(card model.Card, attempt model.Attempt) error {
 		if err := st.saveCard(card); err != nil {
 			return err
 		}
-		return st.event("card:"+card.ID, "plan_unparsable", map[string]string{"card": card.ID})
+		return st.event("card:"+card.ID, "plan_unparsable", map[string]string{"card": card.ID, "attempt": attempt.ID})
 	}
 	for _, event := range list.Events {
 		switch event.Type {
@@ -1111,7 +1114,7 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		if err := st.saveCard(card); err != nil {
 			return err
 		}
-		return st.event("card:"+card.ID, "review_unparsable", map[string]string{"card": card.ID})
+		return st.event("card:"+card.ID, "review_unparsable", map[string]string{"card": card.ID, "attempt": attempt.ID})
 	}
 	if !standalone && parent.Kind == model.KindDev && reviewNames(card, parent.ID) {
 		reviewed, candidate := st.devCandidateReviewed(parent, attempt)
@@ -1380,7 +1383,7 @@ func (st *step) absorbReplan(card model.Card, attempt model.Attempt) error {
 		if err := st.saveCard(card); err != nil {
 			return err
 		}
-		return st.event("card:"+card.ID, "plan_unparsable", map[string]string{"card": card.ID})
+		return st.event("card:"+card.ID, "plan_unparsable", map[string]string{"card": card.ID, "attempt": attempt.ID})
 	}
 	started := map[string]bool{}
 	for id, attempts := range st.snap.attempts {

@@ -251,6 +251,25 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if current < 8 {
+		for _, table := range []string{"cards", "attempts"} {
+			var has int
+			if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('`+table+`') WHERE name='changed_at'`).Scan(&has); err != nil {
+				return fmt.Errorf("migration 8: %w", err)
+			}
+			if has == 0 {
+				if _, err := conn.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN changed_at TEXT NOT NULL DEFAULT ''`); err != nil {
+					return fmt.Errorf("migration 8: %w", err)
+				}
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS events_entity_type ON events(entity, event_type)`); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (8, ?)`, formatTime(time.Now())); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return err
 	}

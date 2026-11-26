@@ -89,7 +89,7 @@ purpose: add, list, show, set, pause, resume, or cancel an objective
 parameters:
   add     --id --project --title --acceptance --check --soft-tokens --hard-tokens --priority --mode --freeze-mode --origin --status --integration-branch --channel --model --review
   list    --project --json
-  show    <id> --json
+  show    <id> --brief --json
   set     --id <id> --mode --freeze-mode --soft-tokens --hard-tokens --priority --review
   pause   <id>
   resume  <id>
@@ -212,8 +212,8 @@ purpose: add, list, show, cancel, retry, pause, resume, revive, absorb, or mark 
 
 parameters:
   add     --id --objective --node --kind --title --body --tier --require --dep --acceptance --claim --base --status --origin
-  list    --objective --json
-  show    <id> --json --summary
+  list    --objective --changed-since <RFC3339> --fields <name> --json
+  show    <id> --brief --claims --attempts all --json --summary
   cancel  <id>
   retry   <id>
   pause   <id>

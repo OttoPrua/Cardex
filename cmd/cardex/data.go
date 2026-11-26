@@ -320,8 +320,9 @@ func objectiveList(home string, asJSON bool, args []string, stdout, stderr io.Wr
 }
 
 func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("objective show", "show one stored objective, including its origin", "<id> --json", stdout, stderr)
-	if code, ok := parseSet(fs, args); !ok {
+	fs := newFlagSet("objective show", "show one stored objective, including its origin", "<id> --json --brief", stdout, stderr)
+	brief := fs.Bool("brief", false, "card counts by status, plus one line each for needs_input and failed cards")
+	if code, ok := parseSet(fs, flagsFirst(fs, args)); !ok {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -334,10 +335,38 @@ func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	defer db.Close()
-	o, err := db.GetObjective(context.Background(), fs.Arg(0))
+	ctx := context.Background()
+	o, err := db.GetObjective(ctx, fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if *brief {
+		cards, err := db.ListCards(ctx, o.ID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		view := buildObjectiveBrief(o.ID, cards)
+		failedNormalizers := make(map[string][]string)
+		for _, card := range cards {
+			if card.Kind == model.KindNormalize && card.Status == model.CardFailed && len(card.Deps) > 0 {
+				failedNormalizers[card.Deps[0]] = append(failedNormalizers[card.Deps[0]], card.ID)
+			}
+		}
+		for i := range view.Blocked {
+			card := &view.Blocked[i]
+			if card.Reason != "" {
+				continue
+			}
+			reason, err := objectiveFallbackReason(ctx, db, *card, failedNormalizers[card.ID])
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			card.Reason = reason
+		}
+		return emitObjectiveBrief(stdout, asJSON, view)
 	}
 	line := o.ID + "\t" + o.Title
 	if o.Origin != "" {
@@ -446,15 +475,17 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		return 1
 	}
 	defer db.Close()
-	if err := reviewAddCheck(context.Background(), db, c, stderr); err != nil {
+	ctx := context.Background()
+	if err := reviewAddCheck(ctx, db, c, stderr); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if err := db.CreateCard(context.Background(), &c); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	if err := saveCardOrigin(context.Background(), db, c.ID, origin); err != nil {
+	if err := db.WithTx(ctx, func(ctx context.Context) error {
+		if err := db.CreateCard(ctx, &c); err != nil {
+			return err
+		}
+		return saveCardOrigin(ctx, db, c.ID, origin)
+	}); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -500,10 +531,31 @@ func reviewAddCheck(ctx context.Context, db *store.Store, card model.Card, stder
 }
 
 func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card list", "list stored cards, optionally for one objective", "--json", stdout, stderr)
+	fs := newFlagSet("card list", "list stored cards, optionally for one objective", "--objective --changed-since <RFC3339> --fields <name> --json", stdout, stderr)
 	objective := fs.String("objective", "", "objective id")
+	changedSince := fs.String("changed-since", "", "RFC3339 time; list cards created or with a status or attempt change after it")
+	var fieldFlags stringsFlag
+	fs.Var(&fieldFlags, "fields", "card fields to print, comma-separated: "+strings.Join(cardListFields(), ","))
 	if code, ok := parseSet(fs, args); !ok {
 		return code
+	}
+	var since *time.Time
+	if flagSeen(fs, "changed-since") {
+		parsed, err := parseChangedSince(*changedSince)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		since = &parsed
+	}
+	var fields []string
+	if len(fieldFlags) > 0 {
+		parsed, err := parseCardFields(fieldFlags)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		fields = parsed
 	}
 	db, err := openStore(home)
 	if err != nil {
@@ -511,10 +563,23 @@ func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		return 1
 	}
 	defer db.Close()
-	items, err := db.ListCards(context.Background(), *objective)
+	ctx := context.Background()
+	var items []model.Card
+	if since == nil {
+		items, err = db.ListCards(ctx, *objective)
+	} else {
+		items, err = db.ListCardsChangedSince(ctx, *objective, *since)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if len(fields) > 0 {
+		if asJSON {
+			return writeJSON(stdout, projectCards(items, fields))
+		}
+		fmt.Fprint(stdout, formatCardFields(items, fields))
+		return 0
 	}
 	if asJSON {
 		return writeJSON(stdout, items)
@@ -526,10 +591,22 @@ func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 }
 
 func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", "<id> --json --summary", stdout, stderr)
+	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", "<id> --json --brief --claims --attempts all --summary", stdout, stderr)
+	brief := fs.Bool("brief", false, "short status: id, objective, status, wait reason, tier, rework count, current attempt, latest event, pending question, commit")
+	showClaims := fs.Bool("claims", false, "with --brief, include the claim list; the default brief prints claims_count only")
+	attemptsMode := fs.String("attempts", "", "with --brief, pass all to list every attempt; the default brief keeps the latest 3")
 	summaryOnly := fs.Bool("summary", false, "print only the structured result summary")
-	if code, ok := parseSet(fs, hoistFlags(args)); !ok {
+	if code, ok := parseSet(fs, flagsFirst(fs, args)); !ok {
 		return code
+	}
+	if *brief && *summaryOnly {
+		fmt.Fprintln(stderr, "--brief and --summary select different output formats")
+		return 2
+	}
+	allAttempts, err := parseAttemptsMode(*attemptsMode)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "card show <id>")
@@ -552,26 +629,39 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if *summaryOnly {
+	if *brief || *summaryOnly {
 		attempts, err := db.ListAttempts(ctx, c.ID)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		sum, ok, err := latestSummary(dir, attempts)
+		if *summaryOnly {
+			sum, ok, err := latestSummary(dir, attempts)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			if !ok {
+				fmt.Fprintf(stderr, "no summary for %s\n", c.ID)
+				return 1
+			}
+			if asJSON {
+				return writeJSON(stdout, sum)
+			}
+			fmt.Fprint(stdout, harvest.FormatSummary(sum))
+			return 0
+		}
+		events, err := db.ListEvents(ctx, "card:"+c.ID)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		if !ok {
-			fmt.Fprintf(stderr, "no summary for %s\n", c.ID)
+		question, err := pendingBriefQuestion(ctx, db, c.ID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		if asJSON {
-			return writeJSON(stdout, sum)
-		}
-		fmt.Fprint(stdout, harvest.FormatSummary(sum))
-		return 0
+		return emitCardBrief(stdout, asJSON, buildCardBrief(c, attempts, events, question, *showClaims, allAttempts))
 	}
 	origin, err := loadCardOrigin(ctx, db, c.ID)
 	if err != nil {
@@ -604,19 +694,6 @@ type cardHistoryItem struct {
 type cardAttemptView struct {
 	ID       string   `json:"id"`
 	Evidence []string `json:"evidence"`
-}
-
-// hoistFlags lets `card show <id> --summary` work. The flag parser stops at the first positional.
-func hoistFlags(args []string) []string {
-	var flags, pos []string
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "-") {
-			flags = append(flags, arg)
-			continue
-		}
-		pos = append(pos, arg)
-	}
-	return append(flags, pos...)
 }
 
 func latestSummary(home string, attempts []model.Attempt) (harvest.Summary, bool, error) {

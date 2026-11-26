@@ -1593,13 +1593,13 @@ func skippedResearchKey(card model.Card, attemptID string) string {
 
 // recoverUnparsed keeps one normalize card tied to the source.
 // resolved is true only after that card has failed or its extraction was absorbed.
-func (d Deps) recoverUnparsed(ctx context.Context, obj model.Objective, card model.Card) (bool, error) {
+func (d Deps) recoverUnparsed(ctx context.Context, obj model.Objective, card model.Card, attemptID string) (bool, error) {
 	existing, err := d.normalizeFor(ctx, obj.ID, card.ID)
 	if err != nil {
 		return false, err
 	}
 	if existing == nil {
-		return false, d.addCard(ctx, obj, &model.Card{
+		normalizer := model.Card{
 			Objective: obj.ID,
 			Node:      card.Node,
 			Kind:      model.KindNormalize,
@@ -1608,6 +1608,12 @@ func (d Deps) recoverUnparsed(ctx context.Context, obj model.Objective, card mod
 			Tier:      model.TierT1,
 			Status:    model.CardReady,
 			Deps:      []string{card.ID},
+		}
+		return false, d.Store.WithTx(ctx, func(ctx context.Context) error {
+			if err := d.addCard(ctx, obj, &normalizer); err != nil {
+				return err
+			}
+			return d.noteNormalizePlan(ctx, attemptID, normalizer.ID)
 		})
 	}
 	if !terminalCard(existing.Status) || existing.Status == model.CardCanceled {
@@ -1624,6 +1630,17 @@ func (d Deps) recoverUnparsed(ctx context.Context, obj model.Objective, card mod
 		return false, err
 	}
 	return true, nil
+}
+
+// NormalizePlannedEvent links a source attempt to its normalization card.
+const NormalizePlannedEvent = "normalize_planned"
+
+func (d Deps) noteNormalizePlan(ctx context.Context, attemptID, normalizerID string) error {
+	if attemptID == "" {
+		return nil
+	}
+	data, _ := json.Marshal(map[string]string{"normalize": normalizerID})
+	return d.noteEvent(ctx, attemptKey(attemptID), NormalizePlannedEvent, data)
 }
 
 func (d Deps) normalizeFor(ctx context.Context, objective, cardID string) (*model.Card, error) {
@@ -1829,7 +1846,7 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 		}
 	case model.KindDesign, model.KindPlan, model.KindReplan:
 		if designUnusable(text, outcome) || judgeResultFreeze(text) == freezeUnclear {
-			resolved, err := d.recoverUnparsed(ctx, obj, card)
+			resolved, err := d.recoverUnparsed(ctx, obj, card, attemptID)
 			if err != nil {
 				return err
 			}

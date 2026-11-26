@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 )
 
 func newFlagSet(name, purpose, params string, stdout, stderr io.Writer) *flag.FlagSet {
@@ -49,6 +50,40 @@ func finishSoft(stdout, stderr io.Writer, asJSON bool, notes []string, v any, li
 		}
 	}
 	return emit(stdout, asJSON, v, line)
+}
+
+// flagsFirst lets a positional id sit before its flags. The standard library
+// stops at the first non-flag, but card and objective commands are written
+// with the id first. "--" still ends flag parsing, so an id that looks like
+// an option can be passed as: card show -- --brief.
+func flagsFirst(fs *flag.FlagSet, args []string) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			flags = append(flags, a)
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if a == "-" || !strings.HasPrefix(a, "-") {
+			pos = append(pos, a)
+			continue
+		}
+		flags = append(flags, a)
+		name, _, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-"), "=")
+		f := fs.Lookup(name)
+		if hasValue || f == nil {
+			continue
+		}
+		if b, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && b.IsBoolFlag() {
+			continue
+		}
+		if i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, pos...)
 }
 
 func flagSeen(fs *flag.FlagSet, name string) bool {

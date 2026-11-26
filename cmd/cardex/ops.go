@@ -17,10 +17,10 @@ const projectGroupUsage = `project — read and update project records
 purpose: add, list, show, or set a project stored in the home database
 
 parameters:
-  add   --id --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off --review auto|off|check|review --scratch-dir
+  add   --id --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off --review auto|off|check|review --scratch-dir --events on|off
   list  --json
   show  <id> --json
-  set   --id <id> --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off --review auto|off|check|review --scratch-dir
+  set   --id <id> --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off --review auto|off|check|review --scratch-dir --events on|off
 `
 
 func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
@@ -33,6 +33,7 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	sandboxMode := fs.String("sandbox", "", "project default for its cards: on, or off to run them outside the Cardex sandbox")
 	reviewMode := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
 	scratchDir := fs.String("scratch-dir", "", "scratch directory for this project's card runs and acceptance commands; overrides the home scratch_dir")
+	eventsMode := fs.String("events", "", "card lifecycle events: on, or off (default off)")
 	var forbidden stringsFlag
 	fs.Var(&forbidden, "forbidden", "forbidden path")
 	if code, ok := parseSet(fs, args); !ok {
@@ -80,6 +81,9 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	if flagSeen(fs, "scratch-dir") {
 		p.ScratchDir = *scratchDir
 	}
+	if flagSeen(fs, "events") {
+		p.Events = *eventsMode
+	}
 	if err := db.UpdateProject(context.Background(), &p); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -91,10 +95,10 @@ const objectiveGroupUsage = `objective — read and update objective records
 purpose: add, list, show, set, pause, resume, or cancel an objective
 
 parameters:
-  add     --id --project --title --acceptance --check --soft-tokens --hard-tokens --priority --mode --freeze-mode --origin --status --integration-branch --channel --model --review
+  add     --id --project --title --acceptance --check --soft-tokens --hard-tokens --priority --mode --freeze-mode --origin --status --integration-branch --channel --model --review --events on|off|inherit
   list    --project --json
-  show    <id> --brief --json
-  set     --id <id> --mode --freeze-mode --soft-tokens --hard-tokens --priority --review
+  show    <id> --brief [--origin <kind:id>] --json
+  set     --id <id> --mode --freeze-mode --soft-tokens --hard-tokens --priority --review --events on|off|inherit
   pause   <id>
   resume  <id>
   cancel  <id>
@@ -112,6 +116,7 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	fs.Var(hard, "hard-tokens", "hard token budget")
 	fs.Var(priority, "priority", "priority")
 	reviewMode := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
+	eventsMode := fs.String("events", "", "card lifecycle events: on, off, or inherit (empty inherits the project; default off)")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -165,6 +170,9 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	if flagSeen(fs, "review") {
 		o.Review = *reviewMode
 	}
+	if flagSeen(fs, "events") {
+		o.Events = *eventsMode
+	}
 	if err := db.UpdateObjective(context.Background(), &o); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -216,8 +224,8 @@ purpose: add, list, show, cancel, retry, pause, resume, revive, absorb, or mark 
 
 parameters:
   add     --id --objective --node --kind --title --body --tier --require --dep --acceptance --claim --base --status --origin
-  list    --objective --changed-since <RFC3339> --fields <name> --json
-  show    <id> --brief --claims --attempts all --json --summary
+  list    --objective --changed-since <RFC3339> --fields <name> [--origin <kind:id>] --json
+  show    <id> --brief --claims --attempts all [--origin <kind:id>] --json --summary
   cancel  <id>
   retry   <id>
   pause   <id>

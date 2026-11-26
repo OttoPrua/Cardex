@@ -226,6 +226,12 @@ func (r *Runner) Tick(ctx context.Context) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if err := notify.FlushLifecycle(ctx, db); err != nil {
+		if keep(err) {
+			return ctx.Err()
+		}
+		r.noteTickError(ctx, db, "lifecycle", "", "", err)
+	}
 	return first
 }
 

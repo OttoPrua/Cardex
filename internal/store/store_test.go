@@ -122,7 +122,7 @@ func TestListCardsChangedSinceAfterMigration(t *testing.T) {
 	for _, stmt := range []string{
 		`ALTER TABLE cards DROP COLUMN changed_at`,
 		`ALTER TABLE attempts DROP COLUMN changed_at`,
-		`DELETE FROM schema_migrations WHERE version=8`,
+		`DELETE FROM schema_migrations WHERE version>=8`,
 	} {
 		if _, err := db.db.ExecContext(ctx, stmt); err != nil {
 			t.Fatal(err)

@@ -20,7 +20,7 @@ import (
 )
 
 // latestSchema is the migration applied by Open.
-const latestSchema = 8
+const latestSchema = 11
 
 // ErrAppendOnly is returned by event update and delete.
 var ErrAppendOnly = errors.New("event is append-only")
@@ -148,7 +148,12 @@ func sqliteURI(path string) string {
 }
 
 // Home is the directory with the database and home configuration.
-func (s *Store) Home() string { return filepath.Dir(s.path) }
+func (s *Store) Home() string {
+	if s == nil {
+		return ""
+	}
+	return filepath.Dir(s.path)
+}
 
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
@@ -168,7 +173,14 @@ func refuseCardexHome(path string) error {
 	return homeguard.Check(filepath.Dir(abs))
 }
 
+type commitNotes struct {
+	pending []cardNote
+}
+
+type notesKey struct{}
+
 // WithTx runs fn inside a transaction. Nested calls join the outer transaction.
+// Lifecycle events are saved before commit and delivered after it.
 func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) (err error) {
 	if _, ok := ctx.Value(txKey{}).(execer); ok {
 		return fn(ctx)
@@ -182,11 +194,32 @@ func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) (err
 			_ = tx.Rollback()
 		}
 	}()
+	callerCtx := ctx
+	notes := &commitNotes{}
 	ctx = context.WithValue(ctx, txKey{}, tx)
+	ctx = context.WithValue(ctx, notesKey{}, notes)
 	if err = fn(ctx); err != nil {
 		return err
 	}
-	return tx.Commit()
+	var deliveries []int64
+	for _, note := range notes.pending {
+		id, noteErr := s.persistLifecycle(ctx, note)
+		if noteErr != nil {
+			return noteErr
+		}
+		if id != 0 {
+			deliveries = append(deliveries, id)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if PublishCardNote != nil {
+		for _, id := range deliveries {
+			PublishCardNote(callerCtx, s, id)
+		}
+	}
+	return nil
 }
 
 func (s *Store) q(ctx context.Context) execer {
@@ -353,6 +386,7 @@ func (s *Store) migrate(ctx context.Context, backupDir string) error {
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (7, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
+		current = 7
 	}
 	if current < 8 {
 		for _, table := range []string{"cards", "attempts"} {
@@ -371,6 +405,67 @@ func (s *Store) migrate(ctx context.Context, backupDir string) error {
 		}
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (8, ?)`, formatTime(time.Now())); err != nil {
 			return fmt.Errorf("migration 8: %w", err)
+		}
+	}
+	if current < 9 {
+		// Lifecycle event switch. Empty inherits (project empty means off).
+		for _, table := range []string{"projects", "objectives"} {
+			var has int
+			if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('`+table+`') WHERE name='events'`).Scan(&has); err != nil {
+				return fmt.Errorf("migration 9: %w", err)
+			}
+			if has == 0 {
+				if _, err := conn.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN events TEXT NOT NULL DEFAULT ''`); err != nil {
+					return fmt.Errorf("migration 9: %w", err)
+				}
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS mgmt_reads (
+			origin TEXT NOT NULL,
+			card_id TEXT NOT NULL,
+			command TEXT NOT NULL,
+			n INTEGER NOT NULL,
+			PRIMARY KEY (origin, card_id, command)
+		)`); err != nil {
+			return fmt.Errorf("migration 9: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (9, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	if current < 10 {
+		if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS lifecycle_outbox (
+			id INTEGER PRIMARY KEY,
+			event_key TEXT NOT NULL UNIQUE,
+			objective_id TEXT NOT NULL,
+			origin TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			done INTEGER NOT NULL DEFAULT 0,
+			available_at INTEGER NOT NULL DEFAULT 0
+		)`); err != nil {
+			return fmt.Errorf("migration 10: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS lifecycle_outbox_pending
+			ON lifecycle_outbox(done, available_at)`); err != nil {
+			return fmt.Errorf("migration 10: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (10, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	if current < 11 {
+		var has int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='wait_question_id'`).Scan(&has); err != nil {
+			return fmt.Errorf("migration 11: %w", err)
+		}
+		if has == 0 {
+			if _, err := conn.ExecContext(ctx, `ALTER TABLE cards ADD COLUMN wait_question_id TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migration 11: %w", err)
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (11, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
 		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {

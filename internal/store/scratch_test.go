@@ -49,11 +49,12 @@ func TestOpenCompletesEitherV8Schema(t *testing.T) {
 		drops   []string
 		scratch string
 	}{
-		{"changed-at only", []string{`ALTER TABLE projects DROP COLUMN scratch_dir`}, ""},
+		{"changed-at only", []string{`ALTER TABLE projects DROP COLUMN scratch_dir`, `DELETE FROM schema_migrations WHERE version>8`}, ""},
 		{"scratch only", []string{
 			`ALTER TABLE cards DROP COLUMN changed_at`,
 			`ALTER TABLE attempts DROP COLUMN changed_at`,
 			`DROP INDEX events_entity_type`,
+			`DELETE FROM schema_migrations WHERE version>8`,
 		}, "external"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,7 +82,7 @@ func TestOpenCompletesEitherV8Schema(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer reopened.Close()
-				if version, err := reopened.SchemaVersion(ctx); err != nil || version != 8 {
+				if version, err := reopened.SchemaVersion(ctx); err != nil || version != 11 {
 					t.Fatalf("schema version %d, error %v", version, err)
 				}
 				got, err := reopened.GetProject(ctx, project.ID)
@@ -134,7 +135,7 @@ func TestBackupRunsOnlyOnRemigration(t *testing.T) {
 	defer raw.Close()
 	for _, stmt := range []string{
 		`PRAGMA wal_autocheckpoint=0`,
-		`DELETE FROM schema_migrations WHERE version=8`,
+		`DELETE FROM schema_migrations WHERE version>=8`,
 		`CREATE TABLE backup_probe(value TEXT)`,
 		`INSERT INTO backup_probe VALUES ('wal row')`,
 	} {

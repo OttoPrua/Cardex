@@ -2,12 +2,15 @@ package loop
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestReviewRoundsKeepVerdictsAndNote(t *testing.T) {
@@ -115,6 +118,10 @@ func TestReviewOpinionTruncatesEventOnly(t *testing.T) {
 
 func TestReworkLimitMarksBothEvents(t *testing.T) {
 	f := newFx(t, model.ModeManual)
+	f.obj.Events = "on"
+	if err := f.db.UpdateObjective(f.ctx, &f.obj); err != nil {
+		t.Fatal(err)
+	}
 	ch := f.channel("ch-a", "a")
 	f.card(model.Card{ID: "dev", Status: model.CardReviewing, Channel: ch.ID, ReworkCount: 2})
 	dir := writeResult(t, "NOISE-RESULT-SECRET\n## 复核结论\nrework\nstill broken\n")
@@ -131,6 +138,26 @@ func TestReworkLimitMarksBothEvents(t *testing.T) {
 	got := f.mustCard("dev")
 	if got.ReworkCount != 2 || got.Status != model.CardNeedsInput || got.ReworkNote != "still broken" || len(f.questions()) != 1 {
 		t.Fatalf("card %+v questions %+v", got, f.questions())
+	}
+	files, err := filepath.Glob(filepath.Join(f.home, "inbox", "lifecycle-*.txt"))
+	if err != nil || len(files) != 2 {
+		t.Fatalf("lifecycle files %v, error %v", files, err)
+	}
+	statuses := map[string]bool{}
+	for _, path := range files {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, payload, _ := strings.Cut(string(raw), "\n\n")
+		var event store.Pulse
+		if err := json.Unmarshal([]byte(payload), &event); err != nil || event.ID != got.ID || event.QuestionID != f.questions()[0].ID {
+			t.Fatalf("lifecycle event %+v, error %v", event, err)
+		}
+		statuses[event.Status] = true
+	}
+	if !statuses["needs_input"] || !statuses["rework_limit"] {
+		t.Fatalf("lifecycle statuses %v", statuses)
 	}
 	verdicts := f.events("review_verdict")
 	reworks := f.events("rework")

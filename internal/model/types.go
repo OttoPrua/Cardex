@@ -16,6 +16,7 @@ type Project struct {
 	Sandbox        string   `json:"sandbox"`               // 项目默认：空表示卡在 Cardex 沙箱内跑；"off" 表示卡默认在沙箱外跑。卡上的 on/off 优先。
 	Review         string   `json:"review"`                // 项目默认复核模式：空或 auto、off、check、review。见 docs/review-policy.md。
 	ScratchDir     string   `json:"scratch_dir,omitempty"` // 本项目派卡与验收的临时目录根。空则用 home 的 scratch_dir，再空则用进程临时目录。
+	Events         string   `json:"events,omitempty"`      // 卡生命周期事件：空或 off 关闭，on 开启。目标未设置时沿用这里。默认关闭。
 }
 
 // Acceptance is an objective's commands and checklist. Both are optional.
@@ -46,6 +47,7 @@ type Objective struct {
 	Channel           string          `json:"channel"`            // 显式指定的渠道；空则自动路由，且不受红线过滤。
 	Model             string          `json:"model"`              // 显式指定的模型；空则自动路由。
 	Review            string          `json:"review"`             // 复核模式：空表示沿用项目；auto、off、check、review。
+	Events            string          `json:"events,omitempty"`   // 卡生命周期事件：空沿用项目，on 开启，off 关闭。默认关闭。
 }
 
 // DesignNode is one node in an objective's design tree.
@@ -114,6 +116,8 @@ type Card struct {
 	Budget       Budget     `json:"budget"`        // 单卡预算。
 	Sandbox      string     `json:"sandbox"`       // 空表示沿用项目设置；"on" 在 Cardex 沙箱内跑；"off" 整张卡在沙箱外跑。只能在 card add 时设定。
 	Review       string     `json:"review"`        // 复核模式：空表示沿用目标和项目；auto、off、check、review。
+
+	WaitQuestionID string `json:"-"` // Question bound to the current needs_input state.
 }
 
 // Route is the channel and model chosen before an attempt starts.

@@ -46,6 +46,106 @@ func TestTruncateEvidence(t *testing.T) {
 	assertTruncated(t, nl, truncateEvidence(nl))
 }
 
+func TestHarvestUsesProjectScratchAndRecordedEvidenceRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell command is POSIX")
+	}
+	dir, head := newRepo(t)
+	home := t.TempDir()
+	original := filepath.Join(t.TempDir(), "att")
+	scratch := filepath.Join(dir, "scratch")
+	write(t, scratch, "keep.txt", "keep\n")
+	physicalDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	calls := filepath.Join(bin, "calls")
+	write(t, bin, "go", `#!/bin/sh
+set -e
+cwd=$(pwd -P)
+test -d "$GOTMPDIR"
+test -d "$GOCACHE"
+printf '%s\t%s\t%s\t%s\n' "$cwd" "$TMPDIR" "$GOTMPDIR" "$GOCACHE" >> "$GO_CALLS"
+if [ "$cwd" = "$GO_CANDIDATE" ]; then
+    touch "$GOTMPDIR/marker" "$GOCACHE/marker"
+elif [ -e "$GOTMPDIR/marker" ] || [ -e "$GOCACHE/marker" ]; then
+    printf 'ok\texample\t0.001s\n'
+    exit 0
+fi
+printf '%s\n' '--- FAIL: TestExisting (0.00s)'
+printf 'FAIL\texample\t0.001s\n'
+exit 1
+`)
+	if err := os.Chmod(filepath.Join(bin, "go"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GO_CALLS", calls)
+	t.Setenv("GO_CANDIDATE", physicalDir)
+	explicitTmp := t.TempDir()
+	t.Setenv("TMPDIR", explicitTmp)
+	write(t, home, "config.json", `{"attempts_dir":"new-attempts","scratch_dir":"home-scratch"}`)
+	for _, key := range []string{"GOTMPDIR", "GOCACHE"} {
+		t.Setenv(key, "")
+		if err := os.Unsetenv(key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, dir, ".cardex-result.md", "## 复核结论\npass\n")
+	in := harvestInput(dir, head, model.Card{ID: "c", Kind: model.KindReview, Acceptance: []string{"go test ./..."}}, 0, nil, "")
+	in.Home, in.Scratch = home, scratch
+	in.Attempt.PromptPath = filepath.Join(original, "prompt.txt")
+	res, err := Harvest(context.Background(), in)
+	if err != nil || res.EvidenceErr != nil {
+		t.Fatalf("harvest %v evidence %v", err, res.EvidenceErr)
+	}
+	log, err := os.ReadFile(filepath.Join(original, "acceptance.log"))
+	if err != nil || !strings.Contains(string(log), "FAIL\texample") {
+		t.Fatalf("acceptance log %q, error %v", log, err)
+	}
+	sum, err := LoadSummary(filepath.Join(original, "summary.json"))
+	if err != nil || sum.Review == nil || sum.Review.Source != filepath.Join(original, "result.md") ||
+		len(sum.Acceptance) != 1 || sum.Acceptance[0].Baseline == nil || sum.Acceptance[0].Baseline.Status != "compared" {
+		t.Fatalf("summary %+v, error %v", sum, err)
+	}
+	baseline := sum.Acceptance[0].Baseline
+	if len(baseline.New) != 0 || len(baseline.Still) != 1 || baseline.Still[0] != "example/TestExisting" {
+		t.Errorf("existing failure misclassified: %+v", baseline)
+	}
+	if len(sum.Files) != 1 || sum.Files[0].Path != "scratch/keep.txt" {
+		t.Errorf("summary files: %+v", sum.Files)
+	}
+	called, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(called)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want acceptance and baseline commands, got %q", called)
+	}
+	candidateRun, baselineRun := strings.Split(lines[0], "\t"), strings.Split(lines[1], "\t")
+	if len(candidateRun) != 4 || len(baselineRun) != 4 {
+		t.Fatalf("scratch paths missing: %q", called)
+	}
+	candidateScratch, baselineScratch := filepath.Dir(candidateRun[2]), filepath.Dir(baselineRun[2])
+	baselineRoot := filepath.Join(physicalDir, "scratch", filepath.Base(baselineScratch), "baseline")
+	if candidateRun[1] != explicitTmp || baselineRun[1] != explicitTmp ||
+		candidateScratch == baselineScratch || filepath.Dir(candidateScratch) != scratch || filepath.Dir(baselineScratch) != scratch ||
+		filepath.Dir(candidateRun[3]) != candidateScratch || filepath.Dir(baselineRun[3]) != baselineScratch ||
+		!strings.HasPrefix(baselineRun[0], baselineRoot+string(os.PathSeparator)) {
+		t.Errorf("acceptance and baseline scratch paths: %q", called)
+	}
+	for _, path := range []string{"attempts", "new-attempts", "home-scratch", filepath.Join("baseline", "wt")} {
+		if _, err := os.Stat(filepath.Join(home, path)); !os.IsNotExist(err) {
+			t.Fatalf("unexpected directory %s: %v", path, err)
+		}
+	}
+	if entries, err := os.ReadDir(scratch); err != nil || len(entries) != 1 || entries[0].Name() != "keep.txt" {
+		t.Fatalf("scratch entries %v, error %v", entries, err)
+	}
+}
+
 func TestHarvestEvidenceFiles(t *testing.T) {
 	t.Run("kinds copy a result and still record an empty acceptance log", func(t *testing.T) {
 		cases := []struct {

@@ -18,6 +18,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/notify"
 	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/route"
 	"github.com/OttoPrua/Cardex/internal/workspace"
 )
@@ -1291,7 +1292,7 @@ func (st *step) noteRework(card model.Card, attempt model.Attempt, source string
 		"question_opened": questionOpened,
 	}
 	if source == reworkSourceTests {
-		data["acceptance_log"] = "attempts/" + attempt.ID + "/acceptance.log"
+		data["acceptance_log"] = roots.EvidenceRef(st.home, attempt.ID, attempt.PromptPath, "acceptance.log")
 		data["excerpt"] = st.existingExcerpt(attempt)
 	}
 	return st.event("card:"+card.ID, "rework", data)
@@ -2121,7 +2122,7 @@ func (st *step) complete() error {
 	if !st.allFrozen() || st.anyUnfinished() {
 		return nil
 	}
-	ok, err := acceptancePasses(st.ctx, st.snap.project.RepoPath, obj.IntegrationBranch, obj.Acceptance.Commands)
+	ok, err := acceptancePasses(st.ctx, st.snap.project.RepoPath, obj.IntegrationBranch, obj.Acceptance.Commands, roots.Load(st.home).EffectiveScratch(st.snap.project.ScratchDir))
 	if err != nil {
 		return err
 	}
@@ -2209,7 +2210,7 @@ func approved(answer string) bool {
 	}
 }
 
-func acceptancePasses(ctx context.Context, repo, branch string, commands []string) (bool, error) {
+func acceptancePasses(ctx context.Context, repo, branch string, commands []string, scratchRoot string) (bool, error) {
 	if len(commands) == 0 {
 		return true, nil
 	}
@@ -2219,11 +2220,26 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 	if _, err := acceptGit(repo, "rev-parse", "--verify", "--quiet", branch); err != nil {
 		return false, nil
 	}
-	parent, err := os.MkdirTemp("", "cardex-accept-")
-	if err != nil {
-		return false, err
+	var parent string
+	var cleanup func() error
+	env := os.Environ()
+	if strings.TrimSpace(scratchRoot) == "" {
+		var err error
+		parent, err = os.MkdirTemp("", "cardex-accept-")
+		if err != nil {
+			return false, err
+		}
+		cleanup = func() error { return os.RemoveAll(parent) }
+	} else {
+		dir, clean, err := roots.PrepareAttemptScratch(scratchRoot, "accept")
+		if err != nil {
+			return false, err
+		}
+		parent = dir
+		cleanup = clean
+		env = roots.ApplyTempEnv(env, dir)
 	}
-	defer os.RemoveAll(parent)
+	defer cleanup()
 	dir := filepath.Join(parent, "wt")
 	if _, err := acceptGit(repo, "worktree", "add", "--detach", dir, branch); err != nil {
 		return false, err
@@ -2232,7 +2248,7 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 	for _, command := range commands {
 		cmd := proc.Shell(ctx, command)
 		cmd.Dir = dir
-		cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = append(proc.AcceptanceEnv(env), "GIT_TERMINAL_PROMPT=0")
 		if err := cmd.Run(); err != nil {
 			return false, nil
 		}

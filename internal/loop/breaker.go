@@ -216,7 +216,7 @@ func applyNotify(cfg *Config, top map[string]json.RawMessage) {
 
 func knownTop(key string) bool {
 	switch key {
-	case "loop", "positioning", "engines", "unknown_quota", "host", "notify":
+	case "loop", "positioning", "engines", "unknown_quota", "host", "notify", "backups_dir", "attempts_dir", "scratch_dir":
 		return true
 	default:
 		return false

@@ -27,6 +27,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/prompt"
 	"github.com/OttoPrua/Cardex/internal/question"
 	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/route"
 	"github.com/OttoPrua/Cardex/internal/store"
 	"github.com/OttoPrua/Cardex/internal/workspace"
@@ -46,7 +47,6 @@ var (
 	deliverMsg  = func(ctx context.Context, msg notify.Message) error {
 		return notify.Stub{}.Deliver(ctx, msg)
 	}
-	startHost   = launchDetached
 	chooseRoute = route.Select
 	// addWorktree creates the attempt checkout. Tests replace it to insert a
 	// card in the window after the review subject is chosen and before the
@@ -275,7 +275,7 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			}
 			res := harvest.Result{Outcome: model.OutcomeNoOutput, Excerpt: excerpt}
 			if err := harvest.WriteUnavailableSummary(ctx, r.harvestInput(ctx, db, card, attempt, 1, nil)); err != nil {
-				_ = noteEvidenceWriteFailed(ctx, db, attempt.ID, err)
+				_ = noteEvidenceWriteFailed(ctx, db, r.Home, attempt, err)
 			}
 			if err := r.deliver(ctx, db, &card, &attempt, res); err != nil {
 				if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
@@ -284,7 +284,7 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			}
 			continue
 		}
-		output, _ := os.ReadFile(filepath.Join(r.Home, "attempts", attempt.ID, "output.log"))
+		output, _ := os.ReadFile(filepath.Join(roots.AttemptDir(r.Home, attempt.ID, attempt.PromptPath), "output.log"))
 		exitCode := 1
 		if attempt.Exit != nil {
 			exitCode = *attempt.Exit
@@ -316,10 +316,22 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			continue
 		}
 		if res.EvidenceErr != nil {
-			_ = noteEvidenceWriteFailed(ctx, db, attempt.ID, res.EvidenceErr)
+			_ = noteEvidenceWriteFailed(ctx, db, r.Home, attempt, res.EvidenceErr)
 		}
 	}
 	return first
+}
+
+func projectScratch(ctx context.Context, db *store.Store, objectiveID string) string {
+	obj, err := db.GetObjective(ctx, objectiveID)
+	if err != nil {
+		return ""
+	}
+	p, err := db.GetProject(ctx, obj.Project)
+	if err != nil {
+		return ""
+	}
+	return p.ScratchDir
 }
 
 func (r *Runner) harvestInput(ctx context.Context, db *store.Store, card model.Card, attempt model.Attempt, exitCode int, output []byte) harvest.Input {
@@ -331,6 +343,7 @@ func (r *Runner) harvestInput(ctx context.Context, db *store.Store, card model.C
 		ErrorClass: attempt.ErrorClass,
 		Repo:       attempt.Worktree,
 		Home:       r.Home,
+		Scratch:    projectScratch(ctx, db, card.Objective),
 	}
 	if d := attempt.RouteReason.Dispatch; d != nil {
 		in.Runner = string(d.Runner)
@@ -359,17 +372,17 @@ func (r *Runner) harvestInput(ctx context.Context, db *store.Store, card model.C
 
 // noteEvidenceWriteFailed records one event for a failed acceptance.log or
 // result.md write. The payload names the attempt directory, not the file bodies.
-func noteEvidenceWriteFailed(ctx context.Context, db *store.Store, attemptID string, cause error) error {
+func noteEvidenceWriteFailed(ctx context.Context, db *store.Store, home string, attempt model.Attempt, cause error) error {
 	raw, err := json.Marshal(map[string]string{
-		"attempt_id": attemptID,
-		"path":       "attempts/" + attemptID,
+		"attempt_id": attempt.ID,
+		"path":       roots.EvidenceRef(home, attempt.ID, attempt.PromptPath, ""),
 		"error":      cause.Error(),
 	})
 	if err != nil {
 		return err
 	}
 	return db.AppendEvent(ctx, &model.Event{
-		Entity: "attempt:" + attemptID,
+		Entity: "attempt:" + attempt.ID,
 		Type:   "evidence_write_failed",
 		Data:   raw,
 	})
@@ -742,7 +755,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 			return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, scratch)
 		}
 	}
-	dir := filepath.Join(r.Home, "attempts", attemptID)
+	dir := roots.AttemptDirFor(r.Home, attemptID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, rt, scratch)
 	}
@@ -847,7 +860,7 @@ func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.
 }
 
 func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, repo string, attempt *model.Attempt) error {
-	dir := filepath.Join(r.Home, "attempts", attempt.ID)
+	dir := roots.AttemptDir(r.Home, attempt.ID, attempt.PromptPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -919,11 +932,14 @@ func stripEmptyFacts(text string) string {
 }
 
 func (r *Runner) startAttempt(ctx context.Context, db *store.Store, attempt *model.Attempt) error {
-	launch := startHost
+	var pid int
+	var err error
 	if r.Launch != nil {
-		launch = func(home, id string) (int, error) { return r.Launch(ctx, home, id) }
+		pid, err = r.Launch(ctx, r.Home, attempt.ID)
+	} else {
+		dir := roots.AttemptDir(r.Home, attempt.ID, attempt.PromptPath)
+		pid, err = launchDetached(r.Home, attempt.ID, dir)
 	}
-	pid, err := launch(r.Home, attempt.ID)
 	if err != nil {
 		return err
 	}
@@ -1881,7 +1897,7 @@ func quotaReset(home string, a model.Attempt) (time.Time, bool) {
 	if t, ok := findReset(a.ErrorExcerpt); ok {
 		return t, true
 	}
-	body, err := os.ReadFile(filepath.Join(home, "attempts", a.ID, "output.log"))
+	body, err := os.ReadFile(filepath.Join(roots.AttemptDir(home, a.ID, a.PromptPath), "output.log"))
 	if err != nil {
 		return time.Time{}, false
 	}

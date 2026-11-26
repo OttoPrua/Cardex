@@ -233,7 +233,7 @@ func TestReviewSummaryIgnoresAuthorPinAndRetainsRetryTier(t *testing.T) {
 	}
 	loadSummary := func(id string) {
 		t.Helper()
-		sum, err := harvest.LoadSummary(harvest.SummaryPath(home, id))
+		sum, err := harvest.LoadSummary(harvest.SummaryPath(home, model.Attempt{ID: id}))
 		if err != nil || !sum.Match || sum.Runner != string(model.RunnerFake) || sum.Channel != "reviewer" || sum.Model != "strong" ||
 			sum.Tier != model.TierT2 || sum.Expected != (harvest.ExpectedRun{Tier: "T1"}) {
 			t.Fatalf("summary %+v err %v", sum, err)

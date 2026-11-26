@@ -19,6 +19,7 @@ type Input struct {
 	ErrorClass model.ErrorClass // runner.Classify 的结果。
 	Repo       string           // 用于比较符号的仓库。
 	Home       string           // serve 解析出的 CARDEX_HOME。空则不写证据文件。
+	Scratch    string           // 项目 scratch_dir。空则用 home 的 scratch_dir，再空则用进程临时目录。
 	Runner     string           // 实际执行这次尝试的 runner。空则摘要里留空。
 	// ExpectedChannel 和 ExpectedModel 是目标或卡上固定的渠道和模型。都空表示没有固定值。
 	ExpectedChannel string

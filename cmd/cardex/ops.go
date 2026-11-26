@@ -17,10 +17,10 @@ const projectGroupUsage = `project — read and update project records
 purpose: add, list, show, or set a project stored in the home database
 
 parameters:
-  add   --id --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off --review auto|off|check|review
+  add   --id --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off --review auto|off|check|review --scratch-dir
   list  --json
   show  <id> --json
-  set   --id <id> --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off --review auto|off|check|review
+  set   --id <id> --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off --review auto|off|check|review --scratch-dir
 `
 
 func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
@@ -32,6 +32,7 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	design := fs.String("design-dir", "", "design directory")
 	sandboxMode := fs.String("sandbox", "", "project default for its cards: on, or off to run them outside the Cardex sandbox")
 	reviewMode := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
+	scratchDir := fs.String("scratch-dir", "", "scratch directory for this project's card runs and acceptance commands; overrides the home scratch_dir")
 	var forbidden stringsFlag
 	fs.Var(&forbidden, "forbidden", "forbidden path")
 	if code, ok := parseSet(fs, args); !ok {
@@ -75,6 +76,9 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	}
 	if flagSeen(fs, "review") {
 		p.Review = *reviewMode
+	}
+	if flagSeen(fs, "scratch-dir") {
+		p.ScratchDir = *scratchDir
 	}
 	if err := db.UpdateProject(context.Background(), &p); err != nil {
 		fmt.Fprintln(stderr, err)

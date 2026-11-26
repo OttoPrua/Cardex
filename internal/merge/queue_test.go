@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -126,6 +127,40 @@ func TestQueueSerialFastForwardAcrossObjectives(t *testing.T) {
 	again, err := gitRev(repo, "integ-a")
 	if err != nil || again != head {
 		t.Fatalf("second step moved HEAD %s -> %s", head, again)
+	}
+}
+
+func TestQueueUsesHomeScratchForAcceptance(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell command is POSIX")
+	}
+	ctx := context.Background()
+	db, repo := openFixture(t)
+	scratch := filepath.Join(db.Home(), "test-scratch")
+	if err := os.WriteFile(filepath.Join(db.Home(), "config.json"), []byte(`{"scratch_dir":"test-scratch"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOTMPDIR", "")
+	if err := os.Unsetenv("GOTMPDIR"); err != nil {
+		t.Fatal(err)
+	}
+	mark := filepath.Join(t.TempDir(), "scratch-path")
+	project := seedProject(t, db, repo, "p", `test -d "$GOTMPDIR" && printf '%s' "$GOTMPDIR" > '`+mark+`'`)
+	obj := seedObjective(t, db, repo, project, "o", "main")
+	card := commitCard(t, db, repo, obj, "main", "c1", "a.txt", "changed\n")
+	q := New(db)
+	if err := q.Enqueue(ctx, card.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Step(ctx, obj); err != nil {
+		t.Fatal(err)
+	}
+	used, err := os.ReadFile(mark)
+	if err != nil || !strings.HasPrefix(string(used), scratch+string(os.PathSeparator)+"cardex-merge-") {
+		t.Fatalf("GOTMPDIR %q, error %v", used, err)
+	}
+	if entries, err := os.ReadDir(scratch); err != nil || len(entries) != 0 {
+		t.Fatalf("scratch entries %v, error %v", entries, err)
 	}
 }
 

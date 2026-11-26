@@ -14,6 +14,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/harvest"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
@@ -49,6 +50,7 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 	design := fs.String("design-dir", "", "design directory")
 	sandboxMode := fs.String("sandbox", "on", "project default for its cards: on, or off to run them outside the Cardex sandbox")
 	reviewMode := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
+	scratchDir := fs.String("scratch-dir", "", "scratch directory for this project's card runs and acceptance commands; overrides the home scratch_dir")
 	var forbidden stringsFlag
 	fs.Var(&forbidden, "forbidden", "forbidden path")
 	if code, ok := parseSet(fs, args); !ok {
@@ -67,6 +69,7 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 		ForbiddenPaths: forbidden,
 		Sandbox:        *sandboxMode,
 		Review:         *reviewMode,
+		ScratchDir:     *scratchDir,
 	}
 	if p.ID == "" {
 		gen, err := newID("p")
@@ -698,21 +701,30 @@ type cardAttemptView struct {
 
 func latestSummary(home string, attempts []model.Attempt) (harvest.Summary, bool, error) {
 	best := -1
+	var bestPath string
 	for i, attempt := range attempts {
 		if !cardSafeID(attempt.ID) {
 			continue
 		}
-		if _, err := os.Stat(harvest.SummaryPath(home, attempt.ID)); err != nil {
+		path := harvest.SummaryPath(home, attempt)
+		_, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			// Earlier versions always wrote summaries under home.
+			path = filepath.Join(home, "attempts", attempt.ID, "summary.json")
+			_, err = os.Stat(path)
+		}
+		if err != nil {
 			continue
 		}
 		if best < 0 || attempt.Index > attempts[best].Index || (attempt.Index == attempts[best].Index && attempt.EndedAt.After(attempts[best].EndedAt)) {
 			best = i
+			bestPath = path
 		}
 	}
 	if best < 0 {
 		return harvest.Summary{}, false, nil
 	}
-	sum, err := harvest.LoadSummary(harvest.SummaryPath(home, attempts[best].ID))
+	sum, err := harvest.LoadSummary(bestPath)
 	if err != nil {
 		return harvest.Summary{}, false, err
 	}
@@ -747,26 +759,10 @@ func cardShowAttempts(ctx context.Context, db *store.Store, home, cardID string)
 	for _, attempt := range attempts {
 		out = append(out, cardAttemptView{
 			ID:       attempt.ID,
-			Evidence: cardEvidencePaths(home, attempt.ID),
+			Evidence: roots.EvidenceRefs(home, attempt.ID, attempt.PromptPath),
 		})
 	}
 	return out, nil
-}
-
-func cardEvidencePaths(home, id string) []string {
-	out := []string{}
-	if strings.TrimSpace(home) == "" || !cardSafeID(id) {
-		return out
-	}
-	for _, name := range []string{"output.log", "acceptance.log", "result.md"} {
-		path := filepath.Join(home, "attempts", id, name)
-		info, err := os.Stat(path)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		out = append(out, "attempts/"+id+"/"+name)
-	}
-	return out
 }
 
 func cardSafeID(id string) bool {

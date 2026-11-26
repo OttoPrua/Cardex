@@ -7,8 +7,6 @@ import (
 	"errors"
 	"math"
 	"net/url"
-	"os"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -17,6 +15,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/quota"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
@@ -703,7 +702,7 @@ func loadCard(ctx context.Context, db *store.Store, id string) (*cardView, error
 			Events:       evs,
 			LogTailURL:   "/attempts/" + a.ID + "/output.log",
 			Ended:        !a.EndedAt.IsZero(),
-			Evidence:     evidencePaths(home, a.ID),
+			Evidence:     roots.EvidenceRefs(home, a.ID, a.PromptPath),
 		})
 	}
 	return view, nil
@@ -726,22 +725,6 @@ func cardHistory(ctx context.Context, db *store.Store, id string) ([]historyEven
 		out = append(out, historyEvent{TS: ts, Type: event.Type, Data: eventData(event.Data)})
 	}
 	return out, nil
-}
-
-func evidencePaths(home, id string) []string {
-	out := []string{}
-	if strings.TrimSpace(home) == "" || !safeID(id) {
-		return out
-	}
-	for _, name := range []string{"output.log", "acceptance.log", "result.md"} {
-		path := filepath.Join(home, "attempts", id, name)
-		info, err := os.Stat(path)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		out = append(out, "attempts/"+id+"/"+name)
-	}
-	return out
 }
 
 func loadHistory(ctx context.Context, db *store.Store, query, status string, page int) (*historyView, error) {

@@ -22,7 +22,7 @@ func TestAcceptanceDropsServeEnv(t *testing.T) {
 	template := t.TempDir()
 	polluteAcceptanceEnv(t, execPath, template)
 
-	ok, err := acceptancePasses(context.Background(), repo, "integration", []string{acceptanceEnvProbe})
+	ok, err := acceptancePasses(context.Background(), repo, "integration", []string{acceptanceEnvProbe}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,8 +24,19 @@ func TestCardJSONHistoryAndEvidence(t *testing.T) {
 	must(t, db.CreateCard(ctx, &model.Card{
 		ID: "c-hist", Objective: "o", Title: "history card", Kind: model.KindDev, Status: model.CardReady,
 	}))
-	for _, id := range []string{"a1", "a2", "a3", "a4"} {
-		must(t, db.CreateAttempt(ctx, &model.Attempt{ID: id, Card: "c-hist"}))
+	external := filepath.Join(t.TempDir(), "a4")
+	must(t, os.Mkdir(external, 0o700))
+	log := filepath.Join(external, "output.log")
+	must(t, os.WriteFile(log, []byte("old external log"), 0o600))
+	must(t, os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"attempts_dir":"current-attempts"}`), 0o600))
+	for _, a := range []model.Attempt{
+		{ID: "a1", PromptPath: "attempts/a1/prompt.txt"},
+		{ID: "a2"},
+		{ID: "a3"},
+		{ID: "a4", PromptPath: filepath.Join(external, "prompt.txt")},
+	} {
+		a.Card = "c-hist"
+		must(t, db.CreateAttempt(ctx, &a))
 	}
 	base := time.Date(2026, 11, 8, 1, 0, 0, 0, time.UTC)
 	rows := []model.Event{
@@ -91,7 +102,13 @@ func TestCardJSONHistoryAndEvidence(t *testing.T) {
 	assertEvidence(t, byID["a1"], "attempts/a1/output.log", "attempts/a1/acceptance.log")
 	assertEvidence(t, byID["a2"], "attempts/a2/result.md")
 	assertEvidence(t, byID["a3"])
-	assertEvidence(t, byID["a4"], "attempts/a4/acceptance.log")
+	assertEvidence(t, byID["a4"], log, "attempts/a4/acceptance.log")
+	for id, want := range map[string]string{"a1": "output-a1", "a4": "old external log"} {
+		rec := do(t, http.MethodGet, "/attempts/"+id+"/output.log")
+		if rec.Code != http.StatusOK || rec.Body.String() != want {
+			t.Fatalf("%s log %d %q", id, rec.Code, rec.Body.String())
+		}
+	}
 }
 
 func writeEvidenceFile(t *testing.T, home, id, name, body string) {

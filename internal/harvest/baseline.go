@@ -8,7 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/OttoPrua/Cardex/internal/roots"
 )
+
+// Version 1 could contain results influenced by candidate scratch files.
+const baselineCacheVersion = 2
 
 type baselineCache struct {
 	Version int      `json:"version"`
@@ -17,13 +22,13 @@ type baselineCache struct {
 	Names   []string `json:"names"`
 }
 
-func compareBaseline(ctx context.Context, home, repo, base string, run commandRun) *TestBaseline {
+func compareBaseline(ctx context.Context, home, repo, base string, run commandRun, env []string, scratchRoot string) *TestBaseline {
 	current := parseGoTestOutput(string(run.Output), run.Exit)
-	parsed, exit, ran := loadOrRunBaseline(ctx, home, repo, base, run.Command)
+	parsed, exit, ran := loadOrRunBaseline(ctx, home, repo, base, run.Command, env, scratchRoot)
 	return compareParsed(current, parsed, exit, ran)
 }
 
-func loadOrRunBaseline(ctx context.Context, home, repo, base, command string) (parsedTests, int, bool) {
+func loadOrRunBaseline(ctx context.Context, home, repo, base, command string, env []string, scratchRoot string) (parsedTests, int, bool) {
 	base = strings.TrimSpace(base)
 	if base == "" || strings.TrimSpace(repo) == "" || ctx.Err() != nil {
 		return parsedTests{}, 0, false
@@ -31,13 +36,22 @@ func loadOrRunBaseline(ctx context.Context, home, repo, base, command string) (p
 	if cache, ok := readBaselineCache(home, base, command); ok {
 		return parsedTests{ok: cache.Parsed, names: cache.Names, context: map[string]string{}}, cache.Exit, true
 	}
-	exit, output, ran := runAtBase(ctx, home, repo, base, command)
+	scratchDir, cleanup, err := roots.PrepareAttemptScratch(scratchRoot, "baseline")
+	if err != nil {
+		return parsedTests{}, 0, false
+	}
+	defer cleanup()
+	parent := scratchDir
+	if parent == "" {
+		parent = strings.TrimSpace(home)
+	}
+	exit, output, ran := runAtBase(ctx, parent, repo, base, command, roots.ApplyTempEnv(env, scratchDir))
 	if !ran {
 		return parsedTests{}, 0, false
 	}
 	parsed := parseGoTestOutput(string(output), exit)
 	if parsed.ok {
-		_ = writeBaselineCache(home, base, command, baselineCache{Version: 1, Exit: exit, Parsed: true, Names: parsed.names})
+		_ = writeBaselineCache(home, base, command, baselineCache{Version: baselineCacheVersion, Exit: exit, Parsed: true, Names: parsed.names})
 	}
 	return parsed, exit, true
 }
@@ -60,7 +74,7 @@ func readBaselineCache(home, base, command string) (baselineCache, bool) {
 		return baselineCache{}, false
 	}
 	var cache baselineCache
-	if json.Unmarshal(body, &cache) != nil || cache.Version != 1 || !cache.Parsed {
+	if json.Unmarshal(body, &cache) != nil || cache.Version != baselineCacheVersion || !cache.Parsed {
 		return baselineCache{}, false
 	}
 	return cache, true
@@ -81,8 +95,7 @@ func writeBaselineCache(home, base, command string, cache baselineCache) error {
 	return os.WriteFile(path, append(body, '\n'), 0o644)
 }
 
-func runAtBase(ctx context.Context, home, repo, base, command string) (int, []byte, bool) {
-	parent := strings.TrimSpace(home)
+func runAtBase(ctx context.Context, parent, repo, base, command string, env []string) (int, []byte, bool) {
 	if parent == "" {
 		var err error
 		parent, err = os.MkdirTemp("", "cardex-baseline-")
@@ -108,6 +121,6 @@ func runAtBase(ctx context.Context, home, repo, base, command string) (int, []by
 	}
 	cctx, cancel := context.WithTimeout(ctx, defaultAcceptanceTimeout)
 	defer cancel()
-	run, _ := runAcceptanceCommand(cctx, wt, command)
+	run, _ := runAcceptanceCommand(cctx, wt, command, env)
 	return run.Exit, run.Output, true
 }

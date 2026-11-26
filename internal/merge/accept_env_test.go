@@ -21,7 +21,7 @@ func TestRunChecksDropsServeEnv(t *testing.T) {
 	t.Setenv("GIT_EXEC_PATH", t.TempDir())
 	t.Setenv("GIT_TEMPLATE_DIR", t.TempDir())
 	probe := serveEnvProbe + "test \"$TMPDIR\" = '" + tmp + "'\n"
-	out, failed := runChecks(context.Background(), t.TempDir(), nil, probe)
+	out, failed := runChecks(context.Background(), t.TempDir(), nil, probe, "")
 	if failed {
 		t.Fatalf("test command saw serve environment:\n%s", out)
 	}

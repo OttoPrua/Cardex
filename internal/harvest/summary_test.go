@@ -163,6 +163,9 @@ func TestHarvestWritesSummaryAndBaseline(t *testing.T) {
 	dir, base, head := twoCommitRepo(t)
 	home := t.TempDir()
 	t.Setenv("KIMI_CODE_HOME", t.TempDir())
+	if err := writeBaselineCache(home, base, "go test .", baselineCache{Version: 1, Parsed: true}); err != nil {
+		t.Fatal(err)
+	}
 	res, err := Harvest(context.Background(), Input{
 		Attempt: model.Attempt{
 			ID: "att", Card: "c", Worktree: dir, BaseCommit: base,
@@ -344,7 +347,7 @@ func reviewSample() string {
 
 func readSummary(t *testing.T, home, id string) Summary {
 	t.Helper()
-	sum, err := LoadSummary(SummaryPath(home, id))
+	sum, err := LoadSummary(SummaryPath(home, model.Attempt{ID: id}))
 	if err != nil {
 		t.Fatal(err)
 	}

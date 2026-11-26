@@ -99,7 +99,7 @@ func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Ca
 	if attempt != nil {
 		attemptID = attempt.ID
 		if err := harvest.WriteUnavailableSummary(ctx, r.harvestInput(ctx, db, *card, *attempt, 1, nil)); err != nil {
-			_ = noteEvidenceWriteFailed(ctx, db, attempt.ID, err)
+			_ = noteEvidenceWriteFailed(ctx, db, r.Home, *attempt, err)
 		}
 	}
 	if werr := r.writeLaunchFailed(ctx, db, card.ID, attemptID, step, summary, rt); werr != nil {

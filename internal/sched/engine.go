@@ -174,7 +174,7 @@ func (r *Runner) disposeOpenDesign(ctx context.Context, db *store.Store, objecti
 		return err
 	}
 	if res.EvidenceErr != nil {
-		_ = noteEvidenceWriteFailed(ctx, db, hit.ID, res.EvidenceErr)
+		_ = noteEvidenceWriteFailed(ctx, db, r.Home, *hit, res.EvidenceErr)
 	}
 	return nil
 }

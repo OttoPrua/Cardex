@@ -17,6 +17,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/host"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
+	"github.com/OttoPrua/Cardex/internal/roots"
 )
 
 const defaultAcceptanceTimeout = 10 * time.Minute
@@ -46,7 +47,19 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	acc, accOut, accLog, runs, err := runAcceptance(ctx, dir, in.Card.Acceptance)
+	acceptRan := hasAcceptance(in.Card.Acceptance)
+	env := proc.AcceptanceEnv(os.Environ())
+	var scratchRoot string
+	if acceptRan {
+		scratchRoot = roots.Load(in.Home).EffectiveScratch(in.Scratch)
+	}
+	scratchDir, cleanup, err := roots.PrepareAttemptScratch(scratchRoot, in.Attempt.ID)
+	if err != nil {
+		return Result{}, err
+	}
+	acc, accOut, accLog, runs, err := runAcceptance(ctx, dir, in.Card.Acceptance, roots.ApplyTempEnv(env, scratchDir))
+	// Scratch can be inside the candidate worktree, so clean it before the summary diff.
+	_ = cleanup()
 	if err != nil {
 		return Result{}, err
 	}
@@ -58,7 +71,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 		ProducesCode: producesCode(in.Card.Kind),
 		HasChanges:   len(changed) > 0,
 		Acceptance:   acc,
-		AcceptRan:    hasAcceptance(in.Card.Acceptance),
+		AcceptRan:    acceptRan,
 		Result:       result,
 		Class:        in.ErrorClass,
 		Exit:         in.Exit,
@@ -78,11 +91,12 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if outcome == model.OutcomeTimeout && acc == acceptTimeout && !runnerClass(in.ErrorClass) {
 		res.ErrorClass = model.ErrorTimeout
 	}
-	if werr := writeEvidence(in.Home, in.Attempt.ID, accLog, result != resultMissing, []byte(raw)); werr != nil {
+	if werr := writeEvidence(in.Home, in.Attempt.ID, in.Attempt.PromptPath, accLog, result != resultMissing, []byte(raw)); werr != nil {
 		res.EvidenceErr = werr
 	}
-	sum := buildSummary(ctx, in, dir, base, runs, raw, result != resultMissing)
-	if werr := writeSummary(in.Home, in.Attempt.ID, sum); werr != nil {
+	acceptance := acceptanceResults(ctx, in.Home, dir, base, runs, env, scratchRoot)
+	sum := buildSummary(ctx, in, dir, base, acceptance, raw, result != resultMissing)
+	if werr := writeSummary(in.Home, in.Attempt, sum); werr != nil {
 		res.EvidenceErr = errors.Join(res.EvidenceErr, werr)
 	}
 	return res, nil
@@ -128,7 +142,7 @@ func mergeClaims(card string, declared, actual []model.Claim) []model.Claim {
 	return out
 }
 
-func runAcceptance(ctx context.Context, dir string, commands []string) (acceptState, string, []byte, []commandRun, error) {
+func runAcceptance(ctx context.Context, dir string, commands []string, env []string) (acceptState, string, []byte, []commandRun, error) {
 	var cmds []string
 	for _, c := range commands {
 		if c = strings.TrimSpace(c); c != "" {
@@ -154,7 +168,7 @@ func runAcceptance(ctx context.Context, dir string, commands []string) (acceptSt
 	var runs []commandRun
 	state := acceptOK
 	for _, command := range cmds {
-		run, err := runAcceptanceCommand(actx, dir, command)
+		run, err := runAcceptanceCommand(actx, dir, command, env)
 		runs = append(runs, run)
 		// A later header starts on its own line. The separator is not part of the raw output.
 		if log.Len() > 0 && log.Bytes()[log.Len()-1] != '\n' {
@@ -184,10 +198,10 @@ func runAcceptance(ctx context.Context, dir string, commands []string) (acceptSt
 	return state, tail(all.String()), log.Bytes(), runs, nil
 }
 
-func runAcceptanceCommand(ctx context.Context, dir, command string) (commandRun, error) {
+func runAcceptanceCommand(ctx context.Context, dir, command string, env []string) (commandRun, error) {
 	cmd := proc.Shell(ctx, command)
 	cmd.Dir = dir
-	cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(append([]string{}, env...), "GIT_TERMINAL_PROMPT=0")
 	proc.NewGroup(cmd)
 	cmd.WaitDelay = time.Second
 	cmd.Cancel = func() error {

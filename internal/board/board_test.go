@@ -349,6 +349,388 @@ func TestViewsHTMLAndJSON(t *testing.T) {
 	_ = home
 }
 
+// TestBoardViewAndFolders covers the v15 open-folder board: view query,
+// both panels, folder descriptions, deterministic project paper, and the
+// absence of texture, crease, and sticky-note markup.
+func TestBoardViewAndFolders(t *testing.T) {
+	t.Chdir(t.TempDir())
+	db, _ := seedCurrent(t)
+	before := snapshot(t, db)
+
+	project := do(t, http.MethodGet, "/?view=project")
+	if project.Code != http.StatusOK {
+		t.Fatalf("project status %d", project.Code)
+	}
+	body := project.Body.String()
+	if !strings.Contains(body, `data-view="project"`) {
+		t.Fatal("project query did not set data-view")
+	}
+	assertBothPanels(t, body)
+	bogus := do(t, http.MethodGet, "/?view=bogus").Body.String()
+	if !strings.Contains(bogus, `data-view="status"`) {
+		t.Fatal("illegal view did not fall back to status")
+	}
+	assertBothPanels(t, bogus)
+	plain := do(t, http.MethodGet, "/").Body.String()
+	if !strings.Contains(plain, `data-view="status"`) {
+		t.Fatal("missing view query did not render status")
+	}
+	if !strings.Contains(body, `id="tab-detail" checked`) || strings.Contains(body, `id="tab-overview" checked`) {
+		t.Fatal("explicit project view did not open the detail pane")
+	}
+	statusPage := do(t, http.MethodGet, "/?view=status").Body.String()
+	if !strings.Contains(statusPage, `data-view="status"`) || !strings.Contains(statusPage, `id="tab-detail" checked`) || strings.Contains(statusPage, `id="tab-overview" checked`) {
+		t.Fatal("explicit status view did not open the detail pane")
+	}
+	if strings.Contains(plain, `id="tab-detail" checked`) || !strings.Contains(plain, `id="tab-overview" checked`) {
+		t.Fatal("page without a view query should stay on the overview")
+	}
+	if strings.Contains(bogus, `id="tab-detail" checked`) {
+		t.Fatal("illegal view query opened the detail pane")
+	}
+	assertContains(t, plain,
+		`href="?view=status"`, `href="?view=project"`,
+		`class="cx-nav"`, `class="cx-seg"`,
+		`localStorage.getItem("cardex.view")`,
+		`history.replaceState`,
+		`if (document.documentElement.dataset.switching) { return; }`,
+	)
+	start := strings.Index(plain, "setInterval(function () {")
+	if start < 0 {
+		t.Fatal("missing refresh interval")
+	}
+	guard := "if (document.documentElement.dataset.switching) { return; }"
+	rest := plain[start:]
+	if !strings.HasPrefix(strings.TrimSpace(rest[len("setInterval(function () {"):]), guard) {
+		t.Fatal("switching guard is not the first line of the refresh callback")
+	}
+
+	for _, page := range []string{body, bogus} {
+		assertFolderCopy(t, page)
+		for _, banned := range []string{"<filter", "feTurbulence", "cardex-tex-", "sticky-note", "postit", `class="note"`, `class="logo"`} {
+			if strings.Contains(page, banned) {
+				t.Fatalf("page contains %q", banned)
+			}
+		}
+		if strings.Contains(strings.ReplaceAll(page, "--of-crease", ""), "of-crease") {
+			t.Fatal("page has a visible of-crease")
+		}
+		if strings.Contains(page, "filter:") {
+			t.Fatal("page uses a CSS filter")
+		}
+	}
+	assertContains(t, plain,
+		"status waiting count 1",
+		"waiting c-wait reason blocked by c-merge on calc.go Answer",
+		"attempt a-run",
+		"claim calc.go Answer",
+		"merge c-merge",
+		"card c-ready status ready",
+		"question q-open",
+		"objective o-live status active",
+	)
+
+	again := do(t, http.MethodGet, "/?view=project").Body.String()
+	if paperClass(t, body) != paperClass(t, again) {
+		t.Fatalf("paper changed across requests: %s vs %s", paperClass(t, body), paperClass(t, again))
+	}
+
+	home := t.TempDir()
+	t.Setenv("CARDEX_HOME", home)
+	db2, err := store.Open(filepath.Join(home, "cardex.db"))
+	must(t, err)
+	t.Cleanup(func() { _ = db2.Close() })
+	ctx := context.Background()
+	for _, id := range []string{"a", "b", "c", "d"} {
+		must(t, db2.CreateProject(ctx, &model.Project{ID: id, RepoPath: home}))
+	}
+	// Project names sort into the effect-image order. Paper follows that
+	// display order, skipping a colour that matches the left neighbour.
+	order := []struct{ id, project string }{
+		{"shop-web", "a"},
+		{"pay-svc", "b"},
+		{"search-idx", "c"},
+		{"ops-tools", "d"},
+	}
+	for _, item := range order {
+		must(t, db2.CreateObjective(ctx, &model.Objective{
+			ID: item.id, Project: item.project, Title: item.id + " goal sentence",
+			Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+		}))
+		must(t, db2.CreateCard(ctx, &model.Card{
+			ID: "c-" + item.id, Objective: item.id, Title: item.id + " card", Kind: model.KindDev, Status: model.CardReady,
+		}))
+	}
+	seeded := do(t, http.MethodGet, "/?view=project").Body.String()
+	classes := projectPaperClasses(t, seeded)
+	if len(classes) != 4 {
+		t.Fatalf("project folders %v", classes)
+	}
+	for i := 1; i < len(classes); i++ {
+		if classes[i] == classes[i-1] {
+			t.Fatalf("adjacent project folders share %s", classes[i])
+		}
+	}
+	want := []string{"g-pc-pistachio", "g-pc-mauve", "g-pc-kraft", "g-pc-manila"}
+	for i, class := range want {
+		if classes[i] != class {
+			t.Fatalf("folder %d class %s, want %s (%v)", i, classes[i], class, classes)
+		}
+	}
+	if !strings.Contains(seeded, `class="of-desc" title="shop-web goal sentence"`) {
+		t.Fatal("project description missing")
+	}
+
+	after := snapshot(t, db)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("view requests mutated the store")
+	}
+}
+
+func TestReviewFolderSeparateFromStats(t *testing.T) {
+	if statusGroup["reviewing"] != "running" || groupOf("reviewing") != "running" {
+		t.Fatal("statusGroup changed; reviewing must still count as running")
+	}
+	if folderGroup("reviewing") != "review" {
+		t.Fatalf("folder group %s", folderGroup("reviewing"))
+	}
+	t.Chdir(t.TempDir())
+	db, home := openHome(t)
+	ctx := context.Background()
+	must(t, db.CreateProject(ctx, &model.Project{ID: "p1", RepoPath: home}))
+	must(t, db.CreateObjective(ctx, &model.Objective{
+		ID: "o-live", Project: "p1", Title: "退款流程",
+		Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeSafe,
+	}))
+	must(t, db.CreateCard(ctx, &model.Card{
+		ID: "c-review", Objective: "o-live", Title: "退款流程状态机", Kind: model.KindDev, Status: model.CardReviewing,
+	}))
+	must(t, db.CreateCard(ctx, &model.Card{
+		ID: "c-run", Objective: "o-live", Title: "支付回调幂等改造", Kind: model.KindDev, Status: model.CardRunning,
+	}))
+
+	body := do(t, http.MethodGet, "/?view=status").Body.String()
+	review := folderSection(t, body, "review")
+	if !strings.Contains(review, "g-review") || !strings.Contains(review, "复核") || !strings.Contains(review, "交叉评审中") || !strings.Contains(review, "退款流程状态机") {
+		t.Fatalf("review folder missing copy: %s", review)
+	}
+	running := folderSection(t, body, "running")
+	if strings.Contains(running, "退款流程状态机") || strings.Contains(running, "c-review") {
+		t.Fatal("reviewing card was filed in the running folder")
+	}
+
+	view := decode[currentView](t, do(t, http.MethodGet, "/api/work"))
+	var runningCount int
+	for _, g := range view.Groups {
+		if g.Group == "review" {
+			t.Fatal("stats gained a review group")
+		}
+		if g.Group == "running" {
+			runningCount = g.Count
+		}
+	}
+	if runningCount != 2 {
+		t.Fatalf("running stat count %d, want 2 (running + reviewing)", runningCount)
+	}
+}
+
+func TestMotionRestoresBeforeMeasure(t *testing.T) {
+	t.Chdir(t.TempDir())
+	_, _ = openHome(t)
+	body := do(t, http.MethodGet, "/").Body.String()
+	if strings.Contains(body, ".finish()") {
+		t.Fatal("view switch finishes animations and keeps their fill")
+	}
+	if !strings.Contains(body, ".of-face.out{display:none;") {
+		t.Fatal("outer face is painted while the folder is resting")
+	}
+	swAt := strings.Index(body, "function switchView")
+	measureAt := strings.Index(body, "function measure")
+	releaseAt := strings.Index(body, "function releaseMotion")
+	if swAt < 0 || measureAt < 0 || releaseAt < 0 || releaseAt > swAt {
+		t.Fatal("missing motion helpers")
+	}
+	sw := body[swAt:measureAt]
+	if !strings.Contains(sw, "releaseMotion") {
+		t.Fatal("switchView does not release the previous motion before measuring")
+	}
+	dropAt := strings.Index(body, "function dropAnim")
+	if dropAt < 0 || dropAt > releaseAt || !strings.Contains(body[dropAt:swAt], ".cancel()") {
+		t.Fatal("releaseMotion does not cancel animations")
+	}
+	settleAt := strings.Index(body, "function settleOpen")
+	if settleAt < 0 || settleAt > releaseAt {
+		t.Fatal("missing settleOpen")
+	}
+	relFn := body[releaseAt:swAt]
+	settleCall := strings.Index(relFn, "settleOpen()")
+	cancelAll := strings.Index(relFn, "getAnimations")
+	if settleCall < 0 || cancelAll < 0 || settleCall > cancelAll {
+		t.Fatal("releaseMotion cancels animations before the open motion has settled")
+	}
+	settleFn := body[settleAt:releaseAt]
+	del := strings.Index(settleFn, "delete root.dataset.open")
+	unflip := strings.Index(settleFn, `classList.remove("is-flipping")`)
+	dropOwn := strings.Index(settleFn, "pending.forEach(dropAnim)")
+	if del < 0 || unflip < 0 || dropOwn < 0 || del > dropOwn || unflip > dropOwn {
+		t.Fatal("settleOpen cancels the open animation before leaving the open pose")
+	}
+	playAt := strings.Index(body, "function playOpen")
+	play := body[playAt:]
+	shown := strings.Index(play, "boardShown()")
+	marker := strings.Index(play, `sessionStorage.setItem("cardex.folderOpen"`)
+	if shown < 0 || marker < 0 || shown > marker {
+		t.Fatal("open marker is written before the folders are visible")
+	}
+	if strings.Contains(play, "getAnimations()") {
+		t.Fatal("open cleanup cancels animations it did not start")
+	}
+	if !strings.Contains(play, "openTicket") || !strings.Contains(play, "mine.forEach") {
+		t.Fatal("open cleanup is not limited to its own animations")
+	}
+}
+
+func folderSection(t *testing.T, body, group string) string {
+	t.Helper()
+	needle := `data-group="` + group + `"`
+	i := strings.Index(body, needle)
+	if i < 0 {
+		t.Fatalf("missing folder %s", group)
+	}
+	start := strings.LastIndex(body[:i], "<section")
+	endRel := strings.Index(body[i:], "</section>")
+	if start < 0 || endRel < 0 {
+		t.Fatalf("unclosed folder %s", group)
+	}
+	return body[start : i+endRel]
+}
+
+func TestPaperForSkipsNeighbour(t *testing.T) {
+	examples := map[string]string{
+		"shop-web":   "pistachio",
+		"pay-svc":    "mauve",
+		"search-idx": "kraft",
+		"ops-tools":  "manila",
+	}
+	for id, name := range examples {
+		got := projectPaper[paperFor(id, -1)]
+		if got != name {
+			t.Fatalf("%s paper %s, want %s", id, got, name)
+		}
+	}
+	prev := paperFor("shop-web", -1)
+	id := ""
+	for i := 0; i < 10000; i++ {
+		id = "collide-" + strconv.Itoa(i)
+		if int(fnv1a32(id)%uint32(len(projectPaper))) == prev {
+			break
+		}
+	}
+	if int(fnv1a32(id)%uint32(len(projectPaper))) != prev {
+		t.Fatal("did not find a colliding id")
+	}
+	got := paperFor(id, prev)
+	if got == prev || got != (prev+1)%len(projectPaper) {
+		t.Fatalf("collision paper %d, prev %d", got, prev)
+	}
+	if paperFor(id, -1) == paperFor(id, prev) {
+		t.Fatal("skip did not change the collided index")
+	}
+}
+
+func TestFaviconRoutesReadOnly(t *testing.T) {
+	t.Chdir(t.TempDir())
+	_, _ = openHome(t)
+	routes := []struct{ path, name, ctype string }{
+		{"/favicon.ico", "static/favicon.ico", "image/x-icon"},
+		{"/favicon.svg", "static/favicon.svg", "image/svg+xml"},
+		{"/apple-touch-icon.png", "static/apple-touch-icon.png", "image/png"},
+	}
+	for _, route := range routes {
+		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+			rec := do(t, method, route.path)
+			if rec.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("%s %s: %d", method, route.path, rec.Code)
+			}
+		}
+		rec := do(t, http.MethodGet, route.path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s: %d", route.path, rec.Code)
+		}
+		if got := rec.Header().Get("Content-Type"); got != route.ctype {
+			t.Fatalf("%s content-type %q", route.path, got)
+		}
+		want, err := staticFS.ReadFile(route.name)
+		must(t, err)
+		if rec.Body.String() != string(want) {
+			t.Fatalf("%s body mismatch (%d vs %d)", route.path, rec.Body.Len(), len(want))
+		}
+	}
+}
+
+func assertBothPanels(t *testing.T, body string) {
+	t.Helper()
+	assertContains(t, body, `data-panel="status"`, `data-panel="project"`, `id="board"`)
+}
+
+func assertFolderCopy(t *testing.T, body string) {
+	t.Helper()
+	sections := strings.Count(body, `<section class="of `)
+	descs := strings.Count(body, `class="of-desc"`)
+	if sections == 0 || descs < sections {
+		t.Fatalf("folders %d descriptions %d", sections, descs)
+	}
+	for _, desc := range []string{
+		"等待分派给工具的卡",
+		"工具正在执行",
+		"等待或已合并",
+	} {
+		if !strings.Contains(body, desc) {
+			t.Fatalf("missing group description %q", desc)
+		}
+	}
+}
+
+func paperClass(t *testing.T, body string) string {
+	t.Helper()
+	classes := projectPaperClasses(t, body)
+	if len(classes) != 1 {
+		t.Fatalf("expected one project folder, got %v", classes)
+	}
+	return classes[0]
+}
+
+func projectPaperClasses(t *testing.T, body string) []string {
+	t.Helper()
+	i := strings.Index(body, `data-panel="project"`)
+	if i < 0 {
+		t.Fatal("missing project panel")
+	}
+	panel := body[i:]
+	if j := strings.Index(panel, `<span class="k">`); j >= 0 {
+		panel = panel[:j]
+	}
+	var classes []string
+	rest := panel
+	for {
+		k := strings.Index(rest, `<section class="of `)
+		if k < 0 {
+			break
+		}
+		rest = rest[k+len(`<section class="of `):]
+		end := strings.Index(rest, `"`)
+		if end < 0 {
+			t.Fatal("unclosed folder class")
+		}
+		class := rest[:end]
+		if strings.Contains(class, "g-pc-") {
+			classes = append(classes, class[strings.Index(class, "g-pc-"):])
+		}
+		rest = rest[end:]
+	}
+	return classes
+}
+
 // TestPendingQuestionsOnOpenObjectives is the regression for unanswered
 // questions on active, paused, and done_candidate objectives. It drives
 // Handler for GET / and GET /api/work. Paused and done_candidate stay out
@@ -961,8 +1343,15 @@ func TestQuotaUnknownVersusExhausted(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			rec := do(t, http.MethodGet, path)
 			body := rec.Body.String()
-			if strings.Contains(body, "0.9") {
-				t.Fatalf("uncapped remaining was shown: %s", body)
+			shown := body
+			if i := strings.Index(body, "<main>"); i >= 0 {
+				shown = body[i:]
+				if j := strings.Index(shown, "</main>"); j >= 0 {
+					shown = shown[:j]
+				}
+			}
+			if strings.Contains(shown, "0.9") {
+				t.Fatalf("uncapped remaining was shown: %s", shown)
 			}
 			if path == "/channels?tab=quota" {
 				assertContains(t, body,

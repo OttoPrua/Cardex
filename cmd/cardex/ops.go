@@ -205,7 +205,7 @@ func objectiveTransition(home string, asJSON bool, verb string, args []string, s
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	return emit(stdout, asJSON, o, o.ID+"\t"+string(o.Status))
+	return emit(stdout, asJSON, o, o.ID+"\t"+paintStatus(stdout, asJSON, string(o.Status)))
 }
 
 func objectiveVerbStatus(verb string) model.ObjectiveStatus {
@@ -267,7 +267,7 @@ func cardTransition(home string, asJSON bool, verb string, args []string, stdout
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	line := c.ID + "\t" + string(c.Status)
+	line := c.ID + "\t" + paintStatus(stdout, asJSON, string(c.Status))
 	return emit(stdout, asJSON, cardView{Card: c, Origin: origin}, line)
 }
 
@@ -311,9 +311,9 @@ func cardAbsorb(home string, asJSON bool, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	line := res.Card + "\t" + string(res.Status)
+	line := res.Card + "\t" + paintStatus(stdout, asJSON, string(res.Status))
 	if res.Review != "" {
-		line += "\treview " + res.Review + " " + string(res.ReviewStatus)
+		line += "\treview " + res.Review + " " + paintStatus(stdout, asJSON, string(res.ReviewStatus))
 	}
 	return emit(stdout, asJSON, res, line)
 }
@@ -345,7 +345,7 @@ func cardMerged(home string, asJSON bool, args []string, stdout, stderr io.Write
 	switch from {
 	case model.CardMergeQueued, model.CardReviewing, model.CardDone:
 	case model.CardMerged:
-		return emit(stdout, asJSON, cardView{Card: c}, c.ID+"\t"+string(c.Status))
+		return emit(stdout, asJSON, cardView{Card: c}, c.ID+"\t"+paintStatus(stdout, asJSON, string(c.Status)))
 	case model.CardWaiting:
 		if msg := canceledBlocker(ctx, db, c); msg != "" {
 			fmt.Fprintln(stderr, msg)
@@ -368,7 +368,7 @@ func cardMerged(home string, asJSON bool, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	return emit(stdout, asJSON, cardView{Card: c}, c.ID+"\t"+string(c.Status))
+	return emit(stdout, asJSON, cardView{Card: c}, c.ID+"\t"+paintStatus(stdout, asJSON, string(c.Status)))
 }
 
 // canceledBlocker returns "" when a waiting card is blocked only by a repair or

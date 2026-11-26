@@ -791,7 +791,7 @@ func TestServeLoopsUntilStopped(t *testing.T) {
 	for _, addr := range []string{"127.0.0.1:8787", "127.0.0.1:8788"} {
 		home := makeV1(t)
 		var errb strings.Builder
-		code := runServe(t.Context(), home, addr, io.Discard, &errb)
+		code := runServe(t.Context(), home, addr, false, io.Discard, &errb)
 		if code == 0 || !strings.Contains(errb.String(), "import-legacy") {
 			t.Fatalf("%s code %d stderr %s", addr, code, errb.String())
 		}
@@ -806,7 +806,7 @@ func TestServeLoopsUntilStopped(t *testing.T) {
 	var buf lockBuf
 	done := make(chan int, 1)
 	go func() {
-		done <- runServe(ctx, t.TempDir(), "127.0.0.1:0", &buf, io.Discard)
+		done <- runServe(ctx, t.TempDir(), "127.0.0.1:0", false, &buf, io.Discard)
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for strings.Count(buf.String(), "serve loop iteration") < 2 {

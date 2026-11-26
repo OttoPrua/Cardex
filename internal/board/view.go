@@ -3,6 +3,7 @@ package board
 import (
 	"fmt"
 	"html/template"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -79,7 +80,27 @@ var boardFuncs = template.FuncMap{
 	"sub":    func(a, b int) int { return a - b },
 	"glabel": func(g string) string { return groupText[g] },
 	"gtone":  func(g string) string { return groupTone[g] },
-	"dec":    func(n int) int { return n - 1 },
+	"stab": func(status string) string {
+		if t, ok := statusTab[status]; ok {
+			return t.class
+		}
+		return "s-ready"
+	},
+	"stabText": func(status string) string {
+		if t, ok := statusTab[status]; ok {
+			return t.text
+		}
+		if status == "" {
+			return ""
+		}
+		return strings.ToUpper(status)
+	},
+	"folderStyle": folderStyle,
+	"cardSlot": func(i int) template.CSS {
+		return template.CSS(fmt.Sprintf("--i:%d", i))
+	},
+	"mark": markSVG,
+	"dec":  func(n int) int { return n - 1 },
 	"pages": func(total, size int) int {
 		if size <= 0 || total <= 0 {
 			return 1
@@ -103,6 +124,10 @@ var statusGroup = map[string]string{
 
 var groupOrder = []string{"running", "queued", "input", "merging", "failed", "done", "paused"}
 
+// folderOrder is the board column order: 排队 → 在做 → 复核 → 合入, then the
+// remaining display folders. It is not the stats row; groupOrder stays put.
+var folderOrder = []string{"queued", "running", "review", "merging", "done", "input", "failed", "paused"}
+
 var groupText = map[string]string{
 	"queued": "排队", "running": "执行中", "merging": "合并中", "input": "待你处理",
 	"done": "完成", "paused": "暂停或取消", "failed": "失败",
@@ -118,6 +143,142 @@ func groupOf(status string) string {
 		return g
 	}
 	return "queued"
+}
+
+// folderGroup is the open-folder column for a card. Reviewing has its own
+// folder. statusGroup is unchanged, so the stats row still counts reviewing
+// as running.
+func folderGroup(status string) string {
+	if status == "reviewing" {
+		return "review"
+	}
+	return groupOf(status)
+}
+
+// statusTab is the index-tab class and English caption for a card status.
+// statusText / statusTone stay as they are; this is only the tab on a card.
+var statusTab = map[string]struct{ class, text string }{
+	"ready":        {"s-ready", "QUEUED"},
+	"waiting":      {"s-waiting", "WAITING"},
+	"running":      {"s-running", "RUNNING"},
+	"harvesting":   {"s-harvesting", "TESTING"},
+	"reviewing":    {"s-reviewing", "REVIEW"},
+	"needs_input":  {"s-needs-input", "YOUR CALL"},
+	"merge_queued": {"s-merge-queued", "MERGE Q"},
+	"merged":       {"s-merged", "MERGED"},
+	"done":         {"s-done", "DONE"},
+	"failed":       {"s-failed", "RETURNED"},
+	"paused":       {"s-paused", "PAUSED"},
+	"canceled":     {"s-canceled", "VOID"},
+}
+
+// groupClass is the open-folder colour class. done shares the merge paper.
+// review is a display folder only; statusGroup still maps reviewing to running.
+var groupClass = map[string]string{
+	"queued":  "g-queued",
+	"running": "g-running",
+	"review":  "g-review",
+	"merging": "g-merge",
+	"input":   "g-input",
+	"done":    "g-merge",
+	"failed":  "g-failed",
+	"paused":  "g-paused",
+}
+
+// folderLabel is the name printed on a status folder's tab.
+var folderLabel = map[string]string{
+	"queued":  "排队",
+	"running": "在做",
+	"review":  "复核",
+	"merging": "合入",
+	"input":   "待你拍板",
+	"done":    "完成",
+	"failed":  "失败",
+	"paused":  "暂停/取消",
+}
+
+// groupDescText is the one-line description under a status folder's name.
+var groupDescText = map[string]string{
+	"queued":  "等待分派给工具的卡",
+	"running": "工具正在执行",
+	"review":  "交叉评审中",
+	"merging": "等待或已合并",
+	"input":   "需要你拍板才能继续",
+	"done":    "等待或已合并",
+	"failed":  "失败或被退回，待返工",
+	"paused":  "暂停或取消的卡",
+}
+
+func groupDesc(group string) string {
+	return groupDescText[group]
+}
+
+// projectPaper is the v15 project-folder palette. Order is the hash space.
+var projectPaper = []string{"manila", "kraft", "lilac", "pistachio", "clay", "slate", "mauve"}
+
+func fnv1a32(s string) uint32 {
+	h := uint32(2166136261)
+	for i := 0; i < len(s); i++ {
+		h ^= uint32(s[i])
+		h *= 16777619
+	}
+	return h
+}
+
+// paperFor picks a project paper from the objective ID. prev is the left
+// neighbour's index, or -1 for the first folder. A collision with that
+// neighbour advances one step.
+func paperFor(id string, prev int) int {
+	k := int(fnv1a32(id) % uint32(len(projectPaper)))
+	if k == prev {
+		k = (k + 1) % len(projectPaper)
+	}
+	return k
+}
+
+func objectiveBlurb(title, id string) (short, full string) {
+	full = strings.TrimSpace(title)
+	if full == "" {
+		full = id
+	}
+	return clipRunes(full, 18), full
+}
+
+func clipRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
+}
+
+// folderStyle sets the open-folder height from how many cards it holds.
+// The front flap is 0.465 of the inner sheet; the crease is where it hinges.
+func folderStyle(n int) template.CSS {
+	if n < 0 {
+		n = 0
+	}
+	const (
+		tabH    = 52
+		cardH   = 88
+		gap     = 12
+		cardTop = 20
+		bottom  = 36
+	)
+	inner := 96
+	if n > 0 {
+		inner = cardTop + n*cardH + (n-1)*gap + bottom
+	}
+	flap := int(math.Round(float64(inner) * 0.465))
+	if flap < 48 {
+		flap = 48
+	}
+	if flap > inner-8 {
+		flap = inner / 2
+	}
+	crease := tabH + inner - flap
+	h := tabH + inner
+	return template.CSS(fmt.Sprintf("--of-h:%dpx;--of-crease:%dpx;--of-flap-h:%dpx", h, crease, flap))
 }
 
 // humanQuestion explains a scheduler-generated question in plain Chinese.

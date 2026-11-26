@@ -1,6 +1,11 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/readme-header-dark.png">
+  <img src="docs/brand/readme-header-light.png" alt="Cardex" width="1280">
+</picture>
+
 # Cardex
 
-**Turn the AI coding tools you already pay for into one crew: you set the goal and make the calls; Cardex splits the work, dispatches it, checks it, and merges it.**
+**Cardex is a local, card-based scheduler for AI coding tools.** It coordinates development, verification, review, and merging across the channels you set up, including Claude Code, Codex, Grok Build, Kimi, and Antigravity. You set the goal and make the key decisions.
 
 [中文](README.md) · **English** · [Install](#install) · [Supported tools](#supported-tools) · [Upgrade from V1](docs/v2/upgrade-from-v1.md) · [Download](https://github.com/OttoPrua/Cardex/releases/latest)
 
@@ -10,19 +15,19 @@
 
 ![What it fixes: unused quota, one window at a time, "done" but not really, progress lost on restart; Cardex runs tools in parallel, works in the background, tests and cross-reviews, and saves state locally.](docs/assets/cardex-problems.en.svg)
 
-The scheduler and board never call a model; the work runs on your own subscriptions or APIs.
+Cardex dispatches cards in the background. Open the local board to see what’s running and what’s waiting for your decision. Development and review use the subscriptions or APIs you configure.
 
 ## Highlights
 
 ![Seven highlights: mix your tools, it breaks work down, parallel without clashes, test then review, no wasted quota, asks when it matters, stays local.](docs/assets/cardex-intro-highlights.en.svg)
 
-- **Mix your tools**: Claude Code, Codex, Grok Build, Cursor, Kimi, OpenCode, Antigravity, picked by difficulty, capability, and quota; `route explain` says why.
-- **Small jobs as cards, big ones split for you**: manual objectives run only your cards; automatic ones survey the repo, design, and split, starting only after you approve the direction.
-- **Parallel without clashes**: each card works in its own workspace; edits to the same function queue up.
-- **Test, review, then merge**: it checks real diffs and test results, not claims; code cards are reviewed by a different model family.
-- **No wasted quota**: stops dispatching near a limit, and uses leftovers on backlog before a reset.
-- **Asks when it matters**: decisions only you can make stop for your answer; silence is not a yes. Rework is capped at 2 tries by default.
-- **Local and safe**: data stays on your machine, code in Git; on macOS executors run in a system sandbox and cannot push.
+- **Route each card to a channel.** Cardex considers task difficulty, tool capabilities, and available quota. Run `route explain` to see why it picked a channel.
+- **Write your own cards or let Cardex break down the work.** Manual objectives run the cards you add. For automatic objectives, Cardex examines the repository and proposes a design. Once you approve the direction, it breaks the work into development cards.
+- **Work in parallel in separate worktrees.** Each attempt gets its own Git worktree. Cards queue up when their declared changes overlap.
+- **Verify, review, and merge.** Cardex runs your configured checks. By default, it then sends development cards that pass to a different model family for review. Approved changes enter the merge queue for the objective branch.
+- **Keep some quota in reserve.** Set a threshold for a channel. Automatic dispatch skips it when the estimated remaining quota reaches that threshold.
+- **Approve key steps.** Cardex waits for your approval on the direction of an automatic objective and before merging into the project’s main branch. It also asks what to do when a card runs out of rework attempts.
+- **Keep progress on your machine.** Card status and execution records are stored locally, and Git tracks changes. On macOS, the system sandbox limits where executors can write by default.
 
 ## How it works
 
@@ -44,6 +49,8 @@ The scheduler and board never call a model; the work runs on your own subscripti
 </details>
 
 ## Install
+
+Start with one project and one card. Install Cardex first, then connect the coding tools you want to use.
 
 **Recommended**: paste this into a Codex or Hermes session that can operate your computer.
 
@@ -94,7 +101,7 @@ Cardex only passes the model ID to a signed-in tool; it does not translate proto
 
 ![An automatic objective: design, owner approval, parallel cards, review and tests, then merge into the objective branch; rejected work retries with review notes.](docs/images/cardex-v2-objective.en.svg)
 
-Using Codex to write and Claude to review:
+Run your first card under a manual objective. Codex makes the change, Claude Code reviews it, and Cardex runs the project tests to verify it.
 
 ```sh
 export CARDEX_HOME="$HOME/.cardex-demo"

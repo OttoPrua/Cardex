@@ -80,7 +80,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	case "proxy":
 		return cmdProxy(home, asJSON, rest[1:], stdout, stderr)
 	case "serve":
-		return cmdServe(home, rest[1:], stdout, stderr)
+		return cmdServe(home, asJSON, rest[1:], stdout, stderr)
 	case "project":
 		return cmdProject(home, asJSON, rest[1:], stdout, stderr)
 	case "objective":
@@ -110,7 +110,7 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	case "notify":
 		return cmdNotify(home, asJSON, rest[1:], stdout, stderr)
 	case "version", "--version", "-v":
-		return cmdVersion(stdout)
+		return cmdVersion(home, asJSON, stdout)
 	case "setup":
 		return cmdSetup(home, asJSON, rest[1:], stdout, stderr)
 	case "host":
@@ -158,7 +158,7 @@ func splitGlobal(args []string) (home string, asJSON bool, rest []string, err er
 	return home, asJSON, rest, nil
 }
 
-func cmdServe(home string, args []string, stdout, stderr io.Writer) int {
+func cmdServe(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("serve", "run the board and the scheduler loop until interrupted", "--addr", stdout, stderr)
 	addr := fs.String("addr", "127.0.0.1:0", "listen address")
 	if code, ok := parseSet(fs, args); !ok {
@@ -166,10 +166,10 @@ func cmdServe(home string, args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return runServe(ctx, home, *addr, stdout, stderr)
+	return runServe(ctx, home, *addr, asJSON, stdout, stderr)
 }
 
-func runServe(ctx context.Context, home, addr string, stdout, stderr io.Writer) int {
+func runServe(ctx context.Context, home, addr string, asJSON bool, stdout, stderr io.Writer) int {
 	home, err := resolveHome(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -177,7 +177,7 @@ func runServe(ctx context.Context, home, addr string, stdout, stderr io.Writer) 
 	}
 	// sched.Serve is the production loop. It builds the runner with sched.New
 	// and writes the listening line when WithLog is set.
-	err = sched.Serve(sched.WithLog(ctx, stdout), home, addr)
+	err = sched.Serve(sched.WithLog(ctx, serveLog(stdout, asJSON, home)), home, addr)
 	if err != nil && ctx.Err() == nil {
 		fmt.Fprintf(stderr, "tick error: %v\n", err)
 		return 1

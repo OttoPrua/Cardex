@@ -23,6 +23,7 @@ const historyPageSize = 50
 
 type pageData struct {
 	Title    string
+	View     string
 	Current  *currentView
 	Channels *channelsView
 	Card     *cardView
@@ -39,6 +40,16 @@ type currentView struct {
 	PendingQuestions []questionBrief   `json:"pending_questions"`
 	Progress         []projectProgress `json:"progress"`
 	Groups           []groupCount      `json:"groups"`
+	// StatusFolders and ProjectFolders are the two server-rendered boards.
+	// They are HTML-only; /api/work stays the machine view.
+	StatusFolders  []folderColumn `json:"-"`
+	ProjectFolders []folderColumn `json:"-"`
+	// BoardView is status or project, from ?view=. Empty means status.
+	BoardView string `json:"-"`
+	// ViewChosen is true when the request named ?view=status or ?view=project.
+	// Those links are the no-JS view switch, so the response opens the board
+	// pane instead of the overview.
+	ViewChosen bool `json:"-"`
 	// Inbox is PendingQuestions minus ones the scheduler no longer delivers
 	// (canceled card, or a no-output question on a card that finished since).
 	Inbox  []questionBrief `json:"inbox"`
@@ -70,6 +81,18 @@ type groupCount struct {
 	Label string `json:"label"`
 	Tone  string `json:"tone"`
 	Count int    `json:"count"`
+}
+
+// folderColumn is one open folder on the board. Status folders set Group;
+// project folders set Objective and leave Group empty.
+type folderColumn struct {
+	Class     string
+	Group     string
+	Name      string
+	Desc      string
+	DescFull  string
+	Cards     []cardRow
+	Objective objectiveView
 }
 
 type nodeView struct {
@@ -463,7 +486,62 @@ func loadCurrent(ctx context.Context, db *store.Store) (*currentView, error) {
 		}
 		return view.Objectives[i].Project < view.Objectives[j].Project
 	})
+	view.StatusFolders, view.ProjectFolders = buildBoardFolders(view.Objectives)
 	return view, nil
+}
+
+// buildBoardFolders groups current cards into status folders, in groupOrder,
+// and one project folder per objective in display order. Empty status groups
+// are omitted. Project paper is fnv1a32(objective ID) mod 7, skipping the
+// left neighbour's colour.
+func buildBoardFolders(objectives []objectiveView) (status []folderColumn, projects []folderColumn) {
+	buckets := map[string][]cardRow{}
+	for _, o := range objectives {
+		for _, c := range o.Cards {
+			g := folderGroup(c.Status)
+			buckets[g] = append(buckets[g], c)
+		}
+	}
+	status = []folderColumn{}
+	for _, g := range folderOrder {
+		cards := buckets[g]
+		if len(cards) == 0 {
+			continue
+		}
+		desc := groupDesc(g)
+		status = append(status, folderColumn{
+			Class:    groupClass[g],
+			Group:    g,
+			Name:     folderLabel[g],
+			Desc:     desc,
+			DescFull: desc,
+			Cards:    cards,
+		})
+	}
+	projects = []folderColumn{}
+	prev := -1
+	for _, o := range objectives {
+		idx := paperFor(o.ID, prev)
+		prev = idx
+		short, full := objectiveBlurb(o.Title, o.ID)
+		name := strings.TrimSpace(o.Title)
+		if name == "" {
+			name = o.ID
+		}
+		cards := o.Cards
+		if cards == nil {
+			cards = []cardRow{}
+		}
+		projects = append(projects, folderColumn{
+			Class:     "g-pc-" + projectPaper[idx],
+			Name:      name,
+			Desc:      short,
+			DescFull:  full,
+			Cards:     cards,
+			Objective: o,
+		})
+	}
+	return status, projects
 }
 
 func openCards(o objectiveView) int {

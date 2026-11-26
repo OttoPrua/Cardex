@@ -24,6 +24,9 @@ import (
 //go:embed templates/page.html
 var templateFS embed.FS
 
+//go:embed static/favicon.svg static/favicon.ico static/apple-touch-icon.png static/mark-light.svg static/mark-dark.svg
+var staticFS embed.FS
+
 var pageTmpl = template.Must(template.New("page.html").Funcs(boardFuncs).ParseFS(templateFS, "templates/page.html"))
 
 // logTailBytes is how much of an attempt output.log a GET returns.
@@ -46,6 +49,12 @@ func serve(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case path == "/":
 		serveCurrent(w, r, false)
+	case path == "/favicon.ico":
+		serveStatic(w, r, "static/favicon.ico", "image/x-icon")
+	case path == "/favicon.svg":
+		serveStatic(w, r, "static/favicon.svg", "image/svg+xml")
+	case path == "/apple-touch-icon.png":
+		serveStatic(w, r, "static/apple-touch-icon.png", "image/png")
 	case path == "/api/work":
 		serveCurrent(w, r, true)
 	case path == "/channels":
@@ -97,7 +106,53 @@ func serveCurrent(w http.ResponseWriter, r *http.Request, asJSON bool) {
 		writeJSON(w, view)
 		return
 	}
-	render(w, pageData{Title: "当前工作", Current: view})
+	viewName := boardView(r)
+	view.BoardView = viewName
+	q := r.URL.Query().Get("view")
+	view.ViewChosen = q == "status" || q == "project"
+	render(w, pageData{Title: "当前工作", View: viewName, Current: view})
+}
+
+// boardView accepts only status and project. Anything else, including an
+// empty query, is status. A missing query is still status on the server;
+// the page script may then apply localStorage before the first paint.
+func boardView(r *http.Request) string {
+	if r.URL.Query().Get("view") == "project" {
+		return "project"
+	}
+	return "status"
+}
+
+func serveStatic(w http.ResponseWriter, r *http.Request, name, contentType string) {
+	body, err := staticFS.ReadFile(name)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+func markSVG(which string) template.HTML {
+	name := "static/mark-light.svg"
+	class := "cx-mark cx-mark-light"
+	if which == "dark" {
+		name = "static/mark-dark.svg"
+		class = "cx-mark cx-mark-dark"
+	}
+	body, err := staticFS.ReadFile(name)
+	if err != nil {
+		return ""
+	}
+	s := string(body)
+	s = strings.ReplaceAll(s, `xmlns="http://www.w3.org/2000/svg"`, "")
+	s = strings.ReplaceAll(s, `width="1024"`, `class="`+class+`" width="28"`)
+	s = strings.ReplaceAll(s, `height="1024"`, `height="28"`)
+	s = strings.ReplaceAll(s, "http://", "")
+	s = strings.ReplaceAll(s, "https://", "")
+	return template.HTML(s)
 }
 
 func serveChannels(w http.ResponseWriter, r *http.Request, asJSON bool) {
@@ -120,7 +175,7 @@ func serveChannels(w http.ResponseWriter, r *http.Request, asJSON bool) {
 		writeJSON(w, view)
 		return
 	}
-	render(w, pageData{Title: "模型与额度", Channels: view})
+	render(w, pageData{Title: "模型与额度", View: "status", Channels: view})
 }
 
 func serveCard(w http.ResponseWriter, r *http.Request, id string, asJSON bool) {
@@ -142,7 +197,7 @@ func serveCard(w http.ResponseWriter, r *http.Request, id string, asJSON bool) {
 		writeJSON(w, view)
 		return
 	}
-	render(w, pageData{Title: view.Title, Card: view})
+	render(w, pageData{Title: view.Title, View: "status", Card: view})
 }
 
 func serveHistory(w http.ResponseWriter, r *http.Request, asJSON bool) {
@@ -162,7 +217,7 @@ func serveHistory(w http.ResponseWriter, r *http.Request, asJSON bool) {
 		writeJSON(w, view)
 		return
 	}
-	render(w, pageData{Title: "历史", History: view})
+	render(w, pageData{Title: "历史", View: "status", History: view})
 }
 
 func serveLog(w http.ResponseWriter, r *http.Request, id string) {

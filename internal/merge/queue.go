@@ -15,6 +15,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
 	"github.com/OttoPrua/Cardex/internal/workspace"
 )
@@ -105,11 +106,20 @@ func (q *Service) mergeOne(ctx context.Context, card *model.Card) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.MkdirTemp("", "cardex-merge-")
+	scratchRoot := roots.Load(q.DB.Home()).EffectiveScratch(project.ScratchDir)
+	tmp, cleanup, err := roots.PrepareAttemptScratch(scratchRoot, "merge")
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmp)
+	defer cleanup()
+	scratch := tmp
+	if tmp == "" {
+		tmp, err = os.MkdirTemp("", "cardex-merge-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tmp)
+	}
 	wt := filepath.Join(tmp, "wt")
 	if _, err := gitOut(ctx, repo, "worktree", "add", "--detach", wt, oldHead); err != nil {
 		return err
@@ -127,7 +137,7 @@ func (q *Service) mergeOne(ctx context.Context, card *model.Card) error {
 		}
 		return fmt.Errorf("merge %s: %w: %s", card.ID, mergeErr, strings.TrimSpace(string(mergeOut)))
 	}
-	if out, failed := runChecks(ctx, wt, card.Acceptance, project.TestCmd); failed {
+	if out, failed := runChecks(ctx, wt, card.Acceptance, project.TestCmd, scratch); failed {
 		return q.failCard(ctx, card, model.KindRepair, "rp-", out)
 	}
 	newHead, err := gitOut(ctx, wt, "rev-parse", "HEAD")
@@ -464,7 +474,7 @@ func conflictHunks(body string) string {
 	return b.String()
 }
 
-func runChecks(ctx context.Context, dir string, acceptance []string, testCmd string) (string, bool) {
+func runChecks(ctx context.Context, dir string, acceptance []string, testCmd, scratch string) (string, bool) {
 	var all []string
 	all = append(all, acceptance...)
 	if strings.TrimSpace(testCmd) != "" {
@@ -478,6 +488,10 @@ func runChecks(ctx context.Context, dir string, acceptance []string, testCmd str
 		}
 		cmd := proc.Shell(ctx, command)
 		cmd.Dir = dir
+		cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
+		if scratch != "" {
+			cmd.Env = roots.ApplyTempEnv(cmd.Env, scratch)
+		}
 		out, err := cmd.CombinedOutput()
 		fmt.Fprintf(&buf, "$ %s\n%s", command, out)
 		if err != nil {

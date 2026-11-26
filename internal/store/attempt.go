@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 )
@@ -41,6 +42,8 @@ func (s *Store) CreateAttempt(ctx context.Context, a *model.Attempt) error {
 	return s.insertAttempt(ctx, a)
 }
 
+const attemptWriteColumns = `card_id, attempt_index, channel, model, route_reason, worktree, branch, base_commit, head_commit, pid, started_at, ended_at, exit_code, exited, usage, outcome, error_class, error_excerpt, prompt_path`
+
 func (s *Store) insertAttempt(ctx context.Context, a *model.Attempt) error {
 	reason, err := mustJSON(a.RouteReason)
 	if err != nil {
@@ -55,8 +58,8 @@ func (s *Store) insertAttempt(ctx context.Context, a *model.Attempt) error {
 		exitCode = *a.Exit
 		exited = 1
 	}
-	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO attempts(id, card_id, attempt_index, channel, model, route_reason, worktree, branch, base_commit, head_commit, pid, started_at, ended_at, exit_code, exited, usage, outcome, error_class, error_excerpt, prompt_path) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		a.ID, a.Card, a.Index, a.Route.Channel, a.Route.Model, reason, a.Worktree, a.Branch, a.BaseCommit, a.HeadCommit, a.PID, formatTime(a.StartedAt), formatTime(a.EndedAt), exitCode, exited, usage, string(a.Outcome), string(a.ErrorClass), a.ErrorExcerpt, a.PromptPath)
+	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO attempts(id, `+attemptWriteColumns+`, changed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		a.ID, a.Card, a.Index, a.Route.Channel, a.Route.Model, reason, a.Worktree, a.Branch, a.BaseCommit, a.HeadCommit, a.PID, formatTime(a.StartedAt), formatTime(a.EndedAt), exitCode, exited, usage, string(a.Outcome), string(a.ErrorClass), a.ErrorExcerpt, a.PromptPath, formatTime(time.Now()))
 	return err
 }
 
@@ -88,14 +91,23 @@ func (s *Store) UpdateAttempt(ctx context.Context, a *model.Attempt) error {
 		exitCode = *a.Exit
 		exited = 1
 	}
-	res, err := s.q(ctx).ExecContext(ctx, `UPDATE attempts SET card_id=?, attempt_index=?, channel=?, model=?, route_reason=?, worktree=?, branch=?, base_commit=?, head_commit=?, pid=?, started_at=?, ended_at=?, exit_code=?, exited=?, usage=?, outcome=?, error_class=?, error_excerpt=?, prompt_path=? WHERE id=?`,
-		a.Card, a.Index, a.Route.Channel, a.Route.Model, reason, a.Worktree, a.Branch, a.BaseCommit, a.HeadCommit, a.PID, formatTime(a.StartedAt), formatTime(a.EndedAt), exitCode, exited, usage, string(a.Outcome), string(a.ErrorClass), a.ErrorExcerpt, a.PromptPath, a.ID)
+	res, err := s.q(ctx).ExecContext(ctx, `WITH incoming(`+attemptWriteColumns+`) AS (VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?))
+		UPDATE attempts SET (`+attemptWriteColumns+`)=(SELECT * FROM incoming),
+			changed_at=CASE WHEN EXISTS (SELECT `+attemptWriteColumns+` EXCEPT SELECT * FROM incoming) THEN ? ELSE changed_at END WHERE id=?`,
+		a.Card, a.Index, a.Route.Channel, a.Route.Model, reason, a.Worktree, a.Branch, a.BaseCommit, a.HeadCommit, a.PID, formatTime(a.StartedAt), formatTime(a.EndedAt), exitCode, exited, usage, string(a.Outcome), string(a.ErrorClass), a.ErrorExcerpt, a.PromptPath, formatTime(time.Now()), a.ID)
 	return rowsAffected(res, err)
 }
 
 func (s *Store) DeleteAttempt(ctx context.Context, id string) error {
-	res, err := s.q(ctx).ExecContext(ctx, `DELETE FROM attempts WHERE id=?`, id)
-	return rowsAffected(res, err)
+	return s.WithTx(ctx, func(ctx context.Context) error {
+		var cardID string
+		err := s.q(ctx).QueryRowContext(ctx, `DELETE FROM attempts WHERE id=? RETURNING card_id`, id).Scan(&cardID)
+		if err != nil {
+			return err
+		}
+		_, err = s.q(ctx).ExecContext(ctx, `UPDATE cards SET changed_at=? WHERE id=?`, formatTime(time.Now()), cardID)
+		return err
+	})
 }
 
 const attemptSelect = `SELECT id, card_id, attempt_index, channel, model, route_reason, worktree, branch, base_commit, head_commit, pid, started_at, ended_at, exit_code, exited, usage, outcome, error_class, error_excerpt, prompt_path FROM attempts`

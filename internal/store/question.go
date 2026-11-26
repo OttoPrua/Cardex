@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/OttoPrua/Cardex/internal/model"
@@ -78,6 +80,21 @@ func (s *Store) DeleteQuestion(ctx context.Context, id string) error {
 }
 
 const questionSelect = `SELECT id, objective_id, scope, scope_kind, kind, text, options, answer, deliveries FROM questions`
+
+// FindPendingCardQuestion matches the card scope across objectives, since a
+// review can ask about a card that belongs to a different objective.
+func (s *Store) FindPendingCardQuestion(ctx context.Context, cardID string) (*model.Question, error) {
+	row := s.q(ctx).QueryRowContext(ctx, questionSelect+`
+		WHERE scope=? AND scope_kind IN ('card', '') AND answer='' ORDER BY id LIMIT 1`, cardID)
+	question, err := scanQuestion(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &question, nil
+}
 
 func (s *Store) ListQuestions(ctx context.Context, objectiveID string) ([]model.Question, error) {
 	q := questionSelect

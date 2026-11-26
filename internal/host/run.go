@@ -19,6 +19,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/proxy"
 	"github.com/OttoPrua/Cardex/internal/pty"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/sandbox"
 	"github.com/OttoPrua/Cardex/internal/store"
@@ -49,6 +50,7 @@ func run(ctx context.Context, home, attemptID string) error {
 	if err != nil {
 		return fmt.Errorf("host: load attempt: %w", err)
 	}
+	promptPath := roots.ResolveStored(home, attempt.PromptPath)
 	card, err := db.GetCard(ctx, attempt.Card)
 	if err != nil {
 		return fmt.Errorf("host: load card: %w", err)
@@ -68,8 +70,8 @@ func run(ctx context.Context, home, attemptID string) error {
 	var goalRunner runner.Runner
 	if gr, isGoal := r.(runner.GoalRunner); isGoal && requiresGoal(card) {
 		launch := runner.GoalLaunch{WorkDir: attempt.Worktree, AttemptID: attempt.ID}
-		if attempt.PromptPath != "" {
-			body, err := os.ReadFile(attempt.PromptPath)
+		if promptPath != "" {
+			body, err := os.ReadFile(promptPath)
 			if err != nil {
 				return fmt.Errorf("host: goal prompt: %w", err)
 			}
@@ -85,13 +87,14 @@ func run(ctx context.Context, home, attemptID string) error {
 		AttemptID:    attempt.ID,
 		AttemptIndex: attempt.Index,
 		WorkDir:      attempt.Worktree,
-		PromptPath:   attempt.PromptPath,
+		PromptPath:   promptPath,
 		Model:        attempt.Route.Model,
 	}
 	if goalMode {
 		spec.SessionID = attempt.ID
 	}
-	scriptPath := filepath.Join(home, "attempts", attempt.ID, "script.json")
+	attemptDir := roots.AttemptDir(home, attempt.ID, attempt.PromptPath)
+	scriptPath := filepath.Join(attemptDir, "script.json")
 	if st, err := os.Stat(scriptPath); err == nil && !st.IsDir() {
 		spec.ScriptPath = scriptPath
 	}
@@ -116,7 +119,6 @@ func run(ctx context.Context, home, attemptID string) error {
 		needPTY = chooser.NeedsPTYFor(spec)
 	}
 
-	attemptDir := filepath.Join(home, "attempts", attempt.ID)
 	if err := os.MkdirAll(attempt.Worktree, 0o755); err != nil {
 		return err
 	}
@@ -163,7 +165,19 @@ func run(ctx context.Context, home, attemptID string) error {
 		appendEvent(ctx, db, attempt.ID, "browser_start", map[string]any{"pgid": b.pgid, "cdp": b.httpURL})
 		env = append(env, b.Env(env)...)
 	}
+	scratchDir, cleanupScratch, serr := prepareRunScratch(ctx, db, home, card, attempt.ID, attemptDir)
+	if serr != nil {
+		return failStart(ctx, db, &attempt, serr)
+	}
+	defer cleanupScratch()
 	cmd, err := commandFor(argv, env)
+	if err != nil {
+		return failStart(ctx, db, &attempt, err)
+	}
+	cmd.Env = roots.ApplyTempEnv(cmd.Env, scratchDir)
+	// The shim is first on PATH. The executor keeps tool homes and GIT_*;
+	// only `go test` is started with AcceptanceEnv.
+	cmd.Env, err = proc.PrependGoTestWrap(cmd.Env, filepath.Join(attemptDir, "go-wrap"))
 	if err != nil {
 		return failStart(ctx, db, &attempt, err)
 	}
@@ -178,8 +192,8 @@ func run(ctx context.Context, home, attemptID string) error {
 	var logRead, logWrite *os.File
 	var copied chan struct{}
 	if !needPTY {
-		if attempt.PromptPath != "" {
-			prompt, err := openPrompt(ctx, attempt.PromptPath)
+		if promptPath != "" {
+			prompt, err := openPrompt(ctx, promptPath)
 			if err != nil {
 				return failStart(ctx, db, &attempt, err)
 			}
@@ -200,6 +214,9 @@ func run(ctx context.Context, home, attemptID string) error {
 	}
 
 	writable := append([]string{attempt.Worktree}, r.WritablePaths()...)
+	if scratchDir != "" {
+		writable = append(writable, scratchDir)
+	}
 	wrap := sandbox.Wrap
 	if sandboxOff(ctx, db, card) {
 		wrap = func(c *exec.Cmd, _ []string) (*exec.Cmd, error) { return sandbox.Off(c) }
@@ -227,7 +244,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		"runner":      r.Name(),
 		"pty":         needPTY,
 		"drive":       needPTY,
-		"prompt_path": attempt.PromptPath,
+		"prompt_path": promptPath,
 		"argv":        argv,
 	})
 
@@ -359,13 +376,30 @@ func run(ctx context.Context, home, attemptID string) error {
 	return finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, nil, driveErr, timedOut, goalStatus)
 }
 
+func projectScratch(ctx context.Context, db *store.Store, card model.Card) string {
+	obj, err := db.GetObjective(ctx, card.Objective)
+	if err != nil {
+		return ""
+	}
+	p, err := db.GetProject(ctx, obj.Project)
+	if err != nil {
+		return ""
+	}
+	return p.ScratchDir
+}
+
 func commandFor(argv, extra []string) (*exec.Cmd, error) {
 	// ApplyEngineEnv already removed another profile's managed keys. Merging
 	// that list back onto os.Environ() would put those keys back.
-	env := mergeEnv(os.Environ(), extra)
+	base := os.Environ()
+	overlay := extra
 	if completeEngineEnv(extra) {
-		env = mergeEnv(extra, nil)
+		base = extra
+		overlay = nil
 	}
+	// Drop CARDEX_SCHED_* only. Tool homes and GIT_* stay on this process;
+	// PrependGoTestWrap isolates `go test`. Overlay (the runner's env) wins.
+	env := mergeEnv(proc.ExecutorEnv(base), proc.ExecutorEnv(overlay))
 	cmd := &exec.Cmd{}
 	if argv[0] == "fake" {
 		exe, err := os.Executable()

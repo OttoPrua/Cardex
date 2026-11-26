@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OttoPrua/Cardex/internal/harvest"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
@@ -46,6 +50,8 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 	design := fs.String("design-dir", "", "design directory")
 	sandboxMode := fs.String("sandbox", "on", "project default for its cards: on, or off to run them outside the Cardex sandbox")
 	reviewMode := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
+	scratchDir := fs.String("scratch-dir", "", "scratch directory for this project's card runs and acceptance commands; overrides the home scratch_dir")
+	eventsMode := fs.String("events", "", "card lifecycle events: on, or off (default off)")
 	var forbidden stringsFlag
 	fs.Var(&forbidden, "forbidden", "forbidden path")
 	if code, ok := parseSet(fs, args); !ok {
@@ -64,6 +70,8 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 		ForbiddenPaths: forbidden,
 		Sandbox:        *sandboxMode,
 		Review:         *reviewMode,
+		ScratchDir:     *scratchDir,
+		Events:         *eventsMode,
 	}
 	if p.ID == "" {
 		gen, err := newID("p")
@@ -186,6 +194,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	channel := fs.String("channel", "", "explicit channel")
 	modelName := fs.String("model", "", "explicit model")
 	objReview := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
+	eventsMode := fs.String("events", "", "card lifecycle events: on, off, or inherit (empty inherits the project; default off)")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -241,7 +250,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		Budget:     model.Budget{SoftTokens: softTokens, HardTokens: hardTokens},
 		Priority:   priorityVal, Mode: modeVal, FreezeMode: freezeVal,
 		Origin: origin, Status: statusVal, IntegrationBranch: *branch,
-		Channel: *channel, Model: *modelName, Review: *objReview,
+		Channel: *channel, Model: *modelName, Review: *objReview, Events: *eventsMode,
 	}
 	if o.ID == "" {
 		gen, err := newID("o")
@@ -317,8 +326,10 @@ func objectiveList(home string, asJSON bool, args []string, stdout, stderr io.Wr
 }
 
 func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("objective show", "show one stored objective, including its origin", "<id> --json", stdout, stderr)
-	if code, ok := parseSet(fs, args); !ok {
+	fs := newFlagSet("objective show", "show one stored objective, including its origin", "<id> --origin --json --brief", stdout, stderr)
+	brief := fs.Bool("brief", false, "card counts by status, plus one line each for needs_input and failed cards")
+	acceptOrigin(fs)
+	if code, ok := parseSet(fs, hoistFlags(fs, args)); !ok {
 		return code
 	}
 	if fs.NArg() != 1 {
@@ -331,10 +342,47 @@ func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Wr
 		return 1
 	}
 	defer db.Close()
-	o, err := db.GetObjective(context.Background(), fs.Arg(0))
+	ctx := context.Background()
+	o, err := db.GetObjective(ctx, fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if origin := readOrigin(fs); origin != "" {
+		if cards, err := db.ListCardWaitStates(ctx, o.ID); err == nil {
+			ids := make([]string, 0, len(cards))
+			for _, card := range cards {
+				ids = append(ids, card.ID)
+			}
+			noteReads(db, origin, "objective-show", ids)
+		}
+	}
+	if *brief {
+		cards, err := db.ListCards(ctx, o.ID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		view := buildObjectiveBrief(o.ID, cards)
+		failedNormalizers := make(map[string][]string)
+		for _, card := range cards {
+			if card.Kind == model.KindNormalize && card.Status == model.CardFailed && len(card.Deps) > 0 {
+				failedNormalizers[card.Deps[0]] = append(failedNormalizers[card.Deps[0]], card.ID)
+			}
+		}
+		for i := range view.Blocked {
+			card := &view.Blocked[i]
+			if card.Reason != "" {
+				continue
+			}
+			reason, err := objectiveFallbackReason(ctx, db, *card, failedNormalizers[card.ID])
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			card.Reason = reason
+		}
+		return emitObjectiveBrief(stdout, asJSON, view)
 	}
 	line := o.ID + "\t" + o.Title
 	if o.Origin != "" {
@@ -443,11 +491,17 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		return 1
 	}
 	defer db.Close()
-	if err := db.CreateCard(context.Background(), &c); err != nil {
+	ctx := context.Background()
+	if err := reviewAddCheck(ctx, db, c, stderr); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if err := saveCardOrigin(context.Background(), db, c.ID, origin); err != nil {
+	if err := db.WithTx(ctx, func(ctx context.Context) error {
+		if err := db.CreateCard(ctx, &c); err != nil {
+			return err
+		}
+		return saveCardOrigin(ctx, db, c.ID, origin)
+	}); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -458,11 +512,67 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	return emit(stdout, asJSON, cardView{Card: c, Origin: origin}, line)
 }
 
+// reviewAddCheck warns when an rv- review has no stored subject, and rejects
+// every non-empty --dep that names no stored card. A blank --dep does not hide
+// a later one. It does not change the card record.
+func reviewAddCheck(ctx context.Context, db *store.Store, card model.Card, stderr io.Writer) error {
+	if card.Kind != model.KindReview {
+		return nil
+	}
+	for _, dep := range card.Deps {
+		dep = strings.TrimSpace(dep)
+		if dep == "" {
+			continue
+		}
+		if _, err := db.GetCard(ctx, dep); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("review dependency %s does not exist", dep)
+			}
+			return err
+		}
+	}
+	id, explicit := model.ReviewSubject(card)
+	if explicit || id == card.ID {
+		return nil
+	}
+	_, err := db.GetCard(ctx, id)
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		fmt.Fprintf(stderr, "review %s: card %s does not exist; this review will be treated as a standalone review. Pass --dep to name the card under review.\n", card.ID, id)
+		return nil
+	}
+	return err
+}
+
 func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card list", "list stored cards, optionally for one objective", "--json", stdout, stderr)
+	fs := newFlagSet("card list", "list stored cards, optionally for one objective", "--objective --changed-since <RFC3339> --fields <name> --origin --json", stdout, stderr)
 	objective := fs.String("objective", "", "objective id")
-	if code, ok := parseSet(fs, args); !ok {
+	changedSince := fs.String("changed-since", "", "RFC3339 time; list cards created or with a status or attempt change after it")
+	var fieldFlags stringsFlag
+	fs.Var(&fieldFlags, "fields", "card fields to print, comma-separated: "+strings.Join(cardListFields(), ","))
+	acceptOrigin(fs)
+	if code, ok := parseSet(fs, hoistFlags(fs, args)); !ok {
 		return code
+	}
+	var since *time.Time
+	if flagSeen(fs, "changed-since") {
+		parsed, err := parseChangedSince(*changedSince)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		since = &parsed
+	}
+	var fields []string
+	if len(fieldFlags) > 0 {
+		parsed, err := parseCardFields(fieldFlags)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+		fields = parsed
 	}
 	db, err := openStore(home)
 	if err != nil {
@@ -470,10 +580,30 @@ func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		return 1
 	}
 	defer db.Close()
-	items, err := db.ListCards(context.Background(), *objective)
+	ctx := context.Background()
+	var items []model.Card
+	if since == nil {
+		items, err = db.ListCards(ctx, *objective)
+	} else {
+		items, err = db.ListCardsChangedSince(ctx, *objective, *since)
+	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if origin := readOrigin(fs); origin != "" {
+		ids := make([]string, 0, len(items))
+		for _, card := range items {
+			ids = append(ids, card.ID)
+		}
+		noteReads(db, origin, "card-list", ids)
+	}
+	if len(fields) > 0 {
+		if asJSON {
+			return writeJSON(stdout, projectCards(items, fields))
+		}
+		fmt.Fprint(stdout, formatCardFields(items, fields))
+		return 0
 	}
 	if asJSON {
 		return writeJSON(stdout, items)
@@ -485,9 +615,23 @@ func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 }
 
 func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", "<id> --json", stdout, stderr)
-	if code, ok := parseSet(fs, args); !ok {
+	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", "<id> --origin --json --brief --claims --attempts all --summary", stdout, stderr)
+	brief := fs.Bool("brief", false, "short status: id, objective, status, wait reason, tier, rework count, current attempt, latest event, pending question, commit")
+	showClaims := fs.Bool("claims", false, "with --brief, include the claim list; the default brief prints claims_count only")
+	attemptsMode := fs.String("attempts", "", "with --brief, pass all to list every attempt; the default brief keeps the latest 3")
+	acceptOrigin(fs)
+	summaryOnly := fs.Bool("summary", false, "print only the structured result summary")
+	if code, ok := parseSet(fs, hoistFlags(fs, args)); !ok {
 		return code
+	}
+	if *brief && *summaryOnly {
+		fmt.Fprintln(stderr, "--brief and --summary select different output formats")
+		return 2
+	}
+	allAttempts, err := parseAttemptsMode(*attemptsMode)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 2
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "card show <id>")
@@ -509,6 +653,41 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	noteReads(db, readOrigin(fs), "card-show", []string{c.ID})
+	if *brief || *summaryOnly {
+		attempts, err := db.ListAttempts(ctx, c.ID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if *summaryOnly {
+			sum, ok, err := latestSummary(dir, attempts)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			if !ok {
+				fmt.Fprintf(stderr, "no summary for %s\n", c.ID)
+				return 1
+			}
+			if asJSON {
+				return writeJSON(stdout, sum)
+			}
+			fmt.Fprint(stdout, harvest.FormatSummary(sum))
+			return 0
+		}
+		events, err := db.ListEvents(ctx, "card:"+c.ID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		question, err := pendingBriefQuestion(ctx, db, c.ID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return emitCardBrief(stdout, asJSON, buildCardBrief(c, attempts, events, question, *showClaims, allAttempts))
 	}
 	origin, err := loadCardOrigin(ctx, db, c.ID)
 	if err != nil {
@@ -543,6 +722,38 @@ type cardAttemptView struct {
 	Evidence []string `json:"evidence"`
 }
 
+func latestSummary(home string, attempts []model.Attempt) (harvest.Summary, bool, error) {
+	best := -1
+	var bestPath string
+	for i, attempt := range attempts {
+		if !cardSafeID(attempt.ID) {
+			continue
+		}
+		path := harvest.SummaryPath(home, attempt)
+		_, err := os.Stat(path)
+		if os.IsNotExist(err) {
+			// Earlier versions always wrote summaries under home.
+			path = filepath.Join(home, "attempts", attempt.ID, "summary.json")
+			_, err = os.Stat(path)
+		}
+		if err != nil {
+			continue
+		}
+		if best < 0 || attempt.Index > attempts[best].Index || (attempt.Index == attempts[best].Index && attempt.EndedAt.After(attempts[best].EndedAt)) {
+			best = i
+			bestPath = path
+		}
+	}
+	if best < 0 {
+		return harvest.Summary{}, false, nil
+	}
+	sum, err := harvest.LoadSummary(bestPath)
+	if err != nil {
+		return harvest.Summary{}, false, err
+	}
+	return sum, true, nil
+}
+
 func cardShowHistory(ctx context.Context, db *store.Store, id string) ([]cardHistoryItem, error) {
 	events, err := db.ListEvents(ctx, "card:"+id)
 	if err != nil {
@@ -571,26 +782,10 @@ func cardShowAttempts(ctx context.Context, db *store.Store, home, cardID string)
 	for _, attempt := range attempts {
 		out = append(out, cardAttemptView{
 			ID:       attempt.ID,
-			Evidence: cardEvidencePaths(home, attempt.ID),
+			Evidence: roots.EvidenceRefs(home, attempt.ID, attempt.PromptPath),
 		})
 	}
 	return out, nil
-}
-
-func cardEvidencePaths(home, id string) []string {
-	out := []string{}
-	if strings.TrimSpace(home) == "" || !cardSafeID(id) {
-		return out
-	}
-	for _, name := range []string{"output.log", "acceptance.log", "result.md"} {
-		path := filepath.Join(home, "attempts", id, name)
-		info, err := os.Stat(path)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		out = append(out, "attempts/"+id+"/"+name)
-	}
-	return out
 }
 
 func cardSafeID(id string) bool {

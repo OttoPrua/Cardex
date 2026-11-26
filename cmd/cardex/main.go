@@ -30,6 +30,8 @@ commands:
   objective add|list|show|set|pause|resume|cancel
   node list|show|freeze|reopen
   card add|list|show|cancel|retry|pause|resume|revive|absorb|merged
+  wait <card-id|objective-id> --until <statuses> --timeout <duration>
+  reads
   question list|show|answer
   channel list|show|set|check
   route explain <card>
@@ -64,6 +66,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, usage)
 		return 0
 	}
+	if rest[0] == "doctor" {
+		return cmdDoctor(home, rest[1:], stdout, stderr)
+	}
 	if dir, err := resolveHome(home); err == nil {
 		// One proxy entry for the serve, its git and notify calls, and every
 		// executor it starts. No "proxy" section in config.json changes nothing.
@@ -82,6 +87,10 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return cmdObjective(home, asJSON, rest[1:], stdout, stderr)
 	case "card":
 		return cmdCard(home, asJSON, rest[1:], stdout, stderr)
+	case "wait":
+		return cmdWait(home, asJSON, rest[1:], stdout, stderr)
+	case "reads":
+		return cmdReads(home, asJSON, rest[1:], stdout, stderr)
 	case "node":
 		return cmdNode(home, asJSON, rest[1:], stdout, stderr)
 	case "question":
@@ -100,8 +109,6 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return cmdImport(home, rest[1:], stdout, stderr)
 	case "notify":
 		return cmdNotify(home, asJSON, rest[1:], stdout, stderr)
-	case "doctor":
-		return cmdDoctor(home, rest[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		return cmdVersion(stdout)
 	case "setup":
@@ -132,6 +139,8 @@ func splitGlobal(args []string) (home string, asJSON bool, rest []string, err er
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
+		case a == "--":
+			return home, asJSON, append(rest, args[i:]...), nil
 		case a == "--json":
 			asJSON = true
 		case a == "--home":
@@ -177,17 +186,7 @@ func runServe(ctx context.Context, home, addr string, stdout, stderr io.Writer) 
 }
 
 func resolveHome(home string) (string, error) {
-	if home == "" {
-		home = os.Getenv("CARDEX_HOME")
-	}
-	if home == "" {
-		user, err := proc.UserHome()
-		if err != nil {
-			return "", err
-		}
-		home = filepath.Join(user, ".cardex")
-	}
-	abs, err := filepath.Abs(home)
+	abs, err := homePath(home)
 	if err != nil {
 		return "", err
 	}
@@ -198,6 +197,20 @@ func resolveHome(home string) (string, error) {
 		return "", err
 	}
 	return abs, nil
+}
+
+func homePath(home string) (string, error) {
+	if home == "" {
+		home = os.Getenv("CARDEX_HOME")
+	}
+	if home == "" {
+		user, err := proc.UserHome()
+		if err != nil {
+			return "", err
+		}
+		home = filepath.Join(user, ".cardex")
+	}
+	return filepath.Abs(home)
 }
 
 func openStore(home string) (*store.Store, error) {

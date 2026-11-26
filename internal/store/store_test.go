@@ -94,6 +94,62 @@ func runFirstOpenChild() error {
 	return db.CreateProject(context.Background(), &p)
 }
 
+func TestListCardsChangedSinceAfterMigration(t *testing.T) {
+	ctx := t.Context()
+	path := filepath.Join(t.TempDir(), "cardex.db")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	cutoff := time.Date(2026, 11, 23, 1, 0, 0, 0, time.UTC)
+	for _, sample := range []struct {
+		id      string
+		started time.Time
+	}{
+		{"earlier", cutoff.Add(-time.Nanosecond)},
+		{"equal", cutoff},
+		{"later", cutoff.Add(time.Nanosecond)},
+	} {
+		card := model.Card{ID: sample.id, Kind: model.KindDev, Tier: model.TierT1, Status: model.CardReady}
+		if err := db.CreateCard(ctx, &card); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.CreateAttempt(ctx, &model.Attempt{ID: "a-" + card.ID, Card: card.ID, StartedAt: sample.started}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE cards DROP COLUMN changed_at`,
+		`ALTER TABLE attempts DROP COLUMN changed_at`,
+		`DELETE FROM schema_migrations WHERE version>=8`,
+	} {
+		if _, err := db.db.ExecContext(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upgraded.Close()
+	list, err := upgraded.ListCardsChangedSince(ctx, "", cutoff.In(time.FixedZone("offset", 8*3600)))
+	if err != nil || len(list) != 1 || list[0].ID != "later" {
+		t.Fatalf("historical attempts: %+v, %v", list, err)
+	}
+	cutoff = time.Now()
+	if err := upgraded.DeleteAttempt(ctx, "a-equal"); err != nil {
+		t.Fatal(err)
+	}
+	list, err = upgraded.ListCardsChangedSince(ctx, "", cutoff)
+	if err != nil || len(list) != 1 || list[0].ID != "equal" {
+		t.Fatalf("attempt deletion: %+v, %v", list, err)
+	}
+}
+
 func TestOpenWALAndVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cardex.db")
 	db, err := Open(path)

@@ -852,7 +852,7 @@ func trackLaunch(t *testing.T, r *Runner) {
 		if inner != nil {
 			pid, err = inner(ctx, home, id)
 		} else {
-			pid, err = launchDetached(home, id)
+			pid, err = launchDetached(home, id, filepath.Join(home, "attempts", id))
 		}
 		if err == nil && pid > 1 {
 			rememberLaunch(id, pid)

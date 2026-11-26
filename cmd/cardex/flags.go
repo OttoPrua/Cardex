@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 )
 
 func newFlagSet(name, purpose, params string, stdout, stderr io.Writer) *flag.FlagSet {
@@ -21,6 +22,58 @@ func newFlagSet(name, purpose, params string, stdout, stderr io.Writer) *flag.Fl
 		fs.SetOutput(stderr)
 	}
 	return fs
+}
+
+// hoistFlags lets a positional id sit before its flags, which is how
+// wait, card show, and objective show are written. Flag order is preserved,
+// and so is the order of the operands.
+func hoistFlags(fs *flag.FlagSet, args []string) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			pos = append(pos, args[i:]...)
+			break
+		}
+		name := flagToken(arg)
+		if name == "" {
+			pos = append(pos, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		if strings.Contains(arg, "=") {
+			continue
+		}
+		f := fs.Lookup(name)
+		if f == nil || boolFlag(f) {
+			continue
+		}
+		if i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, pos...)
+}
+
+func flagToken(arg string) string {
+	if arg == "-" || !strings.HasPrefix(arg, "-") {
+		return ""
+	}
+	name := strings.TrimLeft(arg, "-")
+	if name == "" {
+		return ""
+	}
+	if before, _, ok := strings.Cut(name, "="); ok {
+		name = before
+	}
+	return name
+}
+
+func boolFlag(f *flag.Flag) bool {
+	type booler interface{ IsBoolFlag() bool }
+	b, ok := f.Value.(booler)
+	return ok && b.IsBoolFlag()
 }
 
 func parseSet(fs *flag.FlagSet, args []string) (int, bool) {
@@ -49,6 +102,40 @@ func finishSoft(stdout, stderr io.Writer, asJSON bool, notes []string, v any, li
 		}
 	}
 	return emit(stdout, asJSON, v, line)
+}
+
+// flagsFirst lets a positional id sit before its flags. The standard library
+// stops at the first non-flag, but card and objective commands are written
+// with the id first. "--" still ends flag parsing, so an id that looks like
+// an option can be passed as: card show -- --brief.
+func flagsFirst(fs *flag.FlagSet, args []string) []string {
+	var flags, pos []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			flags = append(flags, a)
+			pos = append(pos, args[i+1:]...)
+			break
+		}
+		if a == "-" || !strings.HasPrefix(a, "-") {
+			pos = append(pos, a)
+			continue
+		}
+		flags = append(flags, a)
+		name, _, hasValue := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(a, "-"), "-"), "=")
+		f := fs.Lookup(name)
+		if hasValue || f == nil {
+			continue
+		}
+		if b, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && b.IsBoolFlag() {
+			continue
+		}
+		if i+1 < len(args) {
+			i++
+			flags = append(flags, args[i])
+		}
+	}
+	return append(flags, pos...)
 }
 
 func flagSeen(fs *flag.FlagSet, name string) bool {

@@ -358,8 +358,7 @@ func reapBrowser(pgid int, profile string) {
 // recorded Chrome group and removes its profile.
 // The group is signalled only when one of its processes still names this
 // attempt's profile, so a recycled pgid is never killed.
-func reapLostBrowser(home, attemptID string) {
-	attemptDir := filepath.Join(home, "attempts", attemptID)
+func reapLostBrowser(attemptDir string) {
 	profile := filepath.Join(attemptDir, browserDirName, "profile")
 	pgidPath := filepath.Join(attemptDir, browserGroupName)
 	if _, err := os.Stat(pgidPath); err != nil {

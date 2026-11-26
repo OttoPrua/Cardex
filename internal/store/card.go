@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 )
@@ -24,6 +26,9 @@ func prepareCard(c *model.Card) error {
 	}
 	if !c.Status.Valid() {
 		return invalid("card status", c.Status)
+	}
+	if c.Status != model.CardNeedsInput {
+		c.WaitQuestionID = ""
 	}
 	switch c.Sandbox {
 	case "", "on", "off":
@@ -66,6 +71,7 @@ func (s *Store) CreateCard(ctx context.Context, c *model.Card) error {
 				return err
 			}
 		}
+		s.noteStatus(ctx, *c)
 		return nil
 	})
 }
@@ -87,8 +93,8 @@ func (s *Store) insertCard(ctx context.Context, c *model.Card) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO cards(id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens, sandbox, review) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		c.ID, c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Sandbox, c.Review)
+	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO cards(id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens, sandbox, review, changed_at, wait_question_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		c.ID, c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Sandbox, c.Review, formatTime(time.Now()), c.WaitQuestionID)
 	return err
 }
 
@@ -130,10 +136,25 @@ func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
 		if err != nil {
 			return err
 		}
-		res, err := s.q(ctx).ExecContext(ctx, `UPDATE cards SET objective_id=?, node_id=?, kind=?, title=?, body=?, tier=?, requires=?, deps=?, acceptance=?, base=?, status=?, wait_reason=?, rework_count=?, legacy=?, channel=?, model=?, rework_note=?, author_family=?, soft_tokens=?, hard_tokens=?, review=? WHERE id=?`,
-			c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Review, c.ID)
-		if err := rowsAffected(res, err); err != nil {
-			return err
+		q := `UPDATE cards SET objective_id=?, node_id=?, kind=?, title=?, body=?, tier=?, requires=?, deps=?, acceptance=?, base=?, status=?, wait_reason=?, rework_count=?, legacy=?, channel=?, model=?, rework_note=?, author_family=?, soft_tokens=?, hard_tokens=?, review=?, wait_question_id=?,
+			changed_at=CASE WHEN status<>? OR wait_reason<>? THEN ? ELSE changed_at END WHERE id=?`
+		args := []any{c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Review, c.WaitQuestionID, string(c.Status), c.WaitReason, formatTime(time.Now()), c.ID}
+		var transitioned bool
+		if hasLifecycleStatus(c.Status) {
+			res, err := s.q(ctx).ExecContext(ctx, q+` AND (status<>? OR wait_question_id<>?)`, append(args, c.Status, c.WaitQuestionID)...)
+			if err != nil {
+				return err
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return err
+			}
+			transitioned = n != 0
+		}
+		if !transitioned {
+			if err := rowsAffected(s.q(ctx).ExecContext(ctx, q, args...)); err != nil {
+				return err
+			}
 		}
 		if _, err := s.q(ctx).ExecContext(ctx, `DELETE FROM claims WHERE card_id=?`, c.ID); err != nil {
 			return err
@@ -142,6 +163,9 @@ func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
 			if err := s.insertClaim(ctx, &c.Claims[i]); err != nil {
 				return err
 			}
+		}
+		if transitioned {
+			s.noteStatus(ctx, *c)
 		}
 		return nil
 	})
@@ -157,14 +181,39 @@ func (s *Store) DeleteCard(ctx context.Context, id string) error {
 	})
 }
 
-const cardSelect = `SELECT id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens, sandbox, review FROM cards`
+const cardSelect = `SELECT id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens, sandbox, review, wait_question_id FROM cards`
 
 func (s *Store) ListCards(ctx context.Context, objectiveID string) ([]model.Card, error) {
-	q := cardSelect
+	return s.listCards(ctx, objectiveID, nil)
+}
+
+// ListCardsChangedSince includes card and attempt writes after since. For
+// historical rows, the stored attempt times and status events provide evidence.
+func (s *Store) ListCardsChangedSince(ctx context.Context, objectiveID string, since time.Time) ([]model.Card, error) {
+	return s.listCards(ctx, objectiveID, &since)
+}
+
+func (s *Store) listCards(ctx context.Context, objectiveID string, since *time.Time) ([]model.Card, error) {
+	var conditions []string
 	var args []any
 	if objectiveID != "" {
-		q += ` WHERE objective_id=?`
+		conditions = append(conditions, `objective_id=?`)
 		args = append(args, objectiveID)
+	}
+	if since != nil {
+		// Stored times are UTC. Stripping Z makes the exact-second value sort
+		// before a fractional value in the same second, at nanosecond precision.
+		cutoff := strings.TrimSuffix(since.UTC().Format(time.RFC3339Nano), "Z")
+		conditions = append(conditions, `(rtrim(cards.changed_at, 'Z') > ?
+			OR EXISTS (SELECT 1 FROM attempts a WHERE a.card_id=cards.id AND (
+				rtrim(a.changed_at, 'Z') > ? OR rtrim(a.started_at, 'Z') > ? OR rtrim(a.ended_at, 'Z') > ?))
+			OR EXISTS (SELECT 1 FROM events e WHERE e.entity='card:' || cards.id
+				AND e.event_type IN ('origin', 'card_created', 'card_status', 'card_marked_merged', 'merge_success') AND rtrim(e.ts, 'Z') > ?))`)
+		args = append(args, cutoff, cutoff, cutoff, cutoff, cutoff)
+	}
+	q := cardSelect
+	if len(conditions) > 0 {
+		q += ` WHERE ` + strings.Join(conditions, ` AND `)
 	}
 	q += ` ORDER BY id`
 	rows, err := s.q(ctx).QueryContext(ctx, q, args...)
@@ -199,7 +248,7 @@ func (s *Store) ListCards(ctx context.Context, objectiveID string) ([]model.Card
 func scanCard(sc scanner) (model.Card, error) {
 	var c model.Card
 	var kind, tier, requires, deps, acceptance, status, legacy string
-	if err := sc.Scan(&c.ID, &c.Objective, &c.Node, &kind, &c.Title, &c.Body, &tier, &requires, &deps, &acceptance, &c.Base, &status, &c.WaitReason, &c.ReworkCount, &legacy, &c.Channel, &c.Model, &c.ReworkNote, &c.AuthorFamily, &c.Budget.SoftTokens, &c.Budget.HardTokens, &c.Sandbox, &c.Review); err != nil {
+	if err := sc.Scan(&c.ID, &c.Objective, &c.Node, &kind, &c.Title, &c.Body, &tier, &requires, &deps, &acceptance, &c.Base, &status, &c.WaitReason, &c.ReworkCount, &legacy, &c.Channel, &c.Model, &c.ReworkNote, &c.AuthorFamily, &c.Budget.SoftTokens, &c.Budget.HardTokens, &c.Sandbox, &c.Review, &c.WaitQuestionID); err != nil {
 		return c, err
 	}
 	c.Kind = model.CardKind(kind)

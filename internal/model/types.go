@@ -7,14 +7,16 @@ import (
 
 // Project is one repository Cardex drives.
 type Project struct {
-	ID             string   `json:"id"`              // 项目标识。
-	RepoPath       string   `json:"repo_path"`       // 主 checkout 路径。
-	WorktreeRoot   string   `json:"worktree_root"`   // worktree 根目录，默认在项目根的 worktrees/cardex/。
-	TestCmd        string   `json:"test_cmd"`        // 默认的全量测试命令。
-	DesignDir      string   `json:"design_dir"`      // 设计文档目录，默认 docs/design/。
-	ForbiddenPaths []string `json:"forbidden_paths"` // 触碰前需要使用者确认的路径。
-	Sandbox        string   `json:"sandbox"`         // 项目默认：空表示卡在 Cardex 沙箱内跑；"off" 表示卡默认在沙箱外跑。卡上的 on/off 优先。
-	Review         string   `json:"review"`          // 项目默认复核模式：空或 auto、off、check、review。见 docs/review-policy.md。
+	ID             string   `json:"id"`                    // 项目标识。
+	RepoPath       string   `json:"repo_path"`             // 主 checkout 路径。
+	WorktreeRoot   string   `json:"worktree_root"`         // worktree 根目录，默认在项目根的 worktrees/cardex/。
+	TestCmd        string   `json:"test_cmd"`              // 默认的全量测试命令。
+	DesignDir      string   `json:"design_dir"`            // 设计文档目录，默认 docs/design/。
+	ForbiddenPaths []string `json:"forbidden_paths"`       // 触碰前需要使用者确认的路径。
+	Sandbox        string   `json:"sandbox"`               // 项目默认：空表示卡在 Cardex 沙箱内跑；"off" 表示卡默认在沙箱外跑。卡上的 on/off 优先。
+	Review         string   `json:"review"`                // 项目默认复核模式：空或 auto、off、check、review。见 docs/review-policy.md。
+	ScratchDir     string   `json:"scratch_dir,omitempty"` // 本项目派卡与验收的临时目录根。空则用 home 的 scratch_dir，再空则用进程临时目录。
+	Events         string   `json:"events,omitempty"`      // 卡生命周期事件：空或 off 关闭，on 开启。目标未设置时沿用这里。默认关闭。
 }
 
 // Acceptance is an objective's commands and checklist. Both are optional.
@@ -45,6 +47,7 @@ type Objective struct {
 	Channel           string          `json:"channel"`            // 显式指定的渠道；空则自动路由，且不受红线过滤。
 	Model             string          `json:"model"`              // 显式指定的模型；空则自动路由。
 	Review            string          `json:"review"`             // 复核模式：空表示沿用项目；auto、off、check、review。
+	Events            string          `json:"events,omitempty"`   // 卡生命周期事件：空沿用项目，on 开启，off 关闭。默认关闭。
 }
 
 // DesignNode is one node in an objective's design tree.
@@ -113,6 +116,8 @@ type Card struct {
 	Budget       Budget     `json:"budget"`        // 单卡预算。
 	Sandbox      string     `json:"sandbox"`       // 空表示沿用项目设置；"on" 在 Cardex 沙箱内跑；"off" 整张卡在沙箱外跑。只能在 card add 时设定。
 	Review       string     `json:"review"`        // 复核模式：空表示沿用目标和项目；auto、off、check、review。
+
+	WaitQuestionID string `json:"-"` // Question bound to the current needs_input state.
 }
 
 // Route is the channel and model chosen before an attempt starts.
@@ -150,6 +155,29 @@ type RouteReason struct {
 	Candidates []RouteCandidate    `json:"candidates"` // 候选列表。
 	Filtered   []FilteredCandidate `json:"filtered"`   // 被过滤的候选和原因。
 	Scores     []RouteScore        `json:"scores"`     // 最终分数。
+	Dispatch   *RouteDispatch      `json:"dispatch,omitempty"`
+}
+
+// RouteDispatch snapshots the runner and constraints before fallback updates a card's pin.
+type RouteDispatch struct {
+	Runner     RunnerName `json:"runner"`
+	Channel    string     `json:"expected_channel,omitempty"`
+	Model      string     `json:"expected_model,omitempty"`
+	Tier       Tier       `json:"expected_tier,omitempty"`
+	ActualTier Tier       `json:"actual_tier,omitempty"`
+}
+
+// SelectedTier returns the stored tier of the selected route, when known.
+func (r RouteReason) SelectedTier(selected Route) Tier {
+	if r.Dispatch != nil && r.Dispatch.Tier != TierNone {
+		return r.Dispatch.ActualTier
+	}
+	for _, cand := range r.Candidates {
+		if cand.Channel == selected.Channel && cand.Model == selected.Model && cand.Tier.Rank() > 0 {
+			return cand.Tier
+		}
+	}
+	return TierNone
 }
 
 // Usage is token consumption with where the number came from.

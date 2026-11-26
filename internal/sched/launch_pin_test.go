@@ -348,6 +348,10 @@ func TestLaunchUnusableChannel(t *testing.T) {
 					t.Fatalf("writeback channel %s model %s route %+v", got.Channel, got.Model, opened.Route)
 				}
 				assertPinEvent(t, ctx, db, cardID, tc.pinChannel, tc.pinModel, tc.wantChannel, opened.Route.Model, tc.reason)
+				in := r.harvestInput(ctx, db, got, opened, 0, nil)
+				if in.ExpectedChannel != tc.pinChannel || in.ExpectedModel != tc.pinModel || in.Runner != string(model.RunnerFake) {
+					t.Fatalf("harvest lost the original dispatch constraints: %+v", in)
+				}
 				t.Logf("%s switched channel original pin %s/%s new route %s/%s reason %s; objective Channel and Model unchanged", pinLogKind(tc.name), tc.pinChannel, tc.pinModel, got.Channel, got.Model, tc.reason)
 			} else {
 				if got.Channel != tc.cardChannel || got.Model != tc.cardModel {

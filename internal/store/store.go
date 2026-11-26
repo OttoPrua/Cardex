@@ -7,15 +7,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 
 	"github.com/OttoPrua/Cardex/internal/homeguard"
+	"github.com/OttoPrua/Cardex/internal/roots"
 )
+
+// latestSchema is the migration applied by Open.
+const latestSchema = 11
 
 // ErrAppendOnly is returned by event update and delete.
 var ErrAppendOnly = errors.New("event is append-only")
@@ -30,7 +35,8 @@ type execer interface {
 
 // Store is a SQLite database opened with WAL and a busy timeout.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
 }
 
 // Open opens or creates the database at path and applies migrations.
@@ -51,15 +57,25 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	defer unlock()
-	dsn := "file:" + filepath.ToSlash(abs) + "?_pragma=busy_timeout(30000)&_pragma=journal_mode(WAL)"
+	dsn := sqliteURI(abs) + "?_pragma=busy_timeout(30000)&_pragma=journal_mode(WAL)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
-	s := &Store{db: db}
-	if err := s.migrate(context.Background()); err != nil {
+	s := &Store{db: db, path: abs}
+	backupDir := roots.Load(filepath.Dir(abs)).BackupsDir
+	if backupDir != "" {
+		info, err := os.Stat(abs)
+		if os.IsNotExist(err) || (err == nil && info.Size() == 0) {
+			backupDir = ""
+		} else if err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+	}
+	if err := s.migrate(context.Background(), backupDir); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -84,6 +100,61 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// Inspect reads an existing store without migrations. SQLite's ordinary
+// read-only mode can create sidecars for a clean WAL database, so use an
+// immutable read for that case and reject the result if the file changed.
+func Inspect(path string, read func(*Store)) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	before, err := os.Stat(abs)
+	if err != nil {
+		return err
+	}
+	opts := "?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)"
+	_, walErr := os.Stat(abs + "-wal")
+	clean := os.IsNotExist(walErr)
+	if clean {
+		opts += "&immutable=1"
+	} else if walErr != nil {
+		return walErr
+	} else if _, err := os.Stat(abs + "-shm"); err != nil {
+		return fmt.Errorf("cannot inspect the WAL without its shared-memory file: %w", err)
+	}
+	db, err := sql.Open("sqlite", sqliteURI(abs)+opts)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err := db.Ping(); err != nil {
+		return err
+	}
+	read(&Store{db: db, path: abs})
+	if clean {
+		after, err := os.Stat(abs)
+		_, walErr := os.Stat(abs + "-wal")
+		if err != nil || !os.IsNotExist(walErr) || !os.SameFile(before, after) ||
+			before.Size() != after.Size() || before.ModTime() != after.ModTime() {
+			return errors.New("database changed during inspection")
+		}
+	}
+	return nil
+}
+
+func sqliteURI(path string) string {
+	u := url.URL{Path: filepath.ToSlash(path)}
+	return "file:" + u.EscapedPath()
+}
+
+// Home is the directory with the database and home configuration.
+func (s *Store) Home() string {
+	if s == nil {
+		return ""
+	}
+	return filepath.Dir(s.path)
+}
+
 // Close closes the database.
 func (s *Store) Close() error { return s.db.Close() }
 
@@ -102,7 +173,14 @@ func refuseCardexHome(path string) error {
 	return homeguard.Check(filepath.Dir(abs))
 }
 
+type commitNotes struct {
+	pending []cardNote
+}
+
+type notesKey struct{}
+
 // WithTx runs fn inside a transaction. Nested calls join the outer transaction.
+// Lifecycle events are saved before commit and delivered after it.
 func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) (err error) {
 	if _, ok := ctx.Value(txKey{}).(execer); ok {
 		return fn(ctx)
@@ -116,11 +194,32 @@ func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) (err
 			_ = tx.Rollback()
 		}
 	}()
+	callerCtx := ctx
+	notes := &commitNotes{}
 	ctx = context.WithValue(ctx, txKey{}, tx)
+	ctx = context.WithValue(ctx, notesKey{}, notes)
 	if err = fn(ctx); err != nil {
 		return err
 	}
-	return tx.Commit()
+	var deliveries []int64
+	for _, note := range notes.pending {
+		id, noteErr := s.persistLifecycle(ctx, note)
+		if noteErr != nil {
+			return noteErr
+		}
+		if id != 0 {
+			deliveries = append(deliveries, id)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if PublishCardNote != nil {
+		for _, id := range deliveries {
+			PublishCardNote(callerCtx, s, id)
+		}
+	}
+	return nil
 }
 
 func (s *Store) q(ctx context.Context) execer {
@@ -130,7 +229,7 @@ func (s *Store) q(ctx context.Context) execer {
 	return s.db
 }
 
-func (s *Store) migrate(ctx context.Context) error {
+func (s *Store) migrate(ctx context.Context, backupDir string) error {
 	// BEGIN IMMEDIATE takes the write lock before the version is read again, so a
 	// later opener skips DDL that an earlier opener already committed.
 	conn, err := s.db.Conn(ctx)
@@ -147,14 +246,39 @@ func (s *Store) migrate(ctx context.Context) error {
 			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
+	var present, current int
+	if err := conn.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='schema_migrations'`).Scan(&present); err != nil {
+		return err
+	}
+	if present != 0 {
+		if err := conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&current); err != nil {
+			return err
+		}
+	}
+	var missingScratch bool
+	if err := conn.QueryRowContext(ctx, `SELECT NOT EXISTS (
+		SELECT 1 FROM pragma_table_info('projects') WHERE name='scratch_dir'
+	)`).Scan(&missingScratch); err != nil {
+		return err
+	}
+	var scratchOnlyV8 bool
+	if current == 8 {
+		// An earlier storage candidate recorded v8 without the changed_at migration.
+		if err := conn.QueryRowContext(ctx, `SELECT NOT EXISTS (
+			SELECT 1 FROM sqlite_schema WHERE type='index' AND name='events_entity_type'
+		)`).Scan(&scratchOnlyV8); err != nil {
+			return err
+		}
+	}
+	if (current < latestSchema || missingScratch || scratchOnlyV8) && backupDir != "" {
+		if err := s.backup(ctx, backupDir); err != nil {
+			return fmt.Errorf("backup before schema write: %w", err)
+		}
+	}
 	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version INTEGER PRIMARY KEY,
 		applied_at TEXT NOT NULL
 	)`); err != nil {
-		return err
-	}
-	var current int
-	if err := conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&current); err != nil {
 		return err
 	}
 	if current < 1 {
@@ -167,6 +291,18 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 		current = 1
+	}
+	if missingScratch {
+		if _, err := conn.ExecContext(ctx, `ALTER TABLE projects ADD COLUMN scratch_dir TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+	}
+	if scratchOnlyV8 {
+		// Replace the old marker in the same transaction as the full v8 migration.
+		if _, err := conn.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=8`); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+		current = 7
 	}
 	if current < 2 {
 		if err := migrateOpenQuestions(ctx, conn); err != nil {
@@ -250,12 +386,130 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (7, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 			return err
 		}
+		current = 7
+	}
+	if current < 8 {
+		for _, table := range []string{"cards", "attempts"} {
+			var has int
+			if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('`+table+`') WHERE name='changed_at'`).Scan(&has); err != nil {
+				return fmt.Errorf("migration 8: %w", err)
+			}
+			if has == 0 {
+				if _, err := conn.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN changed_at TEXT NOT NULL DEFAULT ''`); err != nil {
+					return fmt.Errorf("migration 8: %w", err)
+				}
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS events_entity_type ON events(entity, event_type)`); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (8, ?)`, formatTime(time.Now())); err != nil {
+			return fmt.Errorf("migration 8: %w", err)
+		}
+	}
+	if current < 9 {
+		// Lifecycle event switch. Empty inherits (project empty means off).
+		for _, table := range []string{"projects", "objectives"} {
+			var has int
+			if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('`+table+`') WHERE name='events'`).Scan(&has); err != nil {
+				return fmt.Errorf("migration 9: %w", err)
+			}
+			if has == 0 {
+				if _, err := conn.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN events TEXT NOT NULL DEFAULT ''`); err != nil {
+					return fmt.Errorf("migration 9: %w", err)
+				}
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS mgmt_reads (
+			origin TEXT NOT NULL,
+			card_id TEXT NOT NULL,
+			command TEXT NOT NULL,
+			n INTEGER NOT NULL,
+			PRIMARY KEY (origin, card_id, command)
+		)`); err != nil {
+			return fmt.Errorf("migration 9: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (9, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	if current < 10 {
+		if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS lifecycle_outbox (
+			id INTEGER PRIMARY KEY,
+			event_key TEXT NOT NULL UNIQUE,
+			objective_id TEXT NOT NULL,
+			origin TEXT NOT NULL,
+			payload TEXT NOT NULL,
+			attempts INTEGER NOT NULL DEFAULT 0,
+			done INTEGER NOT NULL DEFAULT 0,
+			available_at INTEGER NOT NULL DEFAULT 0
+		)`); err != nil {
+			return fmt.Errorf("migration 10: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS lifecycle_outbox_pending
+			ON lifecycle_outbox(done, available_at)`); err != nil {
+			return fmt.Errorf("migration 10: %w", err)
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (10, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	if current < 11 {
+		var has int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='wait_question_id'`).Scan(&has); err != nil {
+			return fmt.Errorf("migration 11: %w", err)
+		}
+		if has == 0 {
+			if _, err := conn.ExecContext(ctx, `ALTER TABLE cards ADD COLUMN wait_question_id TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migration 11: %w", err)
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (11, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return err
 	}
 	committed = true
 	return nil
+}
+
+// backup snapshots committed pages, including the WAL, while migration
+// holds the write lock on a different connection.
+func (s *Store) backup(ctx context.Context, dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	stage, err := os.MkdirTemp(dir, ".cardex-backup-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
+	path := filepath.Join(stage, filepath.Base(s.path))
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		return err
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.Raw(func(driverConn any) error {
+		b, err := driverConn.(interface {
+			NewBackup(string) (*sqlite.Backup, error)
+		}).NewBackup(sqliteURI(path))
+		if err != nil {
+			return err
+		}
+		_, err = b.Step(-1)
+		return errors.Join(err, b.Finish())
+	}); err != nil {
+		return err
+	}
+	name := time.Now().UTC().Format("20060102T150405.000000000Z") + "-" +
+		filepath.Base(stage)[len(".cardex-backup-"):] + "-" + filepath.Base(s.path)
+	return os.Rename(path, filepath.Join(dir, name))
 }
 
 func mustJSON(v any) (string, error) {

@@ -80,6 +80,8 @@ func TestCommandHelpNamesPurposeAndParameters(t *testing.T) {
 		{[]string{"card", "add", "--help"}, []string{"-origin", "-objective", "--json"}},
 		{[]string{"card", "list", "--help"}, []string{"--json"}},
 		{[]string{"card", "show", "--help"}, []string{"<id>", "--json"}},
+		{[]string{"wait", "--help"}, []string{"--until", "--timeout", "<id>"}},
+		{[]string{"reads", "--help"}, []string{"--origin", "--json"}},
 		{[]string{"card", "cancel", "--help"}, []string{"<id>", "--json"}},
 		{[]string{"card", "retry", "--help"}, []string{"<id>", "--json"}},
 		{[]string{"card", "pause", "--help"}, []string{"<id>", "--json"}},
@@ -1185,7 +1187,7 @@ func TestDoctorFindingsContinue(t *testing.T) {
 		if line == "" {
 			continue
 		}
-		if !strings.HasPrefix(line, "problem: ") && !strings.HasPrefix(line, "suggestion: ") {
+		if !strings.HasPrefix(line, "problem: ") && !strings.HasPrefix(line, "suggestion: ") && !strings.HasPrefix(line, "storage: ") {
 			t.Fatalf("non-problem line %q\n%s", line, out)
 		}
 	}

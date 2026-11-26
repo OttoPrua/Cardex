@@ -63,10 +63,6 @@ func persistGroupFile(path string, pgid int) error {
 	return cerr
 }
 
-func readExecutorGroup(home, attemptID string) int {
-	return readGroupFile(filepath.Join(home, "attempts", attemptID, executorGroupName))
-}
-
 func readGroupFile(path string) int {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -172,11 +168,11 @@ func waitGroupGone(pgid int, bound time.Duration) bool {
 
 // deadlineReached reports that this attempt's own hard duration has elapsed
 // since it started. A missing or unusable file has not elapsed.
-func deadlineReached(home string, started time.Time, attemptID string, now time.Time) bool {
+func deadlineReached(dir string, started, now time.Time) bool {
 	if started.IsZero() {
 		return false
 	}
-	limit, reason := attemptDeadline(filepath.Join(home, "attempts", attemptID))
+	limit, reason := attemptDeadline(dir)
 	if reason != "" || limit <= 0 {
 		return false
 	}

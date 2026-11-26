@@ -314,6 +314,20 @@ func (k CardKind) Valid() bool { return oneOf(k, AllCardKinds()) }
 // Valid reports whether t is empty or T1–T3.
 func (t Tier) Valid() bool { return t == TierNone || oneOf(t, AllTiers()) }
 
+// Rank 把档位排成数：T1 是 1，T2 是 2，T3 是 3。空或未知是 0。
+func (t Tier) Rank() int {
+	switch t {
+	case TierT1:
+		return 1
+	case TierT2:
+		return 2
+	case TierT3:
+		return 3
+	default:
+		return 0
+	}
+}
+
 // CanonicalTier accepts a known tier that differs only by case or surrounding space.
 // The bool is false when the token is empty or not T1, T2, or T3.
 func CanonicalTier(raw Tier) (Tier, bool) {

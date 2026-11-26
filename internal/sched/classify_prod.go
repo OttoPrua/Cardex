@@ -11,6 +11,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/host"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
@@ -79,7 +80,7 @@ func (r *Runner) classifyAttempt(ctx context.Context, db *store.Store, cardID st
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(r.Home, "attempts", attemptID)
+	dir := roots.AttemptDirFor(r.Home, attemptID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}

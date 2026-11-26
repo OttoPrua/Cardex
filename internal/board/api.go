@@ -17,6 +17,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/homeguard"
 	"github.com/OttoPrua/Cardex/internal/proc"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
@@ -170,7 +171,8 @@ func serveLog(w http.ResponseWriter, r *http.Request, id string) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if _, err := db.GetAttempt(r.Context(), id); err != nil {
+	attempt, err := db.GetAttempt(r.Context(), id)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			http.NotFound(w, r)
 			return
@@ -178,12 +180,11 @@ func serveLog(w http.ResponseWriter, r *http.Request, id string) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	path, ok := attemptLogPath(home, id)
-	if !ok {
-		http.NotFound(w, r)
-		return
+	dir := roots.AttemptDir(home, id, attempt.PromptPath)
+	body, err := readTail(dir, logTailBytes)
+	if legacy := filepath.Join(home, "attempts", id); errors.Is(err, os.ErrNotExist) && legacy != dir {
+		body, err = readTail(legacy, logTailBytes)
 	}
-	body, err := readTail(path, logTailBytes)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			http.NotFound(w, r)
@@ -226,21 +227,13 @@ func parsePage(raw string) int {
 	return int(n)
 }
 
-func attemptLogPath(home, id string) (string, bool) {
-	if !safeID(id) {
-		return "", false
+func readTail(dir string, n int) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
 	}
-	cleanHome := filepath.Clean(home)
-	joined := filepath.Clean(filepath.Join(cleanHome, "attempts", id, "output.log"))
-	want := cleanHome + string(filepath.Separator) + "attempts" + string(filepath.Separator) + id + string(filepath.Separator) + "output.log"
-	if joined != want {
-		return "", false
-	}
-	return joined, true
-}
-
-func readTail(path string, n int) ([]byte, error) {
-	f, err := os.Open(path)
+	defer root.Close()
+	f, err := root.Open("output.log")
 	if err != nil {
 		return nil, err
 	}
@@ -248,6 +241,9 @@ func readTail(path string, n int) ([]byte, error) {
 	info, err := f.Stat()
 	if err != nil {
 		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, os.ErrNotExist
 	}
 	start := int64(0)
 	if info.Size() > int64(n) {

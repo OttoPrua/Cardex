@@ -214,7 +214,7 @@ func routeMatches(in Input, channel, modelName string) bool {
 	return in.Attempt.RouteReason.SelectedTier(model.Route{Channel: channel, Model: modelName}).Rank() >= want.Rank()
 }
 
-func acceptanceResults(ctx context.Context, home, dir, base string, runs []commandRun, env []string, scratch string) []AcceptanceResult {
+func acceptanceResults(ctx context.Context, home, dir, base string, runs []commandRun, env []string, scratchRoot string) []AcceptanceResult {
 	out := make([]AcceptanceResult, 0, len(runs))
 	for _, run := range runs {
 		item := AcceptanceResult{
@@ -223,7 +223,7 @@ func acceptanceResults(ctx context.Context, home, dir, base string, runs []comma
 			DurationMS: run.Duration.Milliseconds(),
 		}
 		if isGoTest(run.Command) {
-			item.Baseline = compareBaseline(ctx, home, dir, base, run, env, scratch)
+			item.Baseline = compareBaseline(ctx, home, dir, base, run, env, scratchRoot)
 		}
 		out = append(out, item)
 	}

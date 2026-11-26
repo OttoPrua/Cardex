@@ -49,18 +49,17 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	}
 	acceptRan := hasAcceptance(in.Card.Acceptance)
 	env := proc.AcceptanceEnv(os.Environ())
-	var scratchDir string
+	var scratchRoot string
 	if acceptRan {
-		var cleanup func() error
-		root := roots.Load(in.Home).EffectiveScratch(in.Scratch)
-		scratchDir, cleanup, err = roots.PrepareAttemptScratch(root, in.Attempt.ID)
-		if err != nil {
-			return Result{}, err
-		}
-		defer cleanup()
-		env = roots.ApplyTempEnv(env, scratchDir)
+		scratchRoot = roots.Load(in.Home).EffectiveScratch(in.Scratch)
 	}
-	acc, accOut, accLog, runs, err := runAcceptance(ctx, dir, in.Card.Acceptance, env)
+	scratchDir, cleanup, err := roots.PrepareAttemptScratch(scratchRoot, in.Attempt.ID)
+	if err != nil {
+		return Result{}, err
+	}
+	acc, accOut, accLog, runs, err := runAcceptance(ctx, dir, in.Card.Acceptance, roots.ApplyTempEnv(env, scratchDir))
+	// Scratch can be inside the candidate worktree, so clean it before the summary diff.
+	_ = cleanup()
 	if err != nil {
 		return Result{}, err
 	}
@@ -95,7 +94,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if werr := writeEvidence(in.Home, in.Attempt.ID, in.Attempt.PromptPath, accLog, result != resultMissing, []byte(raw)); werr != nil {
 		res.EvidenceErr = werr
 	}
-	acceptance := acceptanceResults(ctx, in.Home, dir, base, runs, env, scratchDir)
+	acceptance := acceptanceResults(ctx, in.Home, dir, base, runs, env, scratchRoot)
 	sum := buildSummary(ctx, in, dir, base, acceptance, raw, result != resultMissing)
 	if werr := writeSummary(in.Home, in.Attempt, sum); werr != nil {
 		res.EvidenceErr = errors.Join(res.EvidenceErr, werr)

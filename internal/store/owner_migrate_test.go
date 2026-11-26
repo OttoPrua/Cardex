@@ -82,7 +82,7 @@ func TestLegacyOwnerQuestionMigration(t *testing.T) {
 	if n := versionRows(t, again, 3); n != 1 {
 		t.Fatalf("second open version 3 rows %d", n)
 	}
-	if n := versionRows(t, again, 0); n != 9 {
+	if n := versionRows(t, again, 0); n != 10 {
 		t.Fatalf("schema rows %d", n)
 	}
 }

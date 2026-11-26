@@ -123,12 +123,8 @@ func (st *step) apply(card model.Card, attempt model.Attempt) error {
 			return err
 		}
 	case ActionQuestion, ActionVoid:
-		card.Status = model.CardNeedsInput
 		card.WaitReason = ""
-		if err := st.saveCard(card); err != nil {
-			return err
-		}
-		questionID, err := st.openQuestion(dec.QuestionKind, card.ID, "card", dec.QuestionText, true)
+		questionID, err := st.blockOnQuestion(&card, false, dec.QuestionKind, dec.QuestionText)
 		if err != nil {
 			return err
 		}
@@ -301,12 +297,8 @@ func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 	}
 	if hasPrior && !reviewConstraintMet(st.snap.channels, st.snap.positioning, holdChannel, holdModel, plan.Tier) {
 		reason := reviewHoldUnmetReason(plan.Tier, holdChannel, holdModel)
-		card.Status = model.CardNeedsInput
 		card.WaitReason = reason
-		if err := st.saveCard(card); err != nil {
-			return err
-		}
-		if _, err := st.openQuestion(model.QuestionCustom, card.ID, "card", reason, true); err != nil {
+		if _, err := st.blockOnQuestion(&card, false, model.QuestionCustom, reason); err != nil {
 			return err
 		}
 		return st.event("card:"+card.ID, "review_hold_unmet", map[string]string{
@@ -496,11 +488,7 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 			return err
 		}
 		if !ok {
-			card.Status = model.CardNeedsInput
-			if err := st.saveCard(card); err != nil {
-				return err
-			}
-			_, err := st.openQuestion(model.QuestionCustom, card.ID, "card", noOtherChannelText(attempt, st.snap.channels), true)
+			_, err := st.blockOnQuestion(&card, false, model.QuestionCustom, noOtherChannelText(attempt, st.snap.channels))
 			return err
 		}
 		pin := keptPin(st.snap.events, card)
@@ -767,6 +755,16 @@ func (st *step) unavailableStrikes(channel, modelName string) (int, error) {
 		n++
 	}
 	return n, nil
+}
+
+func (st *step) blockOnQuestion(card *model.Card, foreign bool, kind model.QuestionKind, text string) (string, error) {
+	id, err := st.openQuestion(kind, card.ID, "card", text, true)
+	if err != nil {
+		return "", err
+	}
+	card.Status = model.CardNeedsInput
+	card.WaitQuestionID = id
+	return id, st.saveDep(*card, foreign)
 }
 
 func (st *step) openQuestion(kind model.QuestionKind, scope, scopeKind, text string, deliver bool) (string, error) {
@@ -1163,16 +1161,12 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 	switch verdict {
 	case verdictBlocked:
 		// The reviewer could not verify; a person decides. No rework is spent.
-		parent.Status = model.CardNeedsInput
 		parent.WaitReason = ""
-		if err := st.saveDep(parent, foreign); err != nil {
-			return err
-		}
 		text := "review blocked"
 		if opinion != "" {
 			text += ": " + opinion
 		}
-		if _, err := st.openQuestion(model.QuestionCustom, parent.ID, "card", text, true); err != nil {
+		if _, err := st.blockOnQuestion(&parent, foreign, model.QuestionCustom, text); err != nil {
 			return err
 		}
 		if err := st.noteReviewVerdict(parent, card, attempt, verdict, stored, true); err != nil {
@@ -1195,12 +1189,8 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		}
 		next, ok := upTier(cur)
 		if !ok {
-			parent.Status = model.CardNeedsInput
 			parent.WaitReason = ""
-			if err := st.saveDep(parent, foreign); err != nil {
-				return err
-			}
-			_, err := st.openQuestion(model.QuestionCustom, parent.ID, "card", "review escalated at T3: "+opinion, true)
+			_, err := st.blockOnQuestion(&parent, foreign, model.QuestionCustom, "review escalated at T3: "+opinion)
 			return err
 		}
 		up := model.Card{
@@ -1246,15 +1236,12 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 			return err
 		}
 	} else {
-		parent.Status = model.CardNeedsInput
-		if err := st.saveDep(parent, foreign); err != nil {
-			return err
-		}
+		parent.WaitReason = ""
 		text := dec.QuestionText
 		if opinion != "" {
 			text += ": " + opinion
 		}
-		questionID, err := st.openQuestion(dec.QuestionKind, parent.ID, "card", text, true)
+		questionID, err := st.blockOnQuestion(&parent, foreign, dec.QuestionKind, text)
 		if err != nil {
 			return err
 		}

@@ -336,6 +336,20 @@ func (s *Store) migrate(ctx context.Context) error {
 			return err
 		}
 	}
+	if current < 10 {
+		var has int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('cards') WHERE name='wait_question_id'`).Scan(&has); err != nil {
+			return fmt.Errorf("migration 10: %w", err)
+		}
+		if has == 0 {
+			if _, err := conn.ExecContext(ctx, `ALTER TABLE cards ADD COLUMN wait_question_id TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("migration 10: %w", err)
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (10, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return err
 	}

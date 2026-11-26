@@ -53,11 +53,11 @@ func (s *Store) CardWaitState(ctx context.Context, id string) (model.Card, error
 	return scanCardWaitState(s.q(ctx).QueryRowContext(ctx, cardWaitSelect+` WHERE id=?`, id))
 }
 
-const cardWaitSelect = `SELECT id, objective_id, status, wait_reason FROM cards`
+const cardWaitSelect = `SELECT id, objective_id, status, wait_reason, wait_question_id FROM cards`
 
 func scanCardWaitState(row scanner) (model.Card, error) {
 	var card model.Card
-	err := row.Scan(&card.ID, &card.Objective, &card.Status, &card.WaitReason)
+	err := row.Scan(&card.ID, &card.Objective, &card.Status, &card.WaitReason, &card.WaitQuestionID)
 	return card, err
 }
 
@@ -172,7 +172,7 @@ func (s *Store) cardPulse(ctx context.Context, card model.Card) (Pulse, string, 
 	}
 	pulse.Model = attempt.Route.Model
 	pulse.SHA = firstCommit(attempt.HeadCommit, attempt.BaseCommit)
-	question, err := s.pendingLifecycleQuestion(ctx, card.Objective, card.ID)
+	question, err := s.pendingLifecycleQuestion(ctx, card.Objective, card.ID, card.WaitQuestionID)
 	if err != nil {
 		return pulse, "", err
 	}
@@ -201,7 +201,7 @@ func (s *Store) ObjectivePulse(ctx context.Context, obj model.Objective) (Pulse,
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return pulse, err
 	}
-	question, err := s.pendingLifecycleQuestion(ctx, obj.ID, "")
+	question, err := s.pendingLifecycleQuestion(ctx, obj.ID, "", "")
 	pulse.QuestionID = question.ID
 	return pulse, err
 }
@@ -222,13 +222,14 @@ func firstCommit(head, base string) string {
 	return base
 }
 
-func (s *Store) pendingLifecycleQuestion(ctx context.Context, objectiveID, cardID string) (model.Question, error) {
+func (s *Store) pendingLifecycleQuestion(ctx context.Context, objectiveID, cardID, boundID string) (model.Question, error) {
 	var q model.Question
-	// Cross-objective reviews can open questions scoped to the subject card.
+	// An answered bound question must not be replaced by an unrelated pending one.
 	err := s.q(ctx).QueryRowContext(ctx, `SELECT id, scope, text FROM questions
-		WHERE answer='' AND ((objective_id=?1 AND (scope IN ('', ?1, ?2) OR ?2=''))
-			OR (?2<>'' AND scope_kind='card' AND scope=?2))
-		ORDER BY (scope=?2) DESC, rowid DESC LIMIT 1`, objectiveID, cardID).
+		WHERE answer='' AND ((?3<>'' AND id=?3 AND scope=?2)
+			OR (?3='' AND ((objective_id=?1 AND (scope IN ('', ?1, ?2) OR ?2=''))
+				OR (?2<>'' AND scope_kind='card' AND scope=?2))))
+		ORDER BY (scope=?2) DESC, rowid DESC LIMIT 1`, objectiveID, cardID, boundID).
 		Scan(&q.ID, &q.Scope, &q.Text)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil

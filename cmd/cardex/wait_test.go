@@ -151,6 +151,55 @@ func TestWaitStatusesTimeoutAndReads(t *testing.T) {
 	}
 }
 
+func TestWaitUsesQuestionBoundToCardState(t *testing.T) {
+	home := t.TempDir()
+	mustHome(t, home, "project", "add", "--id", "p1", "--repo", t.TempDir())
+	mustHome(t, home, "objective", "add", "--id", "o1", "--project", "p1", "--title", "Dev")
+	mustHome(t, home, "objective", "add", "--id", "o2", "--project", "p1", "--title", "Review")
+	mustHome(t, home, "card", "add", "--id", "c1", "--objective", "o1", "--title", "Card")
+	ctx := context.Background()
+	bound := model.Question{ID: "q-bound", Objective: "o2", Scope: "c1", Kind: model.QuestionCustom, Text: "rework limit"}
+	withDB(t, home, func(db *store.Store) {
+		other := model.Question{ID: "q-other", Objective: "o1", Scope: "c1", ScopeKind: "card", Kind: model.QuestionCustom, Text: "other review blocked"}
+		for _, q := range []*model.Question{&bound, &other} {
+			if err := db.CreateQuestion(ctx, q); err != nil {
+				t.Fatal(err)
+			}
+		}
+		card, err := db.GetCard(ctx, "c1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		card.Status = model.CardNeedsInput
+		card.WaitQuestionID = bound.ID
+		if err := db.UpdateCard(ctx, &card); err != nil {
+			t.Fatal(err)
+		}
+	})
+	wait := func(id string) store.Pulse {
+		t.Helper()
+		code, out, errb := callCLI(t, []string{"--home", home, "--json", "wait", id, "--until", "needs_input", "--timeout", "1s"})
+		if code != 0 || errb != "" {
+			t.Fatalf("wait exit %d\n%s\n%s", code, out, errb)
+		}
+		return onePulse(t, out)
+	}
+	for _, id := range []string{"c1", "o1"} {
+		if pulse := wait(id); pulse.ID != "c1" || pulse.QuestionID != bound.ID || pulse.Reason != bound.Text {
+			t.Errorf("wait %s returned %+v, want %s and %q", id, pulse, bound.ID, bound.Text)
+		}
+	}
+	withDB(t, home, func(db *store.Store) {
+		bound.Answer = "reject"
+		if err := db.UpdateQuestion(ctx, &bound); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if pulse := wait("c1"); pulse.QuestionID != "" {
+		t.Errorf("wait after answer returned %+v", pulse)
+	}
+}
+
 func TestReadCountFailureDoesNotFailShow(t *testing.T) {
 	home := t.TempDir()
 	repo := t.TempDir()

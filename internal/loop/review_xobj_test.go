@@ -74,18 +74,28 @@ func TestCrossObjectiveReviewAbsorbs(t *testing.T) {
 }
 
 func TestCrossObjectiveReworkLimitUsesQuestionID(t *testing.T) {
+	t.Run("same objective", func(t *testing.T) { testReworkLimitUsesQuestionID(t, false) })
+	t.Run("cross objective", func(t *testing.T) { testReworkLimitUsesQuestionID(t, true) })
+}
+
+func testReworkLimitUsesQuestionID(t *testing.T, foreign bool) {
+	t.Helper()
 	f := newFx(t, model.ModeManual)
 	f.obj.Events = "on"
 	if err := f.db.UpdateObjective(f.ctx, &f.obj); err != nil {
 		t.Fatal(err)
 	}
-	reviewObjective := f.obj
-	reviewObjective.ID = "obj-review"
-	reviewObjective.Origin = "file:review-origin"
-	reviewObjective.IntegrationBranch = "integration-review"
-	reviewObjective.Events = "off"
-	if err := f.db.CreateObjective(f.ctx, &reviewObjective); err != nil {
+	other := f.obj
+	other.ID = "obj-other"
+	other.Origin = "file:other-origin"
+	other.IntegrationBranch = "integration-other"
+	other.Events = "off"
+	if err := f.db.CreateObjective(f.ctx, &other); err != nil {
 		t.Fatal(err)
+	}
+	reviewObjective, competingObjective := f.obj, other
+	if foreign {
+		reviewObjective, competingObjective = other, f.obj
 	}
 	dev := f.card(model.Card{ID: "dev", Status: model.CardReviewing, ReworkCount: 2})
 	candidate := f.attempt(dev, 0, model.OutcomePassed, "", "")
@@ -115,6 +125,9 @@ func TestCrossObjectiveReworkLimitUsesQuestionID(t *testing.T) {
 			if !strings.Contains(header, "\nobjective: "+f.obj.ID+"\norigin: "+f.obj.Origin) ||
 				event.ID != dev.ID || event.Model != candidate.Route.Model || event.SHA != candidate.HeadCommit || events[event.Status] == nil {
 				t.Fatalf("unexpected notification %s", raw)
+			}
+			if event.Reason != "rework_count would exceed 2 (review rework): still broken" {
+				t.Errorf("%s notification reason %q", event.Status, event.Reason)
 			}
 			events[event.Status][event.QuestionID]++
 		}
@@ -165,11 +178,21 @@ func TestCrossObjectiveReworkLimitUsesQuestionID(t *testing.T) {
 			}
 		}
 		pulse, err := f.db.CardPulse(f.ctx, f.mustCard(dev.ID))
-		if err != nil || pulse.QuestionID != pending.ID {
-			t.Errorf("round %d: card pulse %+v, want question %s, error %v", round, pulse, pending.ID, err)
+		if err != nil || pulse.QuestionID != pending.ID || pulse.Reason != pending.Text {
+			t.Errorf("round %d: card pulse %+v, want question %s and reason %q, error %v", round, pulse, pending.ID, pending.Text, err)
 		}
 		if round == 0 {
 			firstID = pending.ID
+			competing := model.Question{ID: "q-other", Objective: competingObjective.ID, Scope: dev.ID,
+				ScopeKind: "card", Kind: model.QuestionCustom, Text: "review blocked in another objective"}
+			if err := f.db.CreateQuestion(f.ctx, &competing); err != nil {
+				t.Fatal(err)
+			}
+			dev = f.mustCard(dev.ID)
+			dev.Status = model.CardReviewing
+			if err := f.db.UpdateCard(f.ctx, &dev); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if round == 1 {
 			pending.Answer = "reject"

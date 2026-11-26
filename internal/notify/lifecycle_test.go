@@ -147,8 +147,14 @@ func TestLifecycleReworkAndChannelOnce(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.CreateQuestion(ctx, &model.Question{
+		ID: "q-other", Objective: obj.ID, Scope: card.ID, ScopeKind: "card",
+		Kind: model.QuestionCustom, Text: "A newer question for the same card",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < 2; i++ {
-		if err := db.NoteReworkLimit(ctx, card, reworkReason); err != nil {
+		if err := db.NoteReworkLimit(ctx, card, reworkReason, "q-rework"); err != nil {
 			t.Fatal(err)
 		}
 		if err := db.NoteChannelDegraded(ctx, card, attempt, "unavailable: model real-model"); err != nil {
@@ -167,6 +173,9 @@ func TestLifecycleReworkAndChannelOnce(t *testing.T) {
 		body, err := os.ReadFile(match)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if strings.Contains(string(body), `"status":"rework_limit"`) && !strings.Contains(string(body), `"question_id":"q-rework"`) {
+			t.Fatalf("wrong rework question in %s", body)
 		}
 		text += string(body)
 	}

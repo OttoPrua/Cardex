@@ -128,11 +128,12 @@ func (st *step) apply(card model.Card, attempt model.Attempt) error {
 		if err := st.saveCard(card); err != nil {
 			return err
 		}
-		if err := st.openQuestion(dec.QuestionKind, card.ID, "card", dec.QuestionText, true); err != nil {
+		questionID, err := st.openQuestion(dec.QuestionKind, card.ID, "card", dec.QuestionText, true)
+		if err != nil {
 			return err
 		}
 		if dec.Action == ActionQuestion && reworkLimitQuestion(dec.QuestionText) {
-			if err := st.db.NoteReworkLimit(st.ctx, card, dec.QuestionText); err != nil {
+			if err := st.db.NoteReworkLimit(st.ctx, card, dec.QuestionText, questionID); err != nil {
 				return err
 			}
 			if err := st.noteRework(card, attempt, reworkSourceTests, true); err != nil {
@@ -305,7 +306,7 @@ func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 		if err := st.saveCard(card); err != nil {
 			return err
 		}
-		if err := st.openQuestion(model.QuestionCustom, card.ID, "card", reason, true); err != nil {
+		if _, err := st.openQuestion(model.QuestionCustom, card.ID, "card", reason, true); err != nil {
 			return err
 		}
 		return st.event("card:"+card.ID, "review_hold_unmet", map[string]string{
@@ -499,7 +500,8 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 			if err := st.saveCard(card); err != nil {
 				return err
 			}
-			return st.openQuestion(model.QuestionCustom, card.ID, "card", noOtherChannelText(attempt, st.snap.channels), true)
+			_, err := st.openQuestion(model.QuestionCustom, card.ID, "card", noOtherChannelText(attempt, st.snap.channels), true)
+			return err
 		}
 		pin := keptPin(st.snap.events, card)
 		excluded := autoExcluded(st.snap.events, card.ID)
@@ -767,10 +769,10 @@ func (st *step) unavailableStrikes(channel, modelName string) (int, error) {
 	return n, nil
 }
 
-func (st *step) openQuestion(kind model.QuestionKind, scope, scopeKind, text string, deliver bool) error {
+func (st *step) openQuestion(kind model.QuestionKind, scope, scopeKind, text string, deliver bool) (string, error) {
 	for _, question := range st.snap.questions {
 		if question.Objective == st.snap.obj.ID && question.Kind == kind && question.Scope == scope && question.Answer == "" {
-			return nil
+			return question.ID, nil
 		}
 	}
 	question := model.Question{
@@ -789,15 +791,13 @@ func (st *step) openQuestion(kind model.QuestionKind, scope, scopeKind, text str
 		}}
 	}
 	if err := st.db.CreateQuestion(st.ctx, &question); err != nil {
-		return err
+		return "", err
 	}
 	st.snap.questions = append(st.snap.questions, question)
 	if deliver {
-		if err := st.notice(question.ID, string(kind), text); err != nil {
-			return err
-		}
+		return question.ID, st.notice(question.ID, string(kind), text)
 	}
-	return nil
+	return question.ID, nil
 }
 
 // queueRedelivery sends notices whose delivery never succeeded for this fault.
@@ -1172,7 +1172,7 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		if opinion != "" {
 			text += ": " + opinion
 		}
-		if err := st.openQuestion(model.QuestionCustom, parent.ID, "card", text, true); err != nil {
+		if _, err := st.openQuestion(model.QuestionCustom, parent.ID, "card", text, true); err != nil {
 			return err
 		}
 		if err := st.noteReviewVerdict(parent, card, attempt, verdict, stored, true); err != nil {
@@ -1200,7 +1200,8 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 			if err := st.saveDep(parent, foreign); err != nil {
 				return err
 			}
-			return st.openQuestion(model.QuestionCustom, parent.ID, "card", "review escalated at T3: "+opinion, true)
+			_, err := st.openQuestion(model.QuestionCustom, parent.ID, "card", "review escalated at T3: "+opinion, true)
+			return err
 		}
 		up := model.Card{
 			Objective:    card.Objective,
@@ -1253,10 +1254,11 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		if opinion != "" {
 			text += ": " + opinion
 		}
-		if err := st.openQuestion(dec.QuestionKind, parent.ID, "card", text, true); err != nil {
+		questionID, err := st.openQuestion(dec.QuestionKind, parent.ID, "card", text, true)
+		if err != nil {
 			return err
 		}
-		if err := st.db.NoteReworkLimit(st.ctx, parent, text); err != nil {
+		if err := st.db.NoteReworkLimit(st.ctx, parent, text, questionID); err != nil {
 			return err
 		}
 	}
@@ -1671,7 +1673,7 @@ func (st *step) advance() error {
 		if err := st.pauseNode(node.ID); err != nil {
 			return err
 		}
-		if err := st.openQuestion(model.QuestionBreaker, node.ID, "node", "breaker: "+reason, true); err != nil {
+		if _, err := st.openQuestion(model.QuestionBreaker, node.ID, "node", "breaker: "+reason, true); err != nil {
 			return err
 		}
 	}
@@ -2113,7 +2115,8 @@ func (st *step) budgetLines() error {
 			return err
 		}
 	}
-	return st.openQuestion(model.QuestionBudget, obj.ID, "objective", "objective spend reached hard_tokens", true)
+	_, err := st.openQuestion(model.QuestionBudget, obj.ID, "objective", "objective spend reached hard_tokens", true)
+	return err
 }
 
 func (st *step) complete() error {
@@ -2141,7 +2144,8 @@ func (st *step) complete() error {
 	if err := st.saveObjective(); err != nil {
 		return err
 	}
-	return st.openQuestion(model.QuestionDone, obj.ID, "objective", "objective is a done candidate; approve to merge the integration branch locally", true)
+	_, err = st.openQuestion(model.QuestionDone, obj.ID, "objective", "objective is a done candidate; approve to merge the integration branch locally", true)
+	return err
 }
 
 func (st *step) allFrozen() bool {

@@ -28,10 +28,11 @@ const (
 )
 
 type cardNote struct {
-	card    model.Card
-	kind    string
-	reason  string
-	attempt model.Attempt
+	card       model.Card
+	kind       string
+	reason     string
+	questionID string
+	attempt    model.Attempt
 }
 
 // PublishCardNote is installed by notify for immediate best-effort delivery.
@@ -85,9 +86,9 @@ func (s *Store) noteStatus(ctx context.Context, next model.Card) {
 }
 
 // NoteReworkLimit records the explicit rework decision, even if the card was already blocked.
-func (s *Store) NoteReworkLimit(ctx context.Context, card model.Card, reason string) error {
+func (s *Store) NoteReworkLimit(ctx context.Context, card model.Card, reason, questionID string) error {
 	return s.WithTx(ctx, func(ctx context.Context) error {
-		s.queueCardNote(ctx, cardNote{card: card, kind: eventReworkLimit, reason: reason})
+		s.queueCardNote(ctx, cardNote{card: card, kind: eventReworkLimit, reason: reason, questionID: questionID})
 		return nil
 	})
 }
@@ -131,7 +132,10 @@ func (s *Store) persistLifecycle(ctx context.Context, note cardNote) (int64, err
 		pulse.SHA = firstCommit(note.attempt.HeadCommit, note.attempt.BaseCommit)
 	}
 	episode := attemptID
-	if (note.kind == string(model.CardNeedsInput) || note.kind == eventReworkLimit) && pulse.QuestionID != "" {
+	if note.kind == eventReworkLimit {
+		pulse.QuestionID = note.questionID
+		episode = note.questionID
+	} else if note.kind == string(model.CardNeedsInput) && pulse.QuestionID != "" {
 		episode = pulse.QuestionID
 	}
 	pulse.Reason = compactReason(pulse.Reason)
@@ -220,9 +224,11 @@ func firstCommit(head, base string) string {
 
 func (s *Store) pendingLifecycleQuestion(ctx context.Context, objectiveID, cardID string) (model.Question, error) {
 	var q model.Question
+	// Cross-objective reviews can open questions scoped to the subject card.
 	err := s.q(ctx).QueryRowContext(ctx, `SELECT id, scope, text FROM questions
-		WHERE objective_id=? AND answer='' AND (scope IN ('', ?, ?) OR ?='')
-		ORDER BY (scope=?) DESC, rowid DESC LIMIT 1`, objectiveID, objectiveID, cardID, cardID, cardID).
+		WHERE answer='' AND ((objective_id=?1 AND (scope IN ('', ?1, ?2) OR ?2=''))
+			OR (?2<>'' AND scope_kind='card' AND scope=?2))
+		ORDER BY (scope=?2) DESC, rowid DESC LIMIT 1`, objectiveID, cardID).
 		Scan(&q.ID, &q.Scope, &q.Text)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = nil

@@ -1,13 +1,17 @@
 package loop
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/harvest"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 // A review card that lives in another objective than the card it reviews must
@@ -66,5 +70,117 @@ func TestCrossObjectiveReviewAbsorbs(t *testing.T) {
 				t.Fatal("verdict not recorded on dev card")
 			}
 		})
+	}
+}
+
+func TestCrossObjectiveReworkLimitUsesQuestionID(t *testing.T) {
+	f := newFx(t, model.ModeManual)
+	f.obj.Events = "on"
+	if err := f.db.UpdateObjective(f.ctx, &f.obj); err != nil {
+		t.Fatal(err)
+	}
+	reviewObjective := f.obj
+	reviewObjective.ID = "obj-review"
+	reviewObjective.Origin = "file:review-origin"
+	reviewObjective.IntegrationBranch = "integration-review"
+	reviewObjective.Events = "off"
+	if err := f.db.CreateObjective(f.ctx, &reviewObjective); err != nil {
+		t.Fatal(err)
+	}
+	dev := f.card(model.Card{ID: "dev", Status: model.CardReviewing, ReworkCount: 2})
+	candidate := f.attempt(dev, 0, model.OutcomePassed, "", "")
+	candidate.HeadCommit = "dev-sha"
+	if err := f.db.UpdateAttempt(f.ctx, &candidate); err != nil {
+		t.Fatal(err)
+	}
+
+	const result = "## 复核结论\nrework\nstill broken\n"
+	worktree := writeResult(t, result)
+	readEvents := func() map[string]map[string]int {
+		files, err := filepath.Glob(filepath.Join(f.home, "inbox", "lifecycle-*.txt"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		events := map[string]map[string]int{"rework_limit": {}, "needs_input": {}}
+		for _, file := range files {
+			raw, err := os.ReadFile(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			header, payload, _ := strings.Cut(string(raw), "\n\n")
+			var event store.Pulse
+			if err := json.Unmarshal([]byte(payload), &event); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(header, "\nobjective: "+f.obj.ID+"\norigin: "+f.obj.Origin) ||
+				event.ID != dev.ID || event.Model != candidate.Route.Model || event.SHA != candidate.HeadCommit || events[event.Status] == nil {
+				t.Fatalf("unexpected notification %s", raw)
+			}
+			events[event.Status][event.QuestionID]++
+		}
+		return events
+	}
+
+	var firstID string
+	for round := 0; round < 3; round++ {
+		review := f.card(model.Card{
+			ID: fmt.Sprintf("review-%d", round), Objective: reviewObjective.ID,
+			Kind: model.KindReview, Tier: model.TierT3, Status: model.CardHarvesting, Deps: []string{dev.ID},
+		})
+		attempt := f.attempt(review, 0, model.OutcomePassed, "", "")
+		attempt.Worktree = worktree
+		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
+			t.Fatal(err)
+		}
+		ctx := WithStore(WithAttempt(WithHome(f.ctx, f.home), attempt.ID), f.db)
+		if err := Dispose(ctx, &review, harvest.Result{Outcome: model.OutcomePassed, ResultText: result}); err != nil {
+			t.Fatal(err)
+		}
+		questions, err := f.db.ListQuestions(f.ctx, reviewObjective.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var pending model.Question
+		for _, q := range questions {
+			if q.Answer == "" && q.Scope == dev.ID {
+				if pending.ID != "" {
+					t.Fatalf("duplicate pending questions: %+v", questions)
+				}
+				pending = q
+			}
+		}
+		if pending.ID == "" {
+			t.Fatalf("round %d: missing pending review question", round)
+		}
+		if (round == 1 && pending.ID != firstID) || (round == 2 && pending.ID == firstID) {
+			t.Fatalf("round %d: got question %q, first question was %q", round, pending.ID, firstID)
+		}
+		for status, counts := range readEvents() {
+			expected := 1
+			if round == 2 {
+				expected = 2
+			}
+			if len(counts) != expected || counts[pending.ID] != 1 || (round == 2 && counts[firstID] != 1) {
+				t.Errorf("round %d: %s deliveries %v, current question %s", round, status, counts, pending.ID)
+			}
+		}
+		pulse, err := f.db.CardPulse(f.ctx, f.mustCard(dev.ID))
+		if err != nil || pulse.QuestionID != pending.ID {
+			t.Errorf("round %d: card pulse %+v, want question %s, error %v", round, pulse, pending.ID, err)
+		}
+		if round == 0 {
+			firstID = pending.ID
+		}
+		if round == 1 {
+			pending.Answer = "reject"
+			if err := f.db.UpdateQuestion(f.ctx, &pending); err != nil {
+				t.Fatal(err)
+			}
+			dev = f.mustCard(dev.ID)
+			dev.Status = model.CardReviewing
+			if err := f.db.UpdateCard(f.ctx, &dev); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 }

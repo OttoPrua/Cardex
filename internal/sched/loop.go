@@ -652,6 +652,12 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err != nil {
 		return "", err
 	}
+	// Keep an approved recovery pinned to its exact target. The approval
+	// transaction already changed the card; scheduler history cannot do so.
+	recovery, locked, err := r.recoveryTarget(ctx, db, card, prev, channels, quotas)
+	if err != nil || locked {
+		return "", err
+	}
 	// dispatch and fill ignore ErrNoCandidate and ErrPinnedUnavailable.
 	// A stored channel that is missing, not ok, or blocked until a future reset
 	// is released on this request only. The objective row is not written.
@@ -661,6 +667,12 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		return "", err
 	}
 	if settled {
+		return "", nil
+	}
+	if recovery.Channel != "" && (rt.Channel != recovery.Channel || (recovery.Model != "" && rt.Model != recovery.Model)) {
+		if err := r.lockAutoRouteRestart(ctx, db, &card); err != nil {
+			return "", err
+		}
 		return "", nil
 	}
 	d := dispatchExpectation(card, obj, classified, channels, pos)
@@ -872,10 +884,15 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 	}
 	// Keep the card body's ## 事实摘要, including a direction-node Q0 that is
 	// not this node's question. Open questions do not replace that summary.
+	hint, err := repairHint(ctx, db, card)
+	if err != nil {
+		return err
+	}
 	in := prompt.Input{
 		Card:       card,
 		Objective:  obj,
 		ReworkNote: card.ReworkNote,
+		RepairHint: hint,
 		Repo:       repo,
 		Revision:   attempt.BaseCommit,
 	}

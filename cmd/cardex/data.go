@@ -408,6 +408,8 @@ func cmdCard(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		return cardTransition(home, asJSON, args[0], args[1:], stdout, stderr)
 	case "absorb":
 		return cardAbsorb(home, asJSON, args[1:], stdout, stderr)
+	case "recover":
+		return cardRecover(home, asJSON, args[1:], stdout, stderr)
 	case "merged":
 		return cardMerged(home, asJSON, args[1:], stdout, stderr)
 	default:

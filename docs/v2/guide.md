@@ -112,3 +112,9 @@ Hermes 接收者读取 `<root>/control/manager-wake/hermes-inbox/<id>/*.json`。
 - 卡停在 `needs_input`：`question list` 里有一张挂在这张卡上的问题。选好选项后用 `question answer` 提交。
 - 想知道为什么没派到某条渠道：`route explain <card>` 看红线、定位和模型族过滤。
 - 复核必须换模型族。作者族和复核族相同是路由结果，不是看板显示错误。
+
+### 恢复自动换渠道后的卡
+
+对当前这次失败，调度器必须先发出明确的重试选择。直接用 `cardex question answer --retry <id> approve` 回答并入队，或在选择已批准后显式执行 `cardex card recover <id>`。恢复优先使用原来明确指定的卡渠道；若没有卡渠道，则使用目标渠道和型号。目标不能使用时不换其他渠道；旧的批准也不能替新的失败解锁。这个限制不改变正常的自动换渠道。
+
+修复和变基卡的原始诊断保留在本地；发送给执行器的卡正文只有错误类别及计数。可另外用 `cardex card recover --note <code> <id>` 附加一个固定提示：`boundary-check` 检查边界、`rerun-checks` 重跑验收、`resolve-conflicts` 解决冲突。该命令不接受自由文本，不会修改状态、渠道或等待原因。较旧、没有结构化重试记录的失败不会被自动重试；暂停后也不能绕过原有阻塞。

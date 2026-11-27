@@ -21,7 +21,9 @@ for target in darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 wi
   if [ "$os" = windows ]; then
     (cd "$out" && rm -f "$name.zip" && zip -qr -X "$name.zip" "$name")
   else
-    (cd "$out" && tar -czf "$name.tar.gz" "$name")
+    # COPYFILE_DISABLE omits AppleDouble files, but macOS tar can still
+    # record xattrs (notably com.apple.provenance) as PAX headers.
+    (cd "$out" && tar --no-xattrs -czf "$name.tar.gz" "$name")
   fi
 done
 (cd "$out" && shasum -a 256 cardex_${ver}_*.tar.gz cardex_${ver}_*.zip > SHA256SUMS)

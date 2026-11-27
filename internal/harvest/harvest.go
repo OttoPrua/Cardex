@@ -18,6 +18,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/roots"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 const defaultAcceptanceTimeout = 10 * time.Minute
@@ -37,6 +38,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if dir == "" {
 		return Result{}, fmt.Errorf("harvest: worktree is required")
 	}
+	ctx = workspace.WithGitEvidence(ctx, in.Card.ID, in.Attempt.ID, dir)
 	events, truncated := readEvents(in.Output)
 	base := strings.TrimSpace(in.Attempt.BaseCommit)
 	if base == "" {
@@ -48,7 +50,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	}
 	changed, err := claims.WorktreeSymbols(ctx, dir, base)
 	if err != nil {
-		return Result{}, err
+		return Result{}, claimGitFailure(ctx, dir, err)
 	}
 	frozenCandidate := stageCandidate(ctx, in, dir)
 	acceptRan := hasAcceptance(in.Card.Acceptance)
@@ -109,6 +111,16 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 		}
 	}
 	return res, nil
+}
+
+// claims.WorktreeSymbols can fail on a Git invocation or on local file I/O.
+func claimGitFailure(ctx context.Context, dir string, err error) error {
+	for _, command := range []string{"diff", "ls-files", "show"} {
+		if strings.HasPrefix(err.Error(), "git "+command+" ") {
+			return workspace.GitFailure(ctx, dir, []string{command}, err, nil)
+		}
+	}
+	return err
 }
 
 func hasAcceptance(commands []string) bool {
@@ -286,10 +298,7 @@ func resultLabel(s resultState) string {
 func gitOut(ctx context.Context, dir string, args ...string) (string, error) {
 	out, err := gitExec(ctx, dir, args...)
 	if err != nil {
-		if ee, ok := err.(*exec.ExitError); ok {
-			return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(ee.Stderr)))
-		}
-		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
 }

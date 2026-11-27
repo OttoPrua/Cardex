@@ -479,6 +479,9 @@ parameters:
   list   --json
   show   <id> --json
   set    --id --runner --redline --concurrency --window name:rule[:tokens] --model
+  set    --id <id> --dry-run --model <name> [--model <name> ...]
+  set    --id <id> --dry-run [--add-model <name>] [--remove-model <name>]
+  set    --id <id> --if-models <token> [--add-model <name>] [--remove-model <name>]
   check
   import-usage --id <channel> --provider <provider> --input <CodexBar JSON file or ->
 `
@@ -553,7 +556,7 @@ func channelShow(home string, asJSON bool, args []string, stdout, stderr io.Writ
 }
 
 func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("channel set", "set redline, quota windows, concurrency, engine profile, or family on a channel", "--json", stdout, stderr)
+	fs := newFlagSet("channel set", "set channel options or preview/edit the model list", "--json", stdout, stderr)
 	id := fs.String("id", "", "channel id")
 	runnerName := fs.String("runner", "", "runner name")
 	engineProfile := fs.String("engine-profile", "", "engines profile name")
@@ -563,9 +566,16 @@ func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	fs.Var(redline, "redline", "redline from 0 to 1 inclusive")
 	fs.Var(concurrency, "concurrency", "concurrency limit")
 	health := fs.String("health", "", "ok, auth_failed, or degraded")
-	var windows, models stringsFlag
+	var windows, models, addModels, removeModels stringsFlag
+	dryRun := fs.Bool("dry-run", false, "preview only from an existing checkpointed database; never write")
+	expected := fs.String("if-models", "", "apply only the add/remove edit approved by the preview token")
 	fs.Var(&windows, "window", "name:rule or name:rule:token-limit")
-	fs.Var(&models, "model", "model name")
+	fs.Var(&models, "model", "replace the entire model list (repeatable)")
+	fs.Var(&addModels, "add-model", "append a model if absent (repeatable)")
+	fs.Var(&removeModels, "remove-model", "remove an existing model (repeatable)")
+	if modelChangeArgs(fs, args) {
+		args = hoistFlags(fs, args)
+	}
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -576,6 +586,25 @@ func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, "channel set requires --id")
 		return 2
 	}
+	if flagSeen(fs, "dry-run") || flagSeen(fs, "if-models") || len(addModels) > 0 || len(removeModels) > 0 {
+		if (flagSeen(fs, "dry-run") && !*dryRun) || (*dryRun && flagSeen(fs, "if-models")) {
+			fmt.Fprintln(stderr, "use --dry-run to preview or --if-models to apply, not both")
+			return 2
+		}
+		if fs.NArg() > 1 || (flagSeen(fs, "id") && fs.NArg() != 0) {
+			fmt.Fprintln(stderr, "supply exactly one channel id")
+			return 2
+		}
+		for _, unrelated := range []string{"runner", "engine-profile", "family", "redline", "concurrency", "health", "window"} {
+			if flagSeen(fs, unrelated) {
+				fmt.Fprintf(stderr, "--%s cannot be mixed with a model preview or add/remove edit\n", unrelated)
+				return 2
+			}
+		}
+		return channelModelChange(home, asJSON, *dryRun, *id, *expected,
+			modelEdit{replace: models, add: addModels, remove: removeModels}, stdout, stderr)
+	}
+	applyCommandProxy(home, stderr)
 	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)

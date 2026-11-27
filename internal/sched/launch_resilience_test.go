@@ -489,7 +489,7 @@ func TestLaunchResilienceServeStaysUp(t *testing.T) {
 	var serveErr error
 	go func() {
 		defer close(serveDone)
-		serveErr = Serve(serveCtx, home, "127.0.0.1:0")
+		serveErr = serveWithFastHeartbeats(serveCtx, home)
 	}()
 	t.Cleanup(func() {
 		// Join even on a failed assertion, before database and repo cleanup.
@@ -502,8 +502,8 @@ func TestLaunchResilienceServeStaysUp(t *testing.T) {
 	})
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		body, _ := os.ReadFile(filepath.Join(home, "serve-loop.log"))
-		if strings.Count(string(body), "iteration ") >= 2 {
+		body, _ := readServeLog(home)
+		if strings.Count(string(body), " heartbeat ") >= 2 {
 			break
 		}
 		select {
@@ -579,12 +579,12 @@ func TestLaunchResilienceStartup(t *testing.T) {
 		serveCtx, cancel := context.WithCancel(context.Background())
 		errCh := make(chan error, 1)
 		go func() {
-			errCh <- Serve(serveCtx, home, "127.0.0.1:0")
+			errCh <- serveWithFastHeartbeats(serveCtx, home)
 		}()
 		deadline := time.Now().Add(5 * time.Second)
 		for {
-			body, _ := os.ReadFile(filepath.Join(home, "serve-loop.log"))
-			if strings.Contains(string(body), "iteration ") {
+			body, _ := readServeLog(home)
+			if strings.Contains(string(body), " heartbeat ") {
 				break
 			}
 			select {

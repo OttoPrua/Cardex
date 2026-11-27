@@ -22,13 +22,13 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 )
 
-const compatibleProtocol = "anthropic-compatible"
-const compatiblePrefix = compatibleProtocol + ":"
+const compatibleProtocol = model.CompatibleEngineProtocol
+const compatiblePrefix = model.CompatibleEnginePrefix
 
 // IsCompatibleBinding identifies the persistent protocol tag in engine_profile.
 // It prevents a replaced/removed config entry from falling back to legacy auth.
 func IsCompatibleBinding(ref string) bool {
-	return strings.HasPrefix(strings.TrimSpace(ref), compatiblePrefix)
+	return model.HasCompatibleEngineBinding(ref)
 }
 
 // CompatibleBindingID returns the staged, nonsecret API endpoint identity

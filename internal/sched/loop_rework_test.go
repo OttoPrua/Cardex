@@ -1027,12 +1027,12 @@ func serveOnce(t *testing.T, home string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
 	go func() {
-		errc <- Serve(ctx, home, "127.0.0.1:0")
+		errc <- serveWithFastHeartbeats(ctx, home)
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		body, _ := os.ReadFile(filepath.Join(home, "serve-loop.log"))
-		if strings.Contains(string(body), "iteration") {
+		body, _ := readServeLog(home)
+		if strings.Contains(string(body), " heartbeat ") {
 			break
 		}
 		if time.Now().After(deadline) {

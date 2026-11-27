@@ -108,7 +108,7 @@ parameters:
   set     --id <id> --mode --freeze-mode --soft-tokens --hard-tokens --priority --hard-rule --review --events on|off|inherit
   pause   <id>
   resume  <id>
-  cancel  <id>
+  cancel  <id> [--cascade] --json
 `
 
 func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
@@ -194,11 +194,18 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 
 func objectiveTransition(home string, asJSON bool, verb string, args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("objective "+verb, "set the objective status to "+string(objectiveVerbStatus(verb)), "<id> --json", stdout, stderr)
-	if code, ok := parseSet(fs, args); !ok {
+	var cascade *bool
+	if verb == "cancel" {
+		cascade = fs.Bool("cascade", false, "also cancel unfinished cards and record what changed; requires a stopped scheduler")
+	}
+	if code, ok := parseSet(fs, hoistFlags(fs, args)); !ok {
 		return code
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintf(stderr, "objective %s <id>\n", verb)
+		return 2
+	}
+	if cascade != nil && *cascade && refuseManagedCardWrite(stderr) {
 		return 2
 	}
 	db, err := openStoreForWrite(home)
@@ -207,6 +214,14 @@ func objectiveTransition(home string, asJSON bool, verb string, args []string, s
 		return 1
 	}
 	defer db.Close()
+	if cascade != nil && *cascade {
+		result, err := cascadeObjectiveCancel(context.Background(), db, fs.Arg(0))
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return emit(stdout, asJSON, result, fmt.Sprintf("%s\tcanceled\t%d cards", result.Objective, len(result.Cards)))
+	}
 	o, err := db.GetObjective(context.Background(), fs.Arg(0))
 	if err != nil {
 		fmt.Fprintln(stderr, err)

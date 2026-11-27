@@ -29,6 +29,7 @@ func releaseDueBackoff(ctx context.Context, db *store.Store, now time.Time) erro
 		if err := db.UpdateCard(ctx, &card); err != nil {
 			return err
 		}
+		reportServeEvent(ctx, "transition state=backoff_released")
 	}
 	return nil
 }

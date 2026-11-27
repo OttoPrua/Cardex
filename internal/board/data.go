@@ -146,6 +146,7 @@ type questionBrief struct {
 }
 
 type channelsView struct {
+	Ranking        *rankingView    `json:"ranking,omitempty"`
 	Channels       []channelView   `json:"channels"`
 	Models         []modelActivity `json:"models"`
 	ActiveModels   int             `json:"active_models"`

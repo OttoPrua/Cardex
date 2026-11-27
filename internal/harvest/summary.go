@@ -14,6 +14,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/roots"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 // FileChange is one path changed between the attempt's base and its worktree.
@@ -26,10 +27,34 @@ type FileChange struct {
 
 // AcceptanceResult is one acceptance command and, for go test, the baseline comparison.
 type AcceptanceResult struct {
-	Command    string        `json:"command"`
-	Exit       int           `json:"exit"`
-	DurationMS int64         `json:"duration_ms"`
-	Baseline   *TestBaseline `json:"baseline,omitempty"`
+	Command      string        `json:"command"`
+	Exit         int           `json:"exit"`
+	DurationMS   int64         `json:"duration_ms"`
+	Baseline     *TestBaseline `json:"baseline,omitempty"`
+	exitReported bool
+}
+
+// HasExitCode distinguishes a reported exit 0 from missing or null evidence.
+func (r AcceptanceResult) HasExitCode() bool { return r.exitReported }
+
+func (r *AcceptanceResult) UnmarshalJSON(raw []byte) error {
+	// The decoder selects the shallower Exit field; all other fields bind to
+	// the alias without recursively invoking this method.
+	type fields AcceptanceResult
+	wire := struct {
+		*fields
+		Exit *int `json:"exit"`
+	}{fields: (*fields)(r)}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return err
+	}
+	r.Exit = 0
+	r.exitReported = wire.Exit != nil
+	if wire.Exit != nil {
+		r.Exit = *wire.Exit
+	}
+	return nil
+
 }
 
 // ExpectedRun is the channel, model, or review tier the attempt was supposed to use.
@@ -346,5 +371,6 @@ func safeAttemptID(id string) bool {
 func gitExec(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
 	cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
-	return cmd.Output()
+	out, err := cmd.Output()
+	return out, workspace.GitFailure(ctx, dir, args, err, nil)
 }

@@ -28,6 +28,7 @@ func (Git) Create(ctx context.Context, req CreateRequest) (Worktree, error) {
 	}
 	branch := fmt.Sprintf("cardex/%s/c/%s", req.ObjectiveID, req.CardID)
 	path := filepath.Join(req.WorktreeRoot, req.CardID+"-"+req.AttemptID)
+	ctx = WithGitEvidence(ctx, req.CardID, req.AttemptID, path)
 	if err := os.MkdirAll(req.WorktreeRoot, 0o755); err != nil {
 		return Worktree{}, err
 	}
@@ -62,7 +63,7 @@ func (Git) Create(ctx context.Context, req CreateRequest) (Worktree, error) {
 			// An explicit base that does not resolve fails the launch instead of
 			// quietly starting at the integration branch.
 			if _, err := runGit(ctx, req.RepoPath, "rev-parse", "--verify", "--quiet", sp+"^{commit}"); err != nil {
-				return Worktree{}, fmt.Errorf("workspace: card base %q not found in %s", sp, req.RepoPath)
+				return Worktree{}, err
 			}
 			start = sp
 		}
@@ -127,6 +128,7 @@ func (Git) Commit(ctx context.Context, worktree, message string) (string, error)
 	if strings.TrimSpace(worktree) == "" {
 		return "", fmt.Errorf("workspace: commit worktree required")
 	}
+	ctx = WithGitEvidence(ctx, "", "", worktree)
 	if _, err := runGit(ctx, worktree, "add", "-A"); err != nil {
 		return "", err
 	}
@@ -161,6 +163,7 @@ func (Git) Diff(ctx context.Context, worktree, base string) (Diff, error) {
 	if strings.TrimSpace(worktree) == "" || strings.TrimSpace(base) == "" {
 		return Diff{}, fmt.Errorf("workspace: diff worktree and base required")
 	}
+	ctx = WithGitEvidence(ctx, "", "", worktree)
 	names, err := runGit(ctx, worktree, "diff", "--name-only", "--relative", base)
 	if err != nil {
 		return Diff{}, err
@@ -213,6 +216,7 @@ func (Git) Remove(ctx context.Context, worktree string) error {
 	if gitdir, stale := StaleGitdir(abs); stale {
 		return &StaleWorktreeError{Path: abs, Gitdir: gitdir}
 	}
+	ctx = WithGitEvidence(ctx, "", "", abs)
 	common, err := gitCommonDir(ctx, abs)
 	if err != nil {
 		return err
@@ -222,12 +226,10 @@ func (Git) Remove(ctx context.Context, worktree string) error {
 	// tree, drops the admin directory, and fails, leaving an orphan. Make
 	// this worktree's own files writable first.
 	makeWritable(abs)
-	cmd := exec.CommandContext(ctx, "git", "--git-dir", common, "worktree", "remove", "--force", abs)
+	args := []string{"--git-dir", common, "worktree", "remove", "--force", abs}
+	cmd := exec.CommandContext(ctx, "git", args...)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("git worktree remove: %w: %s", err, bytes.TrimSpace(out))
-	}
-	return nil
+	return GitFailure(ctx, "", args, err, out)
 }
 
 // BlockPush turns on per-worktree config, points core.hooksPath at the
@@ -256,6 +258,7 @@ func (Git) BlockPush(ctx context.Context, worktree string) error {
 	}
 	// extensions.worktreeConfig has to live in the common config; otherwise
 	// git refuses --worktree. It is not a push URL and does not set hooksPath.
+	ctx = WithGitEvidence(ctx, "", "", worktree)
 	if _, err := runGit(ctx, worktree, "config", "extensions.worktreeConfig", "true"); err != nil {
 		return err
 	}
@@ -362,6 +365,7 @@ func excludeResultFile(ctx context.Context, worktree string) error {
 	// Linked worktrees share $GIT_COMMON_DIR/info. Git does not read
 	// $GIT_DIR/info/exclude for them, so point this worktree's own
 	// core.excludesFile at the file just written.
+	ctx = WithGitEvidence(ctx, "", "", worktree)
 	if _, err := runGit(ctx, worktree, "config", "extensions.worktreeConfig", "true"); err != nil {
 		return err
 	}
@@ -484,11 +488,11 @@ func runGitRaw(ctx context.Context, dir string, args ...string) ([]byte, error) 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = strings.TrimSpace(stdout.String())
+		out := stderr.Bytes()
+		if len(bytes.TrimSpace(out)) == 0 {
+			out = stdout.Bytes()
 		}
-		return stdout.Bytes(), fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, msg)
+		return stdout.Bytes(), GitFailure(ctx, dir, args, err, out)
 	}
 	return stdout.Bytes(), nil
 }

@@ -1,10 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/OttoPrua/Cardex/internal/homeguard"
 )
 
 // systemPathDirs are the directories a login shell always has on PATH. A
@@ -36,6 +42,64 @@ func withSystemPath(list, goos string) string {
 	return strings.Join(parts, ":")
 }
 
-func ensureSystemPath() {
-	_ = os.Setenv("PATH", withSystemPath(os.Getenv("PATH"), runtime.GOOS))
+// ensureRuntimePath runs at executable entry, before any credential adapter,
+// Git subprocess, shell, or background worker resolves a command name.
+func ensureRuntimePath(args []string) error {
+	inherited := os.Getenv("PATH")
+	home, _, rest, err := splitGlobal(args)
+	if err == nil && len(rest) > 0 && (rest[0] == "snapshot" || rest[0] == "verify") {
+		// Evidence-only commands need neither executables nor config reads.
+		return nil
+	}
+	if err != nil || isGlobalHelp(rest) || len(rest) == 0 || rest[0] == "version" || rest[0] == "--version" || rest[0] == "-v" {
+		return os.Setenv("PATH", withSystemPath(inherited, runtime.GOOS))
+	}
+	dir, err := homePath(home)
+	if err != nil || homeguard.Check(dir) != nil {
+		return os.Setenv("PATH", withSystemPath(inherited, runtime.GOOS))
+	}
+	configured, err := configuredRuntimePath(dir)
+	if err != nil {
+		return err
+	}
+	if configured != "" {
+		inherited = configured
+	}
+	return os.Setenv("PATH", withSystemPath(inherited, runtime.GOOS))
+}
+
+func configuredRuntimePath(home string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(home, "config.json"))
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read runtime PATH configuration: %w", err)
+	}
+	var top map[string]json.RawMessage
+	if json.Unmarshal(raw, &top) != nil || len(top["runtime_path"]) == 0 || bytes.Equal(bytes.TrimSpace(top["runtime_path"]), []byte("null")) {
+		// Preserve existing behavior for homes without a runtime_path setting.
+		return "", nil
+	}
+	var entries []string
+	if err := json.Unmarshal(top["runtime_path"], &entries); err != nil || len(entries) == 0 {
+		return "", fmt.Errorf("runtime_path must be a non-empty array of absolute directories")
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(entries))
+	for i, entry := range entries {
+		if !filepath.IsAbs(entry) || strings.ContainsRune(entry, os.PathListSeparator) || strings.ContainsAny(entry, "\x00\n\r") {
+			return "", fmt.Errorf("runtime_path entry %d must be one absolute directory", i+1)
+		}
+		entry = filepath.Clean(entry)
+		key := entry
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, entry)
+		}
+	}
+	return strings.Join(out, string(os.PathListSeparator)), nil
 }

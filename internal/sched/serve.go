@@ -17,7 +17,7 @@ import (
 
 type serveLogKey struct{}
 
-// WithLog attaches the writer that Serve uses for its listening and iteration lines.
+// WithLog attaches the writer that Serve uses for its listening and operational log lines.
 func WithLog(ctx context.Context, w io.Writer) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -39,6 +39,10 @@ func serveWriter(ctx context.Context) io.Writer {
 // Serve loops Tick until ctx is cancelled and serves board.Handler on addr.
 // A host process started by Tick is not killed when ctx is cancelled.
 func Serve(ctx context.Context, home, addr string) error {
+	return serve(ctx, home, addr, time.Now, waitServeTick)
+}
+
+func serve(ctx context.Context, home, addr string, now func() time.Time, wait func(context.Context) bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -77,46 +81,82 @@ func Serve(ctx context.Context, home, addr string) error {
 		fmt.Fprintf(w, "serve listening %s\n", ln.Addr())
 	}
 	runner := New(home)
-	logPath := filepath.Join(home, "serve-loop.log")
-	n := 0
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil
-		}
-		_ = runner.Tick(ctx)
-		if ctx.Err() != nil {
-			return nil
-		}
-		n++
-		if w := serveWriter(ctx); w != nil {
-			fmt.Fprintf(w, "serve loop iteration %d\n", n)
-		}
-		if err := writeServeLoop(logPath, n); err != nil {
-			fmt.Fprintf(os.Stderr, "serve-loop.log: %v\n", err)
-		}
-		timer := time.NewTimer(150 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil
-		case <-timer.C:
-		}
+	return serveTicks(ctx, runner, now, wait, os.Stderr)
+}
+
+func waitServeTick(ctx context.Context) bool {
+	timer := time.NewTimer(150 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
-// writeServeLoop appends one iteration line. Open, write, and close errors
-// are returned to the caller, which keeps the serve loop running.
-func writeServeLoop(path string, n int) error {
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
+func serveTicks(ctx context.Context, runner *Runner, now func() time.Time, wait func(context.Context) bool, diagnostics io.Writer) error {
+	journal := serveJournal{home: runner.Home, maxSize: serveSegmentSize, maxFiles: serveSegments}
+	defer journal.close()
+	var n uint64
+	var failed, writeFailed, degraded bool
+	var next time.Time
+	w := serveWriter(ctx)
+	write := func(event string) {
+		record := fmt.Sprintf("%s %s tick=%d\n", now().UTC().Format(time.RFC3339Nano), event, n)
+		if err := journal.append(record); err != nil {
+			if !writeFailed {
+				// Do not echo path names or caller-supplied strings.
+				fmt.Fprintln(diagnostics, "serve-loop-v2: scheduler log write failed")
+			}
+			writeFailed = true
+		} else {
+			writeFailed = false
+		}
+		if w != nil {
+			fmt.Fprintf(w, "serve loop %s", record)
+		}
 	}
-	_, werr := fmt.Fprintf(f, "iteration %d\n", n)
-	cerr := f.Close()
-	if werr != nil {
-		return werr
+	faults := make(serveFaultLimiter)
+	ctx = context.WithValue(ctx, serveEventKey{}, &serveReporter{
+		event: write,
+		fault: func(fault serveFault) {
+			// Suppression is about output, not health: an unchanged fault still
+			// keeps the scheduler degraded on an otherwise quiet round.
+			failed = true
+			if faults.allow(now(), fault) {
+				write("error step=" + fault.stage)
+			}
+			if !degraded {
+				write("transition state=degraded")
+				degraded = true
+			}
+		},
+	})
+	for ctx.Err() == nil {
+		n++
+		failed = false
+		err := runner.Tick(ctx)
+		if ctx.Err() != nil {
+			break
+		}
+		if err != nil && !failed {
+			reportServeError(ctx, "tick", err)
+		}
+		if !failed && degraded {
+			write("transition state=healthy")
+			degraded = false
+		}
+		current := now()
+		if !current.Before(next) {
+			write("heartbeat")
+			next = current.Add(serveHeartbeat)
+		}
+		if !wait(ctx) {
+			break
+		}
 	}
-	return cerr
+	return nil
 }
 
 // serveStartup opens the database and, when config.json exists, checks that

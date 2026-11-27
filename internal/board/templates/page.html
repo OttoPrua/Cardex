@@ -331,7 +331,7 @@ ul.mini li{display:flex;gap:12px;justify-content:space-between;font-size:13px}
 .model-summary a{text-decoration:none;padding:7px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--card);font-size:12px}
 .model-summary b{color:var(--live);margin-left:8px}
 .resource-stats{grid-template-columns:repeat(4,minmax(0,1fr));margin-bottom:28px}
-.resource-tabs{display:flex;gap:24px;border-bottom:1px solid var(--border);margin-bottom:24px}
+.resource-tabs{display:flex;flex-wrap:wrap;gap:0 24px;border-bottom:1px solid var(--border);margin-bottom:24px}
 .resource-tabs a{text-decoration:none;color:var(--muted-foreground);padding:10px 0;border-bottom:2px solid transparent}
 .resource-tabs a[aria-current=page]{color:var(--foreground);border-color:var(--foreground);font-weight:600}
 .resource-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
@@ -920,20 +920,45 @@ a.ic-title:hover{text-decoration:underline}
 </section>
 {{end}}
 
+{{define "ranking"}}
+<div class="resource-grid">
+<section class="panel" aria-labelledby="ranking-published">
+<div class="title" id="ranking-published" role="heading" aria-level="2">生效排名</div>
+<div class="kv"><span>生效版本</span><b>{{if not .PublishedKnown}}未知{{else if .Version}}v{{.Version}}{{else if .Published}}未知{{else}}尚未发布{{end}}</b>
+<span>证据日期</span><b>{{if .EvidenceDate}}<time datetime="{{.EvidenceDate}}">{{.EvidenceDate}}</time>{{else}}未知{{end}}</b>
+<span>复核提醒</span><b>{{if eq .Freshness "stale"}}证据已超过两周，建议复核{{else if eq .Freshness "fresh"}}证据在两周内{{else}}证据新鲜度未知{{end}}</b></div>
+{{if and .PublishedKnown .Published}}<div class="meta"><span>已入榜模型</span>{{range .RankedModels}}<span class="chip">{{.}}</span>{{else}}<span>生效表为空</span>{{end}}</div>{{end}}
+<div class="meta"><span>未入榜的已配置模型</span>{{if .PublishedKnown}}{{range .MissingModels}}<span class="chip">{{.}}</span>{{else}}<span>无</span>{{end}}{{else}}<span>未知</span>{{end}}</div>
+</section>
+<section class="panel" aria-labelledby="ranking-pending">
+<div class="title" id="ranking-pending" role="heading" aria-level="2">待批提案</div>
+<p class="meta">按待批记录列出。生效排名只读取已发布版本。</p>
+{{if .Pending}}<ul class="rows">{{range .Pending}}<li><span>{{.ID}}</span><span>{{.EntryCount}} 条定位</span></li>{{end}}</ul>{{end}}
+{{if not .PendingKnown}}<p class="empty">待批列表不完整或不可读。</p>{{else if not .Pending}}<p class="empty">当前没有待批提案。</p>{{end}}
+</section>
+</div>
+<p class="resource-note">只读视图。证据日期不等于提案或批准时间；缺失、无法核对或未来日期显示未知。此页不生成提案、不采用提案、不改变路由。</p>
+{{end}}
+
 {{define "channels"}}
 <section id="channels">
 <div class="page-head"><div><h1>模型与额度</h1><p class="sub">谁在工作、分了几路，以及每条订阅渠道还有多少可用空间。</p></div><span class="pill t-live">本机实时视图</span></div>
+{{if ne .Tab "ranking"}}
 <div class="groups resource-stats">
 <div class="stat t-live"><b>{{.ActiveModels}}</b><span>模型正在使用</span></div>
 <div class="stat t-live"><b>{{.Running}}</b><span>任务并行执行</span></div>
 <div class="stat"><b>{{.ActiveChannels}} / {{len .Channels}}</b><span>活跃 / 已配置渠道</span></div>
 <div class="stat"><b>{{len .Models}}</b><span>可见模型（含空闲）</span></div>
 </div>
+{{end}}
 <div class="resource-tabs" aria-label="资源视图">
-<a href="/channels"{{if ne .Tab "quota"}} aria-current="page"{{end}}>模型运行</a>
+<a href="/channels"{{if eq .Tab "models"}} aria-current="page"{{end}}>模型运行</a>
 <a href="/channels?tab=quota"{{if eq .Tab "quota"}} aria-current="page"{{end}}>渠道与额度</a>
+<a href="/channels?tab=ranking"{{if eq .Tab "ranking"}} aria-current="page"{{end}}>排名与证据</a>
 </div>
-{{if ne .Tab "quota"}}
+{{if eq .Tab "ranking"}}
+{{template "ranking" .Ranking}}
+{{else if ne .Tab "quota"}}
 <div class="resource-grid">
 {{range .Models}}<article class="panel model-activity">
 <div class="ch-head"><div class="grow"><div class="title">{{.Name}}</div><div class="meta"><span>{{len .Channels}} 条渠道</span><span>{{if .Tasks}}执行中{{else}}当前空闲{{end}}</span></div></div><div class="model-count">{{len .Tasks}}<small>路并行</small></div></div>

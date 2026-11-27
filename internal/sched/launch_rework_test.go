@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -634,97 +633,55 @@ func TestAutoNormalizeLaunchFailureRetries(t *testing.T) {
 }
 
 func TestServeLoopLogErrorContinues(t *testing.T) {
-	cases := []struct {
-		name string
-		want string
-		prep func(t *testing.T, home string)
-	}{
-		{
-			name: "directory",
-			want: "is a directory",
-			prep: func(t *testing.T, home string) {
-				t.Helper()
-				if err := os.MkdirAll(filepath.Join(home, "serve-loop.log"), 0o755); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
-		{
-			name: "not writable",
-			want: "permission denied",
-			prep: func(t *testing.T, home string) {
-				t.Helper()
-				path := filepath.Join(home, "serve-loop.log")
-				if err := os.WriteFile(path, []byte("untouched\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chmod(path, 0o444); err != nil {
-					t.Fatal(err)
-				}
-			},
-		},
+	home := t.TempDir()
+	writeEmptySchedules(t, home)
+	legacy := filepath.Join(home, "serve-loop.log")
+	if err := os.WriteFile(legacy, []byte("historical\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			home := t.TempDir()
-			writeEmptySchedules(t, home)
-			tc.prep(t, home)
-			stderr := captureStderr(t)
-			var log lockedBuf
-			serveCtx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			errCh := make(chan error, 1)
-			go func() {
-				errCh <- Serve(WithLog(serveCtx, &log), home, "127.0.0.1:0")
-			}()
-			deadline := time.Now().Add(8 * time.Second)
-			for strings.Count(log.String(), "serve loop iteration ") < 2 {
-				select {
-				case err := <-errCh:
-					cancel()
-					t.Fatalf("serve exited: %v stderr %q log %q", err, stderr(), log.String())
-				default:
-				}
-				if time.Now().After(deadline) {
-					cancel()
-					t.Fatalf("log %q stderr %q", log.String(), stderr())
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
-			cancel()
-			select {
-			case err := <-errCh:
-				if err != nil {
-					t.Fatal(err)
-				}
-			case <-time.After(5 * time.Second):
-				t.Fatal("serve did not return")
-			}
-			text := stderr()
-			want := tc.want
-			if runtime.GOOS == "windows" && tc.name == "not writable" {
-				want = "Access is denied"
-			}
-			if !strings.Contains(text, "serve-loop.log") || !strings.Contains(text, want) {
-				t.Fatalf("stderr %q", text)
-			}
-			info, err := os.Stat(filepath.Join(home, "serve-loop.log"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if tc.name == "directory" && !info.IsDir() {
-				t.Fatal("serve-loop.log is no longer a directory")
-			}
-			if tc.name == "not writable" {
-				body, err := os.ReadFile(filepath.Join(home, "serve-loop.log"))
-				if err != nil {
-					t.Fatal(err)
-				}
-				if string(body) != "untouched\n" {
-					t.Fatalf("log file %q", body)
-				}
-			}
-		})
+	// A file in place of the journal directory deterministically blocks
+	// writes even when the test process runs with elevated privileges.
+	blocker := filepath.Join(home, serveLogDir)
+	if err := os.WriteFile(blocker, []byte("untouched\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stderr := captureStderr(t)
+	var log lockedBuf
+	serveCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serveWithFastHeartbeats(WithLog(serveCtx, &log), home)
+	}()
+	deadline := time.Now().Add(8 * time.Second)
+	for strings.Count(log.String(), " heartbeat ") < 2 {
+		select {
+		case err := <-errCh:
+			t.Fatalf("serve exited: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("log %q stderr %q", log.String(), stderr())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("serve did not return")
+	}
+	if text := stderr(); text != "serve-loop-v2: scheduler log write failed\n" {
+		t.Fatalf("stderr %q", text)
+	}
+	for path, want := range map[string]string{legacy: "historical\n", blocker: "untouched\n"} {
+		body, err := os.ReadFile(path)
+		if err != nil || string(body) != want {
+			t.Fatalf("%s: %q %v", path, body, err)
+		}
 	}
 }
 

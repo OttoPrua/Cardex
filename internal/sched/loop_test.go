@@ -551,7 +551,7 @@ func TestTickAndServeTakeOverHost(t *testing.T) {
 
 	serveCtx, cancel := context.WithCancel(context.Background())
 	errc := make(chan error, 1)
-	go func() { errc <- Serve(serveCtx, home, "127.0.0.1:0") }()
+	go func() { errc <- serveWithFastHeartbeats(serveCtx, home) }()
 	waitIterations(t, home, 2)
 	cancel()
 	select {
@@ -902,13 +902,13 @@ func waitIterations(t *testing.T, home string, n int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		b, err := os.ReadFile(filepath.Join(home, "serve-loop.log"))
-		if err == nil && strings.Count(string(b), "\n") >= n {
+		b, err := readServeLog(home)
+		if err == nil && strings.Count(string(b), " heartbeat ") >= n {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	b, _ := os.ReadFile(filepath.Join(home, "serve-loop.log"))
+	b, _ := readServeLog(home)
 	t.Fatalf("serve iterations %q", b)
 }
 

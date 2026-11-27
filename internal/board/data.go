@@ -289,18 +289,19 @@ func buildModelActivity(channels []model.Channel, lanes []runningLane) []modelAc
 }
 
 type cardView struct {
-	ID             string          `json:"id"`
-	Title          string          `json:"title"`
-	Status         string          `json:"status"`
-	Objective      string          `json:"objective"`
-	ObjectiveTitle string          `json:"objective_title"`
-	Project        string          `json:"project"`
-	Body           string          `json:"body"`
-	WaitReason     string          `json:"wait_reason"`
-	ReworkNote     string          `json:"rework_note"`
-	Questions      []questionBrief `json:"questions"`
-	Attempts       []attemptView   `json:"attempts"`
-	History        []historyEvent  `json:"history"`
+	ID             string               `json:"id"`
+	Title          string               `json:"title"`
+	Status         string               `json:"status"`
+	Objective      string               `json:"objective"`
+	ObjectiveTitle string               `json:"objective_title"`
+	Project        string               `json:"project"`
+	Body           string               `json:"body"`
+	WaitReason     string               `json:"wait_reason"`
+	ReworkNote     string               `json:"rework_note"`
+	Questions      []questionBrief      `json:"questions"`
+	Attempts       []attemptView        `json:"attempts"`
+	History        []historyEvent       `json:"history"`
+	ReviewProgress store.ReviewProgress `json:"review_progress"`
 }
 
 type historyEvent struct {
@@ -723,7 +724,15 @@ func formatReset(t time.Time) string {
 	return t.UTC().Format(time.RFC3339)
 }
 
-func loadCard(ctx context.Context, db *store.Store, id string) (*cardView, error) {
+func loadCard(ctx context.Context, db *store.Store, id string) (view *cardView, err error) {
+	err = db.WithTx(ctx, func(ctx context.Context) error {
+		view, err = loadCardSnapshot(ctx, db, id)
+		return err
+	})
+	return view, err
+}
+
+func loadCardSnapshot(ctx context.Context, db *store.Store, id string) (*cardView, error) {
 	card, err := db.GetCard(ctx, id)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -743,10 +752,14 @@ func loadCard(ctx context.Context, db *store.Store, id string) (*cardView, error
 	if err != nil {
 		return nil, err
 	}
+	progress, err := db.ReviewProgress(ctx, card.ID)
+	if err != nil {
+		return nil, err
+	}
 	view := &cardView{
 		ID: card.ID, Title: card.Title, Status: string(card.Status),
 		Objective: card.Objective, Body: card.Body, WaitReason: card.WaitReason, ReworkNote: card.ReworkNote,
-		Attempts: []attemptView{}, History: history, Questions: []questionBrief{},
+		Attempts: []attemptView{}, History: history, Questions: []questionBrief{}, ReviewProgress: progress,
 	}
 	objs := map[string]model.Objective{}
 	if obj, err := db.GetObjective(ctx, card.Objective); err == nil {

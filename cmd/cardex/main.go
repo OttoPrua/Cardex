@@ -32,6 +32,7 @@ commands:
   card add|list|show|cancel|retry|pause|resume|revive|absorb|merged
   wait <card-id|objective-id> --until <statuses> --timeout <duration>
   reads
+  blockers [--objective <id>]
   question list|show|answer
   channel list|show|set|check
   route explain <card>
@@ -91,6 +92,8 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		return cmdWait(home, asJSON, rest[1:], stdout, stderr)
 	case "reads":
 		return cmdReads(home, asJSON, rest[1:], stdout, stderr)
+	case "blockers":
+		return cmdBlockers(home, asJSON, rest[1:], stdout, stderr)
 	case "node":
 		return cmdNode(home, asJSON, rest[1:], stdout, stderr)
 	case "question":

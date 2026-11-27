@@ -21,3 +21,20 @@ func lockExclusive(path string) (func(), error) {
 		_ = f.Close()
 	}, nil
 }
+
+// lockSnapshotRead uses the same lock as Open, but never creates it or waits
+// behind a writer. It is not a substitute for SQLite's journal locks.
+func lockSnapshotRead(f *os.File) (func(), error) {
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB); err != nil {
+		return nil, err
+	}
+	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }, nil
+}
+
+func openSnapshotFile(path string, strict bool) (*os.File, error) {
+	flags := os.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_NONBLOCK
+	if strict {
+		flags |= snapshotReadFlags
+	}
+	return os.OpenFile(path, flags, 0)
+}

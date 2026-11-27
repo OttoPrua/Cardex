@@ -37,17 +37,26 @@ func (s *Store) CreateObjective(ctx context.Context, o *model.Objective) error {
 	if err := prepareObjective(o); err != nil {
 		return err
 	}
+	hardRules, err := normalizeHardRules(o.HardRules)
+	if err != nil {
+		return err
+	}
+	o.HardRules = hardRules
+	rules, err := mustJSON(hardRules)
+	if err != nil {
+		return err
+	}
 	raw, err := mustJSON(o.Acceptance)
 	if err != nil {
 		return err
 	}
-	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO objectives(id, project_id, title, acceptance, soft_tokens, hard_tokens, priority, mode, freeze_mode, origin, status, integration_branch, channel, model, review, events) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		o.ID, o.Project, o.Title, raw, o.Budget.SoftTokens, o.Budget.HardTokens, o.Priority, string(o.Mode), string(o.FreezeMode), o.Origin, string(o.Status), o.IntegrationBranch, o.Channel, o.Model, o.Review, o.Events)
+	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO objectives(id, project_id, title, acceptance, soft_tokens, hard_tokens, priority, mode, freeze_mode, origin, status, integration_branch, channel, model, review, events, hard_rules) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		o.ID, o.Project, o.Title, raw, o.Budget.SoftTokens, o.Budget.HardTokens, o.Priority, string(o.Mode), string(o.FreezeMode), o.Origin, string(o.Status), o.IntegrationBranch, o.Channel, o.Model, o.Review, o.Events, rules)
 	return err
 }
 
 func (s *Store) GetObjective(ctx context.Context, id string) (model.Objective, error) {
-	row := s.q(ctx).QueryRowContext(ctx, `SELECT id, project_id, title, acceptance, soft_tokens, hard_tokens, priority, mode, freeze_mode, origin, status, integration_branch, channel, model, review, events FROM objectives WHERE id=?`, id)
+	row := s.q(ctx).QueryRowContext(ctx, `SELECT id, project_id, title, acceptance, soft_tokens, hard_tokens, priority, mode, freeze_mode, origin, status, integration_branch, channel, model, review, events, hard_rules FROM objectives WHERE id=?`, id)
 	return scanObjective(row)
 }
 
@@ -66,12 +75,21 @@ func (s *Store) UpdateObjective(ctx context.Context, o *model.Objective) error {
 	}
 	o.Acceptance.Commands = normStrings(o.Acceptance.Commands)
 	o.Acceptance.Checklist = normStrings(o.Acceptance.Checklist)
+	hardRules, err := normalizeHardRules(o.HardRules)
+	if err != nil {
+		return err
+	}
+	o.HardRules = hardRules
+	rules, err := mustJSON(hardRules)
+	if err != nil {
+		return err
+	}
 	raw, err := mustJSON(o.Acceptance)
 	if err != nil {
 		return err
 	}
-	res, err := s.q(ctx).ExecContext(ctx, `UPDATE objectives SET project_id=?, title=?, acceptance=?, soft_tokens=?, hard_tokens=?, priority=?, mode=?, freeze_mode=?, origin=?, status=?, integration_branch=?, channel=?, model=?, review=?, events=? WHERE id=?`,
-		o.Project, o.Title, raw, o.Budget.SoftTokens, o.Budget.HardTokens, o.Priority, string(o.Mode), string(o.FreezeMode), o.Origin, string(o.Status), o.IntegrationBranch, o.Channel, o.Model, o.Review, o.Events, o.ID)
+	res, err := s.q(ctx).ExecContext(ctx, `UPDATE objectives SET project_id=?, title=?, acceptance=?, soft_tokens=?, hard_tokens=?, priority=?, mode=?, freeze_mode=?, origin=?, status=?, integration_branch=?, channel=?, model=?, review=?, events=?, hard_rules=? WHERE id=?`,
+		o.Project, o.Title, raw, o.Budget.SoftTokens, o.Budget.HardTokens, o.Priority, string(o.Mode), string(o.FreezeMode), o.Origin, string(o.Status), o.IntegrationBranch, o.Channel, o.Model, o.Review, o.Events, rules, o.ID)
 	return rowsAffected(res, err)
 }
 
@@ -81,7 +99,7 @@ func (s *Store) DeleteObjective(ctx context.Context, id string) error {
 }
 
 func (s *Store) ListObjectives(ctx context.Context, projectID string) ([]model.Objective, error) {
-	q := `SELECT id, project_id, title, acceptance, soft_tokens, hard_tokens, priority, mode, freeze_mode, origin, status, integration_branch, channel, model, review, events FROM objectives`
+	q := `SELECT id, project_id, title, acceptance, soft_tokens, hard_tokens, priority, mode, freeze_mode, origin, status, integration_branch, channel, model, review, events, hard_rules FROM objectives`
 	var args []any
 	if projectID != "" {
 		q += ` WHERE project_id=?`
@@ -106,8 +124,8 @@ func (s *Store) ListObjectives(ctx context.Context, projectID string) ([]model.O
 
 func scanObjective(sc scanner) (model.Objective, error) {
 	var o model.Objective
-	var acceptance, mode, freeze, status string
-	if err := sc.Scan(&o.ID, &o.Project, &o.Title, &acceptance, &o.Budget.SoftTokens, &o.Budget.HardTokens, &o.Priority, &mode, &freeze, &o.Origin, &status, &o.IntegrationBranch, &o.Channel, &o.Model, &o.Review, &o.Events); err != nil {
+	var acceptance, mode, freeze, status, rules string
+	if err := sc.Scan(&o.ID, &o.Project, &o.Title, &acceptance, &o.Budget.SoftTokens, &o.Budget.HardTokens, &o.Priority, &mode, &freeze, &o.Origin, &status, &o.IntegrationBranch, &o.Channel, &o.Model, &o.Review, &o.Events, &rules); err != nil {
 		return o, err
 	}
 	if err := parseJSON(acceptance, &o.Acceptance); err != nil {
@@ -118,5 +136,8 @@ func scanObjective(sc scanner) (model.Objective, error) {
 	o.Mode = model.ObjectiveMode(mode)
 	o.FreezeMode = model.FreezeMode(freeze)
 	o.Status = model.ObjectiveStatus(status)
+	if err := parseJSON(rules, &o.HardRules); err != nil {
+		return o, err
+	}
 	return o, nil
 }

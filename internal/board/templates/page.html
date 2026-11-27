@@ -352,12 +352,6 @@ ul.mini li{display:flex;gap:12px;justify-content:space-between;font-size:13px}
 .quota-caption{font-size:12px;color:var(--muted-foreground);margin:12px 0 0}
 @media(max-width:700px){.resource-grid{grid-template-columns:1fr}.resource-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.page-head{display:block}.resource-grid>.panel{padding:20px}}
 @media(max-width:640px){.channel .ch-head[id]{scroll-margin-top:160px}}
-@media(prefers-reduced-motion:reduce){
-  .pulse{animation:none!important}
-  .cx-seg .thumb,.cx-seg>a{transition:none}
-  .board-view{transition:opacity 160ms linear}
-  html{scroll-behavior:auto}
-}
 /* card page */
 .crumbs{font-size:13px;color:var(--muted-foreground);display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
 .body{white-space:pre-wrap;font-size:13px;line-height:1.65;max-height:320px;overflow:auto;color:var(--foreground)}
@@ -448,6 +442,12 @@ a.ic-title:hover{text-decoration:underline}
 .ic-pill{flex:none;font:700 9.5px/1 var(--cx-font-mono);letter-spacing:.06em;padding:4px 6px 3px;border-radius:4px;background:var(--c-tab);color:var(--c-tab-label)}
 .ic-age{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .design-fold{margin-top:8px}
+@media(prefers-reduced-motion:reduce){
+  .pulse{animation:none!important}
+  .cx-seg .thumb,.cx-seg>a{transition:none}
+  .cx-seg>a:active{transform:none}
+  html{scroll-behavior:auto}
+}
 </style>
 </head>
 <body>
@@ -556,6 +556,11 @@ a.ic-title:hover{text-decoration:underline}
     });
     if (window.cardexArmRefresh) window.cardexArmRefresh();
   }
+  // Compress the stagger on large boards so every item can settle by the
+  // same deadline, without cutting off the last cards or extending the switch.
+  function motionStagger(i, n, step, budget) {
+    return n > 1 ? i * Math.min(step, budget / (n - 1)) : 0;
+  }
   var switchGen = 0;
   function switchView(next, link) {
     var root = document.documentElement;
@@ -565,12 +570,13 @@ a.ic-title:hover{text-decoration:underline}
     var cur = root.dataset.view === "project" ? "project" : "status";
     if (next === cur) { if (wasSwitching) commit(next); return; }
     var gen = ++switchGen;
-    if (link) {
+    var reduce = reduced();
+    if (link && !reduce) {
       link.animate([{transform:"scale(1)"},{transform:"scale(.965)",offset:.45},{transform:"scale(1)"}], {duration:120, easing:"ease-out"});
     }
-    if (!board || reduced()) {
+    if (!board || reduce) {
       root.dataset.switching = "1";
-      if (board && reduced()) {
+      if (board && reduce) {
         var oldP = board.querySelector('[data-panel="' + cur + '"]');
         var newP = board.querySelector('[data-panel="' + next + '"]');
         root.dataset.view = next;
@@ -630,7 +636,10 @@ a.ic-title:hover{text-decoration:underline}
       return {x: cx - 36 + 24 * i, y: top - 10 + 8 * i};
     }
     function gatherDelay(i, n) { return 30 + (n > 2 && i > 0 && i < n - 1 ? 30 : 0); }
-    function fanDelay(i, n) { return 450 + (n - 1 - i) * 28; }
+    var switchTotal = 914, fanStart = 450, fanDuration = 380;
+    function fanDelay(i, n) {
+      return fanStart + motionStagger(n - 1 - i, n, 28, switchTotal - fanStart - fanDuration);
+    }
     function move(item, from, to, delay, duration, layer) {
       var dx = to.x - from.x, dy = to.y - from.y;
       var rot = (dx < 0 ? -1 : dx > 0 ? 1 : 0) * 0.8;
@@ -666,7 +675,7 @@ a.ic-title:hover{text-decoration:underline}
           {transform:"translate(" + (dest.x - item.x) + "px," + (dest.y - item.y) + "px) rotate(0deg) scale(1,1)"},
           {transform:"translate(0px,0px) rotate(0deg) scale(1.008,.99)", offset:.2},
           {transform:"translate(0px,0px) rotate(0deg) scale(1,1)"}
-        ], {duration:380, delay:fanDelay(i, paired), easing:ease, fill:"forwards"}));
+        ], {duration:fanDuration, delay:fanDelay(i, paired), easing:ease, fill:"forwards"}));
       })(newR[i], back);
     }
     for (var j = paired; j < nOld; j++) {
@@ -682,11 +691,10 @@ a.ic-title:hover{text-decoration:underline}
         track(item.el.animate([
           {transform:"translate(" + (dest.x - item.x) + "px," + (dest.y - item.y) + "px)"},
           {transform:"translate(0px,0px)"}
-        ], {duration:380, delay:fanDelay(k, nNew), easing:ease, fill:"forwards"}));
+        ], {duration:fanDuration, delay:fanDelay(k, nNew), easing:ease, fill:"forwards"}));
       })(newR[k], pileN);
     }
-    var total = Math.max(914, 450 + Math.max(paired, nNew, 1) * 28 + 380);
-    setTimeout(function () { if (gen === switchGen) commit(next); }, total + 40);
+    setTimeout(function () { if (gen === switchGen) commit(next); }, switchTotal);
   }
   document.querySelectorAll(".cx-seg a").forEach(function (a) {
     a.addEventListener("click", function (e) {
@@ -711,6 +719,7 @@ a.ic-title:hover{text-decoration:underline}
     var board = document.getElementById("board");
     if (!board) { delete root.dataset.open; return; }
     if (!boardShown()) return;
+    if (reduced()) { settleOpen(); return; }
     openStarted = true;
     try { sessionStorage.setItem("cardex.folderOpen", "1"); } catch (e) {}
     var ease = weightEase();
@@ -726,6 +735,7 @@ a.ic-title:hover{text-decoration:underline}
       if (getComputedStyle(panel).display === "none") return;
       panel.querySelectorAll(".of").forEach(function (el) { visible.push(el); });
     });
+    var opening = 720, dealStart = 300, dealDuration = 260;
     visible.forEach(function (folder) {
       folder.classList.add("is-closing");
       folder.classList.add("is-flipping");
@@ -737,16 +747,17 @@ a.ic-title:hover{text-decoration:underline}
         {"--of-angle":"0deg", offset:560/720},
         {"--of-angle":"1deg", offset:595/720},
         {"--of-angle":"0deg", offset:1}
-      ], {duration:720, easing:"linear", fill:"forwards"}));
+      ], {duration:opening, easing:"linear", fill:"forwards"}));
       openLater(function () {
         if (ticket !== openTicket) return;
         folder.classList.remove("is-closing");
       }, 200);
-      folder.querySelectorAll(".icard3").forEach(function (card, k) {
+      var cards = folder.querySelectorAll(".icard3");
+      cards.forEach(function (card, k) {
         own(card.animate([
           {opacity:0, transform:"translate(0px,28px) rotate(-1deg)"},
           {opacity:1, transform:"translate(0px,0px) rotate(0deg)"}
-        ], {duration:260, delay:300 + k * 50, easing:ease, fill:"forwards"}));
+        ], {duration:dealDuration, delay:dealStart + motionStagger(k, cards.length, 50, opening - dealStart - dealDuration), easing:ease, fill:"forwards"}));
       });
     });
     openLater(function () {
@@ -765,7 +776,7 @@ a.ic-title:hover{text-decoration:underline}
           card.style.transform = "";
         });
       });
-    }, 760);
+    }, opening);
   }
   document.querySelectorAll("input.tab").forEach(function (r) {
     r.addEventListener("change", function () { requestAnimationFrame(playOpen); });

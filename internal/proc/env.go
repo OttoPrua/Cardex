@@ -2,6 +2,9 @@ package proc
 
 import "strings"
 
+// ManagedExecutorEnv is a workflow hint on CardeX executor subprocesses.
+const ManagedExecutorEnv = "CARDEX_MANAGED_EXECUTOR"
+
 // acceptanceDropPrefixes are environment names an acceptance command or an
 // in-executor test must not inherit from the serve process.
 //
@@ -44,6 +47,9 @@ func AcceptanceEnv(base []string) []string {
 
 func dropAcceptanceEnv(key string) bool {
 	upper := strings.ToUpper(key)
+	if upper == ManagedExecutorEnv {
+		return true
+	}
 	for _, prefix := range acceptanceDropPrefixes {
 		if strings.HasPrefix(upper, prefix) {
 			return true
@@ -65,7 +71,7 @@ func ExecutorEnv(base []string) []string {
 	out := make([]string, 0, len(base))
 	for _, kv := range base {
 		key, _, ok := strings.Cut(kv, "=")
-		if !ok || key == "" || strings.HasPrefix(strings.ToUpper(key), "CARDEX_SCHED_") {
+		if !ok || key == "" || strings.EqualFold(key, ManagedExecutorEnv) || strings.HasPrefix(strings.ToUpper(key), "CARDEX_SCHED_") {
 			continue
 		}
 		out = append(out, kv)

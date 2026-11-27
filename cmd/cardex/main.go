@@ -164,6 +164,9 @@ func cmdServe(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
+	if refuseManagedRuntimeStart(stderr) {
+		return 2
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return runServe(ctx, home, *addr, asJSON, stdout, stderr)

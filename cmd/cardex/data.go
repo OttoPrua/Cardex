@@ -436,6 +436,9 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
+	if refuseManagedCardWrite(stderr) {
+		return 2
+	}
 	_ = originFlag
 	origin := resolvedOrigin(args)
 	if *objective == "" {

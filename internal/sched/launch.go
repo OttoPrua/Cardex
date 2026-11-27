@@ -14,14 +14,14 @@ import (
 )
 
 func init() {
-	if os.Getenv("CARDEX_SCHED_HOST") != "1" {
+	// Internal host startup is only `host <attempt-id>` plus the marker
+	// launchDetached sets. An inherited CARDEX_SCHED_ATTEMPT must not pull
+	// version, card add, or any other ordinary CLI back into host.Run.
+	if os.Getenv("CARDEX_SCHED_HOST") != "1" || os.Getenv(proc.ManagedExecutorEnv) == "1" {
 		return
 	}
 	id := attemptFromArgs(os.Args)
-	if id == "" {
-		id = os.Getenv("CARDEX_SCHED_ATTEMPT")
-	}
-	if id == "" {
+	if id == "" || os.Getenv("CARDEX_SCHED_ATTEMPT") != id {
 		return
 	}
 	ctx := host.WithWorkspace(context.Background(), workspace.Git{})
@@ -32,18 +32,19 @@ func init() {
 	os.Exit(0)
 }
 
+// attemptFromArgs accepts only the argv launchDetached builds: the executable,
+// then the command host, then one attempt id. A later host token, an extra
+// argument, or a different command stays on the ordinary CLI path.
 func attemptFromArgs(args []string) string {
-	for i := 0; i < len(args); i++ {
-		if args[i] == "host" && i+1 < len(args) {
-			return args[i+1]
-		}
+	if len(args) != 3 || args[1] != "host" || args[2] == "" {
+		return ""
 	}
-	return ""
+	return args[2]
 }
 
 // launchDetached starts the current executable as `host <attempt-id>` in a
 // new process group. CARDEX_SCHED_HOST tells this package's init to call
-// host.Run, because the cardex host subcommand is still the R2-A stub.
+// host.Run. The attempt argument must match the launcher marker.
 func launchDetached(home, attemptID, dir string) (int, error) {
 	exe, err := os.Executable()
 	if err != nil {

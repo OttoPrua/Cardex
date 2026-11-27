@@ -54,6 +54,21 @@ cardex objective add --project p --title 账单 --mode auto --freeze-mode fast -
 
 项目和目标可通过 `add` 或 `set` 的可重复 `--hard-rule "规则"` 写入卡片提示词共用的文本规则。每次派发和续跑都先继承项目规则，再追加目标规则；相同文本只出现一次。更新时传入整组规则，`--hard-rule=` 清除当前层；不传该参数则保留现有设置。这是提示词约束，不替代沙箱或禁改路径。
 
+## 批量导入卡
+
+`card import` 向一个已有目标批量建卡。默认只预览，不建目录或数据库，不记读数，不迁移库。
+
+```
+cardex --json card import --objective obj --file cards.json
+cardex --json card import --objective obj --file cards.json --apply
+```
+
+`cards.json` 支持 `version: 1`，用 `cardex card import --help` 查看示例。每张卡填写 `id`、`kind`、`title`，并在 `body` 和 `body_file` 之间二选一。正文文件必须是清单所在目录里的 UTF-8 普通文件，路径按清单目录计算。另可指定 `deps`、`claims` 和 `acceptance`。一批最多 256 张；清单上限 2 MiB、单张正文 512 KiB、整批正文 8 MiB。目标、卡和依赖 ID 上限为 128 UTF-8 字节；每卡最多 256 条唯一依赖，可达图最多 16,384 条唯一依赖边。同一张卡内重复依赖会移除，保留首次出现的顺序。不认识或重复的字段报错。
+
+预览检查目标、重复的卡 ID、直接或间接依赖是否存在及是否成环。若冲突很多，只显示前几项。如果 SQLite 有 WAL、SHM 或回滚日志，预览明确返回不可用，不会自行清理这些文件；请使用已安全检查点的同版本数据目录重试。预览不锁定数据。`--apply` 在现有数据库里重新校验，整批同时成功或回滚，不覆盖已有卡；有活跃 WAL 时仍以写入事务读到的最新数据为准。
+
+导入命令不会执行正文或验收命令。成功导入的卡状态为 `ready`，运行中的调度器随后可能按正常流程派发，所以只对可信清单使用 `--apply`。受管执行器可以预览，不能用这个命令写卡。
+
 ## 设计时的事实研究
 
 设计结果里的开放问题用标签区分。`[fact]` 是查一下就知道的，Cardex 派一张研究卡去查，不来问你。研究卡默认走便宜的 T1。`[experiment]` 做原型。`[decision]` 由设计卡自己权衡：问题留在设计节点上，不因此生成 使用者（owner） 的待办。`[owner]` 需要 使用者（owner） 决定。

@@ -976,6 +976,24 @@ a.ic-title:hover{text-decoration:underline}
 <h1>{{.Title}}</h1>
 <div class="meta" style="margin-bottom:28px"><span class="pill t-{{tone .Status}}">{{label .Status}}</span><span class="id">{{.ID}}</span><span>共 {{len .Attempts}} 次尝试</span></div>
 <span class="k">card {{.ID}} status {{.Status}}</span>
+<div class="panel" id="review-progress">
+<h3>复核进度</h3><div class="body">{{.ReviewProgress.Label}}</div>
+<div class="meta">
+{{with .ReviewProgress}}
+{{if .ReviewCardID}}<span>复核卡 <a href="/cards/{{.ReviewCardID}}">{{.ReviewCardID}}</a></span>{{end}}
+{{if .ReviewStatus}}<span>复核卡状态 {{.ReviewStatus}}</span>{{end}}
+{{if .Mode}}<span>模式 {{.Mode}}</span>{{end}}
+{{if .Tier}}<span>档位 {{.Tier}}</span>{{end}}
+{{if .Reason}}<span>原因 {{.Reason}}</span>{{end}}
+{{if .AttemptID}}<span>尝试 <b class="chip">{{.AttemptID}}</b></span>{{end}}
+{{if .ActualModel}}<span>实际模型 {{.ActualModel}}</span>{{end}}
+{{if .ReviewedBase}}<span>复核提交 <b class="chip" title="{{.ReviewedBase}}">{{short .ReviewedBase}}</b></span>{{end}}
+{{if .Verdict}}<span>记录结论 {{.Verdict}}</span>{{end}}
+{{if .RouteReason}}<span>路由 {{.RouteReason}}</span>{{end}}
+{{if .RouteHint}}<span>下一步 {{.RouteHint}}</span>{{end}}
+{{end}}
+</div>
+</div>
 {{if .Questions}}<div class="panel">
 <h3>等你决定<span class="n">{{len .Questions}}</span></h3>
 <ul class="rows">{{range .Questions}}<li class="qcard">{{template "question" .}}</li>{{end}}</ul>

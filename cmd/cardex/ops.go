@@ -232,10 +232,11 @@ func objectiveVerbStatus(verb string) model.ObjectiveStatus {
 }
 
 const cardGroupUsage = `card — read and update card records
-purpose: add, list, show, cancel, retry, pause, resume, revive, absorb, recover, or mark merged a card
+purpose: add, import, list, show, cancel, retry, pause, resume, revive, absorb, recover, or mark merged a card
 
 parameters:
   add     --id --objective --node --kind --title --body --tier --require --dep --acceptance --claim --base --status --origin
+  import  --objective <id> --file <manifest.json> [--apply] [--origin <kind:id>] --json
   list    --objective --changed-since <RFC3339> --fields <name> [--origin <kind:id>] --json
   show    <id> --brief --claims --attempts all [--origin <kind:id>] --json --summary
   cancel  <id>
@@ -247,7 +248,9 @@ parameters:
   recover <id> --json                  queue the current, already approved auto-route recovery
   recover --note <code> <id> --json    save a predefined repair hint without changing routing or status
   merged  [--note <text>] <id> --json   merge_queued, reviewing or done card -> merged (after a manual merge)
-`
+
+card import preview and manifest example (body or body_file):
+` + cardImportExample + "\n"
 
 func cardTransition(home string, asJSON bool, verb string, args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("card "+verb, "change a stored card to "+string(cardVerbStatus(verb))+" without starting an executor", "<id> --json", stdout, stderr)
@@ -256,6 +259,9 @@ func cardTransition(home string, asJSON bool, verb string, args []string, stdout
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintf(stderr, "card %s <id>\n", verb)
+		return 2
+	}
+	if refuseManagedCardWrite(stderr) {
 		return 2
 	}
 	db, err := openStoreForWrite(home)
@@ -415,6 +421,9 @@ func cardAbsorb(home string, asJSON bool, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, "card absorb <id>")
 		return 2
 	}
+	if refuseManagedCardWrite(stderr) {
+		return 2
+	}
 	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -441,6 +450,9 @@ func cardMerged(home string, asJSON bool, args []string, stdout, stderr io.Write
 	}
 	if fs.NArg() != 1 {
 		fmt.Fprintln(stderr, "card merged [--note <text>] <id>")
+		return 2
+	}
+	if refuseManagedCardWrite(stderr) {
 		return 2
 	}
 	db, err := openStoreForWrite(home)
@@ -502,6 +514,9 @@ func cardRecover(home string, asJSON bool, args []string, stdout, stderr io.Writ
 	hint := model.RepairHint(*noteFlag)
 	if noteOnly && hint.PromptText() == "" {
 		fmt.Fprintln(stderr, "card recover: use a predefined hint code: boundary-check, rerun-checks, resolve-conflicts")
+		return 2
+	}
+	if refuseManagedCardWrite(stderr) {
 		return 2
 	}
 	db, err := openStoreForWrite(home)

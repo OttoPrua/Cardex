@@ -213,6 +213,11 @@ func ParseEngineProfile(raw []byte) (EngineProfile, bool) {
 	if len(bytesTrim(raw)) == 0 {
 		return EngineProfile{}, false
 	}
+	// A compatible API document is not a legacy profile, even when it also
+	// carries a base_url. It must not fall through to plaintext auth or aliases.
+	if IsCompatibleEngine(raw) {
+		return EngineProfile{}, false
+	}
 	var p EngineProfile
 	if json.Unmarshal(raw, &p) != nil {
 		return EngineProfile{}, false

@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +19,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/positioning"
 	"github.com/OttoPrua/Cardex/internal/question"
+	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/sched"
 	"github.com/OttoPrua/Cardex/internal/scorecard"
 	"github.com/OttoPrua/Cardex/internal/store"
@@ -549,9 +553,11 @@ func channelShow(home string, asJSON bool, args []string, stdout, stderr io.Writ
 }
 
 func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("channel set", "set redline, quota windows, or concurrency on a channel", "--json", stdout, stderr)
+	fs := newFlagSet("channel set", "set redline, quota windows, concurrency, engine profile, or family on a channel", "--json", stdout, stderr)
 	id := fs.String("id", "", "channel id")
-	runner := fs.String("runner", "", "runner name")
+	runnerName := fs.String("runner", "", "runner name")
+	engineProfile := fs.String("engine-profile", "", "engines profile name")
+	family := fs.String("family", "", "model family")
 	redline := &softNumber{name: "redline", kind: numberFloat}
 	concurrency := &softNumber{name: "concurrency", kind: numberInt}
 	fs.Var(redline, "redline", "redline from 0 to 1 inclusive")
@@ -576,70 +582,163 @@ func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 		return 1
 	}
 	defer db.Close()
-	ctx := context.Background()
-	ch, err := db.GetChannel(ctx, *id)
-	missing := err != nil
-	var notes []string
-	if missing {
-		raw := strings.TrimSpace(*runner)
-		val := model.RunnerName(raw)
-		if raw == "" || val == model.RunnerFake {
-			fmt.Fprintln(stderr, "--runner is required when creating a channel")
-			return 2
-		}
-		if !val.Valid() {
-			notes = append(notes, "runner "+*runner)
-			val = model.RunnerGrok
-		}
-		ch = model.Channel{ID: *id, Health: model.HealthOK, Runner: val}
-	} else if flagSeen(fs, "runner") {
-		val := model.RunnerName(strings.TrimSpace(*runner))
-		if val.Valid() && val != "" {
-			ch.Runner = val
-		} else {
-			notes = append(notes, "runner "+*runner)
-		}
-	}
-	if redline.ok {
-		ch.Redline = redline.f64
-	}
-	notes = append(notes, redline.bad...)
-	if concurrency.ok {
-		ch.Concurrency = concurrency.n
-	}
-	notes = append(notes, concurrency.bad...)
-	if flagSeen(fs, "health") {
-		val := model.Health(strings.TrimSpace(*health))
-		if val.Valid() {
-			ch.Health = val
-		} else {
-			notes = append(notes, "health "+*health)
-			if !ch.Health.Valid() {
-				ch.Health = model.HealthOK
-			}
-		}
-	}
-	if flagSeen(fs, "model") {
-		ch.Models = models
-	}
-	if flagSeen(fs, "window") {
-		parsed, bad := splitWindows(windows)
-		notes = append(notes, bad...)
-		if len(parsed) > 0 {
-			ch.QuotaWindows = parsed
-		}
-	}
-	if ch.Health == "" {
-		ch.Health = model.HealthOK
-	}
-	if missing {
-		if err := db.CreateChannel(ctx, &ch); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-	} else if err := db.UpdateChannel(ctx, &ch); err != nil {
+	dir, err := resolveHome(home)
+	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
+	}
+	requestedHealth := model.Health(strings.TrimSpace(*health))
+	deactivationOnly := requestedHealth == model.HealthDegraded || requestedHealth == model.HealthAuthFailed
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name != "id" && f.Name != "health" && f.Name != "json" {
+			deactivationOnly = false
+		}
+	})
+	var ch model.Channel
+	var notes []string
+	exit := 1
+	invalidSet := func(reason string) error {
+		exit = 2
+		return errors.New(reason)
+	}
+	err = db.WithTx(context.Background(), func(ctx context.Context) error {
+		ch, err = db.GetChannel(ctx, *id)
+		missing := errors.Is(err, sql.ErrNoRows)
+		if err != nil && !missing {
+			return err
+		}
+		previouslyCompatible := runner.IsCompatibleBinding(ch.EngineProfile)
+		previousBindingID := runner.CompatibleBindingID(ch.EngineProfile)
+		// Disabling is always safe: a broken config or credential must not
+		// prevent the operator from taking this identity out of routing.
+		if previouslyCompatible && deactivationOnly {
+			ch.Health = requestedHealth
+			return db.UpdateChannel(ctx, &ch)
+		}
+		if missing {
+			raw := strings.TrimSpace(*runnerName)
+			val := model.RunnerName(raw)
+			if raw == "" || val == model.RunnerFake {
+				return invalidSet("--runner is required when creating a channel")
+			}
+			if !val.Valid() {
+				notes = append(notes, "runner "+*runnerName)
+				val = model.RunnerGrok
+			}
+			ch = model.Channel{ID: *id, Health: model.HealthOK, Runner: val}
+		} else if flagSeen(fs, "runner") {
+			val := model.RunnerName(strings.TrimSpace(*runnerName))
+			if val.Valid() && val != "" {
+				ch.Runner = val
+			} else {
+				notes = append(notes, "runner "+*runnerName)
+			}
+		}
+		if flagSeen(fs, "engine-profile") {
+			name := strings.TrimSpace(*engineProfile)
+			if name == "" {
+				return invalidSet("engine profile name is empty")
+			}
+			ch.EngineProfile = name
+		}
+		if flagSeen(fs, "family") {
+			name := strings.TrimSpace(*family)
+			if err := runner.ValidateChannelFamily(name); err != nil {
+				return invalidSet(err.Error())
+			}
+			ch.Family = name
+		}
+		if redline.ok {
+			ch.Redline = redline.f64
+		}
+		notes = append(notes, redline.bad...)
+		if concurrency.ok {
+			ch.Concurrency = concurrency.n
+		}
+		notes = append(notes, concurrency.bad...)
+		if flagSeen(fs, "health") {
+			val := model.Health(strings.TrimSpace(*health))
+			if val.Valid() {
+				ch.Health = val
+			} else {
+				notes = append(notes, "health "+*health)
+				if !ch.Health.Valid() {
+					ch.Health = model.HealthOK
+				}
+			}
+		}
+		if flagSeen(fs, "model") {
+			ch.Models = models
+		}
+		if flagSeen(fs, "window") {
+			parsed, bad := splitWindows(windows)
+			notes = append(notes, bad...)
+			if len(parsed) > 0 {
+				ch.QuotaWindows = parsed
+			}
+		}
+		if ch.Health == "" {
+			ch.Health = model.HealthOK
+		}
+		if missing || previouslyCompatible || flagSeen(fs, "engine-profile") || flagSeen(fs, "family") ||
+			(flagSeen(fs, "runner") && ch.EngineProfile != "") {
+			others, err := db.ListChannels(ctx)
+			if err != nil {
+				return err
+			}
+			rows, err := db.ListPositioning(ctx)
+			if err != nil {
+				return err
+			}
+			projects, err := db.ListProjects(ctx)
+			if err != nil {
+				return err
+			}
+			var managedRoots []string
+			for _, project := range projects {
+				managedRoots = append(managedRoots, project.RepoPath)
+				if project.WorktreeRoot != "" {
+					managedRoots = append(managedRoots, project.WorktreeRoot)
+				}
+			}
+			next, err := runner.ValidateChannelBinding(dir, ch, others, rows, managedRoots...)
+			if err != nil {
+				return invalidSet(err.Error())
+			}
+			ch = next
+		}
+		if previouslyCompatible && !runner.IsCompatibleBinding(ch.EngineProfile) {
+			return invalidSet("an api channel cannot be converted to a legacy channel; use a different channel id")
+		}
+		if runner.IsCompatibleBinding(ch.EngineProfile) {
+			if len(notes) != 0 {
+				return invalidSet("api channel has invalid options; no changes applied")
+			}
+			if flagSeen(fs, "model") {
+				for _, name := range models {
+					if strings.TrimSpace(name) == "" {
+						return invalidSet("api channel model id is empty")
+					}
+				}
+			}
+			if previousBindingID != runner.CompatibleBindingID(ch.EngineProfile) {
+				if flagSeen(fs, "health") && ch.Health == model.HealthOK {
+					return invalidSet("stage the api channel identity before separately activating it")
+				}
+				if previouslyCompatible && !flagSeen(fs, "engine-profile") && !flagSeen(fs, "model") && !flagSeen(fs, "family") {
+					return invalidSet("api channel profile changed; explicitly stage it with --engine-profile")
+				}
+				ch.Health = model.HealthDegraded
+			}
+		}
+		if missing {
+			return db.CreateChannel(ctx, &ch)
+		}
+		return db.UpdateChannel(ctx, &ch)
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exit
 	}
 	return finishSoft(stdout, stderr, asJSON, notes, ch, ch.ID+"\t"+string(ch.Runner))
 }

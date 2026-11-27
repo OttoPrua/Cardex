@@ -15,14 +15,19 @@ var ErrNotImplemented = errors.New("not implemented")
 
 // LaunchSpec is the dispatch-time description of one attempt.
 type LaunchSpec struct {
-	AttemptID    string // 尝试标识。
-	AttemptIndex int    // 尝试序号，fake 脚本按它选择行为。
-	WorkDir      string // 本次 worktree。
-	PromptPath   string // prompt 文件路径。
-	Model        string // 选定的模型。
-	Script       []byte // fake 执行器的 JSON 脚本；空则读 ScriptPath。
-	ScriptPath   string // JSON 脚本路径。
-	SessionID    string // goal 模式本次会话；空则不传 -s。
+	AttemptID    string         // 尝试标识。
+	AttemptIndex int            // 尝试序号，fake 脚本按它选择行为。
+	WorkDir      string         // 本次 worktree。
+	PromptPath   string         // prompt 文件路径。
+	Model        string         // 选定的模型。
+	Script       []byte         // fake 执行器的 JSON 脚本；空则读 ScriptPath。
+	ScriptPath   string         // JSON 脚本路径。
+	SessionID    string         // goal 模式本次会话；空则不传 -s。
+	CardKind     model.CardKind // API 渠道的卡类型，用来证明工具权限；旧渠道忽略。
+	ConfigDir    string         // API 渠道的空 CLAUDE_CONFIG_DIR；旧渠道为空。
+	DropEnv      []string       // API 渠道子进程保留环境中需明确丢弃的变量名。
+	RelayURL     string         // API 渠道每次运行绑定的本机地址。
+	RelayKey     string         // 本次运行的临时本机访问能力；不是供应商凭据。
 }
 
 // RunResult is what a fake attempt produced.

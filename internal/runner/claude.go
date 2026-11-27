@@ -48,6 +48,9 @@ func (Claude) Build(spec LaunchSpec) ([]string, []string, error) {
 	// An empty script means no profile was selected. A selected document that
 	// is not usable must not fall through to the default channel.
 	if len(bytes.TrimSpace(spec.Script)) > 0 {
+		if IsCompatibleEngine(spec.Script) {
+			return buildCompatibleClaude(spec)
+		}
 		profile, ok := ParseEngineProfile(spec.Script)
 		if !ok {
 			return nil, nil, errors.New("engines profile is not usable")

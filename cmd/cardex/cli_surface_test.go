@@ -94,7 +94,7 @@ func TestCommandHelpNamesPurposeAndParameters(t *testing.T) {
 		{[]string{"channel", "--help"}, []string{"list", "show", "<id>", "--json"}},
 		{[]string{"channel", "list", "--help"}, []string{"--json"}},
 		{[]string{"channel", "show", "--help"}, []string{"<id>", "--json"}},
-		{[]string{"channel", "set", "--help"}, []string{"-runner", "-redline", "--json"}},
+		{[]string{"channel", "set", "--help"}, []string{"-runner", "-engine-profile", "-family", "-redline", "--json"}},
 		{[]string{"channel", "check", "--help"}, []string{"no command arguments"}},
 		{[]string{"route", "--help"}, []string{"explain", "<card>"}},
 		{[]string{"route", "explain", "--help"}, []string{"<card>", "--json"}},

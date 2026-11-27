@@ -58,6 +58,9 @@ func TestFreezeShortAnswer(t *testing.T) {
 			for _, heading := range headings {
 				for _, tc := range bodies {
 					kind, via, heading, tc := kind, via, heading, tc
+					if heading == "结论" && tc.want == expectUnclear {
+						tc.want = expectNotYes
+					}
 					path := "direct"
 					if via {
 						path = "normalize"
@@ -103,7 +106,7 @@ func TestFreezeShortAnswer(t *testing.T) {
 								t.Fatal("needs_input before normalize finished")
 							}
 						default:
-							if freezes != 0 || frozen || plans != 0 {
+							if freezes != 0 || frozen || plans != 0 || (heading == "结论" && norms != seeded) {
 								t.Fatalf("freezes %d frozen %v plans %d", freezes, frozen, plans)
 							}
 						}
@@ -115,7 +118,7 @@ func TestFreezeShortAnswer(t *testing.T) {
 }
 
 // TestFreezeFastModuleConditional starts from a fast module with no open
-// questions. A conditional ## 结论 dispatches one normalize card. After that
+// questions. A conditional ## 可冻结 dispatches one normalize card. After that
 // card returns ## 可冻结 / 是, the step freezes the node and dispatches a plan.
 func TestFreezeFastModuleConditional(t *testing.T) {
 	st := openLoop(t)
@@ -125,7 +128,7 @@ func TestFreezeFastModuleConditional(t *testing.T) {
 		t.Fatalf("open questions %+v", node.OpenQuestions)
 	}
 	card := seedCard(t, st, obj.ID, node.ID, model.KindDesign, model.CardRunning, "任务\n")
-	absorbText(t, st, card.ID, 0, model.OutcomePassed, "## 结论\n设计完成，可以冻结，但要等接口确认后再执行。\n")
+	absorbText(t, st, card.ID, 0, model.OutcomePassed, "## 可冻结\n设计完成，可以冻结，但要等接口确认后再执行。\n")
 	if err := designStep(t.Context(), depsOf(st), obj.ID); err != nil {
 		t.Fatal(err)
 	}

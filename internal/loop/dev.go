@@ -376,7 +376,7 @@ func (s *snap) putChannel(ch model.Channel) {
 }
 
 func (s *snap) disposed(attemptID string) bool {
-	return s.hasEvent("attempt:"+attemptID, "dev_disposed")
+	return s.hasEvent(attemptKey(attemptID), "dev_disposed") || s.hasEvent(attemptKey(attemptID), staleDesignAttemptEvent)
 }
 
 func (s *snap) hasEvent(entity, typ string) bool {

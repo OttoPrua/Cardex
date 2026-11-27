@@ -542,6 +542,7 @@ func seedNormalize(t *testing.T, st *store.Store, objective, node, sourceID stri
 	if err := st.CreateCard(t.Context(), card); err != nil {
 		t.Fatal(err)
 	}
+	linkFixtureNormalize(t, st, sourceID, card.ID)
 	return *card
 }
 

@@ -617,17 +617,28 @@ func TestObjectiveBriefFollowsCurrentPlanBlockerAfterRetry(t *testing.T) {
 
 	mustHome(t, home, "card", "retry", "c-plan")
 	dispose(plan(), 3, harvest.Result{Outcome: model.OutcomeResultUnparsable})
-	assertReason("result_unparsable")
+	// A new unusable source attempt gets its own ready normalizer and
+	// explicit wait reason, never the historical normalizer's result.
+	waiting := plan()
+	if waiting.Status != model.CardWaiting || !strings.Contains(waiting.WaitReason, "unusable_design_result") || strings.Contains(waiting.WaitReason, normalize.ID) {
+		t.Fatalf("fresh source did not wait for its own normalizer: %+v", waiting)
+	}
+	current, err := latestStoredAttempt(ctx, db, waiting.ID)
+	if err != nil || current.ID == "" || !strings.Contains(waiting.WaitReason, current.ID) {
+		t.Fatalf("wait not linked to current source %s: %v", waiting.WaitReason, err)
+	}
 
 	// With no parse event for this result, the source-attempt link must still
-	// prevent a later failure of the old normalizer from replacing the reason.
+	// prevent a later failure of the old normalizer from replacing the wait.
 	mustHome(t, home, "card", "retry", normalize.ID)
 	normalize, err = db.GetCard(ctx, normalize.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dispose(normalize, 2, harvest.Result{Outcome: model.OutcomeTimeout})
-	assertReason("result_unparsable")
+	if got := plan(); got.Status != waiting.Status || got.WaitReason != waiting.WaitReason {
+		t.Fatalf("old normalization failure replaced current wait: %+v", got)
+	}
 }
 
 func TestBriefLatestEventUsesParsedTime(t *testing.T) {

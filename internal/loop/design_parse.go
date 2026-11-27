@@ -134,29 +134,9 @@ func dedupKey(text string) string {
 
 func splitSections(md string) map[string]string {
 	out := map[string]string{}
-	var cur string
-	var buf strings.Builder
-	flush := func() {
-		if cur == "" {
-			return
-		}
-		out[cur] = buf.String()
-		buf.Reset()
+	for name, sections := range designLevelTwoSections(md) {
+		out[name] = sections[len(sections)-1]
 	}
-	for _, line := range strings.Split(md, "\n") {
-		trim := strings.TrimSpace(line)
-		if strings.HasPrefix(trim, "##") && !strings.HasPrefix(trim, "###") {
-			flush()
-			h := strings.TrimSpace(strings.TrimLeft(trim, "#"))
-			cur = h
-			continue
-		}
-		if cur != "" {
-			buf.WriteString(line)
-			buf.WriteByte('\n')
-		}
-	}
-	flush()
 	return out
 }
 
@@ -242,47 +222,181 @@ const (
 	freezeUnclear
 )
 
-// judgeResultFreeze reads ## 可冻结 or ## 结论. Both sections use the same
-// short-answer rule. Wording outside those two sections is not a proposal.
+// judgeResultFreeze reads one dedicated control section. A conclusion is
+// normally prose; only a unique, whole legacy short answer can still propose freezing.
 func judgeResultFreeze(result string) freezeVerdict {
-	if body, ok := headingBody(result, "可冻结"); ok {
-		return classifyFreeze(body, true)
+	sections := designLevelTwoSections(result)
+	if explicit := sections["可冻结"]; len(explicit) != 0 {
+		if len(explicit) != 1 {
+			return freezeUnclear
+		}
+		return classifyFreeze(explicit[0])
 	}
-	if body, ok := headingBody(result, "结论"); ok {
-		return classifyFreeze(body, false)
+	conclusions := sections["结论"]
+	for _, body := range conclusions {
+		if shortFreezeAnswer(body) {
+			if len(conclusions) != 1 {
+				return freezeUnclear
+			}
+			return freezeYes
+		}
 	}
 	return freezeNo
 }
 
-func headingBody(md, name string) (string, bool) {
-	found := false
-	var buf strings.Builder
-	for _, line := range strings.Split(md, "\n") {
-		trim := strings.TrimSpace(line)
-		if strings.HasPrefix(trim, "##") && !strings.HasPrefix(trim, "###") {
-			if found {
+type markdownControlHeading struct {
+	line  int
+	level int
+	title string
+}
+
+func designLevelTwoSections(md string) map[string][]string {
+	sections := map[string][]string{}
+	lines := strings.Split(strings.ReplaceAll(md, "\r\n", "\n"), "\n")
+	var current *markdownControlHeading
+	appendSection := func(end int) {
+		if current != nil {
+			sections[current.title] = append(sections[current.title], strings.Join(lines[current.line+1:end], "\n"))
+		}
+	}
+	for _, heading := range markdownControlHeadings(lines) {
+		if heading.level > 2 {
+			continue
+		}
+		appendSection(heading.line)
+		current = nil
+		if heading.level == 2 {
+			h := heading
+			current = &h
+		}
+	}
+	appendSection(len(lines))
+	return sections
+}
+
+func markdownControlHeadings(lines []string) []markdownControlHeading {
+	var headings []markdownControlHeading
+	var fence byte
+	var fenceWidth int
+	var inComment bool
+	var itemIndent int
+	for i, line := range lines {
+		if i == 0 {
+			line = strings.TrimPrefix(line, "\uFEFF")
+		}
+		left := strings.TrimLeft(line, " ")
+		indent := len(line) - len(left)
+		trim := strings.TrimSpace(left)
+		if inComment || (fence == 0 && strings.HasPrefix(trim, "<!--")) {
+			end := strings.Index(trim, "-->")
+			inComment = end < 0
+			if end >= 0 && strings.TrimSpace(trim[end+3:]) != "" {
+				// Do not restart recognition after mixed comment/HTML text.
 				break
-			}
-			h := strings.TrimSpace(strings.TrimLeft(trim, "#"))
-			if h == name {
-				found = true
 			}
 			continue
 		}
-		if found {
-			buf.WriteString(line)
-			buf.WriteByte('\n')
+		if trim == "" {
+			continue
 		}
+		if itemIndent != 0 && fence == 0 {
+			if indent >= itemIndent {
+				continue
+			}
+			itemIndent = 0
+		}
+		if indent > 3 || strings.HasPrefix(left, "\t") {
+			continue
+		}
+		if fence == 0 {
+			if strings.HasPrefix(trim, "<") {
+				// Raw HTML is outside the control protocol. A partial HTML
+				// parser could mistake an inner close for the block's end.
+				// Do not recognize any later control heading in this artifact.
+				break
+			}
+			if width := markdownListMarkerWidth(trim); width > 0 {
+				itemIndent = indent + width
+				continue
+			}
+		}
+		if len(trim) >= 3 && (trim[0] == '`' || trim[0] == '~') {
+			width := 1
+			for width < len(trim) && trim[width] == trim[0] {
+				width++
+			}
+			if width >= 3 && fence == 0 {
+				fence, fenceWidth = trim[0], width
+			} else if width >= fenceWidth && fence == trim[0] && strings.TrimSpace(trim[width:]) == "" {
+				fence, fenceWidth = 0, 0
+			}
+			continue
+		}
+		if fence != 0 {
+			continue
+		}
+		width := 0
+		for width < len(trim) && trim[width] == '#' {
+			width++
+		}
+		if width < 1 || width > 6 || width == len(trim) || (trim[width] != ' ' && trim[width] != '\t') {
+			continue
+		}
+		title := strings.TrimSpace(trim[width:])
+		headings = append(headings, markdownControlHeading{line: i, level: width, title: title})
 	}
-	if !found {
-		return "", false
+	return headings
+}
+
+func markdownListMarkerWidth(line string) int {
+	if len(line) >= 2 && strings.ContainsRune("-+*", rune(line[0])) && (line[1] == ' ' || line[1] == '\t') {
+		return 2
 	}
-	return buf.String(), true
+	i := 0
+	for i < len(line) && i < 9 && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	if i > 0 && i+1 < len(line) && (line[i] == '.' || line[i] == ')') && (line[i+1] == ' ' || line[i+1] == '\t') {
+		return i + 2
+	}
+	return 0
+}
+
+func startsWithIndentedLiteral(body string) bool {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		left := strings.TrimLeft(line, " ")
+		return len(line)-len(left) > 3 || strings.HasPrefix(left, "\t")
+	}
+	return false
+}
+
+// structuralPlanBody preserves the legacy plan heading names/levels while
+// excluding code examples. Review parsing keeps its separate compatibility rules.
+func structuralPlanBody(raw string) (string, bool) {
+	lines := strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n")
+	headings := markdownControlHeadings(lines)
+	for i, heading := range headings {
+		if normHeading(heading.title) != normHeading("新卡") {
+			continue
+		}
+		end := len(lines)
+		if i+1 < len(headings) {
+			end = headings[i+1].line
+		}
+		return strings.Join(lines[heading.line+1:end], "\n"), true
+	}
+	return "", false
 }
 
 // classifyFreeze returns freezeYes only for a short answer. Negation stays no.
-// Any other ## 可冻结 body, and any other body that names 冻结, is unclear.
-func classifyFreeze(body string, dedicated bool) freezeVerdict {
+// Any other ## 可冻结 body is unclear.
+func classifyFreeze(body string) freezeVerdict {
+	if startsWithIndentedLiteral(body) {
+		return freezeUnclear
+	}
 	compact := compactFreeze(body)
 	if currentNegative(leadingToken(body), compact) {
 		return freezeNo
@@ -290,10 +404,7 @@ func classifyFreeze(body string, dedicated bool) freezeVerdict {
 	if shortFreezeAnswer(body) {
 		return freezeYes
 	}
-	if dedicated || strings.Contains(compact, "冻结") {
-		return freezeUnclear
-	}
-	return freezeNo
+	return freezeUnclear
 }
 
 // shortFreezeAnswer is the whole section after leading and trailing whitespace,
@@ -301,6 +412,9 @@ func classifyFreeze(body string, dedicated bool) freezeVerdict {
 // is not an answer. A whitelist word plus leading separators and then exactly
 // the characters 可以冻结 is also an answer. Separators inside that phrase are not.
 func shortFreezeAnswer(body string) bool {
+	if startsWithIndentedLiteral(body) {
+		return false
+	}
 	s := strings.TrimSpace(body)
 	s = stripOneFreezeMarker(s)
 	s = strings.TrimSpace(s)

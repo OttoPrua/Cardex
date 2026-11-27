@@ -304,6 +304,7 @@ func TestAbsorbBindsDisposedAttempt(t *testing.T) {
 			t.Fatal(err)
 		}
 		later := makeAttempt(t, st, card.ID, 1, "new-base", goneWorktree(t), model.OutcomeResultUnparsable)
+		linkFixtureNormalize(t, st, card.ID, normalizeOf(t, st, obj.ID, card.ID).ID)
 		text := "## 开放问题\n- 解析失败的问题\n"
 		if err := AbsorbDisposed(t.Context(), depsOf(st), later.ID, model.OutcomeResultUnparsable, text); err != nil {
 			t.Fatal(err)

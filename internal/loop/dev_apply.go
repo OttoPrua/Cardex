@@ -76,6 +76,16 @@ func (st *step) attempt(cardID, attemptID string) model.Attempt {
 // decideHarvest is the one dev, review, and normalize disposition.
 // Dispose and disposeAll both call it.
 func (st *step) decideHarvest(card model.Card, attempt model.Attempt) error {
+	if designOriginal(card.Kind) || card.Kind == model.KindNormalize {
+		d := Deps{Store: st.db}
+		current, err := d.currentAttemptID(st.ctx, card.ID)
+		if err != nil {
+			return err
+		}
+		if current != attempt.ID {
+			return d.noteStaleDesignAttempt(st.ctx, card.ID, attempt.ID, current, attempt.Outcome)
+		}
+	}
 	if err := st.apply(card, attempt); err != nil {
 		return err
 	}
@@ -97,11 +107,17 @@ func (st *step) apply(card model.Card, attempt model.Attempt) error {
 	// A canceled card stays canceled: dispose the attempt and stop here, so a
 	// late harvest never reroutes, retries, reworks, or opens a review for it.
 	if card.Status == model.CardCanceled {
+		if card.Kind == model.KindNormalize {
+			d := Deps{Store: st.db, WS: workspace.Git{}, Notify: notify.Stub{}}
+			if err := d.applyNormalize(st.ctx, st.snap.obj, card, attempt.ID, "", attempt.Outcome); err != nil {
+				return err
+			}
+		}
 		return st.dispose(attempt)
 	}
 	// A violation voids the normalize attempt and leaves the original waiting.
 	if card.Kind == model.KindNormalize && attempt.Outcome != "" && attempt.Outcome != model.OutcomePassed && attempt.Outcome != model.OutcomeViolation {
-		if err := st.failNormalize(card); err != nil {
+		if err := st.failNormalize(card, attempt); err != nil {
 			return err
 		}
 		return st.dispose(attempt)
@@ -451,9 +467,22 @@ func (st *step) createNormalize(card model.Card, attemptID string) error {
 	return (Deps{Store: st.db}).noteNormalizePlan(st.ctx, attemptID, created.ID)
 }
 
-func (st *step) failNormalize(card model.Card) error {
+func (st *step) failNormalize(card model.Card, attempt model.Attempt) error {
 	if len(card.Deps) > 0 {
 		if parent, ok := st.snap.card(card.Deps[0]); ok {
+			if designOriginal(parent.Kind) {
+				d := Deps{Store: st.db, WS: workspace.Git{}, Notify: notify.Stub{}}
+				if err := d.applyNormalize(st.ctx, st.snap.obj, card, attempt.ID, "", attempt.Outcome); err != nil {
+					return err
+				}
+				fresh, err := st.db.GetCard(st.ctx, parent.ID)
+				if err != nil {
+					return err
+				}
+				st.snap.putCard(fresh)
+				card.Status = model.CardFailed
+				return st.saveCard(card)
+			}
 			parent.Status = model.CardNeedsInput
 			parent.WaitReason = ""
 			if err := st.saveCard(parent); err != nil {
@@ -986,10 +1015,14 @@ func (st *step) absorb(card model.Card, attempt model.Attempt) error {
 // does not mark it done. Design prose without a list only absorbs design output.
 // An unclear freeze on this card's own result dispatches one normalize card.
 func (st *step) absorbListed(card model.Card, attempt model.Attempt, apply func(model.Card, model.Attempt) error) error {
+	d := Deps{Store: st.db, WS: workspace.Git{}, Notify: notify.Stub{}}
+	current, err := d.currentAttemptID(st.ctx, card.ID)
+	if err != nil || attempt.Card != card.ID || current != attempt.ID || card.Status == model.CardCanceled {
+		return err
+	}
 	text := readResult(attempt)
-	if attempt.Card == card.ID && judgeResultFreeze(text) == freezeUnclear {
-		d := Deps{Store: st.db, WS: workspace.Git{}, Notify: notify.Stub{}}
-		if _, err := d.recoverUnparsed(st.ctx, st.snap.obj, card, attempt.ID); err != nil {
+	if judgeResultFreeze(text) == freezeUnclear {
+		if _, err := d.recoverUnparsed(st.ctx, st.snap.obj, card, attempt.ID, normalizeBadControl); err != nil {
 			return err
 		}
 		if cards, err := st.db.ListCards(st.ctx, st.snap.obj.ID); err == nil {
@@ -997,7 +1030,7 @@ func (st *step) absorbListed(card model.Card, attempt model.Attempt, apply func(
 		}
 		return nil
 	}
-	_, hasList := sectionBody(text, "新卡")
+	_, hasList := structuralPlanBody(text)
 	list := ParseCardList(text, card.Node, nil)
 	prose := strings.Contains(text, "##") && !hasList && list.Bad
 	if !prose {
@@ -1058,6 +1091,7 @@ func (st *step) absorbPlan(card model.Card, attempt model.Attempt) error {
 	list := ParseCardList(readResult(attempt), card.Node, known)
 	if list.Bad {
 		card.Status = model.CardNeedsInput
+		card.WaitReason = "" // the current typed plan_unparsable event supersedes older waits
 		if err := st.saveCard(card); err != nil {
 			return err
 		}
@@ -1373,7 +1407,7 @@ func designOriginal(kind model.CardKind) bool {
 func (st *step) absorbNormalizedOriginal(norm model.Card, parent model.Card, attempt model.Attempt) error {
 	text := readResult(attempt)
 	d := Deps{Store: st.db, WS: workspace.Git{}, Notify: notify.Stub{}}
-	if err := d.finishNormalizedSource(st.ctx, st.snap.obj, parent, text); err != nil {
+	if err := d.applyNormalize(st.ctx, st.snap.obj, norm, attempt.ID, text, attempt.Outcome); err != nil {
 		return err
 	}
 	if fresh, err := st.db.GetCard(st.ctx, parent.ID); err == nil {
@@ -1397,6 +1431,7 @@ func (st *step) absorbReplan(card model.Card, attempt model.Attempt) error {
 	list := ParseCardList(readResult(attempt), card.Node, known)
 	if list.Bad {
 		card.Status = model.CardNeedsInput
+		card.WaitReason = "" // the current typed plan_unparsable event supersedes older waits
 		if err := st.saveCard(card); err != nil {
 			return err
 		}

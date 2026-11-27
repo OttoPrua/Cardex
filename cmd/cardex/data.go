@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/loop"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
@@ -377,7 +378,7 @@ func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Wr
 		}
 		for i := range view.Blocked {
 			card := &view.Blocked[i]
-			if card.Reason != "" {
+			if card.Reason != "" && !loop.IsNormalizationFailureWait(card.Reason) {
 				continue
 			}
 			reason, err := objectiveFallbackReason(ctx, db, *card, failedNormalizers[card.ID])
@@ -385,7 +386,9 @@ func objectiveShow(home string, asJSON bool, args []string, stdout, stderr io.Wr
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
-			card.Reason = reason
+			if reason != "" && (card.Reason == "" || strings.HasPrefix(reason, "normalize ")) {
+				card.Reason = reason
+			}
 		}
 		return emitObjectiveBrief(stdout, asJSON, view)
 	}

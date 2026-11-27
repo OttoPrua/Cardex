@@ -359,8 +359,6 @@ func TestFollowupR6UnclearFreeze(t *testing.T) {
 	}{
 		{name: "plan 可冻结 is not a short answer", kind: model.KindPlan, body: "## 可冻结\n再议一下\n"},
 		{name: "replan 可冻结 is not a short answer", kind: model.KindReplan, body: "## 可冻结\n再议一下\n"},
-		{name: "plan 结论 names 冻结", kind: model.KindPlan, body: "## 结论\n等接口确认后才可以冻结\n"},
-		{name: "replan 结论 names 冻结", kind: model.KindReplan, body: "## 结论\n等接口确认后才可以冻结\n"},
 		{name: "Dispose replan 可冻结 is not a short answer", kind: model.KindReplan, body: "## 可冻结\n等接口确认后才可以冻结\n", dispose: true},
 	}
 	for _, tc := range cases {
@@ -403,10 +401,10 @@ func TestFollowupR6UnclearFreeze(t *testing.T) {
 		}
 	})
 
-	t.Run("结论 without 冻结 does not dispatch normalize", func(t *testing.T) {
+	t.Run("ordinary 结论 mentioning 冻结 does not dispatch normalize", func(t *testing.T) {
 		f := newFx(t, model.ModeAuto)
 		card := f.card(model.Card{ID: "src", Kind: model.KindPlan, Status: model.CardHarvesting})
-		dir := writeResult(t, "## 结论\n再议一下\n")
+		dir := writeResult(t, "## 结论\n等接口冻结后再议一下。\n\n本轮不改变版本。\n")
 		attempt := f.attempt(card, 0, model.OutcomePassed, f.channel("ch-a", "a").ID, "")
 		attempt.Worktree = dir
 		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {

@@ -29,7 +29,7 @@ commands:
   project add|list|show|set
   objective add|list|show|set|pause|resume|cancel
   node list|show|freeze|reopen
-  card add|list|show|cancel|retry|pause|resume|revive|absorb|merged
+  card add|import|list|show|cancel|retry|pause|resume|revive|absorb|merged
   wait <card-id|objective-id> --until <statuses> --timeout <duration>
   reads
   question list|show|answer
@@ -68,6 +68,11 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	if rest[0] == "doctor" {
 		return cmdDoctor(home, rest[1:], stdout, stderr)
+	}
+	// Import handles its own existing-home read/write boundary. In
+	// particular, preview and help must never create a home or a DB.
+	if len(rest) >= 2 && rest[0] == "card" && rest[1] == "import" {
+		return cmdCard(home, asJSON, rest[1:], stdout, stderr)
 	}
 	if dir, err := resolveHome(home); err == nil {
 		// One proxy entry for the serve, its git and notify calls, and every

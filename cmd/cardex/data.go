@@ -398,6 +398,8 @@ func cmdCard(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	switch args[0] {
 	case "add":
 		return cardAdd(home, asJSON, args[1:], stdout, stderr)
+	case "import":
+		return cardImport(home, asJSON, args[1:], stdout, stderr)
 	case "list":
 		return cardList(home, asJSON, args[1:], stdout, stderr)
 	case "show":

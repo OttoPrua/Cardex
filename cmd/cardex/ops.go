@@ -220,10 +220,11 @@ func objectiveVerbStatus(verb string) model.ObjectiveStatus {
 }
 
 const cardGroupUsage = `card — read and update card records
-purpose: add, list, show, cancel, retry, pause, resume, revive, absorb, or mark merged a card
+purpose: add, import, list, show, cancel, retry, pause, resume, revive, absorb, or mark merged a card
 
 parameters:
   add     --id --objective --node --kind --title --body --tier --require --dep --acceptance --claim --base --status --origin
+  import  --objective <id> --file <manifest.json> [--apply] [--origin <kind:id>] --json
   list    --objective --changed-since <RFC3339> --fields <name> [--origin <kind:id>] --json
   show    <id> --brief --claims --attempts all [--origin <kind:id>] --json --summary
   cancel  <id>
@@ -233,7 +234,9 @@ parameters:
   revive  <id>
   absorb  <id> --json   running card whose passed attempt was already disposed -> reviewing
   merged  [--note <text>] <id> --json   merge_queued, reviewing or done card -> merged (after a manual merge)
-`
+
+card import preview and manifest example (body or body_file):
+` + cardImportExample + "\n"
 
 func cardTransition(home string, asJSON bool, verb string, args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("card "+verb, "change a stored card to "+string(cardVerbStatus(verb))+" without starting an executor", "<id> --json", stdout, stderr)

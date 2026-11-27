@@ -17,6 +17,7 @@ const (
 	ReasonBlocked      = "blocked"       // 在观测到的重置时间之前被封锁。
 	ReasonCutoff       = "cutoff"        // 已用超过 98%。
 	ReasonUnknownQuota = "unknown_quota" // 余量未知且配置为 exclude。
+	ReasonPriorFailure = "prior_failure" // 此卡在本轮故障切换中已放弃该渠道。
 	ReasonFamily       = "family"        // 复核卡优先换族：本档有别族可用时，同族候选被滤掉。
 )
 
@@ -34,14 +35,15 @@ type Quotas interface {
 
 // Request is one routing decision.
 type Request struct {
-	Card         model.Card          // 待派发的卡，含 tier、requires 和显式渠道。
-	Objective    model.Objective     // 所属目标，含显式渠道。卡上的指定优先于目标。
-	AuthorFamily string              // 开发卡作者的模型族；复核卡必须不同。空则用卡上的 AuthorFamily。
-	Channels     []model.Channel     // 可派发的渠道。
-	Positioning  []model.Positioning // 当前定位表。
-	InUse        map[string]int      // 渠道 id → 正在使用的并发数。
-	Quota        Quotas              // 余量；nil 表示全部未知。
-	Classified   model.Tier          // 入队分级结果。卡上已有 tier 时不用。
-	UnknownQuota string              // allow 或 exclude，空为 allow。
-	Now          time.Time           // 判断封锁和 Pace 的时刻；零值用 time.Now。
+	Card          model.Card          // 待派发的卡，含 tier、requires 和显式渠道。
+	Objective     model.Objective     // 所属目标，含显式渠道。卡上的指定优先于目标。
+	AuthorFamily  string              // 开发卡作者的模型族；复核卡必须不同。空则用卡上的 AuthorFamily。
+	AvoidChannels map[string]bool     // 同一故障链内自动切换已放弃的渠道；人工 pin 不受影响。
+	Channels      []model.Channel     // 可派发的渠道。
+	Positioning   []model.Positioning // 当前定位表。
+	InUse         map[string]int      // 渠道 id → 正在使用的并发数。
+	Quota         Quotas              // 余量；nil 表示全部未知。
+	Classified    model.Tier          // 入队分级结果。卡上已有 tier 时不用。
+	UnknownQuota  string              // allow 或 exclude，空为 allow。
+	Now           time.Time           // 判断封锁和 Pace 的时刻；零值用 time.Now。
 }

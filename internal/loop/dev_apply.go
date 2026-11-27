@@ -504,11 +504,7 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 				attempt, model.CardRetryChannelsExhausted)
 			return err
 		}
-		pin := keptPin(st.snap.events, card)
-		excluded := autoExcluded(st.snap.events, card.ID)
-		if attempt.Route.Channel != "" {
-			excluded[attempt.Route.Channel] = true
-		}
+		pin := keptPin(st.snap.events, card, lastPassingAttempt(st.snap.attempts[card.ID], card.ID))
 		// The objective pin stays stored. This card's own later request
 		// suppresses it when the recorded channel is one this card failed.
 		objChannel := st.snap.obj.Channel
@@ -524,6 +520,7 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 			"channel":           channelID,
 			"model":             modelName,
 			"exclude":           attempt.Route.Channel,
+			"attempt":           attempt.ID,
 			"pin":               pin,
 			"model_pin":         modelPin,
 			"objective_channel": objChannel,
@@ -1106,6 +1103,9 @@ func (st *step) absorbPlan(card model.Card, attempt model.Attempt) error {
 			return err
 		}
 		ids = append(ids, created.ID)
+	}
+	if err := appendStageParents(st.ctx, st.db, ids, card.ID, attempt.ID); err != nil {
+		return err
 	}
 	return st.event("card:"+card.ID, "plan_split", map[string]any{"node": card.Node, "cards": ids})
 }

@@ -1,7 +1,11 @@
 // Package prompt builds the executor prompt in a stable order. Design §8.
 package prompt
 
-import "github.com/OttoPrua/Cardex/internal/model"
+import (
+	"encoding/json"
+
+	"github.com/OttoPrua/Cardex/internal/model"
+)
 
 // Input is the material Build concatenates.
 type Input struct {
@@ -16,4 +20,14 @@ type Input struct {
 	Revision     string               // 读取文档所用的提交，通常是集成分支 HEAD。
 	DesignDir    string               // 设计文档目录；空则 docs/design/。
 	RepairHint   model.RepairHint     // controlled producer hint; never raw diagnostics.
+	Stage        *StageContext        // Verified bounded evidence or nil.
+}
+
+// StageContext replaces the broad context pack with scoped evidence and Git references.
+type StageContext struct {
+	Data                        json.RawMessage
+	Review                      bool // the reviewer starts cold, without previous opinions or notes
+	ReviewUnavailable           bool // reviewer has no frozen range or validation, including explicit standalone tasks
+	ReviewAcceptanceUnavailable bool // frozen Git range is known, but no acceptance evidence was imported
+	Rework                      bool // the previous review note has been captured from structured evidence
 }

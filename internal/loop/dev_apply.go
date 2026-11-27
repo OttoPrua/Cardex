@@ -471,12 +471,15 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 	}
 	card.WaitReason = ""
 	if dec.SameChannel {
+		// Capture the user limit before the attempt channel is stored.
+		// An unpinned card records an empty pin so the later switch still runs.
+		prior := route.CardUserChannel(card, st.snap.events)
 		if attempt.Route.Channel != "" {
 			card.Channel = attempt.Route.Channel
 		}
 		// Ranking harvest must leave a settled status, so it does not take the dev backoff hold.
 		if st.cfg.RetryBackoff > 0 && transportRetry(attempt.Outcome) && card.Kind != model.KindRanking {
-			return st.holdBackoff(card)
+			return st.holdBackoff(card, prior)
 		}
 		card.Status = model.CardReady
 		if err := st.saveCard(card); err != nil {
@@ -486,6 +489,7 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 			return st.event("card:"+card.ID, "retry_backoff", map[string]string{
 				"until":   st.now.UTC().Format(time.RFC3339Nano),
 				"channel": card.Channel,
+				"pin":     prior,
 			})
 		}
 		return nil
@@ -537,7 +541,7 @@ func transportRetry(outcome model.Outcome) bool {
 // holdBackoff keeps a same-channel transport or timeout retry off the ready
 // queue until the backoff has elapsed. The first wait uses RetryBackoff.
 // A later wait on the same card is twice that base. The deadline is the wait reason.
-func (st *step) holdBackoff(card model.Card) error {
+func (st *step) holdBackoff(card model.Card, prior string) error {
 	wait := st.cfg.RetryBackoff
 	if st.backoffHolds(card.ID) >= 1 {
 		wait *= 2
@@ -551,6 +555,7 @@ func (st *step) holdBackoff(card model.Card) error {
 	return st.event("card:"+card.ID, "retry_backoff", map[string]string{
 		"until":   until.Format(time.RFC3339Nano),
 		"channel": card.Channel,
+		"pin":     prior,
 	})
 }
 
@@ -594,6 +599,11 @@ func backoffDeadline(reason string) (time.Time, bool) {
 }
 
 func (st *step) nextRoute(card model.Card, failed string) (string, string, bool, error) {
+	// A recovery has been approved for one named channel, not for sending
+	// the repair to a different provider if that channel fails again.
+	if pin, ok := route.RecoveryPin(card, st.snap.events); ok && pin.Channel == failed {
+		return "", "", false, nil
+	}
 	req, err := routeRequestFrom(st.ctx, st.db, card, st.snap.obj, st.now, failed, true)
 	if err != nil {
 		return "", "", false, err

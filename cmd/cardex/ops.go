@@ -10,6 +10,8 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/loop"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/question"
+	"github.com/OttoPrua/Cardex/internal/route"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
@@ -47,7 +49,7 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, "project set requires --id")
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -134,7 +136,7 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "objective set requires --id")
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -199,7 +201,7 @@ func objectiveTransition(home string, asJSON bool, verb string, args []string, s
 		fmt.Fprintf(stderr, "objective %s <id>\n", verb)
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -230,7 +232,7 @@ func objectiveVerbStatus(verb string) model.ObjectiveStatus {
 }
 
 const cardGroupUsage = `card — read and update card records
-purpose: add, list, show, cancel, retry, pause, resume, revive, absorb, or mark merged a card
+purpose: add, list, show, cancel, retry, pause, resume, revive, absorb, recover, or mark merged a card
 
 parameters:
   add     --id --objective --node --kind --title --body --tier --require --dep --acceptance --claim --base --status --origin
@@ -242,6 +244,8 @@ parameters:
   resume  <id>
   revive  <id>
   absorb  <id> --json   running card whose passed attempt was already disposed -> reviewing
+  recover <id> --json                  queue the current, already approved auto-route recovery
+  recover --note <code> <id> --json    save a predefined repair hint without changing routing or status
   merged  [--note <text>] <id> --json   merge_queued, reviewing or done card -> merged (after a manual merge)
 `
 
@@ -254,23 +258,67 @@ func cardTransition(home string, asJSON bool, verb string, args []string, stdout
 		fmt.Fprintf(stderr, "card %s <id>\n", verb)
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	defer db.Close()
-	c, err := db.GetCard(context.Background(), fs.Arg(0))
+	var c model.Card
+	err = db.WithWriteTx(context.Background(), func(ctx context.Context) error {
+		var err error
+		c, err = db.GetCard(ctx, fs.Arg(0))
+		if err != nil || legacyReadOnly(c.Legacy.Status) {
+			return err
+		}
+		target := cardVerbStatus(verb)
+		leavingBlocked := c.Status == model.CardNeedsInput && (target == model.CardPaused || target == model.CardCanceled)
+		if target == model.CardReady || leavingBlocked {
+			events, err := db.ListEvents(ctx, "card:"+c.ID)
+			if err != nil {
+				return err
+			}
+			auto := route.LatestAutoSelection(events, c.ID)
+			onAuto := auto.EventID != "" && auto.Channel != "" && c.Channel == auto.Channel
+			if onAuto && leavingBlocked && !route.InterruptedRecoveryHeld(c, events) {
+				ev, err := route.HoldInterruptedRecovery(c.ID, auto.EventID)
+				if err != nil {
+					return err
+				}
+				if err := db.AppendEvent(ctx, &ev); err != nil {
+					return err
+				}
+			}
+			if onAuto && target == model.CardReady {
+				_, offered := route.FallbackRetryBlockFor(c, events)
+				blocked := c.Status == model.CardNeedsInput || offered || route.InterruptedRecoveryHeld(c, events)
+				if !blocked && (c.Status == model.CardPaused || c.Status == model.CardCanceled) {
+					// Older clients already cleared WaitQuestionID on pause.
+					// A same-channel retry or rework can also have a failed
+					// attempt; require evidence of a recovery question.
+					blocked, err = legacyAutoQuestionBlock(ctx, db, c, auto)
+					if err != nil {
+						return err
+					}
+				}
+				if blocked {
+					if verb != "retry" {
+						return fmt.Errorf("automatic recovery needs the current approved retry decision; use card recover")
+					}
+					if _, err := question.RetryApprovedAutoRoute(ctx, db, c.ID); err != nil {
+						return err
+					}
+					c, err = db.GetCard(ctx, c.ID)
+					return err
+				}
+			}
+		}
+		c.Status = target
+		return db.UpdateCard(ctx, &c)
+	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
-	}
-	if !legacyReadOnly(c.Legacy.Status) {
-		c.Status = cardVerbStatus(verb)
-		if err := db.UpdateCard(context.Background(), &c); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
 	}
 	origin, err := loadCardOrigin(context.Background(), db, c.ID)
 	if err != nil {
@@ -279,6 +327,63 @@ func cardTransition(home string, asJSON bool, verb string, args []string, stdout
 	}
 	line := c.ID + "\t" + paintStatus(stdout, asJSON, string(c.Status))
 	return emit(stdout, asJSON, cardView{Card: c, Origin: origin}, line)
+}
+
+// legacyAutoQuestionBlock detects historical scheduler questions that lost
+// their card link on pause. They can block a transition, never approve one.
+func legacyAutoQuestionBlock(ctx context.Context, db *store.Store, card model.Card, auto route.AutoSelection) (bool, error) {
+	attempts, err := db.ListAttempts(ctx, card.ID)
+	if err != nil {
+		return false, err
+	}
+	var newest model.Attempt
+	for _, a := range attempts {
+		if newest.ID == "" || a.Index > newest.Index {
+			newest = a
+		}
+	}
+	if newest.ID == "" || newest.Route.Channel != auto.Channel ||
+		newest.Outcome == "" || newest.Outcome == model.OutcomePassed ||
+		(!newest.StartedAt.IsZero() && newest.StartedAt.Before(auto.At)) ||
+		(!newest.EndedAt.IsZero() && newest.EndedAt.Before(auto.At)) {
+		return false, nil
+	}
+	questions, err := db.ListQuestions(ctx, card.Objective)
+	if err != nil {
+		return false, err
+	}
+	for _, q := range questions {
+		if q.ScopeKind != "card" || q.Scope != card.ID || q.Kind != model.QuestionCustom {
+			continue
+		}
+		head, details, _ := strings.Cut(q.Text, "\n")
+		switch {
+		case head == "no output after switching channel":
+			if newest.Outcome != model.OutcomeNoOutput {
+				continue
+			}
+			if details != "" && !strings.Contains("\n"+details, "\n- attempt "+newest.ID+" on ") {
+				continue
+			}
+		case head == "no other channel is available", strings.HasPrefix(head, "no other channel is available ("):
+		default:
+			continue
+		}
+		// The first delivery is the oldest issuance evidence; a later
+		// redelivery does not make a previous attempt's decision current.
+		// With incomplete legacy timing, only the scoped recovery question
+		// itself (not the mere fact of a failed attempt) can keep the hold.
+		var issued time.Time
+		for _, delivery := range q.Deliveries {
+			if !delivery.At.IsZero() && (issued.IsZero() || delivery.At.Before(issued)) {
+				issued = delivery.At
+			}
+		}
+		if issued.IsZero() || (!issued.Before(auto.At) && !issued.Before(newest.StartedAt)) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func cardVerbStatus(verb string) model.CardStatus {
@@ -310,7 +415,7 @@ func cardAbsorb(home string, asJSON bool, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, "card absorb <id>")
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -338,7 +443,7 @@ func cardMerged(home string, asJSON bool, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, "card merged [--note <text>] <id>")
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -379,6 +484,70 @@ func cardMerged(home string, asJSON bool, args []string, stdout, stderr io.Write
 		return 1
 	}
 	return emit(stdout, asJSON, cardView{Card: c}, c.ID+"\t"+paintStatus(stdout, asJSON, string(c.Status)))
+}
+
+// cardRecover queues the exact active, already approved automatic reroute, or
+// stores a fixed prompt hint. Hint storage never mutates any card fields.
+func cardRecover(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("card recover", "queue an approved recovery, or save a predefined repair hint only", "[--note <code>] <id> --json", stdout, stderr)
+	noteFlag := fs.String("note", "", "store only this hint: boundary-check, rerun-checks, resolve-conflicts")
+	if code, ok := parseSet(fs, hoistFlags(fs, args)); !ok {
+		return code
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "card recover [--note <code>] <id>")
+		return 2
+	}
+	noteOnly := flagSeen(fs, "note")
+	hint := model.RepairHint(*noteFlag)
+	if noteOnly && hint.PromptText() == "" {
+		fmt.Fprintln(stderr, "card recover: use a predefined hint code: boundary-check, rerun-checks, resolve-conflicts")
+		return 2
+	}
+	db, err := openStoreForWrite(home)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if !noteOnly {
+		result, err := question.RetryApprovedAutoRoute(ctx, db, fs.Arg(0))
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return emit(stdout, asJSON, result, result.Card+"\t"+string(result.Status))
+	}
+	var c model.Card
+	err = db.WithWriteTx(ctx, func(ctx context.Context) error {
+		var err error
+		c, err = db.GetCard(ctx, fs.Arg(0))
+		if err != nil {
+			return err
+		}
+		if (c.Kind != model.KindRepair && c.Kind != model.KindRebase) || legacyReadOnly(c.Legacy.Status) {
+			return fmt.Errorf("card %s does not accept repair hints", c.ID)
+		}
+		switch c.Status {
+		case model.CardReady, model.CardWaiting, model.CardNeedsInput, model.CardPaused, model.CardFailed:
+		default:
+			return fmt.Errorf("card %s does not accept a hint from %s", c.ID, c.Status)
+		}
+		raw, err := json.Marshal(struct {
+			Code model.RepairHint `json:"code"`
+		}{Code: hint})
+		if err != nil {
+			return err
+		}
+		return db.AppendEvent(ctx, &model.Event{Entity: "card:" + c.ID, Type: model.EventRepairHint, Data: raw})
+	})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	// Acknowledge without echoing a stored card body or diagnostic archive.
+	return emit(stdout, asJSON, map[string]string{"card": c.ID, "status": string(c.Status), "hint": string(hint)}, c.ID+"\t"+string(c.Status))
 }
 
 // canceledBlocker returns "" when a waiting card is blocked only by a repair or

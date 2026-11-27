@@ -14,8 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"modernc.org/sqlite"
-
 	"github.com/OttoPrua/Cardex/internal/homeguard"
 	"github.com/OttoPrua/Cardex/internal/roots"
 )
@@ -42,6 +40,21 @@ type Store struct {
 
 // Open opens or creates the database at path and applies migrations.
 func Open(path string) (*Store, error) {
+	return open(path, false)
+}
+
+// OpenForWrite also verifies a pre-write snapshot of an existing database
+// when its user has set backups_dir. Use it for one owner command, not a
+// long-running worker or internal per-row write.
+func OpenForWrite(path string) (*Store, error) {
+	return open(path, true)
+}
+
+func open(path string, backupBeforeWrite bool) (*Store, error) {
+	return openWithSnapshot(path, backupBeforeWrite, (*Store).backup)
+}
+
+func openWithSnapshot(path string, backupBeforeWrite bool, snapshot func(*Store, context.Context, string) error) (*Store, error) {
 	if err := refuseCardexHome(path); err != nil {
 		return nil, err
 	}
@@ -53,12 +66,33 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	// SQLite can return SQLITE_BUSY immediately while the new file and WAL mode are created, before busy_timeout applies. Hold an exclusive lock across that setup.
-	unlock, err := lockExclusive(abs + ".lock")
+	lockPath := abs + ".lock"
+	unlock, err := lockExclusive(lockPath)
 	if err != nil {
 		return nil, err
 	}
-	defer unlock()
-	dsn := sqliteURI(abs) + "?_pragma=busy_timeout(30000)&_pragma=journal_mode(WAL)"
+	defer func() {
+		if unlock != nil {
+			unlock()
+		}
+	}()
+
+	backupDir := roots.Load(filepath.Dir(abs)).BackupsDir
+	if backupDir != "" {
+		info, err := os.Stat(abs)
+		if os.IsNotExist(err) || (err == nil && info.Size() == 0) {
+			backupDir = ""
+		} else if err != nil {
+			return nil, err
+		}
+	}
+	dsn := sqliteURI(abs) + "?_pragma=busy_timeout(30000)"
+	if backupDir == "" {
+		dsn += "&_pragma=journal_mode(WAL)"
+	}
+	// A configured existing database keeps its original journal mode while
+	// making the backup. Forcing WAL during driver connection initialization
+	// would change the source before a failed backup can stop the operation.
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -66,24 +100,48 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(8)
 	s := &Store{db: db, path: abs}
-	backupDir := roots.Load(filepath.Dir(abs)).BackupsDir
+	var migrationBackup func(context.Context) error
+	var backedUp bool
 	if backupDir != "" {
-		info, err := os.Stat(abs)
-		if os.IsNotExist(err) || (err == nil && info.Size() == 0) {
-			backupDir = ""
-		} else if err != nil {
+		migrationBackup = func(ctx context.Context) error {
+			err := snapshot(s, ctx, backupDir)
+			backedUp = err == nil
+			return err
+		}
+	}
+	if err := s.migrate(context.Background(), migrationBackup); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if backupBeforeWrite && backupDir != "" && !backedUp {
+		// A normal online backup does not need the exclusive setup lock
+		// or a SQLite write lock during copy, verification, or file sync.
+		unlock()
+		unlock = nil
+		if err := snapshot(s, context.Background(), backupDir); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("backup before database write: %w", err)
+		}
+		unlock, err = lockExclusive(lockPath)
+		if err != nil {
 			_ = db.Close()
 			return nil, err
 		}
-	}
-	if err := s.migrate(context.Background(), backupDir); err != nil {
-		_ = db.Close()
-		return nil, err
 	}
 	var mode string
 	if err := db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
 		_ = db.Close()
 		return nil, err
+	}
+	if backupDir != "" && !strings.EqualFold(mode, "wal") {
+		// Clear the idle connections used during migration and copy before
+		// SQLite attempts a journal mode transition on the source.
+		db.SetMaxIdleConns(0)
+		db.SetMaxIdleConns(8)
+		if err := db.QueryRow("PRAGMA journal_mode=WAL").Scan(&mode); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
 	}
 	if !strings.EqualFold(mode, "wal") {
 		_ = db.Close()
@@ -267,7 +325,7 @@ func (s *Store) q(ctx context.Context) execer {
 	return s.db
 }
 
-func (s *Store) migrate(ctx context.Context, backupDir string) error {
+func (s *Store) migrate(ctx context.Context, beforeMigration func(context.Context) error) error {
 	// BEGIN IMMEDIATE takes the write lock before the version is read again, so a
 	// later opener skips DDL that an earlier opener already committed.
 	conn, err := s.db.Conn(ctx)
@@ -308,8 +366,8 @@ func (s *Store) migrate(ctx context.Context, backupDir string) error {
 			return err
 		}
 	}
-	if (current < latestSchema || missingScratch || scratchOnlyV8) && backupDir != "" {
-		if err := s.backup(ctx, backupDir); err != nil {
+	if (current < latestSchema || missingScratch || scratchOnlyV8) && beforeMigration != nil {
+		if err := beforeMigration(ctx); err != nil {
 			return fmt.Errorf("backup before schema write: %w", err)
 		}
 	}
@@ -527,43 +585,6 @@ func (s *Store) migrate(ctx context.Context, backupDir string) error {
 	}
 	committed = true
 	return nil
-}
-
-// backup snapshots committed pages, including the WAL, while migration
-// holds the write lock on a different connection.
-func (s *Store) backup(ctx context.Context, dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	stage, err := os.MkdirTemp(dir, ".cardex-backup-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(stage)
-	path := filepath.Join(stage, filepath.Base(s.path))
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		return err
-	}
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	if err := conn.Raw(func(driverConn any) error {
-		b, err := driverConn.(interface {
-			NewBackup(string) (*sqlite.Backup, error)
-		}).NewBackup(sqliteURI(path))
-		if err != nil {
-			return err
-		}
-		_, err = b.Step(-1)
-		return errors.Join(err, b.Finish())
-	}); err != nil {
-		return err
-	}
-	name := time.Now().UTC().Format("20060102T150405.000000000Z") + "-" +
-		filepath.Base(stage)[len(".cardex-backup-"):] + "-" + filepath.Base(s.path)
-	return os.Rename(path, filepath.Join(dir, name))
 }
 
 func mustJSON(v any) (string, error) {

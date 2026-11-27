@@ -109,7 +109,7 @@ func nodeStatus(home string, asJSON bool, status model.NodeStatus, args []string
 		fmt.Fprintf(stderr, "node %s <id>\n", statusVerb(status))
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -444,7 +444,7 @@ func questionAnswer(home string, asJSON bool, args []string, stdout, stderr io.W
 	if fs.NArg() >= 2 {
 		option = fs.Arg(1)
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -570,7 +570,7 @@ func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, "channel set requires --id")
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -827,10 +827,13 @@ func cmdPositioning(home string, asJSON bool, args []string, stdout, stderr io.W
 	}
 }
 
-func openPositioning(home string) (*positioning.Home, error) {
+func openPositioning(home string, forWrite bool) (*positioning.Home, error) {
 	dir, err := resolveHome(home)
 	if err != nil {
 		return nil, err
+	}
+	if forWrite {
+		return positioning.OpenForWrite(dir)
 	}
 	return positioning.Open(dir)
 }
@@ -840,7 +843,7 @@ func positioningShow(home string, asJSON bool, args []string, stdout, stderr io.
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
-	h, err := openPositioning(home)
+	h, err := openPositioning(home, false)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -879,7 +882,7 @@ func positioningPropose(home string, asJSON bool, args []string, stdout, stderr 
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
-	h, err := openPositioning(home)
+	h, err := openPositioning(home, false)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1028,7 +1031,7 @@ func positioningDecide(home string, approve bool, args []string, stdout, stderr 
 		fmt.Fprintf(stderr, "positioning %s <id>\n", name)
 		return 2
 	}
-	h, err := openPositioning(home)
+	h, err := openPositioning(home, approve)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -1163,7 +1166,7 @@ func scheduleRun(home string, asJSON bool, args []string, stdout, stderr io.Writ
 		fmt.Fprintf(stderr, "unknown schedule %q\n", name)
 		return 1
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

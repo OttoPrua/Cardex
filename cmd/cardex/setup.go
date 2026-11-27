@@ -70,7 +70,11 @@ func cmdSetup(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	db, err := openStore(resolved)
+	open := openStore
+	if *yes {
+		open = openStoreForWrite
+	}
+	db, err := open(resolved)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

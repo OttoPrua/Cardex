@@ -2,12 +2,14 @@
 package board
 
 import (
+	"bytes"
 	"database/sql"
 	"embed"
 	"encoding/json"
 	"errors"
 	"html/template"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -253,10 +255,16 @@ func serveLog(w http.ResponseWriter, r *http.Request, id string) {
 }
 
 func render(w http.ResponseWriter, page pageData) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := pageTmpl.ExecuteTemplate(w, "layout", page); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	var body bytes.Buffer
+	if err := pageTmpl.ExecuteTemplate(&body, "layout", page); err != nil {
+		// Diagnostics are for the local operator, not the browser. A template
+		// failure must not publish the partial HTML or start two responses.
+		log.Printf("cardex board render failed: %.240q", strings.Join(strings.Fields(err.Error()), " "))
+		http.Error(w, "board rendering failed", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(body.Bytes())
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

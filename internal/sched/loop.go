@@ -790,23 +790,46 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		PromptPath:  promptPath,
 		StartedAt:   r.now().UTC(),
 	}
-	if err := db.CreateAttempt(ctx, &attempt); err != nil {
-		return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, rt, scratch)
-	}
-	// pin is the subject workspaceTarget selected before the worktree existed.
-	// Writing it unchanged keeps a card created during checkout from becoming
-	// the subject of a tree that never contained its branch.
-	if err := r.pinReviewSubject(ctx, db, card, attempt.ID, pin); err != nil {
-		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, rt, scratch)
-	}
-	card.Status = model.CardRunning
-	card.WaitReason = ""
-	if err := db.UpdateCard(ctx, &card); err != nil {
-		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, rt, scratch)
-	}
-	if rel.released {
-		if err := appendPinRelease(ctx, db, r.now(), card.ID, rel, rt); err != nil {
-			return "", err
+	if rel.failoverOrigin != "" {
+		// Install the fallback and its lineage together with the attempt. A
+		// scheduler restart can resume the attempt without forgetting the
+		// previous releases or losing their audit event.
+		err := db.WithTx(ctx, func(ctx context.Context) error {
+			if err := db.CreateAttempt(ctx, &attempt); err != nil {
+				return err
+			}
+			if err := r.pinReviewSubject(ctx, db, card, attempt.ID, pin); err != nil {
+				return err
+			}
+			card.Status = model.CardRunning
+			card.WaitReason = ""
+			if err := db.UpdateCard(ctx, &card); err != nil {
+				return err
+			}
+			return appendPinRelease(ctx, db, r.now(), card.ID, rel, rt)
+		})
+		if err != nil {
+			return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, rt, scratch)
+		}
+	} else {
+		if err := db.CreateAttempt(ctx, &attempt); err != nil {
+			return r.failLaunch(ctx, db, &card, nil, launchStepPrompt, err, rt, scratch)
+		}
+		// pin is the subject workspaceTarget selected before the worktree existed.
+		// Writing it unchanged keeps a card created during checkout from becoming
+		// the subject of a tree that never contained its branch.
+		if err := r.pinReviewSubject(ctx, db, card, attempt.ID, pin); err != nil {
+			return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, rt, scratch)
+		}
+		card.Status = model.CardRunning
+		card.WaitReason = ""
+		if err := db.UpdateCard(ctx, &card); err != nil {
+			return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, rt, scratch)
+		}
+		if rel.released {
+			if err := appendPinRelease(ctx, db, r.now(), card.ID, rel, rt); err != nil {
+				return "", err
+			}
 		}
 	}
 	if err := r.writePrompt(ctx, db, card, obj, project, &attempt); err != nil {
@@ -904,6 +927,11 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 		}
 		in.ReworkNote = material
 	}
+	stage, err := r.buildStageContext(ctx, db, card, obj, project.RepoPath, *attempt, dir)
+	if err != nil {
+		return err
+	}
+	in.Stage = stage
 	text, err := r.promptText(ctx, in)
 	if err != nil {
 		return err

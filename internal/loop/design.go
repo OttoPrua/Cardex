@@ -1374,6 +1374,9 @@ func (d Deps) materializePlan(ctx context.Context, obj model.Objective, source m
 	if err != nil {
 		return err
 	}
+	if err := d.linkListedStages(ctx, source.ID, ids); err != nil {
+		return err
+	}
 	return d.notePlanSplit(ctx, source.ID, source.Node, ids)
 }
 
@@ -1437,7 +1440,8 @@ func (d Deps) materializeReplan(ctx context.Context, obj model.Objective, source
 	if err != nil {
 		return err
 	}
-	if _, err := d.insertBound(ctx, obj, source.Node, creates); err != nil {
+	ids, err := d.insertBound(ctx, obj, source.Node, creates)
+	if err != nil {
 		return err
 	}
 	for _, draft := range edits {
@@ -1455,6 +1459,10 @@ func (d Deps) materializeReplan(ctx context.Context, obj model.Objective, source
 		if err := d.Store.UpdateCard(ctx, &current); err != nil {
 			return err
 		}
+		ids = append(ids, current.ID)
+	}
+	if err := d.linkListedStages(ctx, source.ID, ids); err != nil {
+		return err
 	}
 	for _, id := range change.Delete {
 		if err := d.Store.DeleteCard(ctx, id); err != nil {

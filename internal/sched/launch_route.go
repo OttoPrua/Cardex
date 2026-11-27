@@ -23,10 +23,11 @@ const (
 // pinRelease is one explicit channel or model dropped for this request only.
 // The objective row is never written. Channel and Model are the original pin.
 type pinRelease struct {
-	released bool
-	reason   string
-	channel  string
-	model    string
+	released       bool
+	reason         string
+	channel        string
+	model          string
+	failoverOrigin string
 }
 
 // resolveLaunchRoute reuses the route recorded on the latest launch_failed
@@ -306,7 +307,15 @@ func (r *Runner) chooseLaunchRoute(ctx context.Context, db *store.Store, card mo
 			return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
 		}
 	}
-	rt, reason, err := chooseRoute(ctx, launchRequest(probe, probeObj, routed, pos, inUse, quotas, classified, r.now()))
+	req := launchRequest(probe, probeObj, routed, pos, inUse, quotas, classified, r.now())
+	if rel.released && rel.channel == card.Channel {
+		var err error
+		req.AvoidChannels, rel.failoverOrigin, err = loop.AutomaticFallbackExclusions(ctx, db, card)
+		if err != nil {
+			return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
+		}
+	}
+	rt, reason, err := chooseRoute(ctx, req)
 	if err == nil {
 		return rt, reason, rel, false, nil
 	}
@@ -615,13 +624,17 @@ func (r *Runner) settleNoChannel(ctx context.Context, db *store.Store, card mode
 }
 
 func appendPinRelease(ctx context.Context, db *store.Store, now time.Time, cardID string, rel pinRelease, rt model.Route) error {
-	raw, err := json.Marshal(map[string]string{
+	payload := map[string]string{
 		"pin_channel": rel.channel,
 		"pin_model":   rel.model,
 		"channel":     rt.Channel,
 		"model":       rt.Model,
 		"reason":      rel.reason,
-	})
+	}
+	if rel.failoverOrigin != "" {
+		payload["failover_origin"] = rel.failoverOrigin
+	}
+	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}

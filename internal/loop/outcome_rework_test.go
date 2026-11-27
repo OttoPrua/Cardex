@@ -696,11 +696,9 @@ func TestSuccessiveFailedPinsStaySuppressed(t *testing.T) {
 			if tc.once {
 				return
 			}
-			wantFilter := route.ReasonBlocked
-			if tc.outcome == model.OutcomeAuthFailed {
-				wantFilter = route.ReasonHealth
-			}
-			if got := filteredReason(reason, a.ID); got != wantFilter {
+			// This carrier is already excluded by the active switch chain,
+			// regardless of its current quota or authentication state.
+			if got := filteredReason(reason, a.ID); got != route.ReasonPriorFailure {
 				t.Fatalf("filter %q reason %+v", got, reason)
 			}
 		})

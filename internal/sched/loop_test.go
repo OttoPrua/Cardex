@@ -332,6 +332,17 @@ func assertNoFill(t *testing.T, now, reset time.Time, remaining, redline float64
 	}
 	r := New(home)
 	r.Now = func() time.Time { return now }
+	// A ready dev card may launch here even though backlog fill must not.
+	// Record a synthetic host so this non-fill test leaves no detached
+	// processes writing to its temporary repository.
+	r.Launch = func(ctx context.Context, _ string, id string) (int, error) {
+		attempt, err := db.GetAttempt(ctx, id)
+		if err != nil {
+			return 0, err
+		}
+		attempt.PID = os.Getpid()
+		return attempt.PID, db.UpdateAttempt(ctx, &attempt)
+	}
 	if err := r.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -1251,6 +1251,9 @@ func cmdHost(home string, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "host <attempt-id>")
 		return 2
 	}
+	if refuseManagedRuntimeStart(stderr) {
+		return 2
+	}
 	dir, err := resolveHome(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)

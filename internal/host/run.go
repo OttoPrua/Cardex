@@ -397,9 +397,10 @@ func commandFor(argv, extra []string) (*exec.Cmd, error) {
 		base = extra
 		overlay = nil
 	}
-	// Drop CARDEX_SCHED_* only. Tool homes and GIT_* stay on this process;
-	// PrependGoTestWrap isolates `go test`. Overlay (the runner's env) wins.
+	// Do not pass host bootstrap state back into the executable. This marker is
+	// a CardeX workflow guard, not an OS permission boundary.
 	env := mergeEnv(proc.ExecutorEnv(base), proc.ExecutorEnv(overlay))
+	env = mergeEnv(env, []string{proc.ManagedExecutorEnv + "=1"})
 	cmd := &exec.Cmd{}
 	if argv[0] == "fake" {
 		exe, err := os.Executable()

@@ -403,6 +403,8 @@ func cmdCard(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	switch args[0] {
 	case "add":
 		return cardAdd(home, asJSON, args[1:], stdout, stderr)
+	case "import":
+		return cardImport(home, asJSON, args[1:], stdout, stderr)
 	case "list":
 		return cardList(home, asJSON, args[1:], stdout, stderr)
 	case "show":
@@ -442,6 +444,9 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	originFlag := fs.String("origin", "", "origin session kind:id; a present flag wins over CARDEX_ORIGIN")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
+	}
+	if refuseManagedCardWrite(stderr) {
+		return 2
 	}
 	_ = originFlag
 	origin := resolvedOrigin(args)
@@ -622,17 +627,22 @@ func cardList(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 }
 
 func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", "<id> --origin --json --brief --claims --attempts all --summary", stdout, stderr)
+	fs := newFlagSet("card show", "show one stored card, including the origin recorded for it", "<id> --origin --json --brief --claims --attempts all --summary --review-progress", stdout, stderr)
 	brief := fs.Bool("brief", false, "short status: id, objective, status, wait reason, tier, rework count, current attempt, latest event, pending question, commit")
 	showClaims := fs.Bool("claims", false, "with --brief, include the claim list; the default brief prints claims_count only")
 	attemptsMode := fs.String("attempts", "", "with --brief, pass all to list every attempt; the default brief keeps the latest 3")
 	acceptOrigin(fs)
 	summaryOnly := fs.Bool("summary", false, "print only the structured result summary")
+	reviewOnly := fs.Bool("review-progress", false, "print only the current review projection")
 	if code, ok := parseSet(fs, hoistFlags(fs, args)); !ok {
 		return code
 	}
 	if *brief && *summaryOnly {
 		fmt.Fprintln(stderr, "--brief and --summary select different output formats")
+		return 2
+	}
+	if *reviewOnly && (*brief || *summaryOnly || *showClaims || *attemptsMode != "") {
+		fmt.Fprintln(stderr, "--review-progress is a distinct output format")
 		return 2
 	}
 	allAttempts, err := parseAttemptsMode(*attemptsMode)
@@ -662,6 +672,14 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		return 1
 	}
 	noteReads(db, readOrigin(fs), "card-show", []string{c.ID})
+	if *reviewOnly {
+		progress, err := db.ReviewProgress(ctx, c.ID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return emit(stdout, asJSON, progress, progress.Line())
+	}
 	if *brief || *summaryOnly {
 		attempts, err := db.ListAttempts(ctx, c.ID)
 		if err != nil {
@@ -696,29 +714,44 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		}
 		return emitCardBrief(stdout, asJSON, buildCardBrief(c, attempts, events, question, *showClaims, allAttempts))
 	}
-	origin, err := loadCardOrigin(ctx, db, c.ID)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
+	var view struct {
+		cardView
+		ReviewProgress store.ReviewProgress `json:"review_progress"`
 	}
-	history, err := cardShowHistory(ctx, db, c.ID)
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	attempts, err := cardShowAttempts(ctx, db, dir, c.ID)
+	err = db.WithTx(ctx, func(ctx context.Context) error {
+		var err error
+		c, err = db.GetCard(ctx, c.ID)
+		if err != nil {
+			return err
+		}
+		view.Card = c
+		view.Origin, err = loadCardOrigin(ctx, db, c.ID)
+		if err != nil || !asJSON {
+			return err
+		}
+		view.History, err = cardShowHistory(ctx, db, c.ID)
+		if err != nil {
+			return err
+		}
+		view.Attempts, err = cardShowAttempts(ctx, db, dir, c.ID)
+		if err != nil {
+			return err
+		}
+		view.ReviewProgress, err = db.ReviewProgress(ctx, c.ID)
+		return err
+	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
 	line := c.ID + "\t" + c.Title
-	if origin != "" {
-		line += "\t" + origin
+	if view.Origin != "" {
+		line += "\t" + view.Origin
 	}
 	if useColor(stdout, asJSON) {
 		line += "\t" + colorStatus(string(c.Status))
 	}
-	return emit(stdout, asJSON, cardView{Card: c, Origin: origin, History: history, Attempts: attempts}, line)
+	return emit(stdout, asJSON, view, line)
 }
 
 type cardHistoryItem struct {

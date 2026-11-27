@@ -797,7 +797,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 			return "", err
 		}
 	}
-	if err := r.writePrompt(ctx, db, card, obj, project.RepoPath, &attempt); err != nil {
+	if err := r.writePrompt(ctx, db, card, obj, project, &attempt); err != nil {
 		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, rt, scratch)
 	}
 	if err := r.startAttempt(ctx, db, &attempt); err != nil {
@@ -856,7 +856,7 @@ func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.
 			return r.failLaunch(ctx, db, &card, attempt, launchStepPrompt, err, attempt.Route, scratch)
 		}
 	}
-	if err := r.writePrompt(ctx, db, card, obj, project.RepoPath, attempt); err != nil {
+	if err := r.writePrompt(ctx, db, card, obj, project, attempt); err != nil {
 		return r.failLaunch(ctx, db, &card, attempt, launchStepPrompt, err, attempt.Route, scratch)
 	}
 	if err := r.startAttempt(ctx, db, attempt); err != nil {
@@ -865,7 +865,7 @@ func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.
 	return attempt.Route.Channel, nil
 }
 
-func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, repo string, attempt *model.Attempt) error {
+func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, project model.Project, attempt *model.Attempt) error {
 	dir := roots.AttemptDir(r.Home, attempt.ID, attempt.PromptPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -873,11 +873,12 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 	// Keep the card body's ## 事实摘要, including a direction-node Q0 that is
 	// not this node's question. Open questions do not replace that summary.
 	in := prompt.Input{
-		Card:       card,
-		Objective:  obj,
-		ReworkNote: card.ReworkNote,
-		Repo:       repo,
-		Revision:   attempt.BaseCommit,
+		Card:         card,
+		Objective:    obj,
+		ReworkNote:   card.ReworkNote,
+		Repo:         project.RepoPath,
+		ProjectRules: project.HardRules,
+		Revision:     attempt.BaseCommit,
 	}
 	if card.Kind == model.KindRanking {
 		material, err := loop.RankingMaterial(r.Home)

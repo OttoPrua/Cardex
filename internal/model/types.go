@@ -7,6 +7,7 @@ import (
 
 // Project is one repository Cardex drives.
 type Project struct {
+	HardRules      []string `json:"hard_rules,omitempty"`  // Project-level rules inherited by card prompts.
 	ID             string   `json:"id"`                    // 项目标识。
 	RepoPath       string   `json:"repo_path"`             // 主 checkout 路径。
 	WorktreeRoot   string   `json:"worktree_root"`         // worktree 根目录，默认在项目根的 worktrees/cardex/。
@@ -33,21 +34,22 @@ type Budget struct {
 
 // Objective is a body of work inside a project.
 type Objective struct {
-	ID                string          `json:"id"`                 // 目标标识。
-	Project           string          `json:"project"`            // 所属项目。
-	Title             string          `json:"title"`              // 目标标题。
-	Acceptance        Acceptance      `json:"acceptance"`         // 验收命令和检查清单。
-	Budget            Budget          `json:"budget"`             // 目标的软硬 token 预算。
-	Priority          int             `json:"priority"`           // 调度优先级，数值越大越优先。
-	Mode              ObjectiveMode   `json:"mode"`               // auto 自动生成卡，manual 不自动生成。
-	FreezeMode        FreezeMode      `json:"freeze_mode"`        // safe 或 fast。
-	Origin            string          `json:"origin"`             // 创建者会话，形如 kind:id。
-	Status            ObjectiveStatus `json:"status"`             // active、paused、done_candidate、done、canceled。
-	IntegrationBranch string          `json:"integration_branch"` // 集成分支，cardex/<objective>/main。
-	Channel           string          `json:"channel"`            // 显式指定的渠道；空则自动路由，且不受红线过滤。
-	Model             string          `json:"model"`              // 显式指定的模型；空则自动路由。
-	Review            string          `json:"review"`             // 复核模式：空表示沿用项目；auto、off、check、review。
-	Events            string          `json:"events,omitempty"`   // 卡生命周期事件：空沿用项目，on 开启，off 关闭。默认关闭。
+	HardRules         []string        `json:"hard_rules,omitempty"` // Objective rules added to project rules in card prompts.
+	ID                string          `json:"id"`                   // 目标标识。
+	Project           string          `json:"project"`              // 所属项目。
+	Title             string          `json:"title"`                // 目标标题。
+	Acceptance        Acceptance      `json:"acceptance"`           // 验收命令和检查清单。
+	Budget            Budget          `json:"budget"`               // 目标的软硬 token 预算。
+	Priority          int             `json:"priority"`             // 调度优先级，数值越大越优先。
+	Mode              ObjectiveMode   `json:"mode"`                 // auto 自动生成卡，manual 不自动生成。
+	FreezeMode        FreezeMode      `json:"freeze_mode"`          // safe 或 fast。
+	Origin            string          `json:"origin"`               // 创建者会话，形如 kind:id。
+	Status            ObjectiveStatus `json:"status"`               // active、paused、done_candidate、done、canceled。
+	IntegrationBranch string          `json:"integration_branch"`   // 集成分支，cardex/<objective>/main。
+	Channel           string          `json:"channel"`              // 显式指定的渠道；空则自动路由，且不受红线过滤。
+	Model             string          `json:"model"`                // 显式指定的模型；空则自动路由。
+	Review            string          `json:"review"`               // 复核模式：空表示沿用项目；auto、off、check、review。
+	Events            string          `json:"events,omitempty"`     // 卡生命周期事件：空沿用项目，on 开启，off 关闭。默认关闭。
 }
 
 // DesignNode is one node in an objective's design tree.
@@ -271,6 +273,9 @@ type Question struct {
 	Answer     string       `json:"answer"`     // 已选答案；空表示未回复。
 	Deliveries []Delivery   `json:"deliveries"` // 投递记录。
 }
+
+// EventObjectiveDecision records when a stored answer last changed without copying its text.
+const EventObjectiveDecision = "objective_decision"
 
 // Event is an append-only fact used by the board and the scorecard.
 type Event struct {

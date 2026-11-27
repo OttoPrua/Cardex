@@ -52,8 +52,9 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 	reviewMode := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
 	scratchDir := fs.String("scratch-dir", "", "scratch directory for this project's card runs and acceptance commands; overrides the home scratch_dir")
 	eventsMode := fs.String("events", "", "card lifecycle events: on, or off (default off)")
-	var forbidden stringsFlag
+	var forbidden, rules stringsFlag
 	fs.Var(&forbidden, "forbidden", "forbidden path")
+	fs.Var(&rules, "hard-rule", "project hard rule inherited by prompts; repeat for multiple rules")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -68,6 +69,7 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 		TestCmd:        *testCmd,
 		DesignDir:      *design,
 		ForbiddenPaths: forbidden,
+		HardRules:      rules,
 		Sandbox:        *sandboxMode,
 		Review:         *reviewMode,
 		ScratchDir:     *scratchDir,
@@ -162,6 +164,8 @@ func cmdObjective(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		return objectiveList(home, asJSON, args[1:], stdout, stderr)
 	case "show":
 		return objectiveShow(home, asJSON, args[1:], stdout, stderr)
+	case "brief":
+		return objectiveResumeBrief(home, asJSON, args[1:], stdout, stderr)
 	case "set":
 		return objectiveSet(home, asJSON, args[1:], stdout, stderr)
 	case "pause", "resume", "cancel":
@@ -177,9 +181,10 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	id := fs.String("id", "", "objective id")
 	project := fs.String("project", "", "project id")
 	title := fs.String("title", "", "title")
-	var acceptance, checks stringsFlag
+	var acceptance, checks, rules stringsFlag
 	fs.Var(&acceptance, "acceptance", "acceptance command")
 	fs.Var(&checks, "check", "acceptance checklist item")
+	fs.Var(&rules, "hard-rule", "objective hard rule inherited by prompts; repeat for multiple rules")
 	soft := &softNumber{name: "soft-tokens", kind: numberInt64}
 	hard := &softNumber{name: "hard-tokens", kind: numberInt64}
 	priority := &softNumber{name: "priority", kind: numberInt}
@@ -245,7 +250,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	numNotes = append(numNotes, hard.bad...)
 	numNotes = append(numNotes, priority.bad...)
 	o := model.Objective{
-		ID: *id, Project: *project, Title: titleVal,
+		ID: *id, Project: *project, Title: titleVal, HardRules: rules,
 		Acceptance: model.Acceptance{Commands: acceptance, Checklist: checks},
 		Budget:     model.Budget{SoftTokens: softTokens, HardTokens: hardTokens},
 		Priority:   priorityVal, Mode: modeVal, FreezeMode: freezeVal,

@@ -141,6 +141,7 @@ Chrome 的位置按顺序找：环境变量 `CARDEX_CHROME`、`config.json` 里�
 
 ## 八、排查
 
+- `cardex blockers` 列出各未结束目标中卡住的卡与原因；可用 `--objective <id>` 缩小范围，或用 `--json` 读取结构化结果。它也显示被暂停目标或未完成依赖挡住的就绪卡，但不预测下一轮的渠道选择。
 - 卡停在 `needs_input`：看 `question list` 和 `card show <id>` 的 wait_reason。
 - 卡停在 `waiting`：wait_reason 会写明被哪张卡占了哪个符号。
 - 没派到期望的渠道：用 `route explain <card>` 看红线、定位表和模型族过滤。

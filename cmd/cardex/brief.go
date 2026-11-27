@@ -379,6 +379,10 @@ func objectiveFallbackReason(ctx context.Context, db *store.Store, card objectiv
 	if question != nil && question.Line != "" {
 		return question.Line, nil
 	}
+	return briefAttemptFallbackReason(ctx, db, card, failedNormalizers)
+}
+
+func briefAttemptFallbackReason(ctx context.Context, db *store.Store, card objectiveBlocked, failedNormalizers []string) (string, error) {
 	latest, err := latestStoredAttempt(ctx, db, card.ID)
 	if err != nil {
 		return "", err

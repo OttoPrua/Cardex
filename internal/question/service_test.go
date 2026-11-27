@@ -309,3 +309,46 @@ func TestAnswerDuringDeliveryIsKept(t *testing.T) {
 		})
 	}
 }
+
+func TestConcurrentAnswerAddsOneDecision(t *testing.T) {
+	db := openStore(t)
+	ctx := t.Context()
+	svc := New(db, nil)
+	q, err := svc.Create(ctx, model.Question{Objective: "synthetic-objective", Scope: "synthetic-node", Kind: model.QuestionFreeze, ScopeKind: "node", Text: "Synthetic approval", Options: []string{"yes", "no"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const runs = 12
+	start := make(chan struct{})
+	errs := make(chan error, runs)
+	for i := 0; i < runs; i++ {
+		go func() {
+			<-start
+			_, err := svc.Answer(ctx, q.ID, "yes")
+			errs <- err
+		}()
+	}
+	close(start)
+	for i := 0; i < runs; i++ {
+		if err := <-errs; err != nil {
+			t.Errorf("competing answer failed: %v", err)
+		}
+	}
+	fresh, err := db.GetQuestion(ctx, q.ID)
+	if err != nil || fresh.Answer != "yes" {
+		t.Fatalf("stored answer %q: %v", fresh.Answer, err)
+	}
+	events, err := db.ListEvents(ctx, "objective:"+q.Objective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decisions int
+	for _, ev := range events {
+		if ev.Type == model.EventObjectiveDecision {
+			decisions++
+		}
+	}
+	if decisions != 1 {
+		t.Fatalf("decision events %d, want 1", decisions)
+	}
+}

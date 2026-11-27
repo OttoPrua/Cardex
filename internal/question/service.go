@@ -158,19 +158,37 @@ func (s *svc) Answer(ctx context.Context, id, option string) (model.Question, er
 	if s.store == nil {
 		return model.Question{}, errors.New("question: nil store")
 	}
-	q, err := s.store.GetQuestion(ctx, id)
-	if err != nil {
-		return model.Question{}, err
-	}
-	if strings.TrimSpace(option) == "" {
-		return q, errEmptyAnswer
-	}
-	if len(q.Options) > 0 && !containsOption(q.Options, option) {
-		return q, fmt.Errorf("question: option %q is not one of the stored choices", option)
-	}
-	q.Answer = option
-	if err := s.store.UpdateQuestion(ctx, &q); err != nil {
-		return model.Question{}, err
+	var q model.Question
+	if err := s.store.WithWriteTx(ctx, func(txCtx context.Context) error {
+		var err error
+		q, err = s.store.GetQuestion(txCtx, id)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(option) == "" {
+			return errEmptyAnswer
+		}
+		if len(q.Options) > 0 && !containsOption(q.Options, option) {
+			return fmt.Errorf("question: option %q is not one of the stored choices", option)
+		}
+		if q.Answer == option {
+			return nil
+		}
+		q.Answer = option
+		if err := s.store.UpdateQuestion(txCtx, &q); err != nil {
+			return err
+		}
+		body, err := json.Marshal(struct {
+			Question string `json:"question"`
+		}{q.ID})
+		if err != nil {
+			return err
+		}
+		return s.store.AppendEvent(txCtx, &model.Event{
+			Entity: "objective:" + q.Objective, Type: model.EventObjectiveDecision, Data: body,
+		})
+	}); err != nil {
+		return q, err
 	}
 	if s.after != nil {
 		if err := s.after(ctx, q); err != nil {

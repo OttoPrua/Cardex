@@ -42,7 +42,9 @@ cardex channel set --id ch1 --runner grok --redline 0.25 --model lumen-model --w
 cardex objective add --project p --title 账单 --mode auto --freeze-mode fast --origin codex:<thread>
 ```
 
-`objective list` 和 `objective show` 看状态。`objective pause`、`objective resume`、`objective cancel` 改目标状态。
+`objective list` 和 `objective show` 看状态。上下文压缩后用 `cardex objective brief <id>` 看当前阶段、已冻结范围、待批准事项和最近记录的决定（各显示最多三条，保留总数）。升级之前未记录时间的决定不冒充最近决定，可用 `question list` 查阅。`objective pause`、`objective resume`、`objective cancel` 改目标状态。
+
+项目和目标可通过 `add` 或 `set` 的可重复 `--hard-rule "规则"` 写入卡片提示词共用的文本规则。每次派发和续跑都先继承项目规则，再追加目标规则；相同文本只出现一次。更新时传入整组规则，`--hard-rule=` 清除当前层；不传该参数则保留现有设置。这是提示词约束，不替代沙箱或禁改路径。
 
 ## 设计时的事实研究
 
@@ -57,6 +59,8 @@ cardex objective add --project p --title 账单 --mode auto --freeze-mode fast -
 读选项用 `cardex --json question show <id>`。它给出 text、options 和 answer。普通 `question show` 只有 id 和答案，读不到选项。`question list` 包含已经回答的问题，不会自动排除。`question answer <id> <option>` 把一个已经列在该问题上的选项存下来。冻结题的选项是 `同意` 和 `拒绝`，第一个是同意。空答案不会被收下。
 
 方向冻结、预算用尽、熔断和目标完成，都交给 使用者（owner）。管理会话只在 使用者（owner） 已经选好选项时替他提交。
+
+使用者已批准重试时，`cardex question answer <id> approve --retry` 可在同一次写入中保存答案并将开发卡送回调度队列。它只接受调度器针对当前失败尝试发出的、明确绑定到这张卡的无输出或临时渠道故障问题，不用于预算、权限、登录、评审或设计决策。条件不满足时答案和卡都不变；旧数据没有调度器重试记录时也不自动重试。如只需记录答案，仍用不带 `--retry` 的命令；如果选项文字本身是 `--retry`，使用 `question answer -- <id> --retry`。重试由下一轮调度处理，不会在答题时启动执行器。
 
 ## 配置通知
 

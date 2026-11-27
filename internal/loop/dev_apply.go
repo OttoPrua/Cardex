@@ -125,7 +125,11 @@ func (st *step) apply(card model.Card, attempt model.Attempt) error {
 		}
 	case ActionQuestion, ActionVoid:
 		card.WaitReason = ""
-		questionID, err := st.blockOnQuestion(&card, false, dec.QuestionKind, dec.QuestionText)
+		var retryReason model.CardRetryReason
+		if dec.Action == ActionQuestion && attempt.Outcome == model.OutcomeNoOutput {
+			retryReason = model.CardRetryNoOutput
+		}
+		questionID, err := st.blockOnRetryQuestion(&card, dec.QuestionKind, dec.QuestionText, attempt, retryReason)
 		if err != nil {
 			return err
 		}
@@ -492,7 +496,8 @@ func (st *step) reschedule(card model.Card, attempt model.Attempt, dec Decision)
 			return err
 		}
 		if !ok {
-			_, err := st.blockOnQuestion(&card, false, model.QuestionCustom, noOtherChannelText(attempt, st.snap.channels))
+			_, err := st.blockOnRetryQuestion(&card, model.QuestionCustom, noOtherChannelText(attempt, st.snap.channels),
+				attempt, model.CardRetryChannelsExhausted)
 			return err
 		}
 		pin := keptPin(st.snap.events, card)

@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -172,4 +174,17 @@ func scanAttempt(sc scanner) (model.Attempt, error) {
 	a.Outcome = model.Outcome(outcome)
 	a.ErrorClass = model.ErrorClass(class)
 	return a, nil
+}
+
+// ObjectiveOpenAttemptCard detects a reserved or live attempt even if an
+// operator had already paused its card while the host was still active.
+func (s *Store) ObjectiveOpenAttemptCard(ctx context.Context, objectiveID string) (string, error) {
+	var id string
+	err := s.q(ctx).QueryRowContext(ctx, `SELECT a.card_id FROM attempts a JOIN cards c ON c.id=a.card_id
+		WHERE c.objective_id=? AND a.ended_at='' AND (a.pid>0 OR (a.outcome='' AND a.exited=0))
+		ORDER BY a.card_id LIMIT 1`, objectiveID).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return id, err
 }

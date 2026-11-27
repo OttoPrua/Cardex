@@ -17,9 +17,10 @@ func (Git) RefExists(ctx context.Context, repo, ref string) (bool, error) {
 	if repo == "" || full == "" {
 		return false, fmt.Errorf("workspace: repo and ref required")
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", repo, "show-ref", "--verify", "--quiet", full)
+	args := []string{"show-ref", "--verify", "--quiet", full}
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
-	err := cmd.Run()
+	_, err := cmd.Output()
 	if err == nil {
 		return true, nil
 	}
@@ -27,7 +28,7 @@ func (Git) RefExists(ctx context.Context, repo, ref string) (bool, error) {
 	if errors.As(err, &exit) && exit.ExitCode() == 1 {
 		return false, nil
 	}
-	return false, fmt.Errorf("workspace: ref %s: %w", full, err)
+	return false, GitFailure(ctx, repo, args, err, nil)
 }
 
 // EnsureIntegrationBranch creates branch from the primary branch HEAD when

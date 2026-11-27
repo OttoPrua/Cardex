@@ -158,6 +158,10 @@ func markSVG(which string) template.HTML {
 }
 
 func serveChannels(w http.ResponseWriter, r *http.Request, asJSON bool) {
+	if r.URL.Query().Get("tab") == "ranking" {
+		serveRanking(w, r, asJSON)
+		return
+	}
 	db, home, err := openDB()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

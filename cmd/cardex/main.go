@@ -33,6 +33,7 @@ commands:
   wait <card-id|objective-id> --until <statuses> --timeout <duration>
   reads
   blockers [--objective <id>]
+  verify <card-id>       verify recorded evidence for the latest attempt
   question list|show|answer
   channel list|show|set|check
   route explain <card>
@@ -52,7 +53,10 @@ func main() {
 	if code, ok := runLiveSnapshotWorker(os.Args[1:]); ok {
 		os.Exit(code)
 	}
-	ensureSystemPath()
+	if err := ensureRuntimePath(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	os.Exit(Main(os.Args[1:], os.Stdout, os.Stderr))
 }
 
@@ -74,21 +78,22 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	if rest[0] == "snapshot" {
 		return cmdSnapshot(home, asJSON, rest[1:], stdout, stderr)
 	}
+	if rest[0] == "verify" {
+		return cmdVerify(home, asJSON, rest[1:], stdout, stderr)
+	}
 	if rest[0] == "doctor" {
 		return cmdDoctor(home, rest[1:], stdout, stderr)
 	}
-	// Import handles its own existing-home read/write boundary. In
-	// particular, preview and help must never create a home or a DB.
+	// Import handles its own existing-home boundary, including dry-run.
 	if len(rest) >= 2 && rest[0] == "card" && rest[1] == "import" {
 		return cmdCard(home, asJSON, rest[1:], stdout, stderr)
 	}
-	if dir, err := resolveHome(home); err == nil {
-		// One proxy entry for the serve, its git and notify calls, and every
-		// executor it starts. No "proxy" section in config.json changes nothing.
-		if err := proxy.ApplyProcess(dir); err != nil {
-			fmt.Fprintln(stderr, "warning:", err)
-		}
+	if len(rest) > 1 && rest[0] == "channel" && rest[1] == "set" {
+		// Parse model preview flags before the usual home/proxy setup:
+		// that setup can create a home even if the preview is invalid.
+		return channelSet(home, asJSON, rest[2:], stdout, stderr)
 	}
+	applyCommandProxy(home, stderr)
 	switch rest[0] {
 	case "proxy":
 		return cmdProxy(home, asJSON, rest[1:], stdout, stderr)
@@ -133,6 +138,16 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s", rest[0], usage)
 		return 2
+	}
+}
+
+func applyCommandProxy(home string, stderr io.Writer) {
+	if dir, err := resolveHome(home); err == nil {
+		// One proxy entry for the serve, its git and notify calls, and every
+		// executor it starts. No "proxy" section in config.json changes nothing.
+		if err := proxy.ApplyProcess(dir); err != nil {
+			fmt.Fprintln(stderr, "warning:", err)
+		}
 	}
 }
 

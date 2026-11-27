@@ -676,10 +676,11 @@ func finish(ctx context.Context, db *store.Store, attempt *model.Attempt, card m
 		return err
 	}
 	finishEvent := map[string]any{
-		"exit":        code,
-		"tokens":      attempt.Usage.Tokens,
-		"source":      attempt.Usage.Source,
-		"error_class": attempt.ErrorClass,
+		"exit":          code,
+		"tokens":        attempt.Usage.Tokens,
+		"source":        attempt.Usage.Source,
+		"usage_receipt": runner.DescribeUsage(r, output, attempt.Usage),
+		"error_class":   attempt.ErrorClass,
 	}
 	if timedOut {
 		finishEvent["stop"] = "hard_limit_timeout"

@@ -32,7 +32,10 @@ func TestCreateStartsAtCardBase(t *testing.T) {
 		CardID: "c2", AttemptID: "a1", ObjectiveID: "obj",
 		RepoPath: repo, WorktreeRoot: t.TempDir(), IntegrationBranch: "main", StartPoint: "no-such-ref",
 	})
-	if err == nil || !strings.Contains(err.Error(), "no-such-ref") {
-		t.Fatalf("unknown base must fail loudly, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "kind=missing_base") {
+		t.Fatalf("unknown base must report a missing base, got %v", err)
+	}
+	if strings.Contains(err.Error(), "no-such-ref") {
+		t.Fatalf("diagnostic must not echo the raw base argument: %v", err)
 	}
 }

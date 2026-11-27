@@ -229,6 +229,14 @@ func TestRunCapturesBothStreamsUsageAndPrompt(t *testing.T) {
 	if attempt.Usage.Tokens != 42 || attempt.Usage.Source != "fake" || attempt.Usage.Confidence != 1 {
 		t.Fatalf("usage %+v", attempt.Usage)
 	}
+	finish, ok := eventType(events, "host_finish")
+	var audited struct {
+		Usage runner.UsageReceipt `json:"usage_receipt"`
+	}
+	if !ok || json.Unmarshal(finish.Data, &audited) != nil || audited.Usage.Total == nil ||
+		*audited.Usage.Total != 42 || audited.Usage.Input != nil || audited.Usage.ToolCalls != nil {
+		t.Fatalf("invalid safe usage receipt: %s", finish.Data)
+	}
 	if attempt.Outcome != "" {
 		t.Fatalf("outcome %q", attempt.Outcome)
 	}

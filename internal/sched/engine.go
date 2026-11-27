@@ -103,6 +103,7 @@ func (r *Runner) noteDesignFailure(ctx context.Context, db *store.Store, objecti
 	if cause == nil {
 		return nil
 	}
+	reportServeError(ctx, "design", cause)
 	if db == nil {
 		opened, err := store.Open(filepath.Join(r.Home, "cardex.db"))
 		if err != nil {

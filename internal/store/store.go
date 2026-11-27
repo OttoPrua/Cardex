@@ -163,17 +163,56 @@ func openWithSnapshot(path string, backupBeforeWrite bool, snapshot func(*Store,
 // read-only mode can create sidecars for a clean WAL database, so use an
 // immutable read for that case and reject the result if the file changed.
 func Inspect(path string, read func(*Store)) error {
+	return inspect(path, false, read)
+}
+
+// InspectClean inspects only an already checkpointed database, with a
+// post-check for concurrent file or WAL changes. It never opens live WAL
+// sidecars, so a verdict cannot mistake a stale checkpoint for current state.
+func InspectClean(path string, read func(*Store)) error {
+	return inspect(path, true, read)
+}
+
+func inspect(path string, cleanOnly bool, read func(*Store)) error {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return err
 	}
-	before, err := os.Stat(abs)
+	stat := os.Stat
+	if cleanOnly {
+		stat = os.Lstat
+	}
+	before, err := stat(abs)
 	if err != nil {
 		return err
+	}
+	checkSidecars := func() error {
+		for _, side := range []struct{ suffix, label string }{
+			{"-wal", "WAL"}, {"-shm", "shared-memory sidecar"}, {"-journal", "rollback journal"},
+		} {
+			if _, err := os.Lstat(abs + side.suffix); err == nil {
+				return fmt.Errorf("cannot verify the newest attempt while database %s exists", side.label)
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
+		return nil
+	}
+	if cleanOnly {
+		if !before.Mode().IsRegular() {
+			return errors.New("cannot verify an indirect or irregular database file")
+		}
+		if err := checkSidecars(); err != nil {
+			return err
+		}
 	}
 	opts := "?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)"
 	_, walErr := os.Stat(abs + "-wal")
 	clean := os.IsNotExist(walErr)
+	if cleanOnly && !clean {
+		return errors.New("cannot verify the newest attempt while database WAL exists")
+	}
+
 	if clean {
 		opts += "&immutable=1"
 	} else if walErr != nil {
@@ -191,7 +230,12 @@ func Inspect(path string, read func(*Store)) error {
 	}
 	read(&Store{db: db, path: abs})
 	if clean {
-		after, err := os.Stat(abs)
+		after, err := stat(abs)
+		if cleanOnly {
+			if err := checkSidecars(); err != nil {
+				return err
+			}
+		}
 		_, walErr := os.Stat(abs + "-wal")
 		if err != nil || !os.IsNotExist(walErr) || !os.SameFile(before, after) ||
 			before.Size() != after.Size() || before.ModTime() != after.ModTime() {

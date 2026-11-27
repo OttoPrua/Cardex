@@ -173,12 +173,12 @@ exit 0
 	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- Serve(WithLog(ctx, ioDiscard{}), home, "127.0.0.1:0")
+		errCh <- serveWithFastHeartbeats(WithLog(ctx, ioDiscard{}), home)
 	}()
 	deadline := time.Now().Add(50 * time.Second)
 	for {
-		raw, _ := os.ReadFile(filepath.Join(home, "serve-loop.log"))
-		if strings.Count(string(raw), "iteration ") >= 2 {
+		raw, _ := readServeLog(home)
+		if strings.Count(string(raw), " heartbeat ") >= 2 {
 			cancel()
 			break
 		}

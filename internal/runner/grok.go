@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1539,6 +1540,11 @@ func tokensFromUsage(raw json.RawMessage, aliases map[string]string) (int64, boo
 	any := false
 	for _, dest := range []string{"input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "reasoning_tokens"} {
 		if seen[dest] {
+			if fields[dest] > math.MaxInt64-sum {
+				// An unrepresentable usage record is unknown, never a
+				// negative token count that could lower a budget ledger.
+				return 0, false
+			}
 			sum += fields[dest]
 			any = true
 		}

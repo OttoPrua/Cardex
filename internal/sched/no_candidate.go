@@ -142,6 +142,7 @@ func (r *Runner) noteNoCandidate(ctx context.Context, db *store.Store, card mode
 	}
 	r.noCand[card.ID] = key
 	r.tickMu.Unlock()
+	reportServeEvent(ctx, "transition state=route_unavailable")
 	fmt.Fprintf(os.Stderr, "route_no_candidate card=%s tier=%s reason=%s hint=%s\n", ex.Card, ex.Tier, ex.Reason, ex.Hint)
 	data, err := json.Marshal(ex)
 	if err != nil {

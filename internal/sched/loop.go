@@ -161,8 +161,10 @@ func (r *Runner) Tick(ctx context.Context) error {
 			return ctx.Err()
 		}
 		if reconcileErr != nil {
+			reportServeError(ctx, "reconcile", reconcileErr)
 			fmt.Fprintf(os.Stderr, "tick_error step=%s object=%s error=%s\n", "reconcile", "tick", clipSummary(reconcileErr.Error()))
 		}
+		reportServeError(ctx, "store", err)
 		fmt.Fprintf(os.Stderr, "tick_error step=%s object=%s error=%s\n", "store", "tick", clipSummary(err.Error()))
 		if first == nil {
 			first = err
@@ -418,7 +420,11 @@ func (r *Runner) deliver(ctx context.Context, db *store.Store, card *model.Card,
 	if err := db.UpdateCard(ctx, card); err != nil {
 		return err
 	}
-	return db.UpdateAttempt(ctx, attempt)
+	if err := db.UpdateAttempt(ctx, attempt); err != nil {
+		return err
+	}
+	reportServeEvent(ctx, "transition state=attempt_harvested")
+	return nil
 }
 
 func (r *Runner) familyOf(ctx context.Context, db *store.Store, channelID string) string {
@@ -741,11 +747,13 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if strings.TrimSpace(root) == "" {
 		root = filepath.Join(r.Home, "worktrees")
 	}
-	baseSHA, err := workspace.Git{}.EnsureIntegrationBranch(ctx, project.RepoPath, obj.IntegrationBranch)
+	targetWorktree := filepath.Join(root, wsCard+"-"+attemptID)
+	gitCtx := workspace.WithGitEvidence(ctx, card.ID, attemptID, targetWorktree)
+	baseSHA, err := workspace.Git{}.EnsureIntegrationBranch(gitCtx, project.RepoPath, obj.IntegrationBranch)
 	if err != nil {
 		return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, launchScratch{})
 	}
-	wt, err := addWorktree(ctx, workspace.CreateRequest{
+	wt, err := addWorktree(gitCtx, workspace.CreateRequest{
 		CardID:            wsCard,
 		AttemptID:         attemptID,
 		ObjectiveID:       wsObj,
@@ -758,7 +766,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	})
 	scratch := launchScratch{
 		repo:         project.RepoPath,
-		worktree:     filepath.Join(root, wsCard+"-"+attemptID),
+		worktree:     targetWorktree,
 		branch:       cardBranchName(wsObj, wsCard),
 		base:         baseSHA,
 		dropWorktree: true,
@@ -771,7 +779,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	scratch.branch = wt.Branch
 	scratch.base = wt.BaseCommit
 	if readOnly {
-		if err := detachHead(ctx, wt.Path); err != nil {
+		if err := detachHead(workspace.WithGitEvidence(ctx, card.ID, attemptID, wt.Path), wt.Path); err != nil {
 			return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, scratch)
 		}
 	}
@@ -840,6 +848,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if err := r.startAttempt(ctx, db, &attempt); err != nil {
 		return r.failLaunch(ctx, db, &card, &attempt, launchStepHost, err, rt, scratch)
 	}
+	reportServeEvent(ctx, "transition state=attempt_started")
 	if inUse != nil && rt.Channel != "" {
 		inUse[rt.Channel]++
 	}
@@ -899,6 +908,7 @@ func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.
 	if err := r.startAttempt(ctx, db, attempt); err != nil {
 		return r.failLaunch(ctx, db, &card, attempt, launchStepHost, err, attempt.Route, scratch)
 	}
+	reportServeEvent(ctx, "transition state=attempt_resumed")
 	return attempt.Route.Channel, nil
 }
 
@@ -1247,6 +1257,7 @@ func (r *Runner) schedules(ctx context.Context, db *store.Store) error {
 			continue
 		}
 		if err := enqueueTemplate(ctx, db, objs, entry, slot); err != nil {
+			reportServeError(ctx, "schedules", err)
 			if werr := writeScheduleFault(r.Home, entry.Name, err); werr != nil {
 				return werr
 			}
@@ -1357,7 +1368,11 @@ func enqueueTemplate(ctx context.Context, db *store.Store, objs []model.Objectiv
 		Tier: tier, Status: model.CardReady, Acceptance: tmpl.Acceptance,
 		Requires: append([]string(nil), tmpl.Requires...),
 	}
-	return db.CreateCard(ctx, &card)
+	if err := db.CreateCard(ctx, &card); err != nil {
+		return err
+	}
+	reportServeEvent(ctx, "transition state=schedule_enqueued")
+	return nil
 }
 
 func safeName(s string) string {
@@ -1491,6 +1506,7 @@ func (r *Runner) allow(ctx context.Context, db *store.Store, card *model.Card, o
 			if err := db.UpdateCard(ctx, card); err != nil {
 				return false, err
 			}
+			reportServeEvent(ctx, "transition state=claim_wait")
 		}
 		return false, nil
 	}
@@ -1802,6 +1818,7 @@ func (r *Runner) noteMissingReviewSubject(ctx context.Context, db *store.Store, 
 		if err := db.UpdateCard(ctx, &fresh); err != nil {
 			return err
 		}
+		reportServeEvent(ctx, "transition state=review_subject_missing")
 	}
 	*card = fresh
 	if already {
@@ -1844,12 +1861,10 @@ func rootCardID(ctx context.Context, db *store.Store, card model.Card) (string, 
 }
 
 func detachHead(ctx context.Context, worktree string) error {
-	cmd := exec.CommandContext(ctx, "git", "-C", worktree, "checkout", "--detach")
+	args := []string{"checkout", "--detach"}
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", worktree}, args...)...)
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("detach review worktree: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
+	return workspace.GitFailure(ctx, worktree, args, err, out)
 }
 
 // quotaView is the estimator dispatch and fill both pass to routing.

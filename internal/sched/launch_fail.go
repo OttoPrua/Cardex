@@ -59,6 +59,7 @@ func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Ca
 	if cause == nil {
 		cause = fmt.Errorf("sched: launch failed")
 	}
+	reportServeError(ctx, "launch", cause)
 	workspace.Git{}.DropLaunch(ctx, scratch.repo, scratch.worktree, scratch.branch, scratch.base, scratch.dropWorktree, scratch.dropBranch)
 	summary := clipSummary(cause.Error())
 	// Count before this attempt is marked, so it is not paired with the event twice.
@@ -95,6 +96,7 @@ func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Ca
 		return "", err
 	}
 	*card = fresh
+	reportServeEvent(ctx, "transition state=launch_backoff")
 	attemptID := ""
 	if attempt != nil {
 		attemptID = attempt.ID
@@ -269,6 +271,7 @@ func (r *Runner) noteTickError(ctx context.Context, db *store.Store, step, kind,
 	if r == nil || cause == nil || (ctx != nil && ctx.Err() != nil) {
 		return
 	}
+	reportServeError(ctx, step, cause)
 	summary := clipSummary(cause.Error())
 	key := step + "\x00" + kind + "\x00" + id + "\x00" + summary
 	now := r.now()

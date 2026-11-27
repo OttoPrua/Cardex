@@ -267,6 +267,16 @@ func TestDesignErrorDisposesNamedExit(t *testing.T) {
 	if !processAlive(livePID) {
 		t.Fatal("named live host was signaled")
 	}
+
+	// The updated design/plan guard still permits a uniquely named
+	// current exited attempt to use the ordinary §5 disposition.
+	if err := runner.noteDesignFailure(ctx, db, obj.ID, fmt.Errorf("design failed for current attempt %s", second.ID)); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := db.GetAttempt(ctx, second.ID)
+	if err != nil || settled.Outcome != model.OutcomeNoOutput || !eventsOf(t, db, second.ID, "dev_disposed") {
+		t.Fatalf("current plan did not take the §5 path: %+v; %v", settled, err)
+	}
 }
 
 func TestDesignErrorHarvestWritesEvidence(t *testing.T) {

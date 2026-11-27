@@ -448,7 +448,7 @@ func normalizeFromUnusable(t *testing.T, kind model.CardKind, freeze model.Freez
 	if norm == nil || len(normalizeCards(t, st, obj.ID, source.ID)) != 1 {
 		t.Fatal("missing the single normalize card")
 	}
-	if cardStatus(t, st, source.ID) != model.CardHarvesting || questionText(nodeOf(t, st, node.ID), "原文不该吸收") {
+	if cardStatus(t, st, source.ID) != model.CardWaiting || questionText(nodeOf(t, st, node.ID), "原文不该吸收") {
 		t.Fatalf("source status %s questions %+v", cardStatus(t, st, source.ID), nodeOf(t, st, node.ID).OpenQuestions)
 	}
 	return st, obj, node, source, attempt, *norm

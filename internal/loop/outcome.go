@@ -252,7 +252,7 @@ type rawCard struct {
 // Each remaining cycle loses one edge. Cards whose node is set and different
 // from scope stay out of Cards as work and become a design question on that node.
 func ParseCardList(raw, scope string, known map[string]bool) CardList {
-	body, found := sectionBody(raw, "新卡")
+	body, found := structuralPlanBody(raw)
 	if !found {
 		body = raw
 	}

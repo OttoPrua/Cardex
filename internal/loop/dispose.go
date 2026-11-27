@@ -22,6 +22,7 @@ const (
 	disposeHomeKey disposeKey = iota
 	disposeAttemptKey
 	disposeStoreKey
+	disposeReceiptKey
 )
 
 // WithHome tells Dispose which CARDEX_HOME holds cardex.db.
@@ -48,6 +49,21 @@ func WithStore(ctx context.Context, db *store.Store) context.Context {
 	return context.WithValue(ctx, disposeStoreKey, db)
 }
 
+// DispositionReceipt tells the synchronous caller whether to skip card
+// writeback because the transaction persisted the card or ignored a stale result.
+type DispositionReceipt struct {
+	IgnoredStale  bool
+	PersistedCard bool
+}
+
+// WithDispositionReceipt attaches an optional sink for the current Dispose call.
+func WithDispositionReceipt(ctx context.Context, receipt *DispositionReceipt) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, disposeReceiptKey, receipt)
+}
+
 // Dispose applies one harvested result. Dev, review, and normalize cards use
 // decideHarvest, the same decision as disposeAll. Design, research, plan,
 // replan, and spike failures use that same decision, then any design-side
@@ -68,6 +84,9 @@ func Dispose(ctx context.Context, card *model.Card, res harvest.Result) error {
 	if strings.TrimSpace(home) == "" {
 		return fmt.Errorf("CARDEX_HOME is not set")
 	}
+	if receipt, ok := ctx.Value(disposeReceiptKey).(*DispositionReceipt); ok && receipt != nil {
+		*receipt = DispositionReceipt{}
+	}
 	db, owned, err := disposeStore(ctx, home)
 	if err != nil {
 		return err
@@ -76,7 +95,11 @@ func Dispose(ctx context.Context, card *model.Card, res harvest.Result) error {
 		defer db.Close()
 	}
 	var notices []Notice
-	err = db.WithTx(ctx, func(ctx context.Context) error {
+	write := db.WithTx
+	if designOriginal(card.Kind) || card.Kind == model.KindNormalize {
+		write = db.WithWriteTx
+	}
+	err = write(ctx, func(ctx context.Context) error {
 		var n []Notice
 		var callErr error
 		n, callErr = disposeTx(ctx, db, home, card, res)
@@ -123,16 +146,56 @@ func disposeTx(ctx context.Context, db *store.Store, home string, card *model.Ca
 	if err != nil {
 		return nil, err
 	}
-	if attempt.Card == "" {
-		attempt.Card = card.ID
+	if attempt.Card != card.ID {
+		return nil, fmt.Errorf("loop: Dispose: attempt does not belong to card %s", card.ID)
 	}
-	if card.Kind == model.KindRanking {
+	stored, err := db.GetCard(ctx, card.ID)
+	if err != nil {
+		return nil, err
+	}
+	if stored.Kind != card.Kind || stored.Objective != card.Objective {
+		return nil, fmt.Errorf("loop: Dispose: current card identity changed")
+	}
+	if designOriginal(stored.Kind) || stored.Kind == model.KindNormalize {
+		d := Deps{Store: db}
+		current, err := d.currentAttemptID(ctx, stored.ID)
+		if err != nil {
+			return nil, err
+		}
+		if current != attempt.ID {
+			if err := d.noteStaleDesignAttempt(ctx, stored.ID, attempt.ID, current, res.Outcome); err != nil {
+				return nil, err
+			}
+			*card = stored // do not adopt claims or state from the stale harvest
+			if receipt, ok := ctx.Value(disposeReceiptKey).(*DispositionReceipt); ok && receipt != nil {
+				receipt.IgnoredStale = true
+			}
+			return nil, nil
+		}
+	}
+	if stored.Kind == model.KindRanking {
 		return disposeRanking(ctx, db, home, card, attempt, res)
 	}
-	if designKind(card.Kind) {
-		return disposeDesign(ctx, db, home, card, attempt, res)
+	var notices []Notice
+	if designKind(stored.Kind) {
+		notices, err = disposeDesign(ctx, db, home, card, attempt, res)
+	} else {
+		notices, err = disposeDev(ctx, db, home, card, attempt, res)
 	}
-	return disposeDev(ctx, db, home, card, attempt, res)
+	if err != nil {
+		return nil, err
+	}
+	if designOriginal(stored.Kind) || stored.Kind == model.KindNormalize {
+		// Persist harvested claims and the decided state under the same
+		// writer reservation as the authoritative attempt check.
+		if err := db.UpdateCard(ctx, card); err != nil {
+			return nil, err
+		}
+		if receipt, ok := ctx.Value(disposeReceiptKey).(*DispositionReceipt); ok && receipt != nil {
+			receipt.PersistedCard = true
+		}
+	}
+	return notices, nil
 }
 
 func disposeRanking(ctx context.Context, db *store.Store, home string, card *model.Card, attempt model.Attempt, res harvest.Result) ([]Notice, error) {
@@ -335,7 +398,7 @@ func listedPlan(kind model.CardKind, res harvest.Result) bool {
 		return false
 	}
 	text := res.ResultText
-	if _, ok := sectionBody(text, "新卡"); ok {
+	if _, ok := structuralPlanBody(text); ok {
 		return true
 	}
 	list := ParseCardList(text, "", nil)

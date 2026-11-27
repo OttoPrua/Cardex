@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/OttoPrua/Cardex/internal/model"
@@ -1208,7 +1209,7 @@ func designUnusable(result string, outcome model.Outcome) bool {
 	if text == "" {
 		return true
 	}
-	return !strings.Contains(text, "##")
+	return len(designLevelTwoSections(text)) == 0
 }
 
 // currentAttemptConsumed is true when this card's current attempt was already
@@ -1221,9 +1222,11 @@ func (d Deps) currentAttemptConsumed(ctx context.Context, card model.Card) (bool
 	if strings.TrimSpace(attemptID) != "" {
 		return d.attemptHandled(ctx, attemptID)
 	}
-	done, err := d.hasEvent(ctx, "card:"+card.ID, evAbsorbed)
-	if err != nil || done {
-		return done, err
+	for _, kind := range []string{evAbsorbed, normalizeBlockedEvent} {
+		done, err := d.hasEvent(ctx, "card:"+card.ID, kind)
+		if err != nil || done {
+			return done, err
+		}
 	}
 	return d.continuationSettled(ctx, card)
 }
@@ -1263,60 +1266,91 @@ func (d Deps) recordSkippedResearch(ctx context.Context, obj model.Objective, ca
 // the normalize text and finishes the source the same way a passed design, plan,
 // or replan absorb does. A failed, canceled, or unusable normalize sets the source
 // to needs_input and does not apply the text.
-func (d Deps) applyNormalize(ctx context.Context, obj model.Objective, card model.Card, text string, outcome model.Outcome) error {
-	if len(card.Deps) == 0 || strings.TrimSpace(card.Deps[0]) == "" {
+func (d Deps) applyNormalize(ctx context.Context, obj model.Objective, card model.Card, attemptID, text string, outcome model.Outcome) error {
+	return d.Store.WithWriteTx(ctx, func(ctx context.Context) error {
+		return d.applyNormalizeTx(ctx, obj, card, attemptID, text, outcome)
+	})
+}
+
+func (d Deps) applyNormalizeTx(ctx context.Context, obj model.Objective, card model.Card, attemptID, text string, outcome model.Outcome) error {
+	stored, err := d.Store.GetCard(ctx, card.ID)
+	if err != nil {
+		return err
+	}
+	if stored.Kind != model.KindNormalize || stored.Objective != obj.ID || len(stored.Deps) != 1 || strings.TrimSpace(stored.Deps[0]) == "" {
 		return nil
 	}
+	card = stored
 	source, err := d.Store.GetCard(ctx, card.Deps[0])
 	if err != nil {
 		return err
 	}
-	switch source.Kind {
-	case model.KindDesign, model.KindPlan, model.KindReplan:
-	default:
+	if source.Objective != obj.ID || source.Objective != card.Objective || !designOriginal(source.Kind) {
 		return nil
 	}
-	if card.Status == model.CardFailed || card.Status == model.CardCanceled || skippedOutcome(outcome, card.Status) || designUnusable(text, outcome) {
-		return d.markNeedsInput(ctx, source.ID)
+	sourceAttempt, ok, err := d.normalizationSource(ctx, source.ID, card.ID)
+	if err != nil {
+		return err
 	}
-	return d.finishNormalizedSource(ctx, obj, source, text)
-}
-
-// finishNormalizedSource applies a usable normalize extraction and closes the
-// source. No recorded design-file change becomes done; merge_queued and merged
-// stay as they are. The source attempt is consumed without reading its result.
-func (d Deps) finishNormalizedSource(ctx context.Context, obj model.Objective, source model.Card, text string) error {
-	if judgeResultFreeze(text) == freezeUnclear {
-		if err := d.markNeedsInput(ctx, source.ID); err != nil {
+	current, err := d.currentAttemptID(ctx, source.ID)
+	if err != nil {
+		return err
+	}
+	link := normalizationLink{SourceCard: source.ID, SourceAttempt: sourceAttempt, Normalize: card.ID, NormalizeAttempt: attemptID}
+	latestNormalizer, err := d.currentAttemptID(ctx, card.ID)
+	if err != nil {
+		return err
+	}
+	if !ok || sourceAttempt != current || latestNormalizer != attemptID || source.Status == model.CardCanceled {
+		link.Reason = normalizeStale
+		return d.noteNormalizeResolution(ctx, link)
+	}
+	if sourceAttempt != "" {
+		if done, err := d.attemptHandled(ctx, sourceAttempt); err != nil || done {
 			return err
 		}
-		return d.consumeSourceAttempt(ctx, source.ID)
 	}
-	if err := d.applyDesign(ctx, obj, source, text); err != nil {
-		return err
+	if card.Status == model.CardFailed || card.Status == model.CardCanceled || skippedOutcome(outcome, card.Status) {
+		link.Reason = normalizeFailed
+	} else if !normalizeResultUsable(source, text, outcome) {
+		link.Reason = normalizeInvalid
 	}
-	held, err := d.applyCardList(ctx, obj, source, text)
-	if err != nil {
-		return err
+	if link.Reason == "" {
+		held, err := d.finishNormalizedSource(ctx, obj, source, text)
+		if err != nil {
+			return err
+		}
+		if held {
+			link.Reason = normalizeInvalid
+		}
 	}
-	if held {
-		return d.consumeSourceAttempt(ctx, source.ID)
+	if link.Reason != "" {
+		if err := d.blockNormalization(ctx, source, link); err != nil {
+			return err
+		}
+	} else {
+		link.Reason = normalizeApplied
+		if err := d.markAttempt(ctx, sourceAttempt); err != nil {
+			return err
+		}
 	}
-	if err := d.markPassedDone(ctx, source, model.OutcomePassed); err != nil {
-		return err
-	}
-	if err := d.markAbsorbed(ctx, source.ID, nil); err != nil {
-		return err
-	}
-	return d.consumeSourceAttempt(ctx, source.ID)
+	return d.noteNormalizeResolution(ctx, link)
 }
 
-func (d Deps) consumeSourceAttempt(ctx context.Context, cardID string) error {
-	attemptID, err := d.currentAttemptID(ctx, cardID)
-	if err != nil {
-		return err
+// finishNormalizedSource applies only validated extraction to its exact
+// source. A bad plan list stays held; a merge-queued or merged card stays so.
+func (d Deps) finishNormalizedSource(ctx context.Context, obj model.Objective, source model.Card, text string) (bool, error) {
+	held, err := d.applyCardList(ctx, obj, source, text)
+	if err != nil || held {
+		return held, err
 	}
-	return d.markAttempt(ctx, attemptID)
+	if err := d.applyDesign(ctx, obj, source, text); err != nil {
+		return false, err
+	}
+	if err := d.markPassedDone(ctx, source, model.OutcomePassed); err != nil {
+		return false, err
+	}
+	return false, d.markAbsorbed(ctx, source.ID, nil)
 }
 
 // applyCardList materializes the plan or replan 新卡 list on the design-phase
@@ -1326,7 +1360,7 @@ func (d Deps) applyCardList(ctx context.Context, obj model.Objective, source mod
 	if source.Kind != model.KindPlan && source.Kind != model.KindReplan {
 		return false, nil
 	}
-	_, hasList := sectionBody(text, "新卡")
+	_, hasList := structuralPlanBody(text)
 	cards, err := d.Store.ListCards(ctx, obj.ID)
 	if err != nil {
 		return false, err
@@ -1339,9 +1373,6 @@ func (d Deps) applyCardList(ctx context.Context, obj model.Objective, source mod
 	if list.Bad {
 		if !hasList {
 			return false, nil
-		}
-		if err := d.markNeedsInput(ctx, source.ID); err != nil {
-			return false, err
 		}
 		return true, nil
 	}
@@ -1601,43 +1632,74 @@ func skippedResearchKey(card model.Card, attemptID string) string {
 
 // recoverUnparsed keeps one normalize card tied to the source.
 // resolved is true only after that card has failed or its extraction was absorbed.
-func (d Deps) recoverUnparsed(ctx context.Context, obj model.Objective, card model.Card, attemptID string) (bool, error) {
-	existing, err := d.normalizeFor(ctx, obj.ID, card.ID)
-	if err != nil {
+func (d Deps) recoverUnparsed(ctx context.Context, obj model.Objective, card model.Card, attemptID, reason string) (bool, error) {
+	current, err := d.currentAttemptID(ctx, card.ID)
+	if err != nil || current != attemptID {
 		return false, err
 	}
-	if existing == nil {
-		normalizer := model.Card{
-			Objective: obj.ID,
-			Node:      card.Node,
-			Kind:      model.KindNormalize,
-			Title:     "整理",
-			Body:      "整理 " + card.ID + "\n",
-			Tier:      model.TierT1,
-			Status:    model.CardReady,
-			Deps:      []string{card.ID},
+	var normalizer *model.Card
+	err = d.Store.WithWriteTx(ctx, func(ctx context.Context) error {
+		latest, err := d.currentAttemptID(ctx, card.ID)
+		if err != nil || latest != attemptID {
+			return err
 		}
-		return false, d.Store.WithTx(ctx, func(ctx context.Context) error {
-			if err := d.addCard(ctx, obj, &normalizer); err != nil {
+		fresh, err := d.Store.GetCard(ctx, card.ID)
+		if err != nil || fresh.Status == model.CardCanceled || fresh.Objective != obj.ID || !designOriginal(fresh.Kind) {
+			return err
+		}
+		existing, err := d.normalizeFor(ctx, obj.ID, card.ID, attemptID)
+		if err != nil {
+			return err
+		}
+		if existing == nil {
+			alreadyLinked, err := d.hasEvent(ctx, normalizationPlanEntity(card.ID, attemptID), NormalizePlannedEvent)
+			if err != nil {
 				return err
 			}
-			return d.noteNormalizePlan(ctx, attemptID, normalizer.ID)
-		})
-	}
-	if !terminalCard(existing.Status) || existing.Status == model.CardCanceled {
-		return false, nil
-	}
-	text, _, outcome, _, err := d.harvested(ctx, *existing)
+			if alreadyLinked {
+				return d.blockNormalization(ctx, fresh, normalizationLink{SourceCard: card.ID, SourceAttempt: attemptID, Reason: normalizeMissingLink})
+			}
+			// A different episode cannot repurpose a normalizer already
+			// running or queued for the previous attempt.
+			pending, err := d.pendingNormalization(ctx, obj.ID, card.ID)
+			if err != nil {
+				return err
+			}
+			if pending != "" {
+				link := normalizationLink{SourceCard: card.ID, SourceAttempt: attemptID, Normalize: pending, Reason: normalizePriorPending}
+				return d.blockNormalization(ctx, card, link)
+			}
+			existing = &model.Card{
+				Objective: obj.ID, Node: card.Node, Kind: model.KindNormalize, Title: "整理",
+				Body: "整理 " + card.ID + "\n", Tier: model.TierT1, Status: model.CardReady, Deps: []string{card.ID},
+			}
+			if err := d.addCard(ctx, obj, existing); err != nil {
+				return err
+			}
+		}
+		normalizer = existing
+		if err := d.writeNormalizationPlan(ctx, normalizationLink{SourceCard: card.ID, SourceAttempt: attemptID, Normalize: existing.ID, Reason: reason}); err != nil {
+			return err
+		}
+		// Keep the current pass fact; wait is on the artifact, not on the
+		// execution. Do not disturb an already published merge state.
+		if fresh.Status != model.CardMergeQueued && fresh.Status != model.CardMerged {
+			fresh.Status = model.CardWaiting
+		}
+		fresh.WaitReason = fmt.Sprintf("%s (source attempt %s; normalization %s)", reason, attemptID, existing.ID)
+		return d.Store.UpdateCard(ctx, &fresh)
+	})
 	if err != nil {
 		return false, err
 	}
-	if existing.Status == model.CardFailed || skippedOutcome(outcome, existing.Status) || designUnusable(text, outcome) {
-		return true, d.markNeedsInput(ctx, card.ID)
+	if normalizer == nil || !terminalCard(normalizer.Status) {
+		return false, nil
 	}
-	if err := d.finishNormalizedSource(ctx, obj, card, text); err != nil {
+	text, _, outcome, normalizeAttempt, err := d.harvested(ctx, *normalizer)
+	if err != nil {
 		return false, err
 	}
-	return true, nil
+	return true, d.applyNormalize(ctx, obj, *normalizer, normalizeAttempt, text, outcome)
 }
 
 // NormalizePlannedEvent links a source attempt to its normalization card.
@@ -1651,7 +1713,7 @@ func (d Deps) noteNormalizePlan(ctx context.Context, attemptID, normalizerID str
 	return d.noteEvent(ctx, attemptKey(attemptID), NormalizePlannedEvent, data)
 }
 
-func (d Deps) normalizeFor(ctx context.Context, objective, cardID string) (*model.Card, error) {
+func (d Deps) normalizeFor(ctx context.Context, objective, cardID, attemptID string) (*model.Card, error) {
 	cards, err := d.Store.ListCards(ctx, objective)
 	if err != nil {
 		return nil, err
@@ -1661,8 +1723,14 @@ func (d Deps) normalizeFor(ctx context.Context, objective, cardID string) (*mode
 			continue
 		}
 		if len(cards[i].Deps) > 0 && cards[i].Deps[0] == cardID {
-			c := cards[i]
-			return &c, nil
+			bound, accepted, err := d.normalizationSource(ctx, cardID, cards[i].ID)
+			if err != nil {
+				return nil, err
+			}
+			if accepted && bound == attemptID {
+				c := cards[i]
+				return &c, nil
+			}
 		}
 	}
 	return nil, nil
@@ -1693,6 +1761,7 @@ func (d Deps) markPassedDone(ctx context.Context, card model.Card, outcome model
 		return d.Store.UpdateCard(ctx, &fresh)
 	}
 	fresh.Status = model.CardDone
+	fresh.WaitReason = ""
 	return d.Store.UpdateCard(ctx, &fresh)
 }
 
@@ -1755,7 +1824,11 @@ func (d Deps) attemptHandled(ctx context.Context, attemptID string) (bool, error
 	if strings.TrimSpace(attemptID) == "" {
 		return false, nil
 	}
-	return d.hasEvent(ctx, attemptKey(attemptID), evAbsorbed)
+	done, err := d.hasEvent(ctx, attemptKey(attemptID), evAbsorbed)
+	if err != nil || done {
+		return done, err
+	}
+	return d.hasEvent(ctx, attemptKey(attemptID), normalizeBlockedEvent)
 }
 
 func (d Deps) markAttempt(ctx context.Context, attemptID string) error {
@@ -1763,20 +1836,6 @@ func (d Deps) markAttempt(ctx context.Context, attemptID string) error {
 		return nil
 	}
 	return d.noteEvent(ctx, attemptKey(attemptID), evAbsorbed, nil)
-}
-
-func (d Deps) markNeedsInput(ctx context.Context, cardID string) error {
-	fresh, err := d.Store.GetCard(ctx, cardID)
-	if err != nil {
-		return err
-	}
-	if fresh.Status != model.CardNeedsInput {
-		fresh.Status = model.CardNeedsInput
-		if err := d.Store.UpdateCard(ctx, &fresh); err != nil {
-			return err
-		}
-	}
-	return d.markAbsorbed(ctx, cardID, nil)
 }
 
 func (d Deps) markContinued(ctx context.Context, cardID string) error {
@@ -1808,6 +1867,36 @@ func (d Deps) continuationSettled(ctx context.Context, card model.Card) (bool, e
 }
 
 func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model.Card, attemptID, base, text string, outcome model.Outcome) error {
+	if !designOriginal(card.Kind) && card.Kind != model.KindNormalize {
+		return d.absorbAttemptTx(ctx, obj, card, attemptID, base, text, outcome)
+	}
+	return d.Store.WithWriteTx(ctx, func(ctx context.Context) error {
+		fresh, err := d.Store.GetCard(ctx, card.ID)
+		if err != nil || fresh.Kind != card.Kind || fresh.Objective != obj.ID {
+			return err
+		}
+		// Retain harvested claims carried by the caller, but never rely on
+		// its snapshot for mutability or lifecycle state.
+		if len(card.Claims) != 0 {
+			fresh.Claims = card.Claims
+		}
+		return d.absorbAttemptTx(ctx, obj, fresh, attemptID, base, text, outcome)
+	})
+}
+
+func (d Deps) absorbAttemptTx(ctx context.Context, obj model.Objective, card model.Card, attemptID, base, text string, outcome model.Outcome) error {
+	if designOriginal(card.Kind) || card.Kind == model.KindNormalize {
+		current, err := d.currentAttemptID(ctx, card.ID)
+		if err != nil {
+			return err
+		}
+		if current != attemptID {
+			return d.noteStaleDesignAttempt(ctx, card.ID, attemptID, current, outcome)
+		}
+		if designOriginal(card.Kind) && card.Status == model.CardCanceled {
+			return d.markAttempt(ctx, attemptID)
+		}
+	}
 	if strings.TrimSpace(attemptID) != "" {
 		handled, err := d.attemptHandled(ctx, attemptID)
 		if err != nil {
@@ -1829,7 +1918,7 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 			}
 		}
 		if card.Kind == model.KindNormalize {
-			if err := d.applyNormalize(ctx, obj, card, text, outcome); err != nil {
+			if err := d.applyNormalize(ctx, obj, card, attemptID, text, outcome); err != nil {
 				return err
 			}
 		}
@@ -1853,8 +1942,14 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 			return err
 		}
 	case model.KindDesign, model.KindPlan, model.KindReplan:
-		if designUnusable(text, outcome) || judgeResultFreeze(text) == freezeUnclear {
-			resolved, err := d.recoverUnparsed(ctx, obj, card, attemptID)
+		reason := ""
+		if designUnusable(text, outcome) {
+			reason = normalizeBadArtifact
+		} else if judgeResultFreeze(text) == freezeUnclear {
+			reason = normalizeBadControl
+		}
+		if reason != "" {
+			resolved, err := d.recoverUnparsed(ctx, obj, card, attemptID, reason)
 			if err != nil {
 				return err
 			}
@@ -1885,7 +1980,7 @@ func (d Deps) absorbAttempt(ctx context.Context, obj model.Objective, card model
 			return err
 		}
 	case model.KindNormalize:
-		if err := d.applyNormalize(ctx, obj, card, text, outcome); err != nil {
+		if err := d.applyNormalize(ctx, obj, card, attemptID, text, outcome); err != nil {
 			return err
 		}
 	default:

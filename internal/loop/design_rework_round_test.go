@@ -167,6 +167,17 @@ func TestAttemptScopedConsumption(t *testing.T) {
 						t.Fatal(err)
 					}
 					assertNoSuccess(t, st, obj.ID, node.ID, card.ID, kind)
+					if kind == model.KindDesign && voided.status == model.CardCanceled {
+						// A canceled card rejects late outcomes; a genuinely new
+						// attempt in this fixture requires explicit reopening.
+						reopened := model.CardHarvesting
+						if entry == "step" {
+							reopened = model.CardDone
+						}
+						if err := setCardStatus(t, st, card.ID, reopened); err != nil {
+							t.Fatal(err)
+						}
+					}
 					passed := plantAttempt(t, st, card.ID, 1, model.OutcomePassed, voidText)
 					if entry == "step" {
 						if err := loopStep(t, depsOf(st), obj.ID); err != nil {
@@ -363,7 +374,7 @@ func TestNormalizeRecovery(t *testing.T) {
 			} else if err := AbsorbDisposed(t.Context(), depsOf(st), attempt.ID, model.OutcomeResultUnparsable, ""); err != nil {
 				t.Fatal(err)
 			}
-			if cardStatus(t, st, card.ID) != model.CardNeedsInput || !hasAbsorbed(t, st, card.ID) {
+			if cardStatus(t, st, card.ID) != model.CardNeedsInput || hasAbsorbed(t, st, card.ID) || !hasEventType(t, st, attemptKey(attempt.ID), normalizeBlockedEvent) {
 				t.Fatalf("status %s absorbed %v", cardStatus(t, st, card.ID), hasAbsorbed(t, st, card.ID))
 			}
 		})

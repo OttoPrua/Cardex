@@ -406,7 +406,8 @@ func (r *Runner) deliver(ctx context.Context, db *store.Store, card *model.Card,
 	if r == nil || r.Dispose == nil {
 		return fmt.Errorf("sched: harvest disposition is not installed")
 	}
-	ctx = loop.WithStore(loop.WithAttempt(ctx, attempt.ID), db)
+	var receipt loop.DispositionReceipt
+	ctx = loop.WithDispositionReceipt(loop.WithStore(loop.WithAttempt(ctx, attempt.ID), db), &receipt)
 	if err := r.Dispose(ctx, card, res); err != nil {
 		return err
 	}
@@ -417,8 +418,10 @@ func (r *Runner) deliver(ctx context.Context, db *store.Store, card *model.Card,
 	if attempt.ErrorExcerpt == "" {
 		attempt.ErrorExcerpt = res.Excerpt
 	}
-	if err := db.UpdateCard(ctx, card); err != nil {
-		return err
+	if !receipt.IgnoredStale && !receipt.PersistedCard {
+		if err := db.UpdateCard(ctx, card); err != nil {
+			return err
+		}
 	}
 	if err := db.UpdateAttempt(ctx, attempt); err != nil {
 		return err

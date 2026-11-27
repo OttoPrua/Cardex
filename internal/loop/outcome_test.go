@@ -107,6 +107,12 @@ func (f *fx) card(card model.Card) model.Card {
 	if err := f.db.CreateCard(f.ctx, &card); err != nil {
 		f.t.Fatal(err)
 	}
+	if card.Kind == model.KindNormalize && len(card.Deps) > 0 {
+		parent, err := f.db.GetCard(f.ctx, card.Deps[0])
+		if err == nil && designOriginal(parent.Kind) {
+			linkFixtureNormalize(f.t, f.db, parent.ID, card.ID)
+		}
+	}
 	return card
 }
 

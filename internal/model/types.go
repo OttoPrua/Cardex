@@ -162,11 +162,12 @@ type RouteReason struct {
 
 // RouteDispatch snapshots the runner and constraints before fallback updates a card's pin.
 type RouteDispatch struct {
-	Runner     RunnerName `json:"runner"`
-	Channel    string     `json:"expected_channel,omitempty"`
-	Model      string     `json:"expected_model,omitempty"`
-	Tier       Tier       `json:"expected_tier,omitempty"`
-	ActualTier Tier       `json:"actual_tier,omitempty"`
+	Runner              RunnerName `json:"runner"`
+	Channel             string     `json:"expected_channel,omitempty"`
+	Model               string     `json:"expected_model,omitempty"`
+	Tier                Tier       `json:"expected_tier,omitempty"`
+	ActualTier          Tier       `json:"actual_tier,omitempty"`
+	CompatibleBindingID string     `json:"compatible_binding_id,omitempty"` // Nonsecret staged API identity.
 }
 
 // SelectedTier returns the stored tier of the selected route, when known.

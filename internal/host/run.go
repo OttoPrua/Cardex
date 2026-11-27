@@ -59,6 +59,13 @@ func run(ctx context.Context, home, attemptID string) error {
 	if err != nil {
 		return fmt.Errorf("host: load channel: %w", err)
 	}
+	approvedBindingID := ""
+	if attempt.RouteReason.Dispatch != nil {
+		approvedBindingID = attempt.RouteReason.Dispatch.CompatibleBindingID
+	}
+	if approvedBindingID != "" && approvedBindingID != runner.CompatibleBindingID(channel.EngineProfile) {
+		return handoffReview(ctx, db, &attempt, &card, "api channel dispatch binding changed; select an approved route again")
+	}
 	r, ok := runner.Lookup(string(channel.Runner))
 	if !ok {
 		return fmt.Errorf("host: runner %q is not registered", channel.Runner)
@@ -98,17 +105,71 @@ func run(ctx context.Context, home, attemptID string) error {
 	if st, err := os.Stat(scriptPath); err == nil && !st.IsDir() {
 		spec.ScriptPath = scriptPath
 	}
+	var relay *runner.CompatibleRelay
+	apiIsolated := false
+	if channel.Runner != model.RunnerClaude && runner.IsCompatibleBinding(channel.EngineProfile) {
+		return handoffReview(ctx, db, &attempt, &card, "api channel requires the claude runner")
+	}
 	if channel.Runner == model.RunnerClaude && strings.TrimSpace(channel.EngineProfile) != "" {
 		raw, reason := resolveEngineProfile(cfg, channel.EngineProfile)
 		if reason != "" {
 			return handoffReview(ctx, db, &attempt, &card, reason)
 		}
 		spec.Script = raw
+		if runner.IsCompatibleEngine(raw) {
+			apiIsolated = true
+			spec.CardKind = card.Kind
+			if !runner.IsCompatibleBinding(channel.EngineProfile) {
+				return handoffReview(ctx, db, &attempt, &card, "api channel requires an explicit channel set binding")
+			}
+			if requiresBrowser(card) || requiresGoal(card) {
+				return handoffReview(ctx, db, &attempt, &card, "api channel cannot provide requested browser or goal isolation")
+			}
+			var fileRoots []string
+			if runner.CompatibleFileRef(raw) {
+				obj, err := db.GetObjective(ctx, card.Objective)
+				if err != nil {
+					return handoffReview(ctx, db, &attempt, &card, "api channel cannot verify credential outside the repository")
+				}
+				project, err := db.GetProject(ctx, obj.Project)
+				if err != nil || project.RepoPath == "" {
+					return handoffReview(ctx, db, &attempt, &card, "api channel cannot verify credential outside the repository")
+				}
+				fileRoots = []string{home, project.RepoPath, attempt.Worktree}
+				if project.WorktreeRoot != "" {
+					fileRoots = append(fileRoots, project.WorktreeRoot)
+				}
+			}
+			verified, err := runner.ValidateCompatibleLaunch(spec, channel, approvedBindingID, fileRoots...)
+			if err != nil {
+				return handoffReview(ctx, db, &attempt, &card, err.Error())
+			}
+			spec.Script = verified
+			if _, reason := attemptDeadline(attemptDir); reason != "" {
+				return handoffReview(ctx, db, &attempt, &card, reason)
+			}
+			spec.DropEnv = runner.CompatibleChildDropNames(home)
+			configDir, err := isolateClaudeConfig(attemptDir)
+			if err != nil {
+				return handoffReview(ctx, db, &attempt, &card, err.Error())
+			}
+			spec.ConfigDir = configDir
+			defer cleanupClaudeConfig(db, attempt.ID, configDir)
+			relay, err = startCompatibleRelay(ctx, verified, fileRoots...)
+			if err != nil {
+				return handoffReview(ctx, db, &attempt, &card, err.Error())
+			}
+			defer relay.Close()
+			spec.RelayURL, spec.RelayKey = relay.LocalURL, relay.LocalKey
+		}
 	} else if cfg.invalid {
 		appendEvent(ctx, db, attempt.ID, "host_config", map[string]string{"message": "config.json ignored"})
 	}
 	argv, env, err := r.Build(spec)
 	if err != nil {
+		if apiIsolated {
+			return handoffReview(ctx, db, &attempt, &card, err.Error())
+		}
 		return err
 	}
 	if len(argv) == 0 {
@@ -140,12 +201,14 @@ func run(ctx context.Context, home, attemptID string) error {
 		return err
 	}
 
-	// The channel's proxy route goes last so it wins over the inherited
-	// default, including for engine profiles that replace the whole env.
-	if pe, err := proxy.ChildEnv(home, channel.ID); err != nil {
-		appendEvent(ctx, db, attempt.ID, "host_config", map[string]string{"message": err.Error()})
-	} else if pe != nil {
-		env = append(env, pe...)
+	// Legacy launch keeps its existing proxy behavior. API1 uses one
+	// attempt-scoped local transport and no configured/inherited proxy.
+	if !apiIsolated {
+		if pe, err := proxy.ChildEnv(home, channel.ID); err != nil {
+			appendEvent(ctx, db, attempt.ID, "host_config", map[string]string{"message": err.Error()})
+		} else if pe != nil {
+			env = append(env, pe...)
+		}
 	}
 	// A browser card gets its own Chrome, started here outside the seatbelt
 	// so Chrome keeps its own sandbox. It is stopped when this run returns.
@@ -170,16 +233,23 @@ func run(ctx context.Context, home, attemptID string) error {
 		return failStart(ctx, db, &attempt, serr)
 	}
 	defer cleanupScratch()
-	cmd, err := commandFor(argv, env)
+	if apiIsolated {
+		if err := runner.ProveAPIIsolation(spec, argv, env); err != nil {
+			return handoffReview(ctx, db, &attempt, &card, err.Error())
+		}
+	}
+	cmd, err := commandForEnv(argv, env, apiIsolated)
 	if err != nil {
 		return failStart(ctx, db, &attempt, err)
 	}
 	cmd.Env = roots.ApplyTempEnv(cmd.Env, scratchDir)
 	// The shim is first on PATH. The executor keeps tool homes and GIT_*;
 	// only `go test` is started with AcceptanceEnv.
-	cmd.Env, err = proc.PrependGoTestWrap(cmd.Env, filepath.Join(attemptDir, "go-wrap"))
-	if err != nil {
-		return failStart(ctx, db, &attempt, err)
+	if !apiIsolated {
+		cmd.Env, err = proc.PrependGoTestWrap(cmd.Env, filepath.Join(attemptDir, "go-wrap"))
+		if err != nil {
+			return failStart(ctx, db, &attempt, err)
+		}
 	}
 	cmd.Dir = attempt.Worktree
 	// The host appends each chunk to output.log. The attempt directory stays
@@ -209,11 +279,20 @@ func run(ctx context.Context, home, attemptID string) error {
 		copied = make(chan struct{})
 		go func() {
 			defer close(copied)
-			_, _ = io.Copy(capture, logRead)
+			if relay != nil {
+				relay.CopyOutput(capture, logRead)
+			} else {
+				_, _ = io.Copy(capture, logRead)
+			}
 		}()
 	}
 
-	writable := append([]string{attempt.Worktree}, r.WritablePaths()...)
+	writable := []string{attempt.Worktree}
+	if apiIsolated {
+		writable = append(writable, spec.ConfigDir)
+	} else {
+		writable = append(writable, r.WritablePaths()...)
+	}
 	if scratchDir != "" {
 		writable = append(writable, scratchDir)
 	}
@@ -389,11 +468,15 @@ func projectScratch(ctx context.Context, db *store.Store, card model.Card) strin
 }
 
 func commandFor(argv, extra []string) (*exec.Cmd, error) {
+	return commandForEnv(argv, extra, false)
+}
+
+func commandForEnv(argv, extra []string, isolated bool) (*exec.Cmd, error) {
 	// ApplyEngineEnv already removed another profile's managed keys. Merging
 	// that list back onto os.Environ() would put those keys back.
 	base := os.Environ()
 	overlay := extra
-	if completeEngineEnv(extra) {
+	if isolated || completeEngineEnv(extra) {
 		base = extra
 		overlay = nil
 	}
@@ -412,10 +495,16 @@ func commandFor(argv, extra []string) (*exec.Cmd, error) {
 		env = mergeEnv(env, []string{"CARDEX_FAKE_CHILD=1"})
 	} else {
 		path := argv[0]
+		if isolated && envLookup(env, "PATH") == "" {
+			return nil, errors.New("api channel requires a trusted executor search path")
+		}
 		if !filepath.IsAbs(path) {
 			if found, err := proc.LookPath(path, env); err == nil {
 				path = found
 			}
+		}
+		if isolated && !filepath.IsAbs(path) {
+			return nil, errors.New("api channel executor could not be resolved to an absolute path")
 		}
 		cmd.Path = path
 		cmd.Args = append([]string{}, argv...)
@@ -442,6 +531,17 @@ func completeEngineEnv(env []string) bool {
 		}
 	}
 	return path && base
+}
+
+func envLookup(env []string, key string) string {
+	var got string
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if ok && strings.EqualFold(k, key) {
+			got = v
+		}
+	}
+	return got
 }
 
 func closePipe(write, read *os.File) {
@@ -476,6 +576,26 @@ func mergeEnv(base, extra []string) []string {
 		out = append(out, key+"="+vals[key])
 	}
 	return out
+}
+
+var startCompatibleRelay = runner.StartCompatibleRelay
+
+func isolateClaudeConfig(attemptDir string) (string, error) {
+	if err := os.MkdirAll(attemptDir, 0o700); err != nil {
+		return "", errors.New("api channel isolation parent directory cannot be created")
+	}
+	dir, err := os.MkdirTemp(attemptDir, "claude-config-")
+	if err != nil {
+		return "", errors.New("api channel isolation directory cannot be created")
+	}
+	return dir, nil
+}
+
+func cleanupClaudeConfig(db *store.Store, attemptID, dir string) {
+	err := os.RemoveAll(dir)
+	appendEvent(context.Background(), db, attemptID, "api_channel_cleanup", map[string]any{
+		"removed": err == nil,
+	})
 }
 
 func handoffReview(ctx context.Context, db *store.Store, attempt *model.Attempt, card *model.Card, reason string) error {

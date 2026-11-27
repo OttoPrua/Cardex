@@ -29,6 +29,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/quota"
 	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/route"
+	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/store"
 	"github.com/OttoPrua/Cardex/internal/workspace"
 )
@@ -678,6 +679,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	d := dispatchExpectation(card, obj, classified, channels, pos)
 	if ch, ok := channelByID(channels, rt.Channel); ok {
 		d.Runner = ch.Runner
+		d.CompatibleBindingID = runner.CompatibleBindingID(ch.EngineProfile)
 	}
 	if d.Tier != model.TierNone {
 		selected := reason.SelectedTier(rt)

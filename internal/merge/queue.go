@@ -16,6 +16,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/roots"
+	"github.com/OttoPrua/Cardex/internal/route"
 	"github.com/OttoPrua/Cardex/internal/store"
 	"github.com/OttoPrua/Cardex/internal/workspace"
 )
@@ -354,6 +355,10 @@ func (q *Service) failCard(ctx context.Context, card *model.Card, kind model.Car
 	if err != nil {
 		return err
 	}
+	events, err := q.DB.ListEvents(ctx, "card:"+card.ID)
+	if err != nil {
+		return err
+	}
 	if _, err := q.DB.GetCard(ctx, id); err != nil {
 		follow := model.Card{
 			ID:         id,
@@ -368,6 +373,7 @@ func (q *Service) failCard(ctx context.Context, card *model.Card, kind model.Car
 			Base:       CardBranch(card.Objective, root),
 			Acceptance: append([]string(nil), card.Acceptance...),
 			ReworkNote: detail,
+			Channel:    route.CardUserChannel(*card, events),
 		}
 		if err := q.DB.CreateCard(ctx, &follow); err != nil {
 			return err

@@ -76,6 +76,7 @@ func TestOpenCompletesEitherV8Schema(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"backups_dir":"bak"}`), 0o644); err != nil {
 				t.Fatal(err)
 			}
+			prepareTestBackupOnWindows(t, filepath.Join(home, "bak"))
 			for range 2 {
 				reopened, err := Open(db.path)
 				if err != nil {

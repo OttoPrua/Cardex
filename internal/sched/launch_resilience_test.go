@@ -9,15 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
-	"github.com/OttoPrua/Cardex/internal/host"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/notify"
 	"github.com/OttoPrua/Cardex/internal/prompt"
-	"github.com/OttoPrua/Cardex/internal/store"
 )
 
 func TestLaunchResilienceNeitherPrimaryAndSibling(t *testing.T) {
@@ -484,16 +481,25 @@ func TestLaunchResilienceServeStaysUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	queue(t, db, "bado", "stuck")
-	ready := model.Card{ID: "ready", Objective: goodObj, Kind: model.KindDev, Title: "ready", Tier: model.TierT2, Status: model.CardReady, Channel: "cha", Model: "model-a"}
-	if err := db.CreateCard(ctx, &ready); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { stopHomeHosts(home, db) })
+	// The test observes the healthy and failing merge queues. Do not add
+	// an unrelated ready card: Serve detaches its host and does not join it,
+	// so it can still write Git objects when TempDir is removed.
 	serveCtx, cancel := context.WithCancel(context.Background())
-	errCh := make(chan error, 1)
+	serveDone := make(chan struct{})
+	var serveErr error
 	go func() {
-		errCh <- Serve(serveCtx, home, "127.0.0.1:0")
+		defer close(serveDone)
+		serveErr = Serve(serveCtx, home, "127.0.0.1:0")
 	}()
+	t.Cleanup(func() {
+		// Join even on a failed assertion, before database and repo cleanup.
+		cancel()
+		select {
+		case <-serveDone:
+		case <-time.After(5 * time.Second):
+			t.Error("serve did not stop before cleanup")
+		}
+	})
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		body, _ := os.ReadFile(filepath.Join(home, "serve-loop.log"))
@@ -501,21 +507,20 @@ func TestLaunchResilienceServeStaysUp(t *testing.T) {
 			break
 		}
 		select {
-		case err := <-errCh:
-			t.Fatalf("serve exited: %v\n%s", err, body)
+		case <-serveDone:
+			t.Fatalf("serve exited: %v\n%s", serveErr, body)
 		default:
 		}
 		if time.Now().After(deadline) {
-			cancel()
 			t.Fatalf("serve log %s", body)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 	cancel()
 	select {
-	case err := <-errCh:
-		if err != nil {
-			t.Fatal(err)
+	case <-serveDone:
+		if serveErr != nil {
+			t.Fatal(serveErr)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not return after cancel")
@@ -612,21 +617,6 @@ func writeEmptySchedules(t *testing.T, home string) {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte("{\"schedules\":[]}\n"), 0o644); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func stopHomeHosts(home string, db *store.Store) {
-	attempts, err := db.ListAttempts(context.Background(), "")
-	if err != nil {
-		return
-	}
-	for _, attempt := range attempts {
-		if attempt.PID > 1 {
-			_ = host.SignalProcess(attempt.PID, syscall.SIGKILL)
-		}
-		if pgid := executorPGID(home, attempt.ID); pgid > 1 {
-			_ = host.SignalGroup(pgid, syscall.SIGKILL)
-		}
 	}
 }
 

@@ -15,4 +15,5 @@ type Input struct {
 	Repo         string               // 读取 context.md 和节点文档的仓库。
 	Revision     string               // 读取文档所用的提交，通常是集成分支 HEAD。
 	DesignDir    string               // 设计文档目录；空则 docs/design/。
+	RepairHint   model.RepairHint     // controlled producer hint; never raw diagnostics.
 }

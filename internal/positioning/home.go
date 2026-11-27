@@ -59,6 +59,15 @@ type savedProposal struct {
 
 // Open binds a positioning table to home. A v1 data directory is refused.
 func Open(home string) (*Home, error) {
+	return open(home, store.Open)
+}
+
+// OpenForWrite uses the owner-command backup policy before opening positioning.
+func OpenForWrite(home string) (*Home, error) {
+	return open(home, store.OpenForWrite)
+}
+
+func open(home string, openStore func(string) (*store.Store, error)) (*Home, error) {
 	if err := refuseHome(home); err != nil {
 		return nil, err
 	}
@@ -66,7 +75,7 @@ func Open(home string) (*Home, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := store.Open(filepath.Join(abs, "cardex.db"))
+	db, err := openStore(filepath.Join(abs, "cardex.db"))
 	if err != nil {
 		return nil, err
 	}

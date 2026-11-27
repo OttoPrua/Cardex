@@ -92,7 +92,7 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 	if p.DesignDir == "" {
 		p.DesignDir = "docs/design/"
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -268,7 +268,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	if o.IntegrationBranch == "" {
 		o.IntegrationBranch = "cardex/" + o.ID + "/main"
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -411,6 +411,8 @@ func cmdCard(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		return cardTransition(home, asJSON, args[0], args[1:], stdout, stderr)
 	case "absorb":
 		return cardAbsorb(home, asJSON, args[1:], stdout, stderr)
+	case "recover":
+		return cardRecover(home, asJSON, args[1:], stdout, stderr)
 	case "merged":
 		return cardMerged(home, asJSON, args[1:], stdout, stderr)
 	default:
@@ -490,7 +492,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		}
 		c.Claims = append(c.Claims, model.Claim{Card: c.ID, Path: path, Symbol: symbol})
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

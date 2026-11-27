@@ -277,11 +277,7 @@ func autoExcluded(events []model.Event, cardID string) map[string]bool {
 // stored by the previous auto_route is not itself a user pin. A pin that
 // names a channel an earlier automatic switch already failed is not kept.
 func keptPin(events []model.Event, card model.Card) string {
-	auto := latestAutoChoice(events, card.ID)
-	pin := card.Channel
-	if auto.channel != "" && card.Channel == auto.channel {
-		pin = auto.pin
-	}
+	pin := route.CardUserChannel(card, events)
 	if autoExcluded(events, card.ID)[pin] {
 		return ""
 	}

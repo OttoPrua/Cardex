@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 )
@@ -114,6 +115,119 @@ func TestBuildRevisionStableSegments(t *testing.T) {
 		if !strings.Contains(outDev, want) {
 			t.Fatalf("dev prompt missing %q\n%s", want, outDev)
 		}
+	}
+}
+
+func TestFailureBriefFold(t *testing.T) {
+	const (
+		secret   = "SUPERSECRET"
+		canary   = "CANARY-SENTINEL-9f3a"
+		bare     = "UNLABELED-SENTINEL-dd44"
+		field    = "FIELD-SENTINEL-ff66"
+		noteMark = "NOTE-SENTINEL-ee77"
+	)
+	head := "file: a.txt\n<<<<<<< ours\n" + bare + "\nsession_key: " + field + "\ntoken=" + secret + "\n"
+	tail := "exit: exit status 1\n" + canary + "\n"
+	long := head + strings.Repeat("M", 8000) + "\n" + canary + "\n" + strings.Repeat("Z", 2048) + tail
+	short := bare + "\n" + field + "\nexit: exit status 1\n"
+	positions := []struct {
+		name string
+		body string
+	}{
+		{name: "head", body: canary + "\n" + strings.Repeat("M", 100) + "\nexit: exit status 1\n"},
+		{name: "middle", body: "file: a.txt\n" + strings.Repeat("M", 5000) + canary + strings.Repeat("Z", 5000) + "\nexit: exit status 1\n"},
+		{name: "tail", body: "file: a.txt\n<<<<<<<\n" + strings.Repeat("M", 100) + "\n" + canary},
+		{name: "short", body: short},
+	}
+	for _, tc := range positions {
+		t.Run(tc.name, func(t *testing.T) {
+			brief := FailureBrief(tc.body)
+			if FailureBrief(brief) != brief {
+				t.Fatalf("summary changed on the second call:\n%s", brief)
+			}
+			assertSummary(t, brief, tc.body)
+		})
+	}
+	if utf8.RuneCountInString(long) <= 4096 {
+		t.Fatal("fixture is inside the old cap")
+	}
+	assertSummary(t, FailureBrief(long), long)
+
+	plain := "a token in prose is not a secret"
+	plainBrief := FailureBrief(plain)
+	if strings.Contains(plainBrief, "token") || strings.Contains(plainBrief, "secret") || strings.Contains(plainBrief, "prose") {
+		t.Fatalf("plain text was copied: %q", plainBrief)
+	}
+	if !strings.Contains(plainBrief, "错误类别：other") {
+		t.Fatalf("plain category: %q", plainBrief)
+	}
+
+	ctx := context.Background()
+	for _, kind := range []model.CardKind{model.KindRepair, model.KindRebase} {
+		folded := mustBuild(t, ctx, Input{
+			Card: model.Card{
+				Kind: kind, Title: string(kind), Body: long, ReworkNote: "session_key: " + noteMark,
+				Acceptance: []string{"go test ./internal/prompt/"},
+			},
+			RepairHint: model.RepairHintBoundary,
+			Objective:  model.Objective{ID: "obj"},
+			Context:    "CTX\n",
+		})
+		for _, leak := range []string{secret, canary, bare, field, noteMark, "<<<<<<<", "file: a.txt", "exit:", "返工意见", "…[truncated"} {
+			if strings.Contains(folded, leak) {
+				t.Fatalf("%s prompt leaked %q\n%s", kind, leak, folded)
+			}
+		}
+		if !strings.Contains(folded, "错误类别：") || !strings.Contains(folded, "计数：") || !strings.Contains(folded, "批准摘要：补上边界检查") {
+			t.Fatalf("%s prompt missing the summary\n%s", kind, folded)
+		}
+		if strings.Count(folded, "批准摘要：") != 1 {
+			t.Fatalf("%s approved count %d", kind, strings.Count(folded, "批准摘要："))
+		}
+	}
+	opinion := "返工：补上边界 token=KEEPME"
+	open := mustBuild(t, ctx, Input{
+		Card:      model.Card{Kind: model.KindDev, Title: "dev", Body: "body-dev", ReworkNote: opinion},
+		Objective: model.Objective{ID: "obj"},
+		Context:   "CTX\n",
+	})
+	if !strings.Contains(open, "body-dev") || !strings.Contains(open, "返工意见") || !strings.Contains(open, opinion) {
+		t.Fatalf("review opinion was folded\n%s", open)
+	}
+}
+
+func TestUnrecognizedHintCannotSupplyTextAndOrdinaryTaskIsUnchanged(t *testing.T) {
+	const raw = "synthetic diagnostic fragment"
+	ctx := context.Background()
+	input := Input{
+		Card:       model.Card{Kind: model.KindRepair, Body: raw},
+		Context:    "test context",
+		RepairHint: model.RepairHint(raw),
+	}
+	got := mustBuild(t, ctx, input)
+	if strings.Contains(got, raw) || strings.Contains(got, "批准摘要") {
+		t.Fatal("unrecognized hint reached executor")
+	}
+	input.Card.Kind = model.KindDev
+	input.Card.ReworkNote = raw
+	got = mustBuild(t, ctx, input)
+	if strings.Count(got, raw) != 2 || strings.Contains(got, "错误类别") {
+		t.Fatal("ordinary matching task/rework text was folded")
+	}
+}
+
+func assertSummary(t *testing.T, brief, source string) {
+	t.Helper()
+	for _, leak := range []string{"SUPERSECRET", "CANARY-SENTINEL-9f3a", "UNLABELED-SENTINEL-dd44", "FIELD-SENTINEL-ff66", "<<<<<<<", "file:", "exit:", "session_key"} {
+		if strings.Contains(source, leak) && strings.Contains(brief, leak) {
+			t.Fatalf("summary copied %q\n%s", leak, brief)
+		}
+	}
+	if !strings.HasPrefix(brief, "错误类别：") || !strings.Contains(brief, "\n计数：") {
+		t.Fatalf("summary shape:\n%s", brief)
+	}
+	if strings.Contains(brief, "批准摘要") {
+		t.Fatal("unapproved summary included a note")
 	}
 }
 

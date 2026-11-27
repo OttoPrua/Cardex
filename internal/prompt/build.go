@@ -8,7 +8,9 @@ import (
 	"os/exec"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 )
@@ -161,8 +163,23 @@ func renderFacts(questions []model.OpenQuestion) string {
 }
 
 func renderCard(in Input) string {
+	body := in.Card.Body
+	note := in.ReworkNote
+	if note == "" {
+		note = in.Card.ReworkNote
+	}
+	// Only repair and rebase cards carry failure archives. Ordinary cards
+	// retain their task and review instructions even when the texts match.
+	diagnostic := in.Card.Kind == model.KindRepair || in.Card.Kind == model.KindRebase
+	if diagnostic {
+		local := body
+		if strings.TrimSpace(note) != "" && strings.TrimSpace(note) != strings.TrimSpace(body) {
+			local += "\n" + note
+		}
+		body = failureSummary(local, in.RepairHint)
+	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "标题：%s\n正文：\n%s\n", in.Card.Title, in.Card.Body)
+	fmt.Fprintf(&b, "标题：%s\n正文：\n%s\n", in.Card.Title, body)
 	b.WriteString("声明：\n")
 	for _, claim := range in.Card.Claims {
 		fmt.Fprintf(&b, "- %s %s\n", claim.Path, claim.Symbol)
@@ -171,12 +188,155 @@ func renderCard(in Input) string {
 	for _, cmd := range in.Card.Acceptance {
 		fmt.Fprintf(&b, "- %s\n", cmd)
 	}
-	note := in.ReworkNote
-	if note == "" {
-		note = in.Card.ReworkNote
-	}
-	if strings.TrimSpace(note) != "" {
+	if !diagnostic && strings.TrimSpace(note) != "" {
 		fmt.Fprintf(&b, "返工意见：\n%s\n", note)
 	}
 	return b.String()
+}
+
+// FailureBrief is the only failure archive the model receives.
+// It reports fixed categories and counts. No source line is copied.
+// A second call on that summary returns the same summary. The stored card
+// row is not modified here.
+func FailureBrief(s string) string {
+	return failureSummary(s, "")
+}
+
+func failureSummary(diagnostic string, hint model.RepairHint) string {
+	if form, ok := canonicalSummary(diagnostic); ok {
+		return appendHint(form, hint)
+	}
+	cats, counts := measureDiagnostic(diagnostic)
+	return appendHint(formatSummary(cats, counts), hint)
+}
+
+func appendHint(form string, hint model.RepairHint) string {
+	if text := hint.PromptText(); text != "" {
+		return form + "\n批准摘要：" + text
+	}
+	return form
+}
+
+type diagCounts struct {
+	commands, conflicts, exits, files, lines, runes, unreadable int
+}
+
+func measureDiagnostic(s string) ([]string, diagCounts) {
+	var c diagCounts
+	if strings.TrimSpace(s) == "" {
+		return []string{"empty"}, c
+	}
+	c.runes = utf8.RuneCountInString(s)
+	lines := strings.Split(s, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	c.lines = len(lines)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "$ ") {
+			c.commands++
+		}
+		if strings.HasPrefix(trimmed, "exit:") {
+			c.exits++
+		}
+		if strings.HasPrefix(trimmed, "file:") {
+			c.files++
+		}
+		if strings.HasPrefix(trimmed, "unreadable:") {
+			c.unreadable++
+		}
+		if strings.Contains(line, "<<<<<<<") {
+			c.conflicts++
+		}
+	}
+	var cats []string
+	if c.commands > 0 || c.exits > 0 {
+		cats = append(cats, "check_failed")
+	}
+	if c.conflicts > 0 {
+		cats = append(cats, "conflict")
+	}
+	if c.unreadable > 0 {
+		cats = append(cats, "unreadable")
+	}
+	if len(cats) == 0 {
+		cats = []string{"other"}
+	}
+	sort.Strings(cats)
+	return cats, c
+}
+
+func formatSummary(cats []string, c diagCounts) string {
+	return fmt.Sprintf("错误类别：%s\n计数：commands=%d conflicts=%d exits=%d files=%d lines=%d runes=%d unreadable=%d",
+		strings.Join(cats, " "), c.commands, c.conflicts, c.exits, c.files, c.lines, c.runes, c.unreadable)
+}
+
+// canonicalSummary accepts only the two lines this package writes.
+// Anything else, including an extra approved line or a raw log, is measured again.
+func canonicalSummary(s string) (string, bool) {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) != 2 {
+		return "", false
+	}
+	cats, ok := parseCategories(lines[0])
+	if !ok {
+		return "", false
+	}
+	counts, ok := parseCounts(lines[1])
+	if !ok {
+		return "", false
+	}
+	return formatSummary(cats, counts), true
+}
+
+func parseCategories(line string) ([]string, bool) {
+	const prefix = "错误类别："
+	if !strings.HasPrefix(line, prefix) {
+		return nil, false
+	}
+	fields := strings.Fields(strings.TrimPrefix(line, prefix))
+	if len(fields) == 0 {
+		return nil, false
+	}
+	allowed := map[string]bool{
+		"check_failed": true, "conflict": true, "empty": true, "other": true, "unreadable": true,
+	}
+	seen := map[string]bool{}
+	for _, field := range fields {
+		if !allowed[field] || seen[field] {
+			return nil, false
+		}
+		seen[field] = true
+	}
+	sort.Strings(fields)
+	return fields, true
+}
+
+func parseCounts(line string) (diagCounts, bool) {
+	const prefix = "计数："
+	if !strings.HasPrefix(line, prefix) {
+		return diagCounts{}, false
+	}
+	fields := strings.Fields(strings.TrimPrefix(line, prefix))
+	want := []string{"commands", "conflicts", "exits", "files", "lines", "runes", "unreadable"}
+	if len(fields) != len(want) {
+		return diagCounts{}, false
+	}
+	got := map[string]int{}
+	for i, field := range fields {
+		name, raw, ok := strings.Cut(field, "=")
+		if !ok || name != want[i] {
+			return diagCounts{}, false
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			return diagCounts{}, false
+		}
+		got[name] = n
+	}
+	return diagCounts{
+		commands: got["commands"], conflicts: got["conflicts"], exits: got["exits"],
+		files: got["files"], lines: got["lines"], runes: got["runes"], unreadable: got["unreadable"],
+	}, true
 }

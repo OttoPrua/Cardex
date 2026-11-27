@@ -85,7 +85,7 @@ func importHome(ctx context.Context, v2Home, v1Home string, dryRun bool) (Report
 	if same {
 		return Report{}, errors.New("v2 home and v1 home are the same directory")
 	}
-	db, err := store.Open(filepath.Join(v2Home, "cardex.db"))
+	db, err := store.OpenForWrite(filepath.Join(v2Home, "cardex.db"))
 	if err != nil {
 		return Report{}, err
 	}

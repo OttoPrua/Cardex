@@ -30,6 +30,14 @@ cardex channel set --id ch1 --runner grok --redline 0.25 --model lumen-model --w
 
 接入一个新的 CLI 渠道，或者检查已有渠道时，按 [channel-setup.md](channel-setup.md) 一步步做。
 
+## 写库前的备份
+
+在 CardeX 数据目录的 `config.json` 设置 `"backups_dir": "backups"`，为已有数据库启用命令级备份。路径可以是绝对路径，或相对于该数据目录。Windows 请在启用前手工建好备份目录，缺失时命令不会写库。修改项目、目标、卡、节点、问题或渠道，批准定位表，手动运行排期，应用 `setup --yes` 和正式导入 V1 数据前，命令用 SQLite 在线备份生成一个独立快照，包含已经提交到 WAL 的事务。新建空库时没有旧数据可备份；未设置 `backups_dir` 时沿用原行为。
+
+每份快照用独立名称保存，不覆盖或删除历史备份。快照的只读 `PRAGMA integrity_check` 必须恰好返回一条 `ok`。之后，只有快照内容及其目录项都完成落盘，命令才继续写库；无法校验、独占发布或同步备份时，命令会拒绝写库。不另外依赖 `sqlite3` 可执行文件。迁移需要备份时，同一命令只保留迁移前的那一份。读命令、只写外部配置的命令和后台进程的日常状态更新不会为每次操作新建快照。
+
+在线快照是当时已提交状态的副本，不等同于撤销单条命令。恢复前先停用写入，并核对快照之后是否还有应该保留的修改。
+
 ## 创建目标
 
 `objective add` 至少要 `--project`。常用的还有 `--title`、`--mode`、`--freeze-mode`、`--origin`。`--mode` 默认 `auto`，`--freeze-mode` 默认 `safe`。标题空着时目标会暂停。

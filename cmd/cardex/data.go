@@ -90,7 +90,7 @@ func projectAdd(home string, asJSON bool, args []string, stdout, stderr io.Write
 	if p.DesignDir == "" {
 		p.DesignDir = "docs/design/"
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -263,7 +263,7 @@ func objectiveAdd(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	if o.IntegrationBranch == "" {
 		o.IntegrationBranch = "cardex/" + o.ID + "/main"
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -485,7 +485,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		}
 		c.Claims = append(c.Claims, model.Claim{Card: c.ID, Path: path, Symbol: symbol})
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

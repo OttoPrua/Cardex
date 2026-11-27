@@ -46,7 +46,7 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, "project set requires --id")
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -127,7 +127,7 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		fmt.Fprintln(stderr, "objective set requires --id")
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -189,7 +189,7 @@ func objectiveTransition(home string, asJSON bool, verb string, args []string, s
 		fmt.Fprintf(stderr, "objective %s <id>\n", verb)
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -244,7 +244,7 @@ func cardTransition(home string, asJSON bool, verb string, args []string, stdout
 		fmt.Fprintf(stderr, "card %s <id>\n", verb)
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -300,7 +300,7 @@ func cardAbsorb(home string, asJSON bool, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, "card absorb <id>")
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -328,7 +328,7 @@ func cardMerged(home string, asJSON bool, args []string, stdout, stderr io.Write
 		fmt.Fprintln(stderr, "card merged [--note <text>] <id>")
 		return 2
 	}
-	db, err := openStore(home)
+	db, err := openStoreForWrite(home)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

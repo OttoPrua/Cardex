@@ -52,12 +52,17 @@ func TestRunScratchKeepsExplicitTMPDIR(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := readAttemptLog(t, filepath.Join(home, "attempts", id, "output.log"))
-	if !strings.Contains(log, "TMPDIR="+sentinel) {
-		t.Fatalf("log\n%s", log)
+	for _, line := range strings.Split(strings.ReplaceAll(log, "\r\n", "\n"), "\n") {
+		tmp, ok := strings.CutPrefix(line, "TMPDIR=")
+		if !ok {
+			continue
+		}
+		if tmp != sentinel {
+			t.Fatalf("explicit TMPDIR changed: %q, want %q", tmp, sentinel)
+		}
+		return
 	}
-	if strings.Contains(log, "TMPDIR="+scratch+string(os.PathSeparator)) {
-		t.Fatalf("scratch overwrote TMPDIR\n%s", log)
-	}
+	t.Fatalf("TMPDIR not reported\n%s", log)
 }
 
 func TestRunProjectScratchOverridesHome(t *testing.T) {

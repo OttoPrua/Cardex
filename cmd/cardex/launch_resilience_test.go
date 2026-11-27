@@ -8,10 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 
-	"github.com/OttoPrua/Cardex/internal/host"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/sched"
 	"github.com/OttoPrua/Cardex/internal/store"
@@ -34,7 +32,6 @@ func TestCLIFirstDispatchCreatesIntegrationBranch(t *testing.T) {
 			tickHome(t, home)
 			db := openHome(t, home)
 			defer db.Close()
-			ctx := context.Background()
 			if gitRev(t, repo, "refs/heads/cardex/o/main") != primarySHA {
 				t.Fatalf("integration ref is not %s HEAD", primary)
 			}
@@ -52,7 +49,6 @@ func TestCLIFirstDispatchCreatesIntegrationBranch(t *testing.T) {
 			if _, err := os.Stat(attempts[0].Worktree); err != nil {
 				t.Fatal(err)
 			}
-			stopAttempts(home, attempts)
 			if primary == "main" {
 				mustCLI(t, "--home", home, "card", "add", "--id", "c2", "--objective", "o", "--title", "c2", "--kind", "dev", "--tier", "T2")
 				tickHome(t, home)
@@ -67,10 +63,7 @@ func TestCLIFirstDispatchCreatesIntegrationBranch(t *testing.T) {
 				if second.Status != model.CardRunning {
 					t.Fatalf("second %s", second.Status)
 				}
-				more := mustAttempts(t, db, "c2")
-				stopAttempts(home, more)
 			}
-			_ = ctx
 		})
 	}
 }
@@ -139,7 +132,6 @@ func TestCLIImportLegacyDispatchCreatesIntegrationBranch(t *testing.T) {
 	if _, err := os.Stat(attempts[0].Worktree); err != nil {
 		t.Fatal(err)
 	}
-	stopAttempts(home, attempts)
 }
 
 func mustCLI(t *testing.T, args ...string) {
@@ -153,7 +145,24 @@ func mustCLI(t *testing.T, args ...string) {
 
 func tickHome(t *testing.T, home string) {
 	t.Helper()
-	if err := sched.New(home).Tick(context.Background()); err != nil {
+	// These fixtures exercise the scheduler's real Git preparation, not a
+	// detached executor's lifetime. Keep a synthetic host record and do not
+	// leave Git worktree writers racing TempDir cleanup.
+	r := sched.New(home)
+	r.Launch = func(ctx context.Context, _ string, id string) (int, error) {
+		db, err := store.Open(filepath.Join(home, "cardex.db"))
+		if err != nil {
+			return 0, err
+		}
+		defer db.Close()
+		a, err := db.GetAttempt(ctx, id)
+		if err != nil {
+			return 0, err
+		}
+		a.PID = os.Getpid()
+		return a.PID, db.UpdateAttempt(ctx, &a)
+	}
+	if err := r.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -222,28 +231,4 @@ func gitCmd(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return strings.TrimSpace(string(out))
-}
-
-func stopAttempts(home string, attempts []model.Attempt) {
-	for _, attempt := range attempts {
-		if attempt.PID > 1 {
-			_ = host.SignalProcess(attempt.PID, syscall.SIGKILL)
-		}
-		pgidPath := filepath.Join(home, "attempts", attempt.ID, "executor.pgid")
-		raw, err := os.ReadFile(pgidPath)
-		if err != nil {
-			continue
-		}
-		pgid := 0
-		for _, c := range strings.TrimSpace(string(raw)) {
-			if c < '0' || c > '9' {
-				pgid = 0
-				break
-			}
-			pgid = pgid*10 + int(c-'0')
-		}
-		if pgid > 1 {
-			_ = host.SignalGroup(pgid, syscall.SIGKILL)
-		}
-	}
 }

@@ -390,6 +390,9 @@ func dedupeCands(in []cand) []cand {
 }
 
 func rejectReason(c cand, req Request, now time.Time) string {
+	if req.AvoidChannels[c.ch.ID] {
+		return ReasonPriorFailure
+	}
 	if c.ch.Health != model.HealthOK {
 		return ReasonHealth
 	}

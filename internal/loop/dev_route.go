@@ -14,11 +14,9 @@ import (
 
 // routeRequestFrom assembles the facts DevStep uses for an automatic channel
 // choice. deciding clears card and objective pins on the probe so the choice
-// itself is not an explicit pin. A later call is what dispatch reads back
-// after DevStep has stored the chosen channel: that stored channel is
-// not a pin. A user pin is put back only when it names a channel this card
-// has not already failed, including a channel replaced by an earlier
-// automatic switch. The channel the latest switch failed is omitted.
+// itself is not an explicit pin. The readback projection distinguishes
+// recorded prior pins and excludes the active chain's failed carriers. The
+// scheduler separately preserves stored pins until their ordinary release.
 // An empty positioning table supplies unsaved rows from each channel's own
 // tier and models; those rows are not written to the store.
 func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, objective model.Objective, now time.Time, failed string, deciding bool) (route.Request, error) {
@@ -54,14 +52,18 @@ func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, obj
 	}
 	probe := card
 	obj := objective
-	auto := latestAutoChoice(events, card.ID)
+	after := lastPassingAttempt(attempts, card.ID)
+	auto := latestAutoChoice(events, card.ID, after)
+	excluded := autoExcludedSince(events, card.ID, after)
 	if deciding {
 		probe.Channel = ""
 		probe.Model = ""
 		obj.Channel = ""
 		obj.Model = ""
+		if failed != "" {
+			excluded[failed] = true
+		}
 	} else {
-		excluded := autoExcluded(events, card.ID)
 		if failed == "" {
 			failed = auto.exclude
 		}
@@ -94,7 +96,10 @@ func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, obj
 			obj.Channel = ""
 		}
 	}
-	omit := failed
+	omit := ""
+	if !deciding {
+		omit = failed
+	}
 	if !deciding && auto.channel != "" {
 		if probe.Channel != "" && probe.Channel != auto.channel && omit == probe.Channel {
 			omit = ""
@@ -111,15 +116,95 @@ func routeRequestFrom(ctx context.Context, db *store.Store, card model.Card, obj
 		}
 	}
 	return route.Request{
-		Card:         probe,
-		Objective:    obj,
-		AuthorFamily: card.AuthorFamily,
-		Channels:     withoutChannel(channels, omit),
-		Positioning:  rows,
-		InUse:        inUse,
-		Quota:        led,
-		Now:          now,
+		Card:          probe,
+		Objective:     obj,
+		AuthorFamily:  card.AuthorFamily,
+		Channels:      withoutChannel(channels, omit),
+		Positioning:   rows,
+		InUse:         inUse,
+		Quota:         led,
+		Now:           now,
+		AvoidChannels: excluded,
 	}, nil
+}
+
+// AutomaticFallbackExclusions returns the active chain's exclusions and event
+// ID. It is only used after an unusable pin was released: a viable stored
+// channel cannot distinguish an automatic suggestion from a same-valued pin.
+func AutomaticFallbackExclusions(ctx context.Context, db *store.Store, card model.Card) (excluded map[string]bool, origin string, err error) {
+	if card.Channel == "" {
+		return nil, "", nil
+	}
+	events, err := db.ListEvents(ctx, "card:"+card.ID)
+	if err != nil {
+		return nil, "", err
+	}
+	attempts, err := db.ListAttempts(ctx, card.ID)
+	if err != nil {
+		return nil, "", err
+	}
+	after := lastPassingAttempt(attempts, card.ID)
+	auto := latestAutoChoice(events, card.ID, after)
+	if auto.exclude == "" || !matchesAutomaticTarget(events, card, auto, after) {
+		return nil, "", nil
+	}
+	// Validate the switch against its cause, not the newest attempt. An
+	// ordinary same-channel retry does not end the automatic failure chain.
+	for _, a := range attempts {
+		if a.Route.Channel != auto.exclude || a.EndedAt.IsZero() ||
+			(!after.IsZero() && !a.EndedAt.After(after)) ||
+			(auto.attempt == "" && a.EndedAt.After(auto.at)) || (auto.attempt != "" && a.ID != auto.attempt) {
+			continue
+		}
+		switch a.Outcome {
+		case model.OutcomeNoOutput, model.OutcomeQuotaHit, model.OutcomeAuthFailed, model.OutcomeUnavailable,
+			model.OutcomeTransport, model.OutcomeTimeout:
+			excluded := autoExcludedSince(events, card.ID, after)
+			excluded[card.Channel] = true
+			return excluded, auto.id, nil
+		}
+	}
+	return nil, "", nil
+}
+
+type hardAutoRelease struct {
+	Origin     string `json:"failover_origin"`
+	PinChannel string `json:"pin_channel"`
+	PinModel   string `json:"pin_model"`
+	Channel    string `json:"channel"`
+	Model      string `json:"model"`
+}
+
+func activeRelease(event model.Event, cardID string, after time.Time) (hardAutoRelease, bool) {
+	var release hardAutoRelease
+	ok := event.Type == "pin_released" && event.Entity == "card:"+cardID &&
+		(after.IsZero() || event.TS.After(after)) && json.Unmarshal(event.Data, &release) == nil &&
+		release.Origin != "" && release.PinChannel != "" && release.Channel != "" && release.PinChannel != release.Channel
+	return release, ok
+}
+
+// Each durable hard release links the previous effective pin to the route
+// actually written with it. Use links rather than timestamps for the chain's
+// order, since callers can share the same clock value.
+func matchesAutomaticTarget(events []model.Event, card model.Card, auto autoChoice, after time.Time) bool {
+	if auto.channel == "" {
+		return false
+	}
+	next := map[model.Route]model.Route{}
+	for _, event := range events {
+		if release, ok := activeRelease(event, card.ID, after); ok && release.Origin == auto.id {
+			next[model.Route{Channel: release.PinChannel, Model: release.PinModel}] = model.Route{Channel: release.Channel, Model: release.Model}
+		}
+	}
+	target := model.Route{Channel: auto.channel}
+	for i := 0; i <= len(next); i++ {
+		step, ok := next[target]
+		if !ok {
+			return target == (model.Route{Channel: card.Channel, Model: card.Model})
+		}
+		target = step
+	}
+	return false
 }
 
 func globalOccupancy(ctx context.Context, db *store.Store) (map[string]int, []model.Attempt, error) {
@@ -149,9 +234,8 @@ func globalOccupancy(ctx context.Context, db *store.Store) (map[string]int, []mo
 	return inUse, attempts, nil
 }
 
-// withoutChannel drops failed. A pin that names that channel does not put
-// it back. route.Select has no exclude field; omitting it from Channels is
-// the exclusion the current request type can express.
+// withoutChannel preserves the readback projection's omission of the most
+// recent failed channel; AvoidChannels filters other failed carriers.
 func withoutChannel(channels []model.Channel, failed string) []model.Channel {
 	if failed == "" {
 		out := append([]model.Channel(nil), channels...)
@@ -168,6 +252,9 @@ func withoutChannel(channels []model.Channel, failed string) []model.Channel {
 }
 
 type autoChoice struct {
+	id               string
+	at               time.Time
+	attempt          string
 	channel          string
 	pin              string
 	exclude          string
@@ -179,16 +266,17 @@ type autoChoice struct {
 	hasObjModel      bool
 }
 
-func latestAutoChoice(events []model.Event, cardID string) autoChoice {
+func latestAutoChoice(events []model.Event, cardID string, after time.Time) autoChoice {
 	var last autoChoice
 	for _, event := range events {
-		if event.Type != "auto_route" || event.Entity != "card:"+cardID {
+		if !activeAutoRoute(event, cardID, after) {
 			continue
 		}
 		var data struct {
 			Channel          string  `json:"channel"`
 			Pin              string  `json:"pin"`
 			Exclude          string  `json:"exclude"`
+			Attempt          string  `json:"attempt"`
 			ModelPin         *string `json:"model_pin"`
 			ObjectiveChannel *string `json:"objective_channel"`
 			ObjectiveModel   *string `json:"objective_model"`
@@ -196,7 +284,7 @@ func latestAutoChoice(events []model.Event, cardID string) autoChoice {
 		if json.Unmarshal(event.Data, &data) != nil {
 			continue
 		}
-		last = autoChoice{channel: data.Channel, pin: data.Pin, exclude: data.Exclude}
+		last = autoChoice{id: event.ID, at: event.TS, attempt: data.Attempt, channel: data.Channel, pin: data.Pin, exclude: data.Exclude}
 		if data.ModelPin != nil {
 			last.modelPin = *data.ModelPin
 			last.hasModelPin = true
@@ -253,13 +341,17 @@ func channelsOffer(channels []model.Channel, id, modelName string) bool {
 	return false
 }
 
-// autoExcluded is every channel an automatic switch on this card already
-// replaced because that channel failed. Later switches keep suppressing a
-// pin that names one of them, not only the latest exclude.
-func autoExcluded(events []model.Event, cardID string) map[string]bool {
+func activeAutoRoute(event model.Event, cardID string, after time.Time) bool {
+	return event.Type == "auto_route" && event.Entity == "card:"+cardID && (after.IsZero() || event.TS.After(after))
+}
+
+// Later switches keep suppressing the earlier failed carriers of this chain,
+// not just the most recently failed one.
+func autoExcludedSince(events []model.Event, cardID string, after time.Time) map[string]bool {
 	out := map[string]bool{}
+	roots := map[string]bool{}
 	for _, event := range events {
-		if event.Type != "auto_route" || event.Entity != "card:"+cardID {
+		if !activeAutoRoute(event, cardID, after) {
 			continue
 		}
 		var data struct {
@@ -269,20 +361,38 @@ func autoExcluded(events []model.Event, cardID string) map[string]bool {
 			continue
 		}
 		out[data.Exclude] = true
+		roots[event.ID] = true
+	}
+	for _, event := range events {
+		if release, ok := activeRelease(event, cardID, after); ok && roots[release.Origin] {
+			out[release.PinChannel] = true
+		}
 	}
 	return out
+}
+
+// A successful attempt ends the automatic failure chain. Later rework does
+// not inherit the transient exclusions of an attempt that has already passed.
+func lastPassingAttempt(attempts []model.Attempt, cardID string) time.Time {
+	var at time.Time
+	for _, attempt := range attempts {
+		if attempt.Card == cardID && attempt.Outcome == model.OutcomePassed && attempt.EndedAt.After(at) {
+			at = attempt.EndedAt
+		}
+	}
+	return at
 }
 
 // keptPin is the user pin to remember across an automatic write. A channel
 // stored by the previous auto_route is not itself a user pin. A pin that
 // names a channel an earlier automatic switch already failed is not kept.
-func keptPin(events []model.Event, card model.Card) string {
-	auto := latestAutoChoice(events, card.ID)
+func keptPin(events []model.Event, card model.Card, after time.Time) string {
+	auto := latestAutoChoice(events, card.ID, after)
 	pin := card.Channel
-	if auto.channel != "" && card.Channel == auto.channel {
+	if matchesAutomaticTarget(events, card, auto, after) {
 		pin = auto.pin
 	}
-	if autoExcluded(events, card.ID)[pin] {
+	if autoExcludedSince(events, card.ID, after)[pin] {
 		return ""
 	}
 	return pin

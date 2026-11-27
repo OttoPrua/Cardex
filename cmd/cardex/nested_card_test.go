@@ -13,6 +13,12 @@ import (
 // those writes into the nested-card refusal. TestManagedExecutorCardWrite
 // sets the marker itself for the refusal cases.
 func TestMain(m *testing.M) {
+	if code, handled := runLiveSnapshotWorker(os.Args[1:]); handled {
+		os.Exit(code)
+	}
+	if code, handled := snapshotTestManifest(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	os.Unsetenv("CARDEX_MANAGED_EXECUTOR")
 	os.Exit(m.Run())
 }

@@ -143,3 +143,26 @@ Hermes 接收者读取 `<root>/control/manager-wake/hermes-inbox/<id>/*.json`。
 对当前这次失败，调度器必须先发出明确的重试选择。直接用 `cardex question answer --retry <id> approve` 回答并入队，或在选择已批准后显式执行 `cardex card recover <id>`。恢复优先使用原来明确指定的卡渠道；若没有卡渠道，则使用目标渠道和型号。目标不能使用时不换其他渠道；旧的批准也不能替新的失败解锁。这个限制不改变正常的自动换渠道。
 
 修复和变基卡的原始诊断保留在本地；发送给执行器的卡正文只有错误类别及计数。可另外用 `cardex card recover --note <code> <id>` 附加一个固定提示：`boundary-check` 检查边界、`rerun-checks` 重跑验收、`resolve-conflicts` 解决冲突。该命令不接受自由文本，不会修改状态、渠道或等待原因。较旧、没有结构化重试记录的失败不会被自动重试；暂停后也不能绕过原有阻塞。
+## 只读状态快照
+
+`cardex --home <home> snapshot --json [--card <id>]` 用一次调用返回
+版本、schema、卡片状态、最新尝试及渠道/模型、最多八条已知事件的类型和时间。
+不读取 prompt、卡片正文、事件 payload、完整配置或原始错误。它不探测服务，
+所以 `serve` 始终为 `unknown`。
+
+检查原数据目录需要 Linux，并且 home 的路径各层都不能是符号链接；数据库与锁等
+文件也不能是硬链接。严格读取仅支持已校验的本地文件系统（ext4 系列、XFS、btrfs、
+tmpfs、F2FS、overlayfs），需要 procfs 和 `O_NOATIME`。普通路径读取已完成
+checkpoint 的数据库，并监视读取期间的数据文件、锁及侧文件的命名和 inode 变化。
+它覆盖正常 SQLite 并发及本地路径替换并还原的竞态，不保证抵御绕过 SQLite 锁
+直接修改底层文件的任意进程。Linux x86-64 在内核支持 seccomp、
+可用 procfs 和 `O_NOATIME` 的情况下，还能使用现有 SQLite WAL 锁读取活动数据库。
+同一次快照只包含一次事务内已提交的记录，不初始化、修复或创建 WAL/SHM，
+也不迁移 schema。检测到日志文件不匹配、文件替换或保护条件不满足时，
+会返回不可用，不把可能过时的主文件当作实时状态。
+
+macOS、Windows 等其他平台或缺少必要内核保护时，应先由正常流程准备不再写入的
+备份，确认已完成 checkpoint，再用
+`cardex --home <备份目录> snapshot --json --checkpointed-copy [--card <id>]`。
+备份要包含数据库和原有锁文件，且读取时不能被替换或写入。此路径不要求
+`O_NOATIME`，备份自身的访问时间可能变化。不要单独复制使用中的主文件，也不要手工删除 WAL/SHM 绕过检查。

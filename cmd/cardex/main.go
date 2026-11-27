@@ -43,11 +43,15 @@ commands:
   notify add|list|remove|test
   proxy show|check
   doctor
+  snapshot --json [--card <id>] [--checkpointed-copy]
   version
   host <attempt-id>
 `
 
 func main() {
+	if code, ok := runLiveSnapshotWorker(os.Args[1:]); ok {
+		os.Exit(code)
+	}
 	ensureSystemPath()
 	os.Exit(Main(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -66,6 +70,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	if isGlobalHelp(rest) {
 		fmt.Fprint(stdout, usage)
 		return 0
+	}
+	if rest[0] == "snapshot" {
+		return cmdSnapshot(home, asJSON, rest[1:], stdout, stderr)
 	}
 	if rest[0] == "doctor" {
 		return cmdDoctor(home, rest[1:], stdout, stderr)

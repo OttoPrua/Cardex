@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -181,7 +182,7 @@ type notesKey struct{}
 
 // WithTx runs fn inside a transaction. Nested calls join the outer transaction.
 // Lifecycle events are saved before commit and delivered after it.
-func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) (err error) {
+func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) error {
 	if _, ok := ctx.Value(txKey{}).(execer); ok {
 		return fn(ctx)
 	}
@@ -189,16 +190,53 @@ func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) (err
 	if err != nil {
 		return err
 	}
+	defer tx.Rollback()
+	return s.runTx(ctx, tx, fn, tx.Commit)
+}
+
+// WithWriteTx reserves the SQLite writer before reading data that the operation
+// will change. A deferred read transaction cannot upgrade its snapshot after
+// another WAL writer commits, even with busy_timeout. Nested calls still join
+// the outer transaction; the owner of a read-then-write transaction must use
+// WithWriteTx at the outermost boundary.
+func (s *Store) WithWriteTx(ctx context.Context, fn func(context.Context) error) error {
+	if _, ok := ctx.Value(txKey{}).(execer); ok {
+		return fn(ctx)
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return err
+	}
+	committed := false
 	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
+		if !committed {
+			if _, err := conn.ExecContext(context.WithoutCancel(ctx), "ROLLBACK"); err != nil {
+				// A driver connection whose transaction could not be rolled
+				// back must not be returned to the connection pool.
+				_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+			}
 		}
 	}()
+	return s.runTx(ctx, conn, fn, func() error {
+		_, err := conn.ExecContext(ctx, "COMMIT")
+		if err == nil {
+			committed = true
+			_ = conn.Close()
+		}
+		return err
+	})
+}
+
+func (s *Store) runTx(ctx context.Context, conn execer, fn func(context.Context) error, commit func() error) error {
 	callerCtx := ctx
 	notes := &commitNotes{}
-	ctx = context.WithValue(ctx, txKey{}, tx)
+	ctx = context.WithValue(ctx, txKey{}, conn)
 	ctx = context.WithValue(ctx, notesKey{}, notes)
-	if err = fn(ctx); err != nil {
+	if err := fn(ctx); err != nil {
 		return err
 	}
 	var deliveries []int64
@@ -211,7 +249,7 @@ func (s *Store) WithTx(ctx context.Context, fn func(context.Context) error) (err
 			deliveries = append(deliveries, id)
 		}
 	}
-	if err = tx.Commit(); err != nil {
+	if err := commit(); err != nil {
 		return err
 	}
 	if PublishCardNote != nil {

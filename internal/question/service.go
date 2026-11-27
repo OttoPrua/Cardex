@@ -159,7 +159,7 @@ func (s *svc) Answer(ctx context.Context, id, option string) (model.Question, er
 		return model.Question{}, errors.New("question: nil store")
 	}
 	var q model.Question
-	if err := s.store.WithTx(ctx, func(txCtx context.Context) error {
+	if err := s.store.WithWriteTx(ctx, func(txCtx context.Context) error {
 		var err error
 		q, err = s.store.GetQuestion(txCtx, id)
 		if err != nil {

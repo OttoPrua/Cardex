@@ -352,7 +352,7 @@ purpose: answer goes through question.Service and stores only a listed option
 parameters:
   list    --objective --json
   show    <id> --json
-  answer  <id> <option>
+  answer  <id> <option> [--retry] --json
 `
 
 func cmdQuestion(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
@@ -422,12 +422,22 @@ func questionShow(home string, asJSON bool, args []string, stdout, stderr io.Wri
 }
 
 func questionAnswer(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("question answer", "save one stored option through question.Service", "<id> <option> --json", stdout, stderr)
+	fs := newFlagSet("question answer", "save one stored option; optionally queue an approved transient retry", "<id> <option> [--retry] --json", stdout, stderr)
+	retry := fs.Bool("retry", false, "atomically save approve and return this card to the ready queue")
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		if flagToken(arg) == "retry" {
+			args = hoistFlags(fs, args)
+			break
+		}
+	}
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
-	if fs.NArg() < 1 {
-		fmt.Fprintln(stderr, "question answer <id> <option>")
+	if fs.NArg() < 1 || (*retry && fs.NArg() != 2) {
+		fmt.Fprintln(stderr, "question answer <id> <option> [--retry]")
 		return 2
 	}
 	option := ""
@@ -440,8 +450,17 @@ func questionAnswer(home string, asJSON bool, args []string, stdout, stderr io.W
 		return 1
 	}
 	defer db.Close()
+	ctx := context.Background()
+	if *retry {
+		result, err := question.AnswerAndRetry(ctx, db, fs.Arg(0), option)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return emit(stdout, asJSON, result, result.Question+"\t"+result.Answer+"\t"+result.Card+"\t"+string(result.Status))
+	}
 	svc := question.New(db, nil)
-	q, err := svc.Answer(context.Background(), fs.Arg(0), option)
+	q, err := svc.Answer(ctx, fs.Arg(0), option)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

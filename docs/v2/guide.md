@@ -42,7 +42,7 @@ cardex channel set --id ch1 --runner grok --redline 0.25 --model lumen-model --w
 cardex objective add --project p --title 账单 --mode auto --freeze-mode fast --origin codex:<thread>
 ```
 
-`objective list` 和 `objective show` 看状态。`objective pause`、`objective resume`、`objective cancel` 改目标状态。
+`objective list` 和 `objective show` 看状态。上下文压缩后用 `cardex objective brief <id>` 看当前阶段、已冻结范围、待批准事项和最近记录的决定（各显示最多三条，保留总数）。升级之前未记录时间的决定不冒充最近决定，可用 `question list` 查阅。`objective pause`、`objective resume`、`objective cancel` 改目标状态。
 
 ## 设计时的事实研究
 

@@ -162,6 +162,8 @@ func cmdObjective(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		return objectiveList(home, asJSON, args[1:], stdout, stderr)
 	case "show":
 		return objectiveShow(home, asJSON, args[1:], stdout, stderr)
+	case "brief":
+		return objectiveResumeBrief(home, asJSON, args[1:], stdout, stderr)
 	case "set":
 		return objectiveSet(home, asJSON, args[1:], stdout, stderr)
 	case "pause", "resume", "cancel":

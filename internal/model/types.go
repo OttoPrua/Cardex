@@ -272,6 +272,9 @@ type Question struct {
 	Deliveries []Delivery   `json:"deliveries"` // 投递记录。
 }
 
+// EventObjectiveDecision records when a stored answer last changed without copying its text.
+const EventObjectiveDecision = "objective_decision"
+
 // Event is an append-only fact used by the board and the scorecard.
 type Event struct {
 	ID     string          `json:"id"`     // 事件标识。

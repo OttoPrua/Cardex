@@ -92,12 +92,13 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 }
 
 const objectiveGroupUsage = `objective — read and update objective records
-purpose: add, list, show, set, pause, resume, or cancel an objective
+purpose: add, list, show, brief, set, pause, resume, or cancel an objective
 
 parameters:
   add     --id --project --title --acceptance --check --soft-tokens --hard-tokens --priority --mode --freeze-mode --origin --status --integration-branch --channel --model --review --events on|off|inherit
   list    --project --json
   show    <id> --brief [--origin <kind:id>] --json
+  brief   <id> --json
   set     --id <id> --mode --freeze-mode --soft-tokens --hard-tokens --priority --review --events on|off|inherit
   pause   <id>
   resume  <id>

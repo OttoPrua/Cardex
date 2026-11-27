@@ -27,7 +27,7 @@ commands:
   setup [--yes]          first run: find CLIs, check sign-in, add channels
   serve
   project add|list|show|set
-  objective add|list|show|set|pause|resume|cancel
+  objective add|list|show|brief|set|pause|resume|cancel
   node list|show|freeze|reopen
   card add|list|show|cancel|retry|pause|resume|revive|absorb|merged
   wait <card-id|objective-id> --until <statuses> --timeout <duration>

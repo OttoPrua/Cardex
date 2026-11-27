@@ -196,6 +196,9 @@ func buildSummary(ctx context.Context, in Input, dir, base string, acceptance []
 
 // WriteUnavailableSummary records an ended attempt whose checkout could not be harvested.
 func WriteUnavailableSummary(ctx context.Context, in Input) error {
+	if err := invalidateStageEvidence(in); err != nil {
+		return err
+	}
 	sum := buildSummary(ctx, in, "", in.Attempt.BaseCommit, nil, "", false)
 	return writeSummary(in.Home, in.Attempt, sum)
 }

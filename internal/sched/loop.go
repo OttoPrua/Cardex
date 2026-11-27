@@ -886,6 +886,11 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 		}
 		in.ReworkNote = material
 	}
+	stage, err := r.buildStageContext(ctx, db, card, obj, repo, *attempt, dir)
+	if err != nil {
+		return err
+	}
+	in.Stage = stage
 	text, err := r.promptText(ctx, in)
 	if err != nil {
 		return err

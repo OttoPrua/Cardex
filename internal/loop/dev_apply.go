@@ -1092,6 +1092,9 @@ func (st *step) absorbPlan(card model.Card, attempt model.Attempt) error {
 		}
 		ids = append(ids, created.ID)
 	}
+	if err := appendStageParents(st.ctx, st.db, ids, card.ID, attempt.ID); err != nil {
+		return err
+	}
 	return st.event("card:"+card.ID, "plan_split", map[string]any{"node": card.Node, "cards": ids})
 }
 

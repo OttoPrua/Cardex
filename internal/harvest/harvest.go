@@ -27,6 +27,9 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
+	if err := invalidateStageEvidence(in); err != nil {
+		return Result{}, err
+	}
 	dir := strings.TrimSpace(in.Attempt.Worktree)
 	if dir == "" {
 		dir = strings.TrimSpace(in.Repo)
@@ -47,6 +50,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	frozenCandidate := stageCandidate(ctx, in, dir)
 	acceptRan := hasAcceptance(in.Card.Acceptance)
 	env := proc.AcceptanceEnv(os.Environ())
 	var scratchRoot string
@@ -98,6 +102,11 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	sum := buildSummary(ctx, in, dir, base, acceptance, raw, result != resultMissing)
 	if werr := writeSummary(in.Home, in.Attempt, sum); werr != nil {
 		res.EvidenceErr = errors.Join(res.EvidenceErr, werr)
+	}
+	if frozenCandidate != "" {
+		if werr := saveStageEvidence(ctx, in, dir, frozenCandidate, outcome, runs, sum); werr != nil {
+			res.EvidenceErr = errors.Join(res.EvidenceErr, werr)
+		}
 	}
 	return res, nil
 }

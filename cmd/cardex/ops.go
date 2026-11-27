@@ -17,10 +17,10 @@ const projectGroupUsage = `project — read and update project records
 purpose: add, list, show, or set a project stored in the home database
 
 parameters:
-  add   --id --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off --review auto|off|check|review --scratch-dir --events on|off
+  add   --id --repo --worktree-root --test-cmd --design-dir --forbidden --hard-rule --sandbox on|off --review auto|off|check|review --scratch-dir --events on|off
   list  --json
   show  <id> --json
-  set   --id <id> --repo --worktree-root --test-cmd --design-dir --forbidden --sandbox on|off --review auto|off|check|review --scratch-dir --events on|off
+  set   --id <id> --repo --worktree-root --test-cmd --design-dir --forbidden --hard-rule --sandbox on|off --review auto|off|check|review --scratch-dir --events on|off
 `
 
 func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
@@ -34,8 +34,9 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	reviewMode := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
 	scratchDir := fs.String("scratch-dir", "", "scratch directory for this project's card runs and acceptance commands; overrides the home scratch_dir")
 	eventsMode := fs.String("events", "", "card lifecycle events: on, or off (default off)")
-	var forbidden stringsFlag
+	var forbidden, rules stringsFlag
 	fs.Var(&forbidden, "forbidden", "forbidden path")
+	fs.Var(&rules, "hard-rule", "replace project hard rules; repeat for multiple rules or pass an empty value to clear")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -72,6 +73,9 @@ func projectSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 	if flagSeen(fs, "forbidden") {
 		p.ForbiddenPaths = forbidden
 	}
+	if flagSeen(fs, "hard-rule") {
+		p.HardRules = rules
+	}
 	if flagSeen(fs, "sandbox") {
 		p.Sandbox = *sandboxMode
 	}
@@ -95,10 +99,10 @@ const objectiveGroupUsage = `objective — read and update objective records
 purpose: add, list, show, set, pause, resume, or cancel an objective
 
 parameters:
-  add     --id --project --title --acceptance --check --soft-tokens --hard-tokens --priority --mode --freeze-mode --origin --status --integration-branch --channel --model --review --events on|off|inherit
+  add     --id --project --title --acceptance --check --hard-rule --soft-tokens --hard-tokens --priority --mode --freeze-mode --origin --status --integration-branch --channel --model --review --events on|off|inherit
   list    --project --json
   show    <id> --brief [--origin <kind:id>] --json
-  set     --id <id> --mode --freeze-mode --soft-tokens --hard-tokens --priority --review --events on|off|inherit
+  set     --id <id> --mode --freeze-mode --soft-tokens --hard-tokens --priority --hard-rule --review --events on|off|inherit
   pause   <id>
   resume  <id>
   cancel  <id>
@@ -117,6 +121,8 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 	fs.Var(priority, "priority", "priority")
 	reviewMode := fs.String("review", "", "review mode: auto, off, check, review, or inherit (see docs/review-policy.md)")
 	eventsMode := fs.String("events", "", "card lifecycle events: on, off, or inherit (empty inherits the project; default off)")
+	var rules stringsFlag
+	fs.Var(&rules, "hard-rule", "replace objective hard rules; repeat for multiple rules or pass an empty value to clear")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
 	}
@@ -139,6 +145,9 @@ func objectiveSet(home string, asJSON bool, args []string, stdout, stderr io.Wri
 		return 1
 	}
 	var notes []string
+	if flagSeen(fs, "hard-rule") {
+		o.HardRules = rules
+	}
 	if flagSeen(fs, "mode") {
 		val, ok := normalizeObjectiveMode(*mode)
 		if !ok {

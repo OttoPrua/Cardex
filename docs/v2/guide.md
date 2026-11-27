@@ -42,7 +42,9 @@ cardex channel set --id ch1 --runner grok --redline 0.25 --model lumen-model --w
 cardex objective add --project p --title 账单 --mode auto --freeze-mode fast --origin codex:<thread>
 ```
 
-`objective list` 和 `objective show` 看状态。`objective pause`、`objective resume`、`objective cancel` 改目标状态。
+`objective list` 和 `objective show` 看状态。
+
+项目和目标可通过 `add` 或 `set` 的可重复 `--hard-rule "规则"` 写入卡片提示词共用的文本规则。每次派发和续跑都先继承项目规则，再追加目标规则；相同文本只出现一次。更新时传入整组规则，`--hard-rule=` 清除当前层；不传该参数则保留现有设置。这是提示词约束，不替代沙箱或禁改路径。`objective pause`、`objective resume`、`objective cancel` 改目标状态。
 
 ## 设计时的事实研究
 

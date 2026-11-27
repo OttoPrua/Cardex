@@ -82,7 +82,7 @@ func TestOpenCompletesEitherV8Schema(t *testing.T) {
 					t.Fatal(err)
 				}
 				defer reopened.Close()
-				if version, err := reopened.SchemaVersion(ctx); err != nil || version != 11 {
+				if version, err := reopened.SchemaVersion(ctx); err != nil || version != latestSchema {
 					t.Fatalf("schema version %d, error %v", version, err)
 				}
 				got, err := reopened.GetProject(ctx, project.ID)

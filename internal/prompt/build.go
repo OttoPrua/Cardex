@@ -54,6 +54,7 @@ func Build(ctx context.Context, in Input) (string, error) {
 	if !strings.HasSuffix(preface, "\n") {
 		b.WriteByte('\n')
 	}
+	b.WriteString(inheritedHardRules(in.ProjectRules, in.Objective.HardRules))
 	b.WriteString(contextStart)
 	b.WriteString(contextBytes)
 	b.WriteString(contextEnd)
@@ -68,6 +69,25 @@ func Build(ctx context.Context, in Input) (string, error) {
 	b.WriteString(cardStart)
 	b.WriteString(renderCard(in))
 	return b.String(), nil
+}
+
+func inheritedHardRules(project, objective []string) string {
+	var b strings.Builder
+	seen := make(map[string]bool)
+	for _, group := range [][]string{project, objective} {
+		for _, rule := range group {
+			if rule = strings.TrimSpace(rule); rule == "" || seen[rule] {
+				continue
+			}
+			if b.Len() == 0 {
+				b.WriteString("\n## Inherited hard rules (project, then objective)\n")
+				b.WriteString("Apply these rules in addition to the card requirements; flag conflicts rather than ignoring either rule.\n")
+			}
+			seen[rule] = true
+			fmt.Fprintf(&b, "- %s\n", rule)
+		}
+	}
+	return b.String()
 }
 
 func wantsFacts(kind model.CardKind) bool {

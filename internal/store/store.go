@@ -20,7 +20,7 @@ import (
 )
 
 // latestSchema is the migration applied by Open.
-const latestSchema = 11
+const latestSchema = 12
 
 // ErrAppendOnly is returned by event update and delete.
 var ErrAppendOnly = errors.New("event is append-only")
@@ -465,6 +465,22 @@ func (s *Store) migrate(ctx context.Context, backupDir string) error {
 			}
 		}
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (11, ?)`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+	}
+	if current < 12 {
+		for _, table := range []string{"projects", "objectives"} {
+			var has int
+			if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name='hard_rules'`, table).Scan(&has); err != nil {
+				return fmt.Errorf("migration 12: %w", err)
+			}
+			if has == 0 {
+				if _, err := conn.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN hard_rules TEXT NOT NULL DEFAULT '[]'`); err != nil {
+					return fmt.Errorf("migration 12: %w", err)
+				}
+			}
+		}
+		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (12, ?)`, formatTime(time.Now())); err != nil {
 			return err
 		}
 	}

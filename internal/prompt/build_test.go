@@ -382,3 +382,30 @@ func git(t *testing.T, dir string, args ...string) string {
 	}
 	return string(out)
 }
+
+func TestInheritedHardRulesPreserveScopeAndRemoveDuplicates(t *testing.T) {
+	in := Input{
+		Card:         model.Card{ID: "demo", Kind: model.KindDev, Body: "Synthetic body"},
+		ProjectRules: []string{"Do not publish.", "Use generated fixtures only."},
+		Objective:    model.Objective{HardRules: []string{"Use generated fixtures only.", "Exclude unrelated packages."}},
+		Context:      "Synthetic context",
+	}
+	got, err := Build(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "- Do not publish.\n- Use generated fixtures only.\n- Exclude unrelated packages.\n"
+	if !strings.Contains(got, want) || strings.Count(got, "Use generated fixtures only.") != 1 ||
+		strings.Index(got, want) > strings.Index(got, "Synthetic body") {
+		t.Fatalf("inherited rules missing, reordered, or duplicated: %s", got)
+	}
+	without := in
+	without.ProjectRules = nil
+	without.Objective.HardRules = nil
+	without.Card.Body += "\n" + want
+	old, err := Build(context.Background(), without)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("synthetic rules: old per-card body repeats %d bytes across 4 cards and needs 4 rule edits; stored scopes remove those copies and require 2 scope edits. One actual assembled prompt: old=%d bytes, inherited=%d bytes.", 4*len(want), len(old), len(got))
+}

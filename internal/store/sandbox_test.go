@@ -15,7 +15,7 @@ func TestCardSandboxField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := db.SchemaVersion(ctx); v != 11 {
+	if v, _ := db.SchemaVersion(ctx); v != latestSchema {
 		t.Fatalf("schema version %d, want 11", v)
 	}
 	mk := func(id, sb string) error {

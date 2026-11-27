@@ -28,17 +28,26 @@ func (s *Store) CreateProject(ctx context.Context, p *model.Project) error {
 	}
 	p.ForbiddenPaths = normStrings(p.ForbiddenPaths)
 	p.ScratchDir = stringsTrim(p.ScratchDir)
+	hardRules, err := normalizeHardRules(p.HardRules)
+	if err != nil {
+		return err
+	}
+	p.HardRules = hardRules
+	rules, err := mustJSON(hardRules)
+	if err != nil {
+		return err
+	}
 	raw, err := mustJSON(p.ForbiddenPaths)
 	if err != nil {
 		return err
 	}
-	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO projects(id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review, scratch_dir, events) VALUES (?,?,?,?,?,?,?,?,?,?)`,
-		p.ID, p.RepoPath, p.WorktreeRoot, p.TestCmd, p.DesignDir, raw, p.Sandbox, p.Review, p.ScratchDir, p.Events)
+	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO projects(id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review, scratch_dir, events, hard_rules) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		p.ID, p.RepoPath, p.WorktreeRoot, p.TestCmd, p.DesignDir, raw, p.Sandbox, p.Review, p.ScratchDir, p.Events, rules)
 	return err
 }
 
 func (s *Store) GetProject(ctx context.Context, id string) (model.Project, error) {
-	row := s.q(ctx).QueryRowContext(ctx, `SELECT id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review, scratch_dir, events FROM projects WHERE id=?`, id)
+	row := s.q(ctx).QueryRowContext(ctx, `SELECT id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review, scratch_dir, events, hard_rules FROM projects WHERE id=?`, id)
 	return scanProject(row)
 }
 
@@ -57,12 +66,21 @@ func (s *Store) UpdateProject(ctx context.Context, p *model.Project) error {
 	}
 	p.ForbiddenPaths = normStrings(p.ForbiddenPaths)
 	p.ScratchDir = stringsTrim(p.ScratchDir)
+	hardRules, err := normalizeHardRules(p.HardRules)
+	if err != nil {
+		return err
+	}
+	p.HardRules = hardRules
+	rules, err := mustJSON(hardRules)
+	if err != nil {
+		return err
+	}
 	raw, err := mustJSON(p.ForbiddenPaths)
 	if err != nil {
 		return err
 	}
-	res, err := s.q(ctx).ExecContext(ctx, `UPDATE projects SET repo_path=?, worktree_root=?, test_cmd=?, design_dir=?, forbidden_paths=?, sandbox=?, review=?, scratch_dir=?, events=? WHERE id=?`,
-		p.RepoPath, p.WorktreeRoot, p.TestCmd, p.DesignDir, raw, p.Sandbox, p.Review, p.ScratchDir, p.Events, p.ID)
+	res, err := s.q(ctx).ExecContext(ctx, `UPDATE projects SET repo_path=?, worktree_root=?, test_cmd=?, design_dir=?, forbidden_paths=?, sandbox=?, review=?, scratch_dir=?, events=?, hard_rules=? WHERE id=?`,
+		p.RepoPath, p.WorktreeRoot, p.TestCmd, p.DesignDir, raw, p.Sandbox, p.Review, p.ScratchDir, p.Events, rules, p.ID)
 	return rowsAffected(res, err)
 }
 
@@ -72,7 +90,7 @@ func (s *Store) DeleteProject(ctx context.Context, id string) error {
 }
 
 func (s *Store) ListProjects(ctx context.Context) ([]model.Project, error) {
-	rows, err := s.q(ctx).QueryContext(ctx, `SELECT id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review, scratch_dir, events FROM projects ORDER BY id`)
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT id, repo_path, worktree_root, test_cmd, design_dir, forbidden_paths, sandbox, review, scratch_dir, events, hard_rules FROM projects ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -92,8 +110,8 @@ type scanner interface{ Scan(...any) error }
 
 func scanProject(sc scanner) (model.Project, error) {
 	var p model.Project
-	var forbidden string
-	if err := sc.Scan(&p.ID, &p.RepoPath, &p.WorktreeRoot, &p.TestCmd, &p.DesignDir, &forbidden, &p.Sandbox, &p.Review, &p.ScratchDir, &p.Events); err != nil {
+	var forbidden, rules string
+	if err := sc.Scan(&p.ID, &p.RepoPath, &p.WorktreeRoot, &p.TestCmd, &p.DesignDir, &forbidden, &p.Sandbox, &p.Review, &p.ScratchDir, &p.Events, &rules); err != nil {
 		return p, err
 	}
 	if err := parseJSON(forbidden, &p.ForbiddenPaths); err != nil {
@@ -101,6 +119,9 @@ func scanProject(sc scanner) (model.Project, error) {
 	}
 	p.ForbiddenPaths = normStrings(p.ForbiddenPaths)
 	p.ScratchDir = stringsTrim(p.ScratchDir)
+	if err := parseJSON(rules, &p.HardRules); err != nil {
+		return p, err
+	}
 	return p, nil
 }
 

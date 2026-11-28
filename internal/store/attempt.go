@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -42,6 +43,24 @@ func (s *Store) CreateAttempt(ctx context.Context, a *model.Attempt) error {
 		return err
 	}
 	return s.insertAttempt(ctx, a)
+}
+
+// RecordAttemptPreparation pins the owning card's current revision to the
+// scheduler's pre-executor timestamp. The caller writes it inside the same
+// transaction as the attempt and the Running transition.
+func (s *Store) RecordAttemptPreparation(ctx context.Context, a model.Attempt) error {
+	var revision string
+	if err := s.q(ctx).QueryRowContext(ctx, `SELECT changed_at FROM cards WHERE id=?`, a.Card).Scan(&revision); err != nil {
+		return err
+	}
+	if revision == "" || a.StartedAt.IsZero() {
+		return fmt.Errorf("attempt preparation requires card revision and timestamp")
+	}
+	raw, err := mustJSON(revision)
+	if err != nil {
+		return err
+	}
+	return s.AppendEvent(ctx, &model.Event{Entity: "attempt:" + a.ID, Type: model.EventAttemptPrepared, TS: a.StartedAt, Data: json.RawMessage(raw)})
 }
 
 const attemptWriteColumns = `card_id, attempt_index, channel, model, route_reason, worktree, branch, base_commit, head_commit, pid, started_at, ended_at, exit_code, exited, usage, outcome, error_class, error_excerpt, prompt_path`

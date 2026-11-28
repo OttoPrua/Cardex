@@ -105,7 +105,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		approvedBindingID = attempt.RouteReason.Dispatch.CompatibleBindingID
 	}
 	if !strict && syntheticCompatibleRelay == nil && (approvedBindingID != "" || channel.CompatibleRuntimeHeld()) {
-		return holdCompatibleHostAttempt(ctx, db, card, attempt)
+		return db.HoldPreparedCompatibleAttempt(ctx, card, attempt, observeCompatibleObjective(ctx, db, card), time.Now())
 	}
 	if approvedBindingID != "" && approvedBindingID != runner.CompatibleBindingID(channel.EngineProfile) {
 		return handoffReview(ctx, db, &attempt, &card, "api channel dispatch binding changed; select an approved route again")
@@ -291,11 +291,25 @@ func run(ctx context.Context, home, attemptID string) error {
 			return err
 		}
 	} else {
-		attempt.PID = os.Getpid()
-		if attempt.StartedAt.IsZero() {
-			attempt.StartedAt = time.Now().UTC()
-		}
-		if err := db.UpdateAttempt(ctx, &attempt); err != nil {
+		claimed := false
+		if err := db.WithWriteTx(ctx, func(tx context.Context) error {
+			fresh, err := db.GetAttempt(tx, attempt.ID)
+			if err != nil {
+				return err
+			}
+			if !reflect.DeepEqual(fresh, attempt) || fresh.Outcome != "" || fresh.Exit != nil || !fresh.EndedAt.IsZero() || (fresh.PID != 0 && fresh.PID != os.Getpid()) {
+				return nil
+			}
+			attempt.PID = os.Getpid()
+			if attempt.StartedAt.IsZero() {
+				attempt.StartedAt = time.Now().UTC()
+			}
+			if err := db.UpdateAttempt(tx, &attempt); err != nil {
+				return err
+			}
+			claimed = true
+			return nil
+		}); err != nil || !claimed {
 			return err
 		}
 	}
@@ -1152,12 +1166,6 @@ func sandboxOff(ctx context.Context, db *store.Store, card model.Card) bool {
 		return false
 	}
 	return p.Sandbox == "off"
-}
-
-// A host refusal records the attempt even when objective state cannot be
-// proved. Changing a live card also requires a matching objective snapshot.
-func holdCompatibleHostAttempt(ctx context.Context, db *store.Store, card model.Card, attempt model.Attempt) error {
-	return db.HoldCompatibleAttempt(ctx, card, attempt, observeCompatibleObjective(ctx, db, card), time.Now())
 }
 
 func observeCompatibleObjective(ctx context.Context, db *store.Store, card model.Card) *model.Objective {

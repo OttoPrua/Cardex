@@ -56,6 +56,7 @@ func WithStore(ctx context.Context, db *store.Store) context.Context {
 type DispositionReceipt struct {
 	IgnoredStale  bool
 	PersistedCard bool
+	HeldAttempt   bool
 }
 
 // WithDispositionReceipt attaches an optional sink for the current Dispose call.
@@ -151,6 +152,16 @@ func disposeTx(ctx context.Context, db *store.Store, home string, card *model.Ca
 	}
 	if attempt.Card != card.ID {
 		return nil, fmt.Errorf("loop: Dispose: attempt does not belong to card %s", card.ID)
+	}
+	held, err := compatibleAttemptHeld(ctx, db, attempt.ID)
+	if err != nil || held || attempt.HistoricalCompatibleHoldQuarantine() {
+		if held || attempt.HistoricalCompatibleHoldQuarantine() {
+			if receipt, ok := ctx.Value(disposeReceiptKey).(*DispositionReceipt); ok && receipt != nil {
+				receipt.IgnoredStale = true
+				receipt.HeldAttempt = true
+			}
+		}
+		return nil, err
 	}
 	stored, err := db.GetCard(ctx, card.ID)
 	if err != nil {
@@ -265,6 +276,19 @@ func ensureDevDisposed(ctx context.Context, db *store.Store, attempt model.Attem
 		return err
 	}
 	return markDevDisposed(ctx, db, attempt, outcome)
+}
+
+func compatibleAttemptHeld(ctx context.Context, db *store.Store, id string) (bool, error) {
+	events, err := db.ListEvents(ctx, "attempt:"+id)
+	if err != nil {
+		return false, err
+	}
+	for _, event := range events {
+		if event.Type == model.EventCompatibleAttemptHeld || event.Type == model.EventCompatibleRefusedNoWire {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func attemptDisposed(ctx context.Context, db *store.Store, attemptID string) (bool, error) {

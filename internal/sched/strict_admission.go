@@ -140,6 +140,9 @@ func (r *Runner) prepareStrictAttempt(ctx context.Context, db *store.Store, v st
 				return err
 			}
 		}
+		if err := db.RecordAttemptPreparation(ctx, *attempt); err != nil {
+			return err
+		}
 		*card = current
 		return nil
 	})

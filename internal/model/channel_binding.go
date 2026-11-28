@@ -37,3 +37,17 @@ func ValidateCompatiblePositioning(ch Channel, rows []Positioning) error {
 func HasCompatibleEngineBinding(ref string) bool {
 	return strings.HasPrefix(strings.TrimSpace(ref), CompatibleEnginePrefix)
 }
+
+const (
+	EventAttemptPrepared         = "scheduler_attempt_prepared"
+	EventCompatibleAttemptHeld   = "compatible_runtime_attempt_held"
+	EventCompatibleRefusedNoWire = "compatible_runtime_refused_no_wire"
+)
+
+// HistoricalCompatibleHoldQuarantine recognizes the old terminal hold shape.
+// Older writers sometimes did not save a binding or typed event. Suppress
+// generic disposition on the exact shape, but never use this as evidence of
+// the historical transport, actual dispatch, or whether a process was started.
+func (a Attempt) HistoricalCompatibleHoldQuarantine() bool {
+	return a.Outcome == OutcomeNoOutput && !a.EndedAt.IsZero() && a.ErrorExcerpt == CompatibleRuntimeHold
+}

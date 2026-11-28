@@ -30,6 +30,10 @@ func (s *Store) ReserveStrongStage(ctx context.Context, key StrongRunKey, name s
 		if err != nil {
 			return err
 		}
+		if !p.HasExactRewriteCoverage() {
+			d.Reason = StrongReasonRewriteCoverage
+			return nil
+		}
 		slot, ok := p.Slot(name)
 		if !ok {
 			return model.ErrStrongPlan
@@ -168,6 +172,10 @@ func (s *Store) ClaimStrongIntent(ctx context.Context, want StrongIntent) (strin
 		if err != nil {
 			return err
 		}
+		if !p.HasExactRewriteCoverage() {
+			reason = StrongReasonRewriteCoverage
+			return nil
+		}
 		if run.Status != StrongRunning {
 			reason = run.Reason
 			return nil
@@ -296,12 +304,15 @@ func sameStrongIntent(a, b StrongIntent) bool { a.State, b.State = "", ""; retur
 // A completed, exact ledger/result may still be reconciled via SettleStrong.
 func (s *Store) RecoverStrongRun(ctx context.Context, key StrongRunKey) error {
 	return s.WithWriteTx(ctx, func(ctx context.Context) error {
-		_, v, err := s.strongPlan(ctx, key)
+		p, v, err := s.strongPlan(ctx, key)
 		if err != nil {
 			return err
 		}
 		if v.Status != StrongRunning {
 			return nil
+		}
+		if !p.HasExactRewriteCoverage() {
+			return s.setStrongRunState(ctx, key, StrongBlocked, StrongReasonRewriteCoverage)
 		}
 		var uncertain int
 		if err := s.q(ctx).QueryRowContext(ctx, `SELECT count(*) FROM strong_run_intents i
@@ -368,7 +379,7 @@ func (s *Store) VerifyStrongLaunch(ctx context.Context, want StrongIntent, lease
 	var denied string
 	err := s.WithWriteTx(ctx, func(ctx context.Context) error {
 		p, run, err := s.strongPlan(ctx, want.Key)
-		if err != nil || run.Status != StrongRunning {
+		if err != nil || run.Status != StrongRunning || !p.HasExactRewriteCoverage() {
 			return model.ErrStrongPlan
 		}
 		in, err := s.strongIntent(ctx, want.Key, want.Slot)

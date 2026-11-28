@@ -46,7 +46,7 @@ func withSystemPath(list, goos string) string {
 // Git subprocess, shell, or background worker resolves a command name.
 func ensureRuntimePath(args []string) error {
 	home, _, rest, err := splitGlobal(args)
-	if err == nil && len(rest) > 0 && (rest[0] == "snapshot" || rest[0] == "verify" || isOfflineChannelQuote(rest)) {
+	if err == nil && len(rest) > 0 && (rest[0] == "snapshot" || rest[0] == "verify" || rest[0] == "research" || isOfflineChannelQuote(rest)) {
 		// Evidence-only commands need neither executables nor config reads.
 		return nil
 	}

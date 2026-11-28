@@ -18,8 +18,12 @@ payload contains a known exact author/reviewer channel or model token, it is
 held without rewriting sealed bytes. This is not full free-text anonymity.
 
 The author and reviewer candidate need explicit matching registered synthetic
-channel and positioning family. ST3 rejects unknown or same family (including
-case variants, another channel, or another model), an unavailable model, or an
+channel and positioning family. Different accounts, channel names, or model
+names do not prove independence; known different families and distinct concrete
+routes/models do. Distinct eligible channels can share a synthetic account, in
+which case they share quota; this is not independent-account review. ST3
+rejects unknown or same family (including case variants, another channel, or
+another model), an unavailable model, or an
 unproved/exhausted synthetic quota window. It rechecks at reservation, claim and
 the final start edge. There is no generic route fallback. An exact synthetic
 account/window quote holds tokens transactionally across opted-in stages,
@@ -35,7 +39,10 @@ These are local fixture quotas, not provider quota or billing claims. Review acc
 rechecks the actual consumed attempt, and a changed source cannot unlock the
 rewrite. The rewrite is an explicitly approved slot using only the exact
 actual author route, seat and historically measured synthetic account, not a list
-of alternatives at runtime. The same account can rewrite in a proved new window;
+of alternatives at runtime. Each dispatchable author route must already have
+its exact rewrite counterpart approved before dispatch. Historical malformed
+plans fail closed without reconstructing their approval. The same account can
+rewrite in a proved new window;
 reassigning the channel to another account does not inherit author authority.
 Ordinary ST2 cancellation does not require the additional ST3 tables.
 

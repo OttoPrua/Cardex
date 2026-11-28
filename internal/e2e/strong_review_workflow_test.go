@@ -468,3 +468,35 @@ func TestStrongST3ExpiredQuotaDoesNotReleaseUnprovedPendingOwnership(t *testing.
 		})
 	}
 }
+
+func TestStrongST3SharedAccountStillRequiresDifferentActualFamily(t *testing.T) {
+	f, p, key, r := setupST3(t, model.StrongTemplateLight, "Approved held quota remains shared by both route aliases.")
+	author, err := f.db.GetChannel(f.ctx, f.route.Channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewer, err := f.db.GetChannel(f.ctx, r.cross.Channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewer.SourceGroup = author.SourceGroup
+	reviewer.QuotaWindows = author.QuotaWindows
+	if err := f.db.UpdateChannel(f.ctx, &reviewer); err != nil {
+		t.Fatal(err)
+	}
+	advanceST3Author(t, f, p, key, "Answer to verify.")
+	strongReviewReserve(t, f, key, "review", r.same, store.StrongReasonReviewSameFamily)
+	review := strongReviewReserve(t, f, key, "review", r.cross, "")
+	ref, why, _ := f.fakeSlot(t, p, review, crossReviewResult(p, "Recalculate synthetic arithmetic."), "tokens=7\n", false)
+	if why != "" || ref.Attempt != review.Attempt {
+		t.Fatalf("genuinely distinct family on shared account denied: %s", why)
+	}
+	rewrite := strongReviewReserve(t, f, key, "rewrite", f.route, "")
+	if _, why, _ := f.fakeSlot(t, p, rewrite, rewriteReviewResult(p, "Corrected synthetic result.", "fixed"), "tokens=7\n", false); why != "" {
+		t.Fatalf("approved same-author rewrite: %s", why)
+	}
+	v, _, err := f.db.StrongRun(f.ctx, key)
+	if err != nil || v.Status != store.StrongCompleted || v.Spent != 28 {
+		t.Fatalf("shared quota outcome: %+v %v", v, err)
+	}
+}

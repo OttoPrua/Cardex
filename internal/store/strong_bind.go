@@ -150,7 +150,7 @@ func (s *Store) BindStrongStageInputs(ctx context.Context, want StrongIntent) (m
 	var pin string
 	err := s.WithWriteTx(ctx, func(ctx context.Context) error {
 		p, v, err := s.strongPlan(ctx, want.Key)
-		if err != nil || v.Status != StrongRunning {
+		if err != nil || v.Status != StrongRunning || !p.HasExactRewriteCoverage() {
 			return model.ErrStrongPlan
 		}
 		in, err := s.strongIntent(ctx, want.Key, want.Slot)
@@ -192,7 +192,7 @@ func (s *Store) ResolveStrongCondition(ctx context.Context, key StrongRunKey, co
 	}
 	return s.WithWriteTx(ctx, func(ctx context.Context) error {
 		p, v, err := s.strongPlan(ctx, key)
-		if err != nil || v.Status != StrongRunning {
+		if err != nil || v.Status != StrongRunning || !p.HasExactRewriteCoverage() {
 			return model.ErrStrongPlan
 		}
 		graph, _ := p.Graph()

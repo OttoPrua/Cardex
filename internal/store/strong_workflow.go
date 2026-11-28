@@ -24,18 +24,19 @@ const (
 	StrongCheckpoint = "st3_required"
 )
 const (
-	StrongReasonApproval      = "approval_required"
-	StrongReasonDependency    = "dependencies_unfinished"
-	StrongReasonCondition     = "condition_decision_required"
-	StrongReasonBudget        = "global_budget_unavailable"
-	StrongReasonRoute         = "route_not_approved"
-	StrongReasonT0            = "t0_confirmation_required"
-	StrongReasonIsolation     = "no_verified_real_runner"
-	StrongReasonUnknownLaunch = "launch_state_unresolved"
-	StrongReasonUnknownUsage  = "usage_unknown"
-	StrongReasonOverrun       = "budget_overrun"
-	StrongReasonArtifact      = "artifact_invalid_or_missing"
-	StrongReasonST3           = "st3_checkpoint_disabled"
+	StrongReasonApproval        = "approval_required"
+	StrongReasonDependency      = "dependencies_unfinished"
+	StrongReasonCondition       = "condition_decision_required"
+	StrongReasonBudget          = "global_budget_unavailable"
+	StrongReasonRoute           = "route_not_approved"
+	StrongReasonT0              = "t0_confirmation_required"
+	StrongReasonIsolation       = "no_verified_real_runner"
+	StrongReasonUnknownLaunch   = "launch_state_unresolved"
+	StrongReasonUnknownUsage    = "usage_unknown"
+	StrongReasonOverrun         = "budget_overrun"
+	StrongReasonArtifact        = "artifact_invalid_or_missing"
+	StrongReasonRewriteCoverage = "required_exact_author_rewrite_unapproved"
+	StrongReasonST3             = "st3_checkpoint_disabled"
 )
 
 type StrongRunKey struct {
@@ -45,10 +46,11 @@ type StrongRunKey struct {
 }
 
 type StrongRunView struct {
-	Key                  StrongRunKey
-	Status, Reason       string
-	Reserved, Spent      int64
-	ApprovalID, Approver string
+	Key                    StrongRunKey
+	Status, Reason         string
+	Reserved, Spent        int64
+	ApprovalID, Approver   string
+	ExecutionBlockedReason string `json:",omitempty"`
 }
 
 type StrongSlotView struct {
@@ -115,9 +117,12 @@ func (s *Store) strongPlan(ctx context.Context, key StrongRunKey) (model.StrongP
 	if err != nil || json.Unmarshal(raw, &p) != nil {
 		return p, v, model.ErrStrongPlan
 	}
-	body, sha, err := p.Canonical()
+	body, sha, err := p.CanonicalWire()
 	if err != nil || !bytes.Equal(body, raw) || sha != key.SHA || p.Run != key.Run || p.Revision != key.Revision {
 		return p, v, model.ErrStrongPlan
+	}
+	if !p.HasExactRewriteCoverage() {
+		v.ExecutionBlockedReason = StrongReasonRewriteCoverage
 	}
 	return p, v, nil
 }
@@ -160,6 +165,9 @@ func (s *Store) ApproveStrongPlan(ctx context.Context, key StrongRunKey, actor, 
 		plan, view, err := s.strongPlan(ctx, key)
 		if err != nil {
 			return err
+		}
+		if !plan.HasExactRewriteCoverage() {
+			return model.ErrStrongPlan
 		}
 		if view.Status == StrongRunning && view.ApprovalID == receipt && view.Approver == actor {
 			return nil

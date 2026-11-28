@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/OttoPrua/Cardex/internal/model"
@@ -18,6 +20,8 @@ func strongSource(key StrongRunKey, slot model.StrongSlot) (model.StrongStage, b
 		model.StrongPhasePeer:      model.StrongWorkflowPeer,
 		model.StrongPhaseVerify:    model.StrongVerification,
 		model.StrongPhaseSynthesis: model.StrongWorkflowSynthesis,
+		model.StrongPhaseReview:    model.StrongWorkflowReview,
+		model.StrongPhaseRewrite:   model.StrongWorkflowRewrite,
 	}
 	role, ok := mapping[slot.Phase]
 	scope := model.StrongStage{Run: key.Run, Stage: fmt.Sprintf("v%d-%s", key.Revision, slot.Key), Seat: slot.Seat, Role: role}
@@ -67,10 +71,13 @@ func strongReport(p model.StrongPlan, slot model.StrongSlot, body []byte) (map[s
 			return nil, false
 		}
 		switch key {
-		case "Scope", "Criteria", "Commit", "Evidence", "Facts", "Uncertainty", "Answer", "Assumptions", "Counterexample", "Test", "Critique", "Objection", "Dispute", "Result", "Rationale", "Minority":
+		case "Scope", "Criteria", "Commit", "Evidence", "Facts", "Uncertainty", "Answer", "Assumptions", "Counterexample", "Test", "Critique", "Objection", "Dispute", "Result", "Rationale", "Minority", "Source", "Recompute", "Denominator", "Threshold", "Issues", "Review":
 			values[key] = val
 		default:
-			return nil, false
+			if !indexedStrongReviewField(key, "Issue-") && !indexedStrongReviewField(key, "Response-") {
+				return nil, false
+			}
+			values[key] = val
 		}
 	}
 	switch slot.Phase {
@@ -86,9 +93,75 @@ func strongReport(p model.StrongPlan, slot model.StrongSlot, body []byte) (map[s
 		return values, values["Evidence"] == p.EvidenceSHA && (values["Result"] == "support" || values["Result"] == "refute" || values["Result"] == "insufficient") && values["Rationale"] != ""
 	case model.StrongPhaseSynthesis:
 		return values, len(body) <= 8<<10 && values["Evidence"] == p.EvidenceSHA && values["Answer"] != "" && values["Rationale"] != "" && values["Minority"] != ""
+	case model.StrongPhaseReview:
+		_, ok := strongReviewIssues(values)
+		return values, ok && values["Source"] == "Material 01" && values["Evidence"] == p.EvidenceSHA && values["Recompute"] != "" &&
+			values["Denominator"] != "" && values["Threshold"] != "" && values["Facts"] != "" && values["Uncertainty"] != "" && values["Counterexample"] != ""
+	case model.StrongPhaseRewrite:
+		return values, len(body) <= 8<<10 && values["Source"] == "Material 01" && values["Review"] == "Material 02" &&
+			values["Evidence"] == p.EvidenceSHA && values["Answer"] != "" && values["Rationale"] != ""
 	default:
 		return nil, false
 	}
+}
+
+func indexedStrongReviewField(key, prefix string) bool {
+	n, ok := strings.CutPrefix(key, prefix)
+	i, err := strconv.Atoi(n)
+	return ok && err == nil && i >= 1 && i <= 8 && n == fmt.Sprintf("%02d", i)
+}
+
+func strongReviewIssues(fields map[string]string) ([]string, bool) {
+	raw := fields["Issues"]
+	count, err := strconv.Atoi(raw)
+	if err != nil || count < 0 || count > 8 || strconv.Itoa(count) != raw {
+		return nil, false
+	}
+	severity := make([]string, 0, count)
+	for i := 1; i <= 8; i++ {
+		entry := fields[fmt.Sprintf("Issue-%02d", i)]
+		if fields[fmt.Sprintf("Response-%02d", i)] != "" {
+			return nil, false
+		}
+		if i > count {
+			if entry != "" {
+				return nil, false
+			}
+			continue
+		}
+		level, why, ok := strings.Cut(entry, "|")
+		if !ok || (level != "major" && level != "minor") || !strongReasonText(why) {
+			return nil, false
+		}
+		severity = append(severity, level)
+	}
+	return severity, true
+}
+
+func strongRewriteResponses(severity []string, fields map[string]string) (unresolved, valid bool) {
+	if fields["Issues"] != "" {
+		return false, false
+	}
+	for i := 1; i <= 8; i++ {
+		entry := fields[fmt.Sprintf("Response-%02d", i)]
+		if fields[fmt.Sprintf("Issue-%02d", i)] != "" {
+			return false, false
+		}
+		if i > len(severity) {
+			if entry != "" {
+				return false, false
+			}
+			continue
+		}
+		decision, why, ok := strings.Cut(entry, "|")
+		if !ok || (decision != "fixed" && decision != "dissent") || !strongReasonText(why) {
+			return false, false
+		}
+		if decision == "dissent" && severity[i-1] == "major" {
+			unresolved = true
+		}
+	}
+	return unresolved, true
 }
 
 func (s *Store) strongBoundResult(ctx context.Context, p model.StrongPlan, key StrongRunKey, slot model.StrongSlot, ref model.StrongArtifactRef) (map[string]string, error) {
@@ -109,6 +182,44 @@ func (s *Store) strongBoundResult(ctx context.Context, p model.StrongPlan, key S
 	report, ok := strongReport(p, slot, body)
 	if !ok {
 		return nil, model.ErrStrongArtifact
+	}
+	if slot.Phase == model.StrongPhaseReview || slot.Phase == model.StrongPhaseRewrite {
+		if err := checkKnownReviewIdentities(p, body); err != nil {
+			return nil, err
+		}
+
+		pin, err := s.readStrongReviewPin(ctx, p, key)
+		if err != nil {
+			return nil, model.ErrStrongArtifact
+		}
+		intent, err := s.strongIntent(ctx, key, slot.Key)
+		if err != nil || intent.Attempt != ref.Attempt || !slices.Contains(p.Limits[slot.Key].Routes, intent.Route) {
+			return nil, model.ErrStrongArtifact
+		}
+		att, err := s.GetAttempt(ctx, intent.Attempt)
+		if err != nil || !actualSyntheticStrongRoute(att, intent.Route) || !knownStrongFamily(intent.Route.Family) {
+			return nil, model.ErrStrongArtifact
+		}
+		if slot.Phase == model.StrongPhaseReview && pin.independent(intent.Route) != "" {
+			return nil, model.ErrStrongArtifact
+		}
+		if slot.Phase == model.StrongPhaseRewrite {
+			if intent.Route != pin.Route || slot.Seat != pin.Seat {
+				return nil, model.ErrStrongArtifact
+			}
+			_, state, review, err := s.strongSlotArtifact(ctx, p, key, "review")
+			if err != nil || state != strongDone {
+				return nil, model.ErrStrongArtifact
+			}
+			issues, ok := strongReviewIssues(review)
+			unresolved, valid := strongRewriteResponses(issues, report)
+			if !ok || !valid {
+				return nil, model.ErrStrongArtifact
+			}
+			if unresolved {
+				report["__unresolved"] = "yes"
+			}
+		}
 	}
 	return report, nil
 }
@@ -192,9 +303,7 @@ func (s *Store) SettleStrong(ctx context.Context, want StrongIntent, lease strin
 		if err != nil || att.Card != in.Card || att.EndedAt.IsZero() || att.Exit == nil {
 			return block(StrongReasonUnknownLaunch)
 		}
-		if !actualSyntheticStrongRoute(att, in.Route) {
-			return block(StrongReasonRoute)
-		}
+		routeMatches := actualSyntheticStrongRoute(att, in.Route)
 		exit, usage, err := s.strongMeasuredUsage(ctx, in, custodyPin)
 		if err != nil || exit != *att.Exit || usage != att.Usage || !strongExactUsage(usage) {
 			return block(StrongReasonUnknownUsage)
@@ -206,6 +315,9 @@ func (s *Store) SettleStrong(ctx context.Context, want StrongIntent, lease strin
 				reason = "run_not_advancing"
 			}
 		}
+		if reason == "" && !routeMatches {
+			reason = StrongReasonRoute
+		}
 		if reason == "" && (tokens > in.Reserved || v.Spent+tokens > p.GlobalTokens) {
 			reason = StrongReasonOverrun
 		}
@@ -213,8 +325,10 @@ func (s *Store) SettleStrong(ctx context.Context, want StrongIntent, lease strin
 		if reason == "" && (!passedStrongAttempt(att) || ref.Attempt != att.ID || s.checkStrongWorkflowCapture(ctx, in, custodyPin) != nil) {
 			reason = StrongReasonArtifact
 		}
+		var report map[string]string
 		if reason == "" {
-			if _, err := s.strongBoundResult(ctx, p, in.Key, slot, ref); err != nil {
+			report, err = s.strongBoundResult(ctx, p, in.Key, slot, ref)
+			if err != nil {
 				reason = StrongReasonArtifact
 			}
 		}
@@ -222,6 +336,14 @@ func (s *Store) SettleStrong(ctx context.Context, want StrongIntent, lease strin
 		if reason != "" {
 			next = strongStopped
 		}
+		settled, err := s.settleStrongQuota(ctx, p, in, tokens)
+		if err != nil {
+			return err
+		}
+		if !settled {
+			return block(StrongReasonUnknownUsage)
+		}
+
 		r, err := s.q(ctx).ExecContext(ctx, `UPDATE strong_run_plans SET reserved=reserved-?,spent=spent+? WHERE run_id=? AND revision=? AND reserved>=?`,
 			in.Reserved, tokens, in.Key.Run, in.Key.Revision, in.Reserved)
 		if err := rowsAffected(r, err); err != nil {
@@ -246,6 +368,16 @@ func (s *Store) SettleStrong(ctx context.Context, want StrongIntent, lease strin
 			next, raw, att.ID, in.Key.Run, in.Key.Revision, in.Slot)
 		if err := rowsAffected(r, err); err != nil {
 			return err
+		}
+		if err := s.writeStrongReviewPin(ctx, p, in, slot, ref, att); err != nil {
+			return err
+		}
+
+		if slot.Phase == model.StrongPhaseRewrite {
+			if report["__unresolved"] == "yes" {
+				return s.setStrongRunState(ctx, in.Key, StrongUnresolved, "material_review_issues_unresolved")
+			}
+			return s.setStrongRunState(ctx, in.Key, StrongCompleted, "synthetic_review_and_rewrite_done")
 		}
 		if v.Status == StrongBlocked && v.Reason == StrongReasonUnknownLaunch {
 			var remaining int

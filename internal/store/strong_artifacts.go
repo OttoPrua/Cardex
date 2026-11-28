@@ -144,6 +144,11 @@ func allowedStrongBinding(target, source model.StrongStage) bool {
 		return source.Role == model.StrongWorkflowBlind && source.Seat != target.Seat
 	case model.StrongVerification:
 		return source.Role == model.StrongWorkflowEvidence || source.Role == model.StrongWorkflowPeer
+	case model.StrongWorkflowReview:
+		return source.Role == model.StrongWorkflowBlind || source.Role == model.StrongWorkflowSynthesis || source.Role == model.StrongWorkflowEvidence
+	case model.StrongWorkflowRewrite:
+		return source.Role == model.StrongWorkflowBlind || source.Role == model.StrongWorkflowSynthesis ||
+			source.Role == model.StrongWorkflowEvidence || source.Role == model.StrongWorkflowReview
 	case model.StrongWorkflowSynthesis:
 		return source.Role == model.StrongWorkflowBlind || source.Role == model.StrongWorkflowPeer ||
 			source.Role == model.StrongWorkflowEvidence || source.Role == model.StrongVerification

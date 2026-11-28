@@ -77,6 +77,10 @@ func assembleStrongBundle(ctx context.Context, db *Store, target model.StrongSta
 		b.Instruction = "Review only the supplied anonymous materials. Refer to them only by their supplied reference labels."
 	case model.StrongSynthesis, model.StrongWorkflowSynthesis:
 		b.Instruction = "Synthesize the supplied anonymous materials. Refer to them only by their supplied reference labels."
+	case model.StrongWorkflowReview:
+		b.Instruction = "Independently recompute formulas and denominators, verify threshold direction, separate evidence from inference, and list material counterexamples or uncertainties. Use only the given anonymous source and pinned evidence."
+	case model.StrongWorkflowRewrite:
+		b.Instruction = "Rewrite the source once using the exact attached review and evidence. For each numbered issue record a fixed or dissent response with a rationale. Preserve unresolved issues; never ask for a further round."
 	case model.StrongRecheck:
 		b.Instruction = "Recheck the supplied anonymous material against the task."
 	default:
@@ -89,7 +93,7 @@ func assembleStrongBundle(ctx context.Context, db *Store, target model.StrongSta
 		if n > model.StrongBundleMax {
 			return nil, model.ErrStrongArtifact
 		}
-		bodies = append(bodies, f.Body)
+		bodies = append(bodies, f.Body, []byte(f.Path))
 	}
 	for _, m := range in {
 		n += len(m.Body)
@@ -102,6 +106,10 @@ func assembleStrongBundle(ctx context.Context, db *Store, target model.StrongSta
 	if err := db.CheckStrongAnonymity(ctx, target, approvedTaskSHA, bodies...); err != nil {
 		return nil, err
 	}
+	if err := db.checkStrongReviewBundleIdentities(ctx, target, bodies...); err != nil {
+		return nil, err
+	}
+
 	body, err := json.Marshal(b)
 	if err != nil {
 		return nil, err

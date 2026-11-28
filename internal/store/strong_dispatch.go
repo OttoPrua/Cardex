@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/OttoPrua/Cardex/internal/model"
@@ -77,6 +78,11 @@ func (s *Store) ReserveStrongStage(ctx context.Context, key StrongRunKey, name s
 			d.Reason = StrongReasonIsolation
 			return s.setStrongRunState(ctx, key, StrongBlocked, d.Reason)
 		}
+		if why := s.strongST3RouteGate(ctx, p, key, slot, route, false); why != "" {
+			d.Reason = why
+			return s.setStrongSlotState(ctx, key, name, state, why)
+		}
+
 		prior, err := s.strongIntent(ctx, key, name)
 		if err == nil {
 			if prior.Route != route {
@@ -112,7 +118,7 @@ func (s *Store) ReserveStrongStage(ctx context.Context, key StrongRunKey, name s
 			return err
 		}
 		d.Intent = StrongIntent{Key: key, Slot: name, ID: id, Attempt: attempt, Card: card, Route: route, Reserved: limit.Tokens, State: strongReserved}
-		return nil
+		return s.reserveStrongQuota(ctx, p, d.Intent)
 	})
 	if err != nil {
 		return StrongDecision{}, err
@@ -186,6 +192,11 @@ func (s *Store) ClaimStrongIntent(ctx context.Context, want StrongIntent) (strin
 			reason = StrongReasonDependency
 			return nil
 		}
+		if why := s.strongST3RouteGate(ctx, p, in.Key, slot, in.Route, true); why != "" {
+			reason = why
+			return s.setStrongSlotState(ctx, in.Key, in.Slot, strongReserved, why)
+		}
+
 		if in.Route.T0 {
 			var receipt string
 			if err := s.q(ctx).QueryRowContext(ctx, `SELECT t0_id FROM strong_run_intents WHERE intent_id=?`, in.ID).Scan(&receipt); err != nil {
@@ -311,11 +322,11 @@ func (s *Store) CancelStrongRun(ctx context.Context, key StrongRunKey, actor str
 		return model.ErrStrongPlan
 	}
 	return s.WithWriteTx(ctx, func(ctx context.Context) error {
-		_, v, err := s.strongPlan(ctx, key)
+		p, v, err := s.strongPlan(ctx, key)
 		if err != nil {
 			return err
 		}
-		if v.Status == StrongCanceled {
+		if v.Status == StrongCanceled || v.Status == StrongCompleted || v.Status == StrongUnresolved {
 			return nil
 		}
 		if v.Status == StrongSuperseded {
@@ -334,6 +345,13 @@ func (s *Store) CancelStrongRun(ctx context.Context, key StrongRunKey, actor str
 		if _, err := s.q(ctx).ExecContext(ctx, `UPDATE strong_run_slots SET state=?,reason='owner_canceled' WHERE run_id=? AND revision=? AND state IN (?,?)`, strongStopped, key.Run, key.Revision, strongSlotPending, strongReserved); err != nil {
 			return err
 		}
+		if p.CrossFamilyReview {
+			if _, err := s.q(ctx).ExecContext(ctx, `UPDATE strong_run_quota_holds SET state='released' WHERE state='held' AND intent_id IN
+		  (SELECT intent_id FROM strong_run_intents WHERE run_id=? AND revision=? AND state=?)`, key.Run, key.Revision, strongReserved); err != nil {
+				return err
+			}
+		}
+
 		if _, err := s.q(ctx).ExecContext(ctx, `UPDATE strong_run_intents SET state=? WHERE run_id=? AND revision=? AND state=?`, strongStopped, key.Run, key.Revision, strongReserved); err != nil {
 			return err
 		}
@@ -347,7 +365,8 @@ func (s *Store) VerifyStrongLaunch(ctx context.Context, want StrongIntent, lease
 	if _, nested := ctx.Value(txKey{}).(execer); nested || !model.StrongDigestKey(lease) {
 		return model.ErrStrongPlan
 	}
-	return s.WithWriteTx(ctx, func(ctx context.Context) error {
+	var denied string
+	err := s.WithWriteTx(ctx, func(ctx context.Context) error {
 		p, run, err := s.strongPlan(ctx, want.Key)
 		if err != nil || run.Status != StrongRunning {
 			return model.ErrStrongPlan
@@ -372,6 +391,18 @@ func (s *Store) VerifyStrongLaunch(ctx context.Context, want StrongIntent, lease
 		if !ok || slot.Phase == model.StrongPhaseCheckpoint {
 			return model.ErrStrongPlan
 		}
+		att, err := s.GetAttempt(ctx, in.Attempt)
+		if err != nil || att.Card != in.Card || !pendingStrongAttempt(att) {
+			return model.ErrStrongPlan
+		}
+		if err := s.checkStrongWorkflowCapture(ctx, in, pin); err != nil {
+			return err
+		}
+		if why := s.strongST3RouteGate(ctx, p, in.Key, slot, in.Route, true); why != "" {
+			denied = why
+			return s.releaseStrongNoStart(ctx, in, lease, why)
+		}
+
 		refs, err := s.strongInputRefs(ctx, p, in.Key, slot)
 		if err != nil {
 			return err
@@ -380,16 +411,16 @@ func (s *Store) VerifyStrongLaunch(ctx context.Context, want StrongIntent, lease
 		if err != nil {
 			return err
 		}
-		att, err := s.GetAttempt(ctx, in.Attempt)
-		if err != nil || att.Card != in.Card || !pendingStrongAttempt(att) || !actualSyntheticStrongRoute(att, in.Route) {
-			return model.ErrStrongPlan
+		if !actualSyntheticStrongRoute(att, in.Route) {
+			if !p.CrossFamilyReview {
+				return model.ErrStrongPlan
+			}
+			denied = StrongReasonRoute
+			return s.releaseStrongNoStart(ctx, in, lease, denied)
 		}
 		proof, err := capture.ProveLaunch(ctx, att, path)
 		if err != nil || proof.ManifestSHA != expected || proof.TaskSHA != p.TaskSHA || strongWorkflowCapturePin(proof) != pin {
 			return model.ErrStrongArtifact
-		}
-		if err := s.checkStrongWorkflowCapture(ctx, in, pin); err != nil {
-			return err
 		}
 
 		r, err := s.q(ctx).ExecContext(ctx, `UPDATE strong_run_intents SET state=? WHERE intent_id=? AND state=? AND lease=?`, strongStarting, in.ID, strongClaimed, lease)
@@ -398,4 +429,11 @@ func (s *Store) VerifyStrongLaunch(ctx context.Context, want StrongIntent, lease
 		}
 		return s.setStrongSlotState(ctx, in.Key, in.Slot, strongStarting, "")
 	})
+	if err != nil {
+		return err
+	}
+	if denied != "" {
+		return fmt.Errorf("%w: %s", model.ErrStrongPlan, denied)
+	}
+	return nil
 }

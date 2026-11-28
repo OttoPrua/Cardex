@@ -163,6 +163,30 @@ func (p StrongPlan) StrongAuthorSlot() string {
 }
 
 func (p StrongPlan) Canonical() ([]byte, string, error) {
+	if !p.HasExactRewriteCoverage() {
+		return nil, "", ErrStrongPlan
+	}
+	return p.CanonicalWire()
+}
+
+// HasExactRewriteCoverage is an execution requirement, not a wire migration.
+func (p StrongPlan) HasExactRewriteCoverage() bool {
+	if !p.CrossFamilyReview {
+		return true
+	}
+	authors, rewrites := p.Limits[p.StrongAuthorSlot()].Routes, p.Limits["rewrite"].Routes
+	for _, route := range authors {
+		if route.Runner == string(RunnerFake) && !route.T0 && !slices.Contains(rewrites, route) {
+			return false
+		}
+	}
+	return true
+}
+
+// CanonicalWire verifies the schema and exact original approval content of
+// historical plans. It does not authorize execution; use Canonical or verify
+// HasExactRewriteCoverage at every dispatch edge.
+func (p StrongPlan) CanonicalWire() ([]byte, string, error) {
 	graph, err := p.Graph()
 	wantLimits := len(graph)
 	if !p.CrossFamilyReview {
@@ -219,8 +243,9 @@ func (p StrongPlan) Canonical() ([]byte, string, error) {
 				modelFamilies[id.ModelKey()], routeFamilies[id] = family, family
 			}
 		}
-		for _, route := range p.Limits["rewrite"].Routes {
-			if !slices.Contains(p.Limits[p.StrongAuthorSlot()].Routes, route) || route.T0 || route.Runner != string(RunnerFake) {
+		authors, rewrites := p.Limits[p.StrongAuthorSlot()].Routes, p.Limits["rewrite"].Routes
+		for _, route := range rewrites {
+			if !slices.Contains(authors, route) || route.T0 || route.Runner != string(RunnerFake) {
 				return nil, "", ErrStrongPlan
 			}
 		}

@@ -71,14 +71,26 @@ func strongReport(p model.StrongPlan, slot model.StrongSlot, body []byte) (map[s
 			return nil, false
 		}
 		switch key {
-		case "Scope", "Criteria", "Commit", "Evidence", "Facts", "Uncertainty", "Answer", "Assumptions", "Counterexample", "Test", "Critique", "Objection", "Dispute", "Result", "Rationale", "Minority", "Source", "Recompute", "Denominator", "Threshold", "Issues", "Review":
-			values[key] = val
-		default:
-			if !indexedStrongReviewField(key, "Issue-") && !indexedStrongReviewField(key, "Response-") {
+		case "Scope", "Criteria", "Commit", "Evidence", "Facts", "Uncertainty", "Answer", "Assumptions", "Counterexample", "Test", "Critique", "Objection", "Dispute", "Result", "Rationale", "Minority":
+		case "Source":
+			if slot.Phase != model.StrongPhaseReview && slot.Phase != model.StrongPhaseRewrite {
 				return nil, false
 			}
-			values[key] = val
+		case "Recompute", "Denominator", "Threshold", "Issues":
+			if slot.Phase != model.StrongPhaseReview {
+				return nil, false
+			}
+		case "Review":
+			if slot.Phase != model.StrongPhaseRewrite {
+				return nil, false
+			}
+		default:
+			if !(slot.Phase == model.StrongPhaseReview && indexedStrongReviewField(key, "Issue-")) &&
+				!(slot.Phase == model.StrongPhaseRewrite && indexedStrongReviewField(key, "Response-")) {
+				return nil, false
+			}
 		}
+		values[key] = val
 	}
 	switch slot.Phase {
 	case model.StrongPhaseFrame:
@@ -289,6 +301,13 @@ func (s *Store) SettleStrong(ctx context.Context, want StrongIntent, lease strin
 			return model.ErrStrongPlan
 		}
 		advance := v.Status == StrongRunning || (v.Status == StrongBlocked && v.Reason == StrongReasonUnknownLaunch)
+		if !p.HasExactRewriteCoverage() && advance {
+			if err := s.setStrongRunState(ctx, in.Key, StrongBlocked, StrongReasonRewriteCoverage); err != nil {
+				return err
+			}
+			v.Status, v.Reason = StrongBlocked, StrongReasonRewriteCoverage
+			advance = false
+		}
 		block := func(why string) error {
 			reason = why
 			if err := s.setStrongSlotState(ctx, in.Key, in.Slot, in.State, why); err != nil {

@@ -34,6 +34,7 @@ commands:
   wait <card-id|objective-id> --until <statuses> --timeout <duration>
   reads
   blockers [--objective <id>]
+  research report       inspect/export synthetic workflow receipts offline
   verify <card-id>       verify recorded evidence for the latest attempt
   question list|show|answer
   channel list|show|set|check
@@ -101,6 +102,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	// config, credential, or configured proxy.
 	if isOfflineChannelQuote(rest) {
 		return channelQuoteFixture(rest[2:], stdout, stderr)
+	}
+	if rest[0] == "research" {
+		return cmdResearch(home, rest[1:], stdout, stderr)
 	}
 	applyCommandProxy(home, stderr)
 	switch rest[0] {

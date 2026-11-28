@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
+	"github.com/OttoPrua/Cardex/internal/strongcustody"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -43,11 +46,42 @@ func fakeChildMain() int {
 			}
 		}
 	}
+	var actualSHA string
+	if len(os.Args) > 1 && os.Args[1] == strongFakeBootstrap {
+		want := os.Getenv(strongFakeBundleEnv)
+		body, err := strongcustody.ReadFakeDelivery(spec.PromptPath, "input.json", model.StrongBundleMax)
+		if err != nil || len(body) == 0 || !model.StrongDigestKey(want) || model.StrongArtifactDigest(body) != want {
+			return 1
+		}
+		if len(os.Args) != 6 || os.Args[2] != "--attempt" || os.Args[4] != "--index" || os.Args[5] != "0" ||
+			spec.ScriptPath != "" || !strongFakeSafePath(spec.PromptPath) || !strongFakeSafePath(spec.WorkDir) {
+			return 1
+		}
+		script, err := io.ReadAll(io.LimitReader(os.Stdin, strongFakeScriptMax+1))
+		scriptSHA := os.Getenv(strongFakeScriptSHAEnv)
+		if err != nil || !model.StrongDigestKey(scriptSHA) || model.StrongArtifactDigest(script) != scriptSHA || validateStrongFakeScript(script) != nil {
+			return 1
+		}
+
+		spec.Script = script
+		spec.strongFixtureInput = body
+
+		challenge := os.Getenv(strongFakeChallengeEnv)
+		if !model.StrongDigestKey(challenge) || !model.StrongKey(spec.AttemptID) {
+			return 1
+		}
+		actualSHA = strongFakeProof(want, challenge, spec.AttemptID, scriptSHA)
+	}
+
 	res, err := Fake{}.run(context.Background(), spec, true)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	if actualSHA != "" {
+		fmt.Fprintln(os.Stdout, strongFakeBundlePrefix+actualSHA)
+	}
+
 	if _, err := os.Stdout.Write(res.Output); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -73,7 +107,7 @@ func childPrelude(out *bytes.Buffer, spec LaunchSpec, step scriptAttempt) error 
 	} else {
 		out.WriteString("tty=0\n")
 	}
-	if spec.PromptPath != "" {
+	if spec.PromptPath != "" && len(spec.strongFixtureInput) == 0 {
 		fmt.Fprintf(out, "prompt=%s\n", spec.PromptPath)
 	}
 	if step.OutsideWrite != "" {

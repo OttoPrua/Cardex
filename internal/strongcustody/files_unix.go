@@ -52,7 +52,7 @@ func strongSlotAbsent(dir *os.File, name string) bool {
 }
 
 func readStrongAt(dir *os.File, name string, limit int64) ([]byte, error) {
-	if name != strongResultName && name != strongReferencesName {
+	if name != strongResultName && name != strongReferencesName && name != strongDeliveryName && name != "script.json" {
 		return nil, model.ErrStrongArtifact
 	}
 	d := int(dir.Fd())

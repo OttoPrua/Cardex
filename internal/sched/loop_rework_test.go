@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -647,6 +648,31 @@ func TestDispatchRefusesUnfinishedDepsPausedClaims(t *testing.T) {
 	}
 }
 
+func assertFailedOrdinaryCheckoutRetainsBase(t *testing.T, repo string, failed model.Attempt) {
+	t.Helper()
+	if failed.BaseCommit == "" || failed.Branch == "" || failed.Worktree == "" {
+		t.Fatalf("missing failed checkout identity: %+v", failed)
+	}
+	if tip := gitOutput(t, repo, "rev-parse", "--verify", "refs/heads/"+failed.Branch); tip != failed.BaseCommit {
+		t.Fatalf("reusable branch moved: got %q, want %q", tip, failed.BaseCommit)
+	}
+	if _, err := os.Lstat(failed.Worktree); !os.IsNotExist(err) {
+		t.Fatalf("old clean owned checkout not removed: %v", err)
+	}
+}
+
+func assertOrdinaryRetryReusesRefNotCheckout(t *testing.T, repo string, failed, retry model.Attempt) {
+	t.Helper()
+	if retry.ID == failed.ID || retry.Worktree == "" || retry.Worktree == failed.Worktree ||
+		retry.Branch != failed.Branch || retry.BaseCommit != failed.BaseCommit {
+		t.Fatalf("retry did not reuse exact branch/base with a new attempt/checkout: old %+v new %+v", failed, retry)
+	}
+	if head := gitOutput(t, retry.Worktree, "rev-parse", "--verify", "HEAD"); head != failed.BaseCommit {
+		t.Fatalf("retry checked out %q, want %q", head, failed.BaseCommit)
+	}
+	assertFailedOrdinaryCheckoutRetainsBase(t, repo, failed)
+}
+
 func TestPromptFailureResumesSameBranch(t *testing.T) {
 	ctx := context.Background()
 	home, db, repo := newHome(t)
@@ -675,10 +701,7 @@ func TestPromptFailureResumesSameBranch(t *testing.T) {
 	if err != nil || len(first) != 1 || first[0].Outcome != model.OutcomeLaunchFailed || first[0].EndedAt.IsZero() {
 		t.Fatalf("partial %+v %v", first, err)
 	}
-	name := first[0].Branch
-	if branchExists(repo, name) {
-		t.Fatal("uncommitted branch kept after prompt failure")
-	}
+	assertFailedOrdinaryCheckoutRetainsBase(t, repo, first[0])
 	got, err := db.GetCard(ctx, "c")
 	if err != nil || got.Status != model.CardWaiting || !strings.HasPrefix(got.WaitReason, "backoff:") {
 		t.Fatalf("card %+v %v", got, err)
@@ -704,8 +727,15 @@ func TestPromptFailureResumesSameBranch(t *testing.T) {
 			launched = &again[i]
 		}
 	}
-	if launched == nil || launched.ID == first[0].ID || launched.Branch != name || !branchExists(repo, name) {
+	if launched == nil {
 		t.Fatalf("new attempt %+v", again)
+	}
+	assertOrdinaryRetryReusesRefNotCheckout(t, repo, first[0], *launched)
+	if old, err := db.GetAttempt(ctx, first[0].ID); err != nil || !reflect.DeepEqual(old, first[0]) {
+		t.Fatalf("original failure record missing or changed: %+v %v", old, err)
+	}
+	if current, err := db.GetCard(ctx, "c"); err != nil || current.Status != model.CardRunning {
+		t.Fatalf("relaunched card %+v %v", current, err)
 	}
 }
 
@@ -814,9 +844,7 @@ func TestHostStartFailureResumesOnNewRunner(t *testing.T) {
 	if err != nil || len(first) != 1 || first[0].Outcome != model.OutcomeLaunchFailed || first[0].EndedAt.IsZero() {
 		t.Fatalf("partial %+v %v", first, err)
 	}
-	if branchExists(repo, first[0].Branch) {
-		t.Fatal("uncommitted branch kept")
-	}
+	assertFailedOrdinaryCheckoutRetainsBase(t, repo, first[0])
 	got, err := db.GetCard(ctx, "c")
 	if err != nil || got.Status != model.CardWaiting || !strings.HasPrefix(got.WaitReason, "backoff:") {
 		t.Fatalf("card %+v %v", got, err)
@@ -849,12 +877,13 @@ func TestHostStartFailureResumesOnNewRunner(t *testing.T) {
 			launched = attempt
 			found = true
 		}
-		if attempt.ID == first[0].ID && attempt.Outcome != model.OutcomeLaunchFailed {
-			t.Fatalf("first attempt changed %+v", attempt)
-		}
 	}
-	if !found || launched.ID == first[0].ID {
+	if !found {
 		t.Fatalf("restart %+v", again)
+	}
+	assertOrdinaryRetryReusesRefNotCheckout(t, repo, first[0], launched)
+	if old, err := db.GetAttempt(ctx, first[0].ID); err != nil || !reflect.DeepEqual(old, first[0]) {
+		t.Fatalf("original failure record missing or changed: %+v %v", old, err)
 	}
 	if got, err := db.GetCard(ctx, "c"); err != nil || got.Status != model.CardRunning {
 		t.Fatalf("relaunched card %+v %v", got, err)
@@ -1652,6 +1681,7 @@ func TestWorkspaceExistsBeforeAttemptResumes(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(home, "attempts"), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
+		base := gitOutput(t, repo, "rev-parse", "--verify", "refs/heads/main")
 		now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 		r := New(home)
 		r.Now = func() time.Time { return now }
@@ -1664,8 +1694,24 @@ func TestWorkspaceExistsBeforeAttemptResumes(t *testing.T) {
 			t.Fatalf("attempt stored early %+v %v", first, err)
 		}
 		name := "cardex/" + obj + "/c/c"
-		if branchExists(repo, name) {
-			t.Fatal("uncommitted branch kept")
+		if tip := gitOutput(t, repo, "rev-parse", "--verify", "refs/heads/"+name); tip != base {
+			t.Fatalf("pre-attempt failure changed ref: got %q, want %q", tip, base)
+		}
+		var oldPath string
+		registered := gitOutput(t, repo, "worktree", "list", "--porcelain")
+		for _, record := range strings.Split(registered, "\n\n") {
+			lines := strings.Split(record, "\n")
+			for _, line := range lines {
+				if line == "branch refs/heads/"+name {
+					if oldPath != "" || !strings.HasPrefix(lines[0], "worktree ") {
+						t.Fatal("ambiguous pre-attempt checkout identity")
+					}
+					oldPath = strings.TrimPrefix(lines[0], "worktree ")
+				}
+			}
+		}
+		if oldPath == "" || gitOutput(t, oldPath, "rev-parse", "--verify", "HEAD") != base {
+			t.Fatalf("pre-attempt checkout missing or changed: %q", oldPath)
 		}
 		got, err := db.GetCard(ctx, "c")
 		if err != nil || got.Status != model.CardWaiting || !strings.HasPrefix(got.WaitReason, "backoff:") {
@@ -1689,8 +1735,28 @@ func TestWorkspaceExistsBeforeAttemptResumes(t *testing.T) {
 		if err != nil || len(again) != 1 || again[0].Branch != name || again[0].PID != 94 {
 			t.Fatalf("resume %+v %v", again, err)
 		}
-		if !branchExists(repo, name) {
-			t.Fatal("branch lost")
+		if again[0].BaseCommit != base || again[0].Worktree == "" || again[0].Worktree == oldPath ||
+			gitOutput(t, again[0].Worktree, "rev-parse", "--verify", "HEAD") != base ||
+			gitOutput(t, repo, "rev-parse", "--verify", "refs/heads/"+name) != base {
+			t.Fatalf("retry did not continue exact ref and base in a new worktree: %+v", again[0])
+		}
+		if got := gitOutput(t, oldPath, "rev-parse", "--verify", "HEAD"); got != base {
+			t.Fatalf("previous checkout changed: got %q, want %q", got, base)
+		}
+		detached := false
+		for _, record := range strings.Split(gitOutput(t, repo, "worktree", "list", "--porcelain"), "\n\n") {
+			lines := strings.Split(record, "\n")
+			if lines[0] == "worktree "+oldPath {
+				for _, line := range lines {
+					detached = detached || line == "detached"
+				}
+			}
+		}
+		if !detached {
+			t.Fatalf("previous checkout not retained detached: %q", oldPath)
+		}
+		if current, err := db.GetCard(ctx, "c"); err != nil || current.Status != model.CardRunning {
+			t.Fatalf("resumed card %+v %v", current, err)
 		}
 	})
 	t.Run("pre-existing branch and worktree", func(t *testing.T) {

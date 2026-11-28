@@ -379,7 +379,7 @@ func (s *snap) putChannel(ch model.Channel) {
 }
 
 func (s *snap) disposed(attemptID string) bool {
-	return s.hasEvent(attemptKey(attemptID), model.EventCompatibleAttemptHeld) || s.hasEvent(attemptKey(attemptID), model.EventCompatibleRefusedNoWire) || s.hasEvent(attemptKey(attemptID), "dev_disposed") || s.hasEvent(attemptKey(attemptID), staleDesignAttemptEvent)
+	return s.hasEvent(attemptKey(attemptID), model.EventLegacyClaudeBuildHeld) || s.hasEvent(attemptKey(attemptID), model.EventCompatibleAttemptHeld) || s.hasEvent(attemptKey(attemptID), model.EventCompatibleRefusedNoWire) || s.hasEvent(attemptKey(attemptID), "dev_disposed") || s.hasEvent(attemptKey(attemptID), staleDesignAttemptEvent)
 }
 
 func (s *snap) hasEvent(entity, typ string) bool {

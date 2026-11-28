@@ -144,7 +144,7 @@ func resolveEngineAuth(p EngineProfile) (string, error) {
 		if v := strings.TrimSpace(os.Getenv(p.AuthEnv)); v != "" {
 			return v, nil
 		}
-		return "", fmt.Errorf("auth_env %s is empty", p.AuthEnv)
+		return "", legacyClaudeBuildError{legacyAuthEnvEmpty, fmt.Errorf("auth_env %s is empty", p.AuthEnv)}
 	}
 	if p.AuthFile != "" {
 		data, err := os.ReadFile(p.AuthFile)
@@ -159,7 +159,7 @@ func resolveEngineAuth(p EngineProfile) (string, error) {
 	if v := strings.TrimSpace(p.AuthValue); v != "" {
 		return v, nil
 	}
-	return "", fmt.Errorf("engine profile has no auth")
+	return "", legacyClaudeBuildError{legacyAuthMissing, fmt.Errorf("engine profile has no auth")}
 }
 
 func engineAuthVar(p EngineProfile) string {

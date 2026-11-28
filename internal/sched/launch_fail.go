@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
@@ -31,6 +32,7 @@ type launchScratch struct {
 	repo, worktree, branch, base string
 	dropWorktree, dropBranch     bool
 	strict                       *workspace.CreateRequest
+	checkout                     *workspace.LaunchCheckout
 }
 
 // tickNoted marks an error already stored as tick_error by the step that saw it.
@@ -142,9 +144,11 @@ func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Ca
 	}
 	reportServeError(ctx, "launch", cause)
 	reportServeEvent(ctx, "transition state=launch_backoff")
-	// Never run destructive Git cleanup for a failure which lost the DB
-	// ownership check. Branch deletion is conditional on the original tip.
-	workspace.Git{}.DropLaunch(ctx, scratch.repo, scratch.worktree, scratch.branch, scratch.base, scratch.dropWorktree, scratch.dropBranch)
+	// A successful failure transition is not a lease: zero backoff immediately
+	// permits another launch. Reacquire exact failed ownership before cleanup.
+	if attempt != nil && scratch.checkout != nil {
+		r.dropFailedCheckout(ctx, db, fresh, failure, scratch)
+	}
 	if attempt != nil {
 		if err := harvest.WriteUnavailableSummary(ctx, r.harvestInput(ctx, db, *card, *attempt, 1, nil)); err != nil {
 			_ = noteEvidenceWriteFailed(ctx, db, r.Home, *attempt, err)
@@ -162,6 +166,36 @@ func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Ca
 		}
 	}
 	return "", nil
+}
+
+func (r *Runner) dropFailedCheckout(ctx context.Context, db *store.Store, card model.Card, failed model.Attempt, scratch launchScratch) {
+	if !scratch.dropWorktree || scratch.checkout == nil || failed.Worktree != scratch.worktree || failed.Outcome != model.OutcomeLaunchFailed {
+		return
+	}
+	bounded, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	_ = db.WithWriteTx(bounded, func(tx context.Context) error {
+		current, err := db.GetCard(tx, card.ID)
+		if err != nil || !reflect.DeepEqual(current, card) {
+			return err
+		}
+		latest, err := db.GetAttempt(tx, failed.ID)
+		if err != nil || !reflect.DeepEqual(latest, failed) {
+			return err
+		}
+		rows, err := db.ListAttempts(tx, "")
+		if err != nil {
+			return err
+		}
+		for _, row := range rows {
+			if row.ID != failed.ID && ((row.Card == failed.Card && (row.Index >= failed.Index || attemptOpen(row))) ||
+				(row.Worktree != "" && filepath.Clean(row.Worktree) == filepath.Clean(failed.Worktree))) {
+				return nil
+			}
+		}
+		(workspace.Git{}).DropOwnedLaunchCheckout(tx, scratch.repo, scratch.worktree, scratch.checkout)
+		return nil
+	})
 }
 
 func (r *Runner) applyLaunchBackoff(card *model.Card, prior int) {

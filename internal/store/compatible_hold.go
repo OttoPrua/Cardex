@@ -16,13 +16,17 @@ import (
 // MarkCompatibleCardHeld updates only hold state. Callers prove the observed
 // card and route in the same writer transaction before invoking this helper.
 func (s *Store) MarkCompatibleCardHeld(ctx context.Context, current model.Card) error {
+	return s.markOperatorHeldCard(ctx, current, model.CompatibleRuntimeHold)
+}
+
+func (s *Store) markOperatorHeldCard(ctx context.Context, current model.Card, reason string) error {
 	res, err := s.q(ctx).ExecContext(ctx, `UPDATE cards SET status=?, wait_reason=?, changed_at=? WHERE id=?`,
-		model.CardNeedsInput, model.CompatibleRuntimeHold, formatTime(time.Now()), current.ID)
+		model.CardNeedsInput, reason, formatTime(time.Now()), current.ID)
 	if err := rowsAffected(res, err); err != nil {
 		return err
 	}
 	current.Status = model.CardNeedsInput
-	current.WaitReason = model.CompatibleRuntimeHold
+	current.WaitReason = reason
 	s.noteStatus(ctx, current)
 	return nil
 }
@@ -57,6 +61,9 @@ func (s *Store) HoldCompatibleRefusal(ctx context.Context, card model.Card, atte
 }
 
 func (s *Store) holdCompatibleAttempt(ctx context.Context, observedCard model.Card, observedAttempt model.Attempt, observedObjective *model.Objective, now time.Time, refusal *CompatibleRefusal, preExec bool) error {
+	// A historical park introduces a new write authority. Do not inherit a
+	// caller transaction whose writer reservation/store cannot be proved.
+	ownWriter := ctx.Value(txKey{}) == nil
 	return s.WithWriteTx(ctx, func(ctx context.Context) error {
 		attempt, err := s.GetAttempt(ctx, observedAttempt.ID)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -78,8 +85,14 @@ func (s *Store) holdCompatibleAttempt(ctx context.Context, observedCard model.Ca
 				var receipts int
 				var data string
 				err := s.q(ctx).QueryRowContext(ctx, `SELECT count(*), COALESCE(min(data),'') FROM events WHERE entity=? AND event_type=? AND ts=?`, "attempt:"+attempt.ID, model.EventAttemptPrepared, formatTime(attempt.StartedAt)).Scan(&receipts, &data)
-				if err != nil || receipts != 1 {
+				if err != nil {
 					return err
+				}
+				if receipts == 0 && refusal == nil && ownWriter {
+					return s.parkHistoricalCompatiblePreparation(ctx, observedCard, attempt, observedObjective)
+				}
+				if receipts != 1 {
+					return nil
 				}
 				if err := json.Unmarshal([]byte(data), &preparedCardRevision); err != nil || preparedCardRevision == "" {
 					return fmt.Errorf("invalid compatible runtime preparation receipt")
@@ -186,6 +199,30 @@ func (s *Store) holdCompatibleAttempt(ctx context.Context, observedCard model.Ca
 		}
 		return s.AppendEvent(ctx, &model.Event{Entity: "attempt:" + attempt.ID, Type: model.EventCompatibleRefusedNoWire, Data: raw})
 	})
+}
+
+// parkHistoricalCompatiblePreparation preserves the attempt, checkout and
+// any evidence. The staged channel cannot resume this exact current card,
+// but a timestamp without a receipt does not establish who tried to run it.
+func (s *Store) parkHistoricalCompatiblePreparation(tx context.Context, observed model.Card, a model.Attempt, objective *model.Objective) error {
+	if !pristineLocalPreparation(a) {
+		return nil
+	}
+	ch, err := s.GetChannel(tx, a.Route.Channel)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil || !ch.CompatibleRuntimeHeld() {
+		return err
+	}
+	if _, valid, err := s.localPreparationRevision(tx, a, observed.Kind, false); err != nil || !valid {
+		return err
+	}
+	c, current, err := s.currentLocalPreparation(tx, a, observed, objective)
+	if err != nil || !current {
+		return err
+	}
+	return s.markOperatorHeldCard(tx, c, model.CompatibleHistoricalRecoveryHold)
 }
 
 // compatibleTypedAttemptOwner is read-only and deliberately does not install

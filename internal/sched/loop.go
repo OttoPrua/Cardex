@@ -872,7 +872,6 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 			cont, detached, startPoint = false, true, "refs/heads/"+branch
 		}
 	}
-	existed := cont || detached
 	root := project.WorktreeRoot
 	if strings.TrimSpace(root) == "" {
 		root = filepath.Join(r.Home, "worktrees")
@@ -915,7 +914,6 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		branch:       branch,
 		base:         baseSHA,
 		dropWorktree: true,
-		dropBranch:   !existed,
 		strict:       &req,
 	}
 	if err != nil {
@@ -928,6 +926,10 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		if err := detachHead(workspace.WithGitEvidence(ctx, card.ID, attemptID, wt.Path), wt.Path); err != nil {
 			return r.failLaunch(ctx, db, &strictView.card, nil, launchStepWorktree, err, rt, scratch)
 		}
+	}
+	if !card.StrictDeps && filepath.Clean(wt.Path) == filepath.Clean(targetWorktree) {
+		scratch.checkout = (workspace.Git{}).CaptureLaunchCheckout(gitCtx, scratch.repo, wt.Path, wt.BaseCommit)
+		defer scratch.checkout.Release()
 	}
 	dir := roots.AttemptDirFor(r.Home, attemptID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1260,17 +1262,18 @@ func stripEmptyFacts(text string) string {
 
 func (r *Runner) startAttempt(ctx context.Context, db *store.Store, attempt *model.Attempt, strict bool) (bool, error) {
 	var pid int
+	var exited <-chan struct{}
 	var err error
 	if r.Launch != nil {
 		pid, err = r.Launch(ctx, r.Home, attempt.ID)
 	} else {
 		dir := roots.AttemptDir(r.Home, attempt.ID, attempt.PromptPath)
-		pid, err = launchDetached(ctx, r.Home, attempt.ID, dir)
+		pid, exited, err = startDetached(ctx, r.Home, attempt.ID, dir)
 	}
 	if err != nil {
 		return false, err
 	}
-	waitPID(ctx, func() (int, bool) {
+	waitPID(ctx, exited, func() (int, bool) {
 		got, err := db.GetAttempt(ctx, attempt.ID)
 		if err != nil {
 			return 0, false
@@ -1296,10 +1299,17 @@ func (r *Runner) startAttempt(ctx context.Context, db *store.Store, attempt *mod
 		return true, nil
 	}
 	if r.Launch == nil {
+		select {
+		case <-exited:
+			// An untyped exit can be transient or externally interrupted.
+			// Keep the unclaimed attempt, not a synthetic PID or outcome.
+			return false, nil
+		default:
+		}
 		// A scheduler child PID is not executor ownership. In particular,
 		// never race a delayed pre-credential refusal of a named Claude profile.
 		ch, err := db.GetChannel(ctx, got.Route.Channel)
-		if err != nil || (ch.Runner == model.RunnerClaude && strings.TrimSpace(ch.EngineProfile) != "") {
+		if err != nil || ch.CompatibleRuntimeHeld() || (ch.Runner == model.RunnerClaude && strings.TrimSpace(ch.EngineProfile) != "") {
 			return false, err
 		}
 	}
@@ -1319,6 +1329,25 @@ func (r *Runner) startAttempt(ctx context.Context, db *store.Store, attempt *mod
 		}
 		if !reflect.DeepEqual(fresh, got) || !attemptOpen(fresh) {
 			return nil
+		}
+		if r.Launch == nil {
+			select {
+			case <-exited:
+				return nil
+			default:
+			}
+			current, err := db.GetCard(tx, fresh.Card)
+			if err != nil {
+				return err
+			}
+			channel, err := db.GetChannel(tx, fresh.Route.Channel)
+			if err != nil {
+				return err
+			}
+			if current.WaitReason == model.CompatibleHistoricalRecoveryHold || channel.CompatibleRuntimeHeld() ||
+				(channel.Runner == model.RunnerClaude && strings.TrimSpace(channel.EngineProfile) != "") {
+				return nil
+			}
 		}
 		fresh.PID = pid
 		if err := db.UpdateAttempt(tx, &fresh); err != nil {

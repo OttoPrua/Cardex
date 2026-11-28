@@ -490,17 +490,26 @@ func (r *Runner) advance(ctx context.Context, db *store.Store) error {
 	}
 	var first error
 	for _, obj := range objs {
-		if obj.Mode != model.ModeAuto || obj.Status != model.ObjectiveActive {
+		if obj.Mode != model.ModeAuto {
 			continue
 		}
 		var stepErr error
-		if r.Engine != nil {
-			stepErr = r.Engine(ctx, obj.ID)
-		} else {
-			stepErr = designStep(ctx, obj.ID)
-			if stepErr == nil || errors.Is(stepErr, loop.ErrNotImplemented) {
-				stepErr = devStep(ctx, obj.ID)
+		switch obj.Status {
+		case model.ObjectiveDoneCandidate:
+			// Only the exact approved optional-comparison continuation may
+			// resume here. It does not call design or a custom engine.
+			stepErr = loop.ResumeOptionalComparisonCandidate(ctx, db, obj)
+		case model.ObjectiveActive:
+			if r.Engine != nil {
+				stepErr = r.Engine(ctx, obj.ID)
+			} else {
+				stepErr = designStep(ctx, obj.ID)
+				if stepErr == nil || errors.Is(stepErr, loop.ErrNotImplemented) {
+					stepErr = devStep(ctx, obj.ID)
+				}
 			}
+		default:
+			continue
 		}
 		if stepErr == nil || errors.Is(stepErr, loop.ErrNotImplemented) {
 			continue

@@ -2180,8 +2180,12 @@ func (st *step) complete() error {
 	if obj.Status != model.ObjectiveActive {
 		return nil
 	}
-	if !st.allFrozen() || st.anyUnfinished() {
+	if !st.allFrozen() {
 		return nil
+	}
+	unfinished, excluded, err := st.anyUnfinished()
+	if err != nil || unfinished {
+		return err
 	}
 	ok, err := acceptancePasses(st.ctx, st.snap.project.RepoPath, obj.IntegrationBranch, obj.Acceptance.Commands, roots.Load(st.home).EffectiveScratch(st.snap.project.ScratchDir))
 	if err != nil {
@@ -2194,8 +2198,15 @@ func (st *step) complete() error {
 	if err := st.saveObjective(); err != nil {
 		return err
 	}
-	_, err = st.openQuestion(model.QuestionDone, obj.ID, "objective", "objective is a done candidate; approve to merge the integration branch locally", true)
-	return err
+	id, err := st.openQuestion(model.QuestionDone, obj.ID, "objective", "objective is a done candidate; approve to merge the integration branch locally", true)
+	if err != nil {
+		return err
+	}
+	_, alreadyGated := st.snap.doneApproval()
+	if len(excluded) != 0 || alreadyGated {
+		return st.event("objective:"+obj.ID, objectiveComparisonExemptionEvent, comparisonExemption{Question: id, Cards: excluded})
+	}
+	return nil
 }
 
 func (st *step) allFrozen() bool {
@@ -2210,7 +2221,8 @@ func (st *step) allFrozen() bool {
 	return true
 }
 
-func (st *step) anyUnfinished() bool {
+func (st *step) anyUnfinished() (bool, []string, error) {
+	var exempted []string
 	for _, card := range st.snap.cards {
 		// The weekly ranking card stays on the active objective until it can run.
 		// It is not that objective's unfinished work.
@@ -2220,10 +2232,14 @@ func (st *step) anyUnfinished() bool {
 		switch card.Status {
 		case model.CardMerged, model.CardDone, model.CardFailed, model.CardCanceled:
 		default:
-			return true
+			optional, err := st.optionalHeldComparison(card)
+			if err != nil || !optional {
+				return true, nil, err
+			}
+			exempted = append(exempted, card.ID)
 		}
 	}
-	return false
+	return false, exempted, nil
 }
 
 func (st *step) pending(kind model.QuestionKind, scope string) bool {
@@ -2236,17 +2252,25 @@ func (st *step) pending(kind model.QuestionKind, scope string) bool {
 }
 
 func (st *step) mergeIfApproved() error {
-	var answer string
-	found := false
-	for _, question := range st.snap.questions {
-		if question.Kind == model.QuestionDone && question.Objective == st.snap.obj.ID {
-			answer = question.Answer
-			found = true
-		}
-	}
-	if !found || !approved(answer) {
+	approval, gated := st.snap.doneApproval()
+	if !approved(approval.Answer) {
 		return nil
 	}
+	if gated {
+		if !st.completionReserved || st.snap.obj.Status != model.ObjectiveDoneCandidate || !st.allFrozen() {
+			return nil
+		}
+		exemption, _ := st.snap.comparisonCompletionReceipt()
+		safe, err := st.priorComparisonCardsSafe(exemption)
+		if err != nil || !safe {
+			return err
+		}
+		unfinished, _, err := st.anyUnfinished()
+		if err != nil || unfinished {
+			return err
+		}
+	}
+
 	if st.snap.project.RepoPath == "" || st.snap.obj.IntegrationBranch == "" {
 		return fmt.Errorf("done merge requires a project repo and an integration branch")
 	}

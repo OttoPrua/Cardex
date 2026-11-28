@@ -2,6 +2,7 @@ package sched
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,8 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/harvest"
+	"github.com/OttoPrua/Cardex/internal/host"
+	"github.com/OttoPrua/Cardex/internal/loop"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/prompt"
@@ -227,5 +230,279 @@ func TestAPIChannelHoldHarvestsOnlyCurrentEndedAttempt(t *testing.T) {
 		if err != nil || a.Outcome != model.OutcomeNoOutput || a.ErrorExcerpt != model.CompatibleRuntimeHold {
 			t.Fatalf("%s: %+v %v", mode, a, err)
 		}
+	}
+}
+
+func TestAPIChannelBacklogPinHeldWithOnlyCompatibleLane(t *testing.T) {
+	ctx := t.Context()
+	home, db, repo := newHome(t)
+	_, oid := seedRepo(t, db, repo, "true")
+	ch := model.Channel{ID: "api", Family: "fixture", Runner: model.RunnerClaude, Health: model.HealthOK, EngineProfile: "", Models: []string{"fixture-model"}}
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(apiLifecycleProfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ch.EngineProfile = "api-fixture"
+	ch, err := runner.ValidateChannelBinding(home, ch, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	card := model.Card{ID: "pinned-backlog", Objective: oid, Kind: model.KindBacklog, Status: model.CardReady, Channel: ch.ID}
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(home).dispatch(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetCard(ctx, card.ID)
+	if err != nil || got.Status != model.CardNeedsInput || got.WaitReason != model.CompatibleRuntimeHold || got.Channel != ch.ID {
+		t.Fatalf("backlog: %+v %v", got, err)
+	}
+}
+
+const apiLifecycleProfile = `{"engines":{"api-fixture":{"protocol":"anthropic-compatible","base_url":"https://api.example.test","default_model":"fixture-model","credential":{"source":"env","name":"CARDEX_API1_FIXTURE"}}}}`
+
+func TestAPIChannelRestagePreservesEndedLegacyHarvest(t *testing.T) {
+	ctx := t.Context()
+	home, db, repo := newHome(t)
+	_, oid := seedRepo(t, db, repo, "true")
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(apiLifecycleProfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := runner.ValidateChannelBinding(home, model.Channel{ID: "shared", Runner: model.RunnerClaude, Health: model.HealthOK, EngineProfile: "api-fixture", Family: "current"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	card := model.Card{ID: "legacy-completed", Objective: oid, Kind: model.KindReview, Status: model.CardRunning}
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	code := 0
+	a := model.Attempt{ID: "old-legacy", Card: card.ID, Route: model.Route{Channel: ch.ID, Model: "fixture-model"}, Worktree: repo, EndedAt: time.Now(), Exit: &code,
+		RouteReason: model.RouteReason{Dispatch: &model.RouteDispatch{Runner: model.RunnerFake}, Candidates: []model.RouteCandidate{{Channel: ch.ID, Model: "fixture-model", Family: "historical"}}}}
+	if err := db.CreateAttempt(ctx, &a); err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	r := New(home)
+	r.Dispose = func(_ context.Context, c *model.Card, res harvest.Result) error {
+		seen = true
+		if c.AuthorFamily != "historical" || res.Excerpt == model.CompatibleRuntimeHold {
+			t.Fatalf("retrospective classification: %+v %+v", c, res)
+		}
+		return nil
+	}
+	if err := r.harvest(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	if !seen {
+		t.Fatal("ended legacy evidence did not reach harvest")
+	}
+}
+
+func TestAPIChannelPreparedRawRefusalNoRetry(t *testing.T) {
+	ctx := t.Context()
+	home, db, repo := newHome(t)
+	_, oid := seedRepo(t, db, repo, "true")
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(apiLifecycleProfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	obj, err := db.GetObjective(ctx, oid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj.Mode = model.ModeAuto
+	if err := db.UpdateObjective(ctx, &obj); err != nil {
+		t.Fatal(err)
+	}
+	ch := model.Channel{ID: "old-raw", Runner: model.RunnerClaude, Health: model.HealthOK, EngineProfile: "api-fixture", Models: []string{"fixture-model"}}
+	if err := db.CreateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	card := model.Card{ID: "dev-refused", Objective: oid, Kind: model.KindDev, Status: model.CardRunning}
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	a := model.Attempt{ID: "prepared-raw", Card: card.ID, Route: model.Route{Channel: ch.ID, Model: "fixture-model"}, Worktree: repo, StartedAt: time.Now().UTC()}
+	if err := db.CreateAttempt(ctx, &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.RecordAttemptPreparation(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	r := New(home)
+	r.Launch = func(ctx context.Context, home, attempt string) (int, error) {
+		return 0, host.Run(ctx, home, attempt)
+	}
+	if started, err := r.startAttempt(ctx, db, &a, false); err != nil || started {
+		t.Fatalf("synchronous no-wire refusal counted as dispatch: %t %v", started, err)
+	}
+	t.Setenv("CARDEX_HOME", home)
+	if err := loop.DevStep(loop.WithHome(ctx, home), oid); err != nil && err != loop.ErrNotImplemented {
+		t.Fatal(err)
+	}
+	r.Launch = func(context.Context, string, string) (int, error) { t.Fatal("refusal reached retry"); return 0, nil }
+	if _, err := r.dispatch(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	aa, err := db.ListAttempts(ctx, card.ID)
+	if err != nil || len(aa) != 1 || aa[0].Outcome != model.OutcomeNoOutput || aa[0].PID != 0 {
+		t.Fatalf("attempts: %+v %v", aa, err)
+	}
+	got, err := db.GetCard(ctx, card.ID)
+	if err != nil || got.Status != model.CardNeedsInput || got.WaitReason != model.CompatibleRuntimeHold {
+		t.Fatalf("card: %+v %v", got, err)
+	}
+	ev, err := db.ListEvents(ctx, "attempt:"+a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := false
+	for _, e := range ev {
+		if e.Type == "host_start" || e.Type == "dev_disposed" {
+			t.Fatalf("unexpected event %s", e.Type)
+		}
+		seen = seen || e.Type == model.EventCompatibleRefusedNoWire
+	}
+	if !seen {
+		t.Fatal("no typed refusal receipt")
+	}
+}
+
+func TestAPIChannelRefusalAfterRevisedCardOrLaunchFailure(t *testing.T) {
+	for _, edit := range []bool{false, true} {
+		name := "refusal-before-failed-launch"
+		if edit {
+			name = "operator-edit-before-host-load"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			home, db, repo := newHome(t)
+			_, oid := seedRepo(t, db, repo, "true")
+			if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(apiLifecycleProfile), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			ch := model.Channel{ID: "old-raw", Runner: model.RunnerClaude, Health: model.HealthOK, EngineProfile: "api-fixture", Models: []string{"fixture-model"}}
+			if err := db.CreateChannel(ctx, &ch); err != nil {
+				t.Fatal(err)
+			}
+			c := model.Card{ID: "card", Objective: oid, Kind: model.KindDev, Status: model.CardRunning, Title: "original"}
+			if err := db.CreateCard(ctx, &c); err != nil {
+				t.Fatal(err)
+			}
+			c, err := db.GetCard(ctx, c.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wt := filepath.Join(filepath.Dir(repo), "fixture-worktree")
+			git(t, repo, "worktree", "add", "-b", "owned-fixture", wt)
+			a := model.Attempt{ID: "attempt", Card: c.ID, Route: model.Route{Channel: ch.ID, Model: "fixture-model"}, Worktree: wt, StartedAt: time.Now().UTC()}
+			if err := db.WithWriteTx(ctx, func(tx context.Context) error {
+				if err := db.CreateAttempt(tx, &a); err != nil {
+					return err
+				}
+				return db.RecordAttemptPreparation(tx, a)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			a, err = db.GetAttempt(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if edit {
+				updated := c
+				updated.Title = "new operator title"
+				if err := db.UpdateCard(ctx, &updated); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := host.Run(ctx, home, a.ID); err != nil {
+				t.Fatal(err)
+			}
+			if !edit {
+				_, err := New(home).failLaunch(ctx, db, &c, &a, launchStepHost, errors.New("late synthetic launcher error"), a.Route, launchScratch{repo: repo, worktree: wt, branch: "owned-fixture", base: "main", dropWorktree: true, dropBranch: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := db.GetCard(ctx, c.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if edit && (got.Title != "new operator title" || got.Status != model.CardRunning || got.WaitReason != "") {
+				t.Fatalf("new edit was parked: %+v", got)
+			}
+			if !edit && (got.Status != model.CardNeedsInput || got.WaitReason != model.CompatibleRuntimeHold) {
+				t.Fatalf("launch failure overwrote hold: %+v", got)
+			}
+			gotA, err := db.GetAttempt(ctx, a.ID)
+			if err != nil || gotA.Outcome != model.OutcomeNoOutput || gotA.ErrorExcerpt != model.CompatibleRuntimeHold {
+				t.Fatalf("invalid attempt: %+v %v", gotA, err)
+			}
+			if _, err := os.Stat(filepath.Join(wt, "a.txt")); err != nil {
+				t.Fatalf("late cleanup removed held worktree: %v", err)
+			}
+			git(t, repo, "show-ref", "--verify", "refs/heads/owned-fixture")
+		})
+	}
+}
+
+func TestAPIChannelLateOrdinaryResumeDoesNotReplaceHold(t *testing.T) {
+	ctx := t.Context()
+	home, db, repo := newHome(t)
+	_, oid := seedRepo(t, db, repo, "true")
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(apiLifecycleProfile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := model.Card{ID: "ordinary-ready", Objective: oid, Kind: model.KindDev, Status: model.CardReady}
+	ch := model.Channel{ID: "raw", Runner: model.RunnerClaude, Health: model.HealthOK, EngineProfile: "api-fixture", Models: []string{"fixture-model"}}
+	if err := db.CreateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CreateCard(ctx, &c); err != nil {
+		t.Fatal(err)
+	}
+	a := model.Attempt{ID: "old-no-pid", Card: c.ID, Route: model.Route{Channel: ch.ID, Model: "fixture-model"}, Worktree: repo}
+	if err := db.CreateAttempt(ctx, &a); err != nil {
+		t.Fatal(err)
+	}
+	scheduledCard, err := db.GetCard(ctx, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduledAttempt, err := db.GetAttempt(ctx, a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, err := db.GetObjective(ctx, oid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The scheduler's Ready snapshot precedes the competing direct refusal.
+	if err := host.Run(ctx, home, a.ID); err != nil {
+		t.Fatal(err)
+	}
+	r := New(home)
+	r.Prompt = func(context.Context, prompt.Input) (string, error) {
+		t.Fatal("stale resume generated prompt")
+		return "", nil
+	}
+	r.Launch = func(context.Context, string, string) (int, error) { t.Fatal("stale resume launched"); return 0, nil }
+	got, err := r.resumeAttempt(ctx, db, scheduledCard, obj, &scheduledAttempt)
+	if err != nil || got != "" {
+		t.Fatalf("resume got %q %v", got, err)
+	}
+	seen, err := db.GetCard(ctx, c.ID)
+	if err != nil || seen.Status != model.CardNeedsInput || seen.WaitReason != model.CompatibleRuntimeHold {
+		t.Fatalf("hold replaced: %+v %v", seen, err)
+	}
+	ended, err := db.GetAttempt(ctx, a.ID)
+	if err != nil || ended.Outcome != model.OutcomeNoOutput || ended.PID != 0 {
+		t.Fatalf("attempt replaced: %+v %v", ended, err)
 	}
 }

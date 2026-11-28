@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OttoPrua/Cardex/internal/harvest"
 	"github.com/OttoPrua/Cardex/internal/loop"
@@ -245,6 +246,21 @@ func TestReviewSummaryIgnoresAuthorPinAndRetainsRetryTier(t *testing.T) {
 		loadSummary(failed[0].ID)
 	}
 	r.Launch = func(context.Context, string, string) (int, error) { return 84, nil }
+	// The failed launch committed a Waiting/backoff revision. A retained
+	// Ready snapshot must not authorize another host/attempt. Release backoff
+	// through the same step as dispatch and then load its new Ready revision.
+	if ch, err := r.launchCard(ctx, db, card, obj, channels, pos, nil, nil); err != nil || ch != "" {
+		t.Fatalf("stale review retry launched %q, err %v", ch, err)
+	}
+	now := r.now().Add(time.Hour)
+	if err := releaseDueBackoff(ctx, db, now); err != nil {
+		t.Fatal(err)
+	}
+	r.Now = func() time.Time { return now }
+	card, err = db.GetCard(ctx, card.ID)
+	if err != nil || card.Status != model.CardReady {
+		t.Fatalf("review retry did not become ready: %+v %v", card, err)
+	}
 	if ch, err := r.launchCard(ctx, db, card, obj, channels, pos, nil, nil); err != nil || ch != "reviewer" {
 		t.Fatalf("retry channel %q err %v", ch, err)
 	}

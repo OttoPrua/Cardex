@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -60,67 +61,103 @@ func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Ca
 	if cause == nil {
 		cause = fmt.Errorf("sched: launch failed")
 	}
+	// A generic launch error cannot attest that no comparison executor
+	// started. Only the dedicated pre-exec comparison path can write the
+	// exact no-wire receipt. In particular, dual-marked cards must not
+	// enter D1's retry/backoff or Git cleanup path.
+	if card.StrictComparison() || (attempt != nil && attempt.StrictComparison()) {
+		return "", ctx.Err()
+	}
 	if card.StrictDeps {
 		return r.failStrictLaunch(ctx, db, card, attempt, step, cause, rt, scratch)
 	}
-	reportServeError(ctx, "launch", cause)
-	workspace.Git{}.DropLaunch(ctx, scratch.repo, scratch.worktree, scratch.branch, scratch.base, scratch.dropWorktree, scratch.dropBranch)
 	summary := clipSummary(cause.Error())
-	// Count before this attempt is marked, so it is not paired with the event twice.
-	prior, err := r.launchFailureStreak(ctx, db, card.ID)
-	if err != nil {
-		return "", err
-	}
-	fresh, err := db.GetCard(ctx, card.ID)
-	if err != nil {
-		return "", err
-	}
-	strict := fresh.StrictComparison() || (attempt != nil && attempt.StrictComparison())
-	if strict {
-		fresh.Status = model.CardNeedsInput
-		fresh.WaitReason = "strict comparison could not start; no automatic retry"
-	} else {
-		r.applyLaunchBackoff(&fresh, prior)
-	}
-	if rt.Channel == "" && attempt != nil {
-		rt = attempt.Route
-	}
-	err = db.WithTx(ctx, func(ctx context.Context) error {
-		if attempt != nil && attempt.ID != "" {
-			exit := 1
-			attempt.Outcome = model.OutcomeLaunchFailed
-			attempt.ErrorClass = model.ErrorLaunchFailed
-			attempt.ErrorExcerpt = summary
-			attempt.EndedAt = r.now().UTC()
-			attempt.Exit = &exit
-			if err := db.UpdateAttempt(ctx, attempt); err != nil {
-				return err
+	var fresh model.Card
+	var failure model.Attempt
+	var changed, strict bool
+	prior := 0
+	err := db.WithWriteTx(ctx, func(tx context.Context) error {
+		var err error
+		fresh, err = db.GetCard(tx, card.ID)
+		if err != nil || !reflect.DeepEqual(fresh, *card) || !canDispatch(fresh) {
+			return err
+		}
+		rows, err := db.ListAttempts(tx, card.ID)
+		if err != nil {
+			return err
+		}
+		if attempt != nil {
+			failure, err = strictPreparedAttempt(rows, *attempt)
+			if err != nil {
+				// A refusal, newer attempt, or live owner beat this failure.
+				return nil
 			}
-			if err := markLaunchDisposed(ctx, db, r.now(), attempt); err != nil {
-				return err
+			exit := 1
+			failure.Outcome, failure.ErrorClass, failure.ErrorExcerpt = model.OutcomeLaunchFailed, model.ErrorLaunchFailed, summary
+			failure.EndedAt, failure.Exit = r.now().UTC(), &exit
+		} else {
+			for _, a := range rows {
+				if attemptOpen(a) {
+					return nil
+				}
 			}
 		}
-		return db.UpdateCard(ctx, &fresh)
+		prior, err = r.launchFailureStreak(tx, db, card.ID)
+		if err != nil {
+			return err
+		}
+		if attempt != nil {
+			if err := db.UpdateAttempt(tx, &failure); err != nil {
+				return err
+			}
+			if err := markLaunchDisposed(tx, db, r.now(), &failure); err != nil {
+				return err
+			}
+			if rt.Channel == "" {
+				rt = failure.Route
+			}
+		}
+		strict = fresh.StrictComparison() || (attempt != nil && failure.StrictComparison())
+		if strict {
+			fresh.Status = model.CardNeedsInput
+			fresh.WaitReason = "strict comparison could not start; no automatic retry"
+		} else {
+			r.applyLaunchBackoff(&fresh, prior)
+		}
+		if err := db.UpdateCard(tx, &fresh); err != nil {
+			return err
+		}
+		if err := r.writeLaunchFailed(tx, db, card.ID, failure.ID, step, summary, rt); err != nil {
+			return err
+		}
+		changed = true
+		return nil
 	})
-	if err != nil {
+	if err != nil || !changed {
 		return "", err
 	}
 	*card = fresh
-	reportServeEvent(ctx, "transition state=launch_backoff")
-	attemptID := ""
 	if attempt != nil {
-		attemptID = attempt.ID
+		*attempt = failure
+	}
+	reportServeError(ctx, "launch", cause)
+	reportServeEvent(ctx, "transition state=launch_backoff")
+	// Never run destructive Git cleanup for a failure which lost the DB
+	// ownership check. Branch deletion is conditional on the original tip.
+	workspace.Git{}.DropLaunch(ctx, scratch.repo, scratch.worktree, scratch.branch, scratch.base, scratch.dropWorktree, scratch.dropBranch)
+	if attempt != nil {
 		if err := harvest.WriteUnavailableSummary(ctx, r.harvestInput(ctx, db, *card, *attempt, 1, nil)); err != nil {
 			_ = noteEvidenceWriteFailed(ctx, db, r.Home, *attempt, err)
 		}
 	}
-	if werr := r.writeLaunchFailed(ctx, db, card.ID, attemptID, step, summary, rt); werr != nil {
-		fmt.Fprintf(os.Stderr, "launch_failed card=%s step=%s error=%s write=%v\n", card.ID, step, summary, werr)
-	} else {
-		prior++
-	}
-	if !strict && prior >= 3 {
-		if qerr := r.openLaunchQuestion(ctx, db, card, step, summary); qerr != nil {
+	if !strict && prior+1 >= 3 {
+		if qerr := db.WithWriteTx(ctx, func(tx context.Context) error {
+			current, err := db.GetCard(tx, fresh.ID)
+			if err != nil || !reflect.DeepEqual(current, fresh) {
+				return err
+			}
+			return r.openLaunchQuestion(tx, db, card, step, summary)
+		}); qerr != nil {
 			fmt.Fprintf(os.Stderr, "launch_failed question card=%s error=%v\n", card.ID, qerr)
 		}
 	}

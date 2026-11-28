@@ -164,3 +164,50 @@ func reviewDeps(t *testing.T, f *fx, id string) []model.Card {
 	}
 	return out
 }
+
+func TestAPIChannelHistoricalHoldQuarantineDoesNotInferTransport(t *testing.T) {
+	for _, tc := range []struct {
+		name, excerpt string
+		outcome       model.Outcome
+		ended         bool
+		quarantined   bool
+	}{
+		{"old-untagged-hold", model.CompatibleRuntimeHold, model.OutcomeNoOutput, true, true},
+		{"similar-message", model.CompatibleRuntimeHold + ".", model.OutcomeNoOutput, true, false},
+		{"ordinary-pass", model.CompatibleRuntimeHold, model.OutcomePassed, true, false},
+		{"no-terminal-time", model.CompatibleRuntimeHold, model.OutcomeNoOutput, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFx(t, model.ModeAuto)
+			c := f.card(model.Card{ID: "held", Objective: f.obj.ID, Kind: model.KindDev, Title: "held", Status: model.CardNeedsInput, WaitReason: model.CompatibleRuntimeHold, Tier: model.TierT2})
+			a := model.Attempt{ID: "old-hold", Card: c.ID, Worktree: f.home, Outcome: tc.outcome, ErrorExcerpt: tc.excerpt}
+			if tc.ended {
+				a.EndedAt = time.Now().UTC()
+			}
+			if err := f.db.CreateAttempt(f.ctx, &a); err != nil {
+				t.Fatal(err)
+			}
+			if err := DevStep(f.ctx, f.obj.ID); err != nil {
+				t.Fatal(err)
+			}
+			events, err := f.db.ListEvents(f.ctx, "attempt:"+a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var disposed bool
+			for _, e := range events {
+				if e.Type == model.EventCompatibleRefusedNoWire || e.Type == model.EventCompatibleAttemptHeld {
+					t.Fatal("historical quarantine manufactured compatible evidence")
+				}
+				disposed = disposed || e.Type == "dev_disposed"
+			}
+			if disposed == tc.quarantined {
+				t.Fatalf("generic disposal=%t; quarantine=%t", disposed, tc.quarantined)
+			}
+			got := f.mustCard(c.ID)
+			if tc.quarantined && (got.Status != c.Status || got.WaitReason != c.WaitReason) {
+				t.Fatalf("operator hold changed: %+v", got)
+			}
+		})
+	}
+}

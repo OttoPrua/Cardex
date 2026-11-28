@@ -163,7 +163,7 @@ func TestHarvestWritesSummaryAndBaseline(t *testing.T) {
 	dir, base, head := twoCommitRepo(t)
 	home := t.TempDir()
 	t.Setenv("KIMI_CODE_HOME", t.TempDir())
-	if err := writeBaselineCache(home, base, "go test .", baselineCache{Version: 1, Parsed: true}); err != nil {
+	if err := writeBaselineCache(t.Context(), home, base, "go test .", baselineCache{Version: 1, Parsed: true}); err != nil {
 		t.Fatal(err)
 	}
 	res, err := Harvest(context.Background(), Input{
@@ -217,7 +217,7 @@ func TestHarvestWritesSummaryAndBaseline(t *testing.T) {
 		t.Fatalf("log %s", log)
 	}
 
-	cache, ok := baselineCachePath(home, base, "go test .")
+	cache, ok := baselineCachePath(t.Context(), home, base, "go test .")
 	if !ok {
 		t.Fatal("cache path")
 	}

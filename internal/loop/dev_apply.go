@@ -36,7 +36,7 @@ func (st *step) disposeAll() error {
 			continue
 		}
 		for _, attempt := range st.snap.attempts[card.ID] {
-			if attempt.StrictComparison() || attempt.Outcome == "" || st.snap.disposed(attempt.ID) {
+			if attempt.StrictComparison() || attempt.Outcome == "" || attempt.HistoricalCompatibleHoldQuarantine() || st.snap.disposed(attempt.ID) {
 				continue
 			}
 			todo = append(todo, harvested{cardID: card.ID, attemptID: attempt.ID})

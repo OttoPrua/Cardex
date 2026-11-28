@@ -9,14 +9,20 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/roots"
 )
 
 // Version 1 could contain results influenced by candidate scratch files.
 const baselineCacheVersion = 2
 
+// Bump this namespace if the exact-object checkout/test policy changes.
+// The ordinary version-2 namespace and on-disk shape remain unchanged.
+const exactGitBaselineScope = "exact-git-objects-v1"
+
 type baselineCache struct {
 	Version int      `json:"version"`
+	Scope   string   `json:"scope,omitempty"`
 	Exit    int      `json:"exit"`
 	Parsed  bool     `json:"parsed"`
 	Names   []string `json:"names"`
@@ -33,7 +39,7 @@ func loadOrRunBaseline(ctx context.Context, home, repo, base, command string, en
 	if base == "" || strings.TrimSpace(repo) == "" || ctx.Err() != nil {
 		return parsedTests{}, 0, false
 	}
-	if cache, ok := readBaselineCache(home, base, command); ok {
+	if cache, ok := readBaselineCache(ctx, home, base, command); ok {
 		return parsedTests{ok: cache.Parsed, names: cache.Names, context: map[string]string{}}, cache.Exit, true
 	}
 	scratchDir, cleanup, err := roots.PrepareAttemptScratch(scratchRoot, "baseline")
@@ -51,21 +57,35 @@ func loadOrRunBaseline(ctx context.Context, home, repo, base, command string, en
 	}
 	parsed := parseGoTestOutput(string(output), exit)
 	if parsed.ok {
-		_ = writeBaselineCache(home, base, command, baselineCache{Version: baselineCacheVersion, Exit: exit, Parsed: true, Names: parsed.names})
+		_ = writeBaselineCache(ctx, home, base, command, baselineCache{Version: baselineCacheVersion, Exit: exit, Parsed: true, Names: parsed.names})
 	}
 	return parsed, exit, true
 }
 
-func baselineCachePath(home, base, command string) (string, bool) {
+func baselineCacheScope(ctx context.Context) string {
+	if proc.ExactGitObjects(ctx) {
+		return exactGitBaselineScope
+	}
+	return ""
+}
+
+func baselineCachePath(ctx context.Context, home, base, command string) (string, bool) {
 	if strings.TrimSpace(home) == "" || strings.ContainsAny(base, `/\\`) || base == "." || base == ".." {
 		return "", false
 	}
+	dir := filepath.Join(home, "baseline", base)
+	if scope := baselineCacheScope(ctx); scope != "" {
+		if !IsCommitID(base) {
+			return "", false // do not cache a strict baseline under a mutable ref
+		}
+		dir = filepath.Join(dir, scope)
+	}
 	sum := sha256.Sum256([]byte(command))
-	return filepath.Join(home, "baseline", base, hex.EncodeToString(sum[:])+".json"), true
+	return filepath.Join(dir, hex.EncodeToString(sum[:])+".json"), true
 }
 
-func readBaselineCache(home, base, command string) (baselineCache, bool) {
-	path, ok := baselineCachePath(home, base, command)
+func readBaselineCache(ctx context.Context, home, base, command string) (baselineCache, bool) {
+	path, ok := baselineCachePath(ctx, home, base, command)
 	if !ok {
 		return baselineCache{}, false
 	}
@@ -74,20 +94,21 @@ func readBaselineCache(home, base, command string) (baselineCache, bool) {
 		return baselineCache{}, false
 	}
 	var cache baselineCache
-	if json.Unmarshal(body, &cache) != nil || cache.Version != baselineCacheVersion || !cache.Parsed {
+	if json.Unmarshal(body, &cache) != nil || cache.Version != baselineCacheVersion || cache.Scope != baselineCacheScope(ctx) || !cache.Parsed {
 		return baselineCache{}, false
 	}
 	return cache, true
 }
 
-func writeBaselineCache(home, base, command string, cache baselineCache) error {
-	path, ok := baselineCachePath(home, base, command)
+func writeBaselineCache(ctx context.Context, home, base, command string, cache baselineCache) error {
+	path, ok := baselineCachePath(ctx, home, base, command)
 	if !ok {
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	cache.Scope = baselineCacheScope(ctx)
 	body, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
 		return err

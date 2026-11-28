@@ -2,8 +2,10 @@ package sched
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -172,5 +174,75 @@ func TestAPI2HealthyHistoricalPinHeldBeforeCheckout(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(repo), "wt")); !os.IsNotExist(err) {
 		t.Fatal("held comparison prepared a checkout")
+	}
+}
+
+func TestAPI2DualMarkedLaunchFailureCannotEnterD1Recovery(t *testing.T) {
+	for _, dual := range []bool{true, false} {
+		name := "ordinary-D1-positive"
+		if dual {
+			name = "dual-marked-no-authoritative-no-wire"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			home, db, repo := newHome(t)
+			_, oid := seedRepo(t, db, repo, "true")
+			wt := filepath.Join(filepath.Dir(repo), "fixture-checkout")
+			git(t, repo, "worktree", "add", "-b", "fixture-checkout", wt)
+			c := model.Card{ID: "fixture", Objective: oid, Kind: model.KindResearch, Status: model.CardRunning, StrictDeps: true, Title: "fixture", Body: "question", Channel: "fixture-route", Model: "fixture-model"}
+			if dual {
+				c.Requires = []string{model.RequireStrictComparison}
+			}
+			if dual && !c.ValidStrictComparison() {
+				t.Fatal("invalid dual-marked fixture")
+			}
+			if err := db.CreateCard(ctx, &c); err != nil {
+				t.Fatal(err)
+			}
+			c, err := db.GetCard(ctx, c.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := model.Attempt{ID: "fixture-attempt", Card: c.ID, Worktree: wt, Route: model.Route{Channel: c.Channel, Model: c.Model}}
+			if dual {
+				_, digest := c.ComparisonInput()
+				a.RouteReason.Dispatch = &model.RouteDispatch{StrictComparison: true, ComparisonInputDigest: digest, Channel: c.Channel, Model: c.Model}
+			}
+			if err := db.CreateAttempt(ctx, &a); err != nil {
+				t.Fatal(err)
+			}
+			a, err = db.GetAttempt(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			beforeCard, beforeAttempt := c, a
+			r := New(home)
+			if _, err := r.failLaunch(ctx, db, &c, &a, launchStepHost, errors.New("synthetic startup error with unknown execution phase"), a.Route, launchScratch{repo: repo, worktree: wt, branch: "fixture-checkout", base: "main", dropWorktree: true, dropBranch: true}); err != nil {
+				t.Fatal(err)
+			}
+			gotCard, err := db.GetCard(ctx, c.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotAttempt, err := db.GetAttempt(ctx, a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dual {
+				if !reflect.DeepEqual(gotCard, beforeCard) || !reflect.DeepEqual(gotAttempt, beforeAttempt) {
+					t.Fatalf("generic failure rewrote comparison: %+v %+v", gotCard, gotAttempt)
+				}
+				if _, err := os.Stat(filepath.Join(wt, "a.txt")); err != nil {
+					t.Fatalf("generic cleanup touched comparison: %v", err)
+				}
+				git(t, repo, "show-ref", "--verify", "refs/heads/fixture-checkout")
+				ev, err := db.ListEvents(ctx, "attempt:"+a.ID)
+				if err != nil || len(ev) != 0 {
+					t.Fatalf("generic failure fabricated evidence: %+v %v", ev, err)
+				}
+			} else if gotAttempt.Outcome != model.OutcomeLaunchFailed || gotCard.Status != model.CardWaiting || !strings.HasPrefix(gotCard.WaitReason, "backoff:") {
+				t.Fatalf("ordinary non-comparison D1 no longer reaches existing recovery: %+v %+v", gotCard, gotAttempt)
+			}
+		})
 	}
 }

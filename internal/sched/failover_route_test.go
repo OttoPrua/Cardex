@@ -202,6 +202,9 @@ func TestLaunchPersistsOrderedFailoverAcrossTwoHardReleases(t *testing.T) {
 			}
 			exit := 1
 			a.EndedAt, a.Outcome, a.Exit = now, model.OutcomeTransport, &exit
+			if err := db.AppendEvent(ctx, &model.Event{Entity: "attempt:" + id, Type: "executor_pgid", Data: []byte(`{"pgid":123}`)}); err != nil {
+				return 0, err
+			}
 			return 0, db.UpdateAttempt(ctx, &a)
 		}
 		channels, err := db.ListChannels(ctx)

@@ -13,15 +13,30 @@ import (
 // including legacy review IDs and an active or latest attempt's pinned
 // review subject. Requirements in prose are not interpreted.
 func (s *Store) CardHasDependencyReference(ctx context.Context, cardID string) (bool, error) {
-	found, err := s.cardDefinitionReferences(ctx, cardID)
+	found, err := s.cardDefinitionReferences(ctx, cardID, false)
 	if err != nil || found {
 		return found, err
 	}
 	return s.cardPinnedReviewReferences(ctx, cardID)
 }
 
-func (s *Store) cardDefinitionReferences(ctx context.Context, cardID string) (bool, error) {
-	rows, err := s.q(ctx).QueryContext(ctx, `SELECT id, kind, deps, strict_deps FROM cards WHERE id<>?`, cardID)
+// CardHasStrictExecutionReference detects an explicit prerequisite of a
+// strict card. The first subject of a review or repair is not relabeled as
+// an execution prerequisite. The query is deliberately cross-objective.
+func (s *Store) CardHasStrictExecutionReference(ctx context.Context, cardID string) (bool, error) {
+	return s.cardDefinitionReferences(ctx, cardID, true)
+}
+
+// completionReferenceMatches treats both exact stored IDs and whitespace
+// variants as possible links. It never normalizes the stored identity or
+// chooses between different cards that happen to have the same trimmed ID.
+func completionReferenceMatches(ref, id string) bool {
+	return ref == id || (strings.TrimSpace(id) != "" && strings.TrimSpace(ref) == strings.TrimSpace(id))
+}
+
+func (s *Store) cardDefinitionReferences(ctx context.Context, cardID string, strictOnly bool) (bool, error) {
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT id, kind, deps, strict_deps FROM cards
+		WHERE id<>? AND (?=0 OR strict_deps=1)`, cardID, strictOnly)
 	if err != nil {
 		return false, err
 	}
@@ -36,14 +51,18 @@ func (s *Store) cardDefinitionReferences(ctx context.Context, cardID string) (bo
 			return false, fmt.Errorf("cannot verify stored completion dependencies: %w", err)
 		}
 		readStrictDependencies(&c)
-		for _, dep := range c.Deps {
-			if strings.TrimSpace(dep) == cardID {
+		depsIDs := c.Deps
+		if strictOnly {
+			depsIDs = c.ExecutionDependencyIDs()
+		}
+		for _, dep := range depsIDs {
+			if completionReferenceMatches(dep, cardID) {
 				return true, nil
 			}
 		}
-		if c.Kind == model.KindReview {
+		if !strictOnly && c.Kind == model.KindReview {
 			subject, _ := model.ReviewSubject(c)
-			if subject == cardID {
+			if completionReferenceMatches(subject, cardID) {
 				return true, nil
 			}
 		}
@@ -81,14 +100,34 @@ func (s *Store) cardPinnedReviewReferences(ctx context.Context, cardID string) (
 			// damaged. Do not fall back to a mutable declaration.
 			return true, nil
 		}
-		next := model.PinnedReviewSubject{Subject: strings.TrimSpace(parsed.Subject), Standalone: *parsed.Standalone}
+		next := model.PinnedReviewSubject{Subject: parsed.Subject, Standalone: *parsed.Standalone}
 		if last == attempt && pin != next {
 			return true, nil
 		}
-		if !next.Standalone && next.Subject == cardID {
+		if !next.Standalone && completionReferenceMatches(next.Subject, cardID) {
 			return true, nil
 		}
 		last, pin = attempt, next
+	}
+	return false, rows.Err()
+}
+
+// CardHasPendingCompletionDecision uses the same conservative linkage as
+// the dependency graph while preserving the exact stored scope ID.
+func (s *Store) CardHasPendingCompletionDecision(ctx context.Context, cardID string) (bool, error) {
+	rows, err := s.q(ctx).QueryContext(ctx, `SELECT scope FROM questions WHERE scope_kind IN ('card','') AND answer=''`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var scope string
+		if err := rows.Scan(&scope); err != nil {
+			return false, err
+		}
+		if completionReferenceMatches(scope, cardID) {
+			return true, nil
+		}
 	}
 	return false, rows.Err()
 }

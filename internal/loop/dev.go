@@ -199,26 +199,19 @@ func devStep(ctx context.Context, objectiveID string) error {
 	if err != nil {
 		return err
 	}
+	_, marked := s.comparisonCompletionReceipt()
+	if marked && s.obj.Status == model.ObjectiveDoneCandidate {
+		// Marked completion exclusively owns its dedicated writer. No
+		// ordinary budget, disposition or delivery can roll back its fence.
+		return runOptionalComparisonCandidate(ctx, db, s.obj, false)
+	}
+	if marked && s.comparisonNeedsReconciliation() {
+		return comparisonResumeDiagnostic(s.obj)
+	}
 	st := &step{ctx: ctx, db: db, home: home, cfg: cfg, snap: s, now: clockFrom(ctx)}
 	var notices []Notice
-	transact := db.WithTx
-	approval, gated := s.doneApproval()
-	reserveCompletion := gated && s.obj.Status == model.ObjectiveDoneCandidate && approved(approval.Answer)
-	if reserveCompletion {
-		transact = db.WithWriteTx
-	}
-	err = transact(ctx, func(ctx context.Context) error {
+	err = db.WithTx(ctx, func(ctx context.Context) error {
 		st.ctx = ctx
-		if reserveCompletion {
-			// The initial observation is only a hint to acquire a writer.
-			// Read the exact graph, queries and status again under that
-			// reservation, and keep it through the local Git merge.
-			fresh, err := loadSnap(ctx, db, objectiveID)
-			if err != nil {
-				return err
-			}
-			st.snap, st.completionReserved = fresh, true
-		}
 		if err := st.warn(); err != nil {
 			return err
 		}
@@ -258,15 +251,24 @@ func devStep(ctx context.Context, objectiveID string) error {
 	return nil
 }
 
+func comparisonResumeDiagnostic(obj model.Objective) error {
+	if obj.Status == model.ObjectiveActive && obj.Mode == model.ModeAuto {
+		return errPendingComparisonGitEntry
+	}
+	return nil
+}
+
 type step struct {
-	ctx                context.Context
-	db                 *store.Store
-	home               string
-	cfg                Config
-	snap               *snap
-	notices            []Notice
-	now                time.Time
-	completionReserved bool
+	ctx                  context.Context
+	db                   *store.Store
+	home                 string
+	cfg                  Config
+	snap                 *snap
+	notices              []Notice
+	now                  time.Time
+	completionReserved   bool
+	comparisonPrepared   *comparisonGitEntry
+	comparisonDiagnostic error
 }
 
 type snap struct {

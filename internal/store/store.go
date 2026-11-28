@@ -354,6 +354,29 @@ func (s *Store) WithWriteTx(ctx context.Context, fn func(context.Context) error)
 	})
 }
 
+// WithTopLevelWriteTx requires its own commit boundary. It must not join
+// a caller's transaction when a later external action depends on durability.
+func (s *Store) WithTopLevelWriteTx(ctx context.Context, fn func(context.Context) error) error {
+	if _, nested := ctx.Value(txKey{}).(execer); nested {
+		return errors.New("independent writer required for durable decision")
+	}
+	return s.WithWriteTx(ctx, fn)
+}
+
+// ReserveObjectiveCompletionWriter fixes the SQLite snapshot before a generic
+// objective step can start an external completion check. Only call it at the
+// completion boundary, already inside a transaction. If a deferred reader
+// has a stale WAL snapshot the upgrade fails, before any Git or acceptance.
+// The targeted update takes the writer without changing the stored status.
+func (s *Store) ReserveObjectiveCompletionWriter(ctx context.Context, objective string) error {
+	tx, ok := ctx.Value(txKey{}).(execer)
+	if !ok {
+		return errors.New("transaction required for objective completion")
+	}
+	_, err := tx.ExecContext(ctx, "UPDATE objectives SET status=status WHERE id=?", objective)
+	return err
+}
+
 func (s *Store) runTx(ctx context.Context, conn execer, fn func(context.Context) error, commit func() error) error {
 	callerCtx := ctx
 	notes := &commitNotes{}

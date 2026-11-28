@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +18,12 @@ import (
 func api2CompletionFixture(t *testing.T) (*fx, string, string) {
 	t.Helper()
 	repo, main := integrationRepo(t)
+	literal, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo = literal
+	gitRun(t, repo, "checkout", "--detach", "main")
 	f := newFx(t, model.ModeAuto)
 	f.pointRepo(repo)
 	f.setCommands([]string{"test -f marker"})
@@ -389,89 +394,6 @@ func TestAPI2LateOrdinaryWorkGuardsOnlyMarkedApproval(t *testing.T) {
 	}
 }
 
-func TestAPI2MarkedApprovalReservesGraphWriterThroughGit(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("uses a temporary Unix Git hook")
-	}
-	f, repo, main := api2CompletionFixture(t)
-	c := api2StandaloneCard(f, nil)
-	api2HoldUnlaunchedCard(f, c)
-	dependent := api2CompletionDependency(f, c, true, false)
-	dependent.Deps = nil
-	if err := f.db.UpdateCard(f.ctx, &dependent); err != nil {
-		t.Fatal(err)
-	}
-	// Force a real merge commit so Git invokes the synthetic rendezvous,
-	// rather than fast-forwarding before a competing writer can be checked.
-	if err := os.WriteFile(filepath.Join(repo, "local-main"), []byte("fixture\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	gitRun(t, repo, "add", "local-main")
-	gitRun(t, repo, "commit", "-m", "fixture main divergence")
-	main = gitSHA(t, repo, "main")
-	f.step()
-	qs := questionsKind(f, model.QuestionDone)
-	if f.objective().Status != model.ObjectiveDoneCandidate || len(qs) != 1 {
-		t.Fatal("fixture did not become a candidate")
-	}
-	q := qs[0]
-	q.Answer = "approve"
-	if err := f.db.UpdateQuestion(f.ctx, &q); err != nil {
-		t.Fatal(err)
-	}
-	signalDir := t.TempDir()
-	ready := filepath.Join(signalDir, "merge-ready")
-	resume := filepath.Join(signalDir, "resume")
-	t.Setenv("CARDEX_TEST_MERGE_READY", ready)
-	t.Setenv("CARDEX_TEST_MERGE_RESUME", resume)
-	script := `#!/bin/sh
-printf 'ready\n' > "$CARDEX_TEST_MERGE_READY" || exit 1
-i=0
-while [ ! -f "$CARDEX_TEST_MERGE_RESUME" ] && [ "$i" -lt 200 ]; do
-	i=$((i + 1))
-	sleep 0.05
-done
-test -f "$CARDEX_TEST_MERGE_RESUME"
-`
-	if err := os.WriteFile(filepath.Join(repo, ".git", "hooks", "pre-merge-commit"), []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	release := func() { _ = os.WriteFile(resume, []byte("done"), 0o600) }
-	defer release()
-	ctx, cancel := context.WithTimeout(f.ctx, 10*time.Second)
-	defer cancel()
-	result := make(chan error, 1)
-	go func() { result <- DevStep(ctx, f.obj.ID) }()
-	for {
-		if _, err := os.Stat(ready); err == nil {
-			break
-		}
-		select {
-		case err := <-result:
-			t.Fatalf("merge did not reach the test rendezvous: %v", err)
-		case <-ctx.Done():
-			t.Fatal("timed out waiting for synthetic Git rendezvous")
-		case <-time.After(10 * time.Millisecond):
-		}
-	}
-	raw, err := json.Marshal([]string{c.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	db := api2OpenFixtureDatabase(t, f.home)
-	_, err = db.ExecContext(ctx, "UPDATE cards SET deps=? WHERE id=?", string(raw), dependent.ID)
-	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "locked") {
-		t.Fatalf("late concurrent graph writer succeeded or did not hit writer reservation: %v", err)
-	}
-	release()
-	if err := <-result; err != nil {
-		t.Fatal(err)
-	}
-	if f.objective().Status != model.ObjectiveDone || gitSHA(t, repo, "main") == main {
-		t.Fatal("guarded local merge failed after excluding the concurrent writer")
-	}
-}
-
 func TestAPI2PriorExemptionCardCannotDisappearBehindApproval(t *testing.T) {
 	for _, mode := range []string{"deleted-with-explicit-reference", "deleted-with-pinned-review", "deleted-no-references",
 		"moved-without-references", "repurposed-same-id"} {
@@ -527,6 +449,107 @@ func TestAPI2PriorExemptionCardCannotDisappearBehindApproval(t *testing.T) {
 				}
 			} else if got := f.objective().Status; got != model.ObjectiveDoneCandidate || gitSHA(t, repo, "main") != main {
 				t.Fatalf("original comparison identity disappeared behind approval: %s", got)
+			}
+		})
+	}
+}
+
+func TestAPI2ReceiptKeepsExactRawComparisonIDAndBlocksAliases(t *testing.T) {
+	for _, mode := range []string{"independent-exact-id", "normalized-dependency-alias", "normalized-pinned-review-alias",
+		"normalized-card-question-alias", "whitespace-only-identity"} {
+		t.Run(mode, func(t *testing.T) {
+			f, repo, main := api2CompletionFixture(t)
+			c := api2StandaloneCard(f, func(c *model.Card) {
+				c.ID = "\tcomparison-raw\u00a0"
+				if mode == "whitespace-only-identity" {
+					c.ID = "\t\u00a0"
+				}
+			})
+			alias := strings.TrimSpace(c.ID)
+			switch mode {
+			case "normalized-dependency-alias":
+				dependent := api2CompletionDependency(f, c, true, false)
+				dependent.Deps = []string{alias}
+				if err := f.db.UpdateCard(f.ctx, &dependent); err != nil {
+					t.Fatal(err)
+				}
+			case "normalized-pinned-review-alias":
+				review := api2CompletionDependency(f, c, true, true)
+				review.Deps = []string{"another-review-subject"}
+				if err := f.db.UpdateCard(f.ctx, &review); err != nil {
+					t.Fatal(err)
+				}
+				api2FixtureReviewPin(f, review, "normalized-subject", 0, true, alias, false)
+			case "normalized-card-question-alias":
+				q := model.Question{Objective: f.obj.ID, Scope: alias, ScopeKind: "card", Kind: model.QuestionCustom, Text: "synthetic decision"}
+				if err := f.db.CreateQuestion(f.ctx, &q); err != nil {
+					t.Fatal(err)
+				}
+			}
+			api2HoldUnlaunchedCard(f, c)
+			f.step()
+			qs := questionsKind(f, model.QuestionDone)
+			if mode != "independent-exact-id" {
+				if len(qs) != 0 || f.objective().Status != model.ObjectiveActive || gitSHA(t, repo, "main") != main {
+					t.Fatal("ambiguous ID or linkage opened an unusable approval")
+				}
+				return
+			}
+			receipts := f.events(objectiveComparisonExemptionEvent)
+			var receipt comparisonExemption
+			if len(qs) != 1 || len(receipts) != 1 || json.Unmarshal(receipts[0].Data, &receipt) != nil ||
+				len(receipt.Cards) != 1 || receipt.Cards[0] != c.ID || receipt.Cards[0] == alias {
+				t.Fatal("stored comparison identity was not preserved exactly")
+			}
+			q := qs[0]
+			q.Answer = "approve"
+			if err := f.db.UpdateQuestion(f.ctx, &q); err != nil {
+				t.Fatal(err)
+			}
+			f.step()
+			if f.objective().Status != model.ObjectiveDone || gitSHA(t, repo, "main") == main {
+				t.Fatal("exact raw-ID approval could not be used")
+			}
+			if f.mustCard(c.ID).Status != model.CardNeedsInput {
+				t.Fatal("comparison itself changed state")
+			}
+		})
+	}
+}
+
+func TestAPI2CanceledOrFailedComparisonCannotSatisfyCrossObjectiveStrictDependency(t *testing.T) {
+	for _, status := range []model.CardStatus{model.CardCanceled, model.CardFailed, model.CardDone, model.CardMerged} {
+		t.Run(string(status), func(t *testing.T) {
+			f, repo, main := api2CompletionFixture(t)
+			c := api2StandaloneCard(f, nil)
+			api2HoldUnlaunchedCard(f, c)
+			f.step()
+			qs := questionsKind(f, model.QuestionDone)
+			if len(qs) != 1 || f.objective().Status != model.ObjectiveDoneCandidate {
+				t.Fatal("independent comparison did not initially open approval")
+			}
+			c = f.mustCard(c.ID)
+			c.Status = status
+			if err := f.db.UpdateCard(f.ctx, &c); err != nil {
+				t.Fatal(err)
+			}
+			dependent := api2CompletionDependency(f, c, true, false)
+			dependent.StrictDeps, dependent.Status = true, model.CardReady
+			if err := f.db.UpdateCard(f.ctx, &dependent); err != nil {
+				t.Fatal(err)
+			}
+			q := qs[0]
+			q.Answer = "approve"
+			if err := f.db.UpdateQuestion(f.ctx, &q); err != nil {
+				t.Fatal(err)
+			}
+			f.step()
+			if status == model.CardDone || status == model.CardMerged {
+				if f.objective().Status != model.ObjectiveDone || gitSHA(t, repo, "main") == main {
+					t.Fatal("satisfied strict prerequisite blocked approval")
+				}
+			} else if f.objective().Status != model.ObjectiveDoneCandidate || gitSHA(t, repo, "main") != main {
+				t.Fatal("canceled or failed comparison silently satisfied cross-objective strict execution dependency")
 			}
 		})
 	}

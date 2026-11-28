@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/store"
@@ -15,32 +16,68 @@ import (
 const objectiveComparisonExemptionEvent = "objective_optional_comparison_completion"
 
 type comparisonExemption struct {
-	Question string   `json:"question_id"`
-	Cards    []string `json:"comparison_cards"`
+	Question   string                   `json:"question_id"`
+	Cards      []string                 `json:"comparison_cards"`
+	Acceptance *comparisonAcceptancePin `json:"acceptance,omitempty"`
+	Supersedes string                   `json:"supersedes_question_id,omitempty"`
 }
 
-// comparisonCompletionReceipt returns the original approved question and
-// every card that was excluded from that exact candidate. An ambiguous
-// marked receipt does not fall back to legacy approval behavior.
-func (s *snap) comparisonCompletionReceipt() (exemption comparisonExemption, marked bool) {
-	for i := len(s.events) - 1; i >= 0; i-- {
-		ev := s.events[i]
+// comparisonCompletionReceipt follows explicit supersession rather than
+// timestamps, whose clock may repeat or be reset. An ambiguous marked
+// history does not fall back to legacy approval behavior.
+func (s *snap) comparisonCompletionReceipt() (comparisonExemption, bool) {
+	history := map[string]comparisonExemption{}
+	for _, ev := range s.events {
 		if ev.Entity != "objective:"+s.obj.ID || ev.Type != objectiveComparisonExemptionEvent {
 			continue
 		}
-		if json.Unmarshal(ev.Data, &exemption) != nil || strings.TrimSpace(exemption.Question) == "" {
+		var r comparisonExemption
+		if json.Unmarshal(ev.Data, &r) != nil || strings.TrimSpace(r.Question) == "" ||
+			r.Question == r.Supersedes || history[r.Question].Question != "" || (r.Acceptance != nil && !r.Acceptance.valid()) {
 			return comparisonExemption{}, true
 		}
-		seen := make(map[string]bool, len(exemption.Cards))
-		for _, id := range exemption.Cards {
-			if id == "" || strings.TrimSpace(id) != id || seen[id] {
+		seen := make(map[string]bool, len(r.Cards))
+		for _, id := range r.Cards {
+			if !comparisonReceiptCardID(id) || seen[id] {
 				return comparisonExemption{}, true
 			}
 			seen[id] = true
 		}
-		return exemption, true
+		history[r.Question] = r
 	}
-	return comparisonExemption{}, false
+	if len(history) == 0 {
+		return comparisonExemption{}, false
+	}
+	superseded := map[string]bool{}
+	for _, r := range history {
+		if r.Supersedes == "" {
+			continue
+		}
+		if superseded[r.Supersedes] || history[r.Supersedes].Question == "" {
+			return comparisonExemption{}, true
+		}
+		superseded[r.Supersedes] = true
+	}
+	var current comparisonExemption
+	for _, r := range history {
+		if !superseded[r.Question] {
+			if current.Question != "" {
+				return comparisonExemption{}, true
+			}
+			current = r
+		}
+	}
+	remaining := len(history)
+	for at := current; at.Question != ""; at = history[at.Supersedes] {
+		remaining--
+		if remaining < 0 {
+			return comparisonExemption{}, true
+		}
+	}
+	if remaining != 0 {
+		return comparisonExemption{}, true
+	}
+	return current, true
 }
 
 // doneApproval preserves the old question selection for ordinary objectives.
@@ -49,7 +86,8 @@ func (s *snap) doneApproval() (question model.Question, gated bool) {
 	if exemption, marked := s.comparisonCompletionReceipt(); marked {
 		for _, q := range s.questions {
 			if q.ID == exemption.Question && q.Kind == model.QuestionDone && q.Objective == s.obj.ID &&
-				q.Scope == s.obj.ID && q.ScopeKind == "objective" {
+				q.Scope == s.obj.ID && q.ScopeKind == "objective" &&
+				(exemption.Acceptance == nil || q.Text == exemption.Acceptance.question()) {
 				return q, true
 			}
 		}
@@ -71,45 +109,7 @@ func ResumeOptionalComparisonCandidate(ctx context.Context, db *store.Store, obj
 	if obj.Mode != model.ModeAuto || obj.Status != model.ObjectiveDoneCandidate {
 		return nil
 	}
-	events, err := db.ListEvents(ctx, "objective:"+obj.ID)
-	if err != nil {
-		return err
-	}
-	hint := snap{obj: obj, events: events}
-	exemption, marked := hint.comparisonCompletionReceipt()
-	if !marked || exemption.Question == "" {
-		return nil
-	}
-	q, err := db.GetQuestion(ctx, exemption.Question)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	hint.questions = []model.Question{q}
-	approval, _ := hint.doneApproval()
-	if !approved(approval.Answer) {
-		return nil
-	}
-	return db.WithWriteTx(ctx, func(ctx context.Context) error {
-		fresh, err := loadSnap(ctx, db, obj.ID)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		q, stillMarked := fresh.doneApproval()
-		if fresh.obj.Mode != model.ModeAuto || fresh.obj.Status != model.ObjectiveDoneCandidate ||
-			!stillMarked || q.ID != approval.ID || !approved(q.Answer) {
-			return nil
-		}
-		// Approval is the only continuation, not another design/development
-		// pass. The reservation is live through the graph check and Git.
-		st := &step{ctx: ctx, db: db, home: db.Home(), snap: fresh, now: clockFrom(ctx), completionReserved: true}
-		return st.complete()
-	})
+	return runOptionalComparisonCandidate(ctx, db, obj, true)
 }
 
 // priorComparisonCardsSafe checks receipt identities even after a card
@@ -124,8 +124,8 @@ func (st *step) priorComparisonCardsSafe(exemption comparisonExemption) (bool, e
 			if err != nil || linked {
 				return false, err
 			}
-			question, err := st.db.FindPendingCardQuestion(st.ctx, id)
-			if err != nil || question != nil {
+			pending, err := st.db.CardHasPendingCompletionDecision(st.ctx, id)
+			if err != nil || pending {
 				return false, err
 			}
 			continue
@@ -133,8 +133,20 @@ func (st *step) priorComparisonCardsSafe(exemption comparisonExemption) (bool, e
 		if err != nil || c.Objective != st.snap.obj.ID || !c.ValidStrictComparison() {
 			return false, err
 		}
+		if c.Status != model.CardDone && c.Status != model.CardMerged {
+			linked, err := st.db.CardHasStrictExecutionReference(st.ctx, id)
+			if err != nil || linked {
+				return false, err
+			}
+		}
 	}
 	return true, nil
+}
+
+// Store accepts raw ID strings. Preserve their exact bytes in the receipt,
+// but do not offer approval for an identity JSON cannot round-trip exactly.
+func comparisonReceiptCardID(id string) bool {
+	return strings.TrimSpace(id) != "" && utf8.ValidString(id) && !strings.ContainsRune(id, '\x00')
 }
 
 func hardHeldComparison(c model.Card) bool {
@@ -146,7 +158,7 @@ func hardHeldComparison(c model.Card) bool {
 // no-execution hold. The card stays NeedsInput and visible with its reason;
 // this is not a status change, a satisfied dependency, or a comparison result.
 func (st *step) optionalHeldComparison(observed model.Card) (bool, error) {
-	if !hardHeldComparison(observed) {
+	if !comparisonReceiptCardID(observed.ID) || !hardHeldComparison(observed) {
 		return false, nil
 	}
 	c, err := st.db.GetCard(st.ctx, observed.ID)
@@ -164,8 +176,8 @@ func (st *step) optionalHeldComparison(observed model.Card) (bool, error) {
 	if err != nil || linked {
 		return false, err
 	}
-	question, err := st.db.FindPendingCardQuestion(st.ctx, c.ID)
-	if err != nil || question != nil {
+	pending, err := st.db.CardHasPendingCompletionDecision(st.ctx, c.ID)
+	if err != nil || pending {
 		return false, err
 	}
 	attempts, err := st.db.ListAttempts(st.ctx, c.ID)

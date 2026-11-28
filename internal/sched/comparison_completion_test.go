@@ -32,6 +32,22 @@ func TestAPI2TickResumesOnlyExactMarkedComparisonApproval(t *testing.T) {
 			git(t, repo, "add", "completion-marker")
 			git(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "local completion fixture")
 			git(t, repo, "checkout", "main")
+			if marked {
+				git(t, repo, "checkout", "--detach", "main")
+				// Fixture config uses a literal main repository path.
+				literal, err := filepath.EvalSymlinks(repo)
+				if err != nil {
+					t.Fatal(err)
+				}
+				project, err := db.GetProject(ctx, "p")
+				if err != nil {
+					t.Fatal(err)
+				}
+				project.RepoPath = literal
+				if err := db.UpdateProject(ctx, &project); err != nil {
+					t.Fatal(err)
+				}
+			}
 			r := New(home)
 			r.Notify = func(context.Context, notify.Message) error { return notify.ErrNotImplemented }
 			r.Launch = func(context.Context, string, string) (int, error) {

@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 // RefExists reports whether ref is a branch in repo. A missing branch is
@@ -18,8 +20,7 @@ func (Git) RefExists(ctx context.Context, repo, ref string) (bool, error) {
 		return false, fmt.Errorf("workspace: repo and ref required")
 	}
 	args := []string{"show-ref", "--verify", "--quiet", full}
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd := proc.Git(ctx, append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), append([]string{"-C", repo}, args...)...)
 	_, err := cmd.Output()
 	if err == nil {
 		return true, nil

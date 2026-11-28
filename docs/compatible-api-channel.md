@@ -1,8 +1,9 @@
 # Anthropic-compatible channels (API1)
 
-API1 adds configuration and isolated execution through Claude Code. It does not
-perform a model probe, infer account health, or estimate provider costs.
-`channel check` does not send a new model request.
+API1 is configuration-only in this build. Compatible API channels can be
+registered, but cannot run cards or send provider requests. This is independent
+of config flags and legacy `health=ok` rows. `channel check` reports the hold
+without signing in to Claude or contacting the API provider for these channels.
 
 ## Register without enabling a channel
 
@@ -16,7 +17,7 @@ domains below are placeholders:
       "protocol": "anthropic-compatible",
       "base_url": "https://api.example.test/anthropic",
       "default_model": "gateway-model-1",
-      "credential": {"source": "env", "name": "GATEWAY_A_API_TOKEN"}
+      "credential": {"source": "env", "name": "CARDEX_API_GATEWAY_A_TOKEN"}
     }
   }
 }
@@ -24,9 +25,15 @@ domains below are placeholders:
 
 Choose exactly one credential reference:
 
-- `env`: the name of an environment variable of the **CardeX service**, not
-  its caller's shell. Use a dedicated variable for this channel. Its value is
-  checked only at execution time.
+- `env`: the name of a dedicated **CardeX service** environment variable.
+  Use a unique `CARDEX_API_*` name, not a legacy key shared with another runner.
+  Keep its value unset while compatible runtime is disabled. Git subprocesses (and their
+  hooks/helpers), ordinary executors, acceptance commands and notification
+  subprocesses drop the reserved
+  prefix and configured compatible env references. Keychain service labels
+  are not environment variable names. An arbitrary old variable cannot be recovered from a deleted or
+  unreadable config; remove any such old credential from the service environment
+  before starting the service.
 - `keychain`: the macOS generic-password service `name`. Add `account` if
   the service matches several accounts. Duplicate matching items are refused.
   The running user must be able to read that item. CardeX does not create or
@@ -41,10 +48,8 @@ Choose exactly one credential reference:
 Do not put the token in this configuration, a CLI argument or a card. Profiles
 do not accept `auth_value`, arbitrary environment additions or shell
 interpolation. A profile has one qualified HTTPS origin and optional base path.
-Userinfo, query strings, fragments, IP literals, escaped paths and redirects
-are not accepted. The provider must accept bearer authentication on the
-Anthropic Messages API routes. The runtime permits the SDK's fixed
-`?beta=true` Messages qualifier, not a query in the configured URL.
+Userinfo, query strings, fragments, IP literals and escaped paths are not
+accepted. Registration makes no network calls.
 
 ```sh
 cardex channel set --id gateway-a --runner claude --engine-profile gateway-a \
@@ -57,52 +62,33 @@ omitted fields. A compatible binding is persisted as
 `anthropic-compatible:gateway-a@<binding-id>` in the existing `engine_profile`
 field. The binding ID covers the channel, profile, endpoint, family, models
 and credential reference, not the credential value. Editing one of these
-requires staging the new identity with `channel set` and approving it in a
-separate command. Previously prepared attempts keep their original binding
-and refuse to launch if it changes. If its
-config is removed or changed to a legacy profile, it cannot fall back to Claude
-login, a preset or a legacy credential. Legacy profiles keep their existing
-launcher.
-
-Registration neither adds an approved positioning row nor automatically
-enables the new channel; it defaults to `degraded`. Only after the operator
-has checked the reference and explicitly authorized channel use can a separate
-`channel set --id gateway-a --health ok` mark it eligible. Automatic routing
-still requires the applicable approved model positioning. A health-only
-`channel set --id gateway-a --health degraded` can disable a channel even if
-the config or credential cannot be validated; it does not change the binding.
-Fixing that config does not automatically reactivate the channel. Do not
-enable a real account as part of an API1 configuration rehearsal.
+requires explicitly staging the new identity with `channel set`. A separate
+`--health ok` is refused while the runtime is disabled. A health-only
+`channel set --id gateway-a --health degraded` disables an old healthy row even
+when its config cannot be validated. Repairing that config does not reactivate
+the channel. Conflicting positioning families cannot be introduced by either
+registration (including the unapproved config seed) or positioning approval.
 
 ## Execution boundary
 
-CardeX launches a fresh nonpersistent Claude Code session per attempt. It
-uses `--bare`, `--restricted` and explicit tool sets, no user or project
-settings, and no MCP tools. Only review, research and ranking are enabled,
-without tools. Development cards, other card kinds, and browser/goal requests
-fail closed; file-tool confinement has not been verified. Use a Claude
-Code build implementing these flags; the documented minimum for
-`--restricted` is 2.1.248. CardeX does not override managed Claude Code
-policies. An environment with detected managed settings, unverifiable policy,
-or custom `SSL_CERT_FILE`/`SSL_CERT_DIR` overrides is refused.
+Compatible channels are removed from automatic routing before ranking. An
+explicit compatible-only pin waits for input rather than silently sending the
+card through a different provider. A historical prepared compatible attempt
+is stopped before credentials, a relay, or a child; an unconsumed older
+attempt is not harvested through generic acceptance or
+`.cardex-result.md`. The no-tool executor's stdout is not an authenticated
+workflow result. Ordinary legacy routes continue to use their existing
+launchers. If upgrading from an older build, stop old CardeX processes that
+could still hold a relay before relying on this boundary.
 
-The provider token stays in the host. Claude Code gets a short-lived
-loopback capability usable only for this attempt's Messages API routes; the
-host attaches the token to requests to the configured TLS origin. It checks
-all DNS answers before dialing a pinned public IP and retains the original
-hostname for TLS verification. A private, local or reserved answer is refused. Parent,
-default and channel proxies are not inherited. The relay does not follow or
-return redirects or upstream error bodies. Attempt configuration and relay
-are removed when the host finishes. This is credential and tool isolation,
-not a claim that a local service administrator cannot access host memory or
-credentials. The output filter redacts exact token bytes as defense in depth.
-A malicious trusted endpoint that encodes or transforms its own bearer is not
-covered; configure only a provider you trust.
+Future live support requires independent operator authorization, a bounded
+result verified end to end, and a guarantee that deactivation or rebinding
+prevents new requests on an already started transport. Reference validation
+and synthetic isolated-launch tests are not evidence of that capability.
 
 References: [Claude Code CLI flags](https://code.claude.com/docs/en/cli-reference),
 [headless/bare mode](https://code.claude.com/docs/en/headless),
-[managed settings locations](https://code.claude.com/docs/en/managed-settings),
-[Anthropic SDK beta Messages source](https://github.com/anthropics/anthropic-sdk-typescript/blob/main/src/resources/beta/messages/messages.ts).
+[managed settings locations](https://code.claude.com/docs/en/managed-settings).
 
 ### Why developer file tools stay disabled
 
@@ -118,7 +104,7 @@ allows system reads, network and temporary-area writes, so it does not
 independently prove this narrower developer policy. Other CardeX hosts
 cannot substitute a sandbox skip for that proof.
 
-Before enabling an opt-in, verify the actual pinned executor and enforced
+Before enabling any developer opt-in, verify the actual pinned executor and enforced
 boundary with a synthetic local endpoint and throwaway directories, never a
 provider or real credential. A positive in-worktree read, edit and creation
 must succeed while absolute outside paths, traversal, linked paths (including

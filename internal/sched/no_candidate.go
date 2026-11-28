@@ -105,6 +105,8 @@ func explainNoCandidate(ctx context.Context, card model.Card, obj model.Objectiv
 			}
 		case route.ReasonRedline, route.ReasonCutoff, route.ReasonBlocked:
 			h = "channel " + f.Channel + " is out of quota for now; it is retried after the reset, or add another channel"
+		case route.ReasonCompatibleRuntime:
+			h = model.CompatibleRuntimeHold
 		case route.ReasonUnknownQuota:
 			h = "channel " + f.Channel + " has no quota data and unknown_quota is exclude"
 		}

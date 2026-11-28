@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/OttoPrua/Cardex/internal/runner"
 )
 
 // hermesTestSeq keeps each notify test wake distinct from earlier tests,
@@ -83,12 +85,12 @@ func TestDeliver(ctx context.Context, exec Exec, home string, rec Receiver) erro
 		if exec == nil {
 			return fmt.Errorf("notify: exec is nil")
 		}
-		return exec(ctx, codexArgv(rec.Target, text))
+		return exec(runner.WithCompatibleCredentialEnv(ctx, home), codexArgv(rec.Target, text))
 	case "lark":
 		if exec == nil {
 			return fmt.Errorf("notify: exec is nil")
 		}
-		return exec(ctx, larkArgv(rec.Target, text))
+		return exec(runner.WithCompatibleCredentialEnv(ctx, home), larkArgv(rec.Target, text))
 	case "file":
 		return writeReceiverFile(rec.Target, Message{
 			QuestionID: "notify-test",

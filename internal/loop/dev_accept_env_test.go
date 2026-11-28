@@ -104,7 +104,7 @@ func TestMergeLocalHonorsGitConfigGlobal(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", cfg)
-	if err := mergeLocal(repo, "integration"); err == nil {
+	if err := mergeLocal(context.Background(), repo, "integration"); err == nil {
 		t.Fatal("merge skipped the pre-merge-commit hook from GIT_CONFIG_GLOBAL")
 	}
 	if _, err := os.Stat(marker); err != nil {

@@ -177,3 +177,24 @@ func TestCompatibleRelayOutputDropsSplitCredentials(t *testing.T) {
 		t.Fatal("executor output contained an auth value or was truncated")
 	}
 }
+
+func TestCompatibleProductionRelayDoesNotResolveOrListen(t *testing.T) {
+	t.Setenv("CARDEX_API_TEST", "fixture-only")
+	profile := []byte(`{"protocol":"anthropic-compatible","base_url":"https://fixtures.example.test","credential":{"source":"env","name":"CARDEX_API_TEST"}}`)
+	relay, err := StartCompatibleRelay(t.Context(), profile)
+	if relay != nil || err == nil || !strings.Contains(err.Error(), "runtime is disabled") {
+		t.Fatal("production factory accepted a live descriptor")
+	}
+}
+
+func TestCompatibleCredentialEnvCannotBeRepackagedByLegacyEngine(t *testing.T) {
+	const name = "FIXTURE_SHARED_ENV"
+	t.Setenv(name, "synthetic-only")
+	_, _, err := (Claude{}).Build(LaunchSpec{
+		DropEnv: []string{"fixture_shared_env"},
+		Script:  []byte(`{"base_url":"https://legacy.example.test","auth_env":"FIXTURE_SHARED_ENV"}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot reuse") || strings.Contains(err.Error(), name) {
+		t.Fatal("legacy profile could repack a compatible ref as a general credential")
+	}
+}

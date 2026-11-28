@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/roots"
 )
 
@@ -108,6 +109,9 @@ func FrozenStagePaths(ctx context.Context, dir, base, candidate string) ([]strin
 }
 
 func saveStageEvidence(ctx context.Context, in Input, dir, frozenCandidate string, outcome model.Outcome, runs []commandRun, sum Summary) error {
+	if in.Card.UsesStrictReviewObjects(in.Attempt) {
+		ctx = proc.WithExactGitObjects(ctx)
+	}
 	switch outcome {
 	case model.OutcomePassed, model.OutcomeTestsFailed:
 	default:

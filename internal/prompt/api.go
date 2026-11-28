@@ -28,6 +28,7 @@ type StageContext struct {
 	Data                        json.RawMessage
 	Review                      bool // the reviewer starts cold, without previous opinions or notes
 	ReviewUnavailable           bool // reviewer has no frozen range or validation, including explicit standalone tasks
+	StrictReviewObjects         bool // host-bound, exact Git objects without replacement or graft mapping
 	ReviewAcceptanceUnavailable bool // frozen Git range is known, but no acceptance evidence was imported
 	Rework                      bool // the previous review note has been captured from structured evidence
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -144,7 +145,12 @@ func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
 	if c.ID != saved {
 		return fmt.Errorf("card id changed")
 	}
-	return s.WithTx(ctx, func(ctx context.Context) error {
+	return s.WithWriteTx(ctx, func(ctx context.Context) error {
+		previous, err := s.GetCard(ctx, c.ID)
+		if err != nil {
+			return err
+		}
+		definitionChanged := !reflect.DeepEqual(previous, *c)
 		requires, err := mustJSON(c.Requires)
 		if err != nil {
 			return err
@@ -162,8 +168,8 @@ func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
 			return err
 		}
 		q := `UPDATE cards SET objective_id=?, node_id=?, kind=?, title=?, body=?, tier=?, requires=?, deps=?, acceptance=?, base=?, status=?, wait_reason=?, rework_count=?, legacy=?, channel=?, model=?, rework_note=?, author_family=?, soft_tokens=?, hard_tokens=?, review=?, wait_question_id=?, strict_deps=?,
-			changed_at=CASE WHEN status<>? OR wait_reason<>? THEN ? ELSE changed_at END WHERE id=?`
-		args := []any{c.Objective, c.Node, string(c.Kind), c.Title, c.Body, wireTier(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Review, c.WaitQuestionID, c.StrictDeps, string(c.Status), c.WaitReason, formatTime(time.Now()), c.ID}
+			changed_at=CASE WHEN ? THEN ? ELSE changed_at END WHERE id=?`
+		args := []any{c.Objective, c.Node, string(c.Kind), c.Title, c.Body, wireTier(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Review, c.WaitQuestionID, c.StrictDeps, definitionChanged, formatTime(time.Now()), c.ID}
 		var transitioned bool
 		if hasLifecycleStatus(c.Status) {
 			res, err := s.q(ctx).ExecContext(ctx, q+` AND (status<>? OR wait_question_id<>?)`, append(args, c.Status, c.WaitQuestionID)...)

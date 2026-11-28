@@ -16,6 +16,8 @@ import (
 	"github.com/OttoPrua/Cardex/internal/notify"
 	"github.com/OttoPrua/Cardex/internal/store"
 	"github.com/OttoPrua/Cardex/internal/workspace"
+
+	"github.com/OttoPrua/Cardex/internal/runner"
 )
 
 // productionEngine is sched.New's design phase. It calls loop.New(...).Step
@@ -24,6 +26,7 @@ import (
 // that attempt already has a real exit. The error itself is not returned, so
 // serve keeps ticking.
 func (r *Runner) productionEngine(ctx context.Context, objectiveID string) error {
+	ctx = runner.WithCompatibleCredentialEnv(ctx, r.Home)
 	return withCardexHome(r.Home, func() error {
 		db, err := store.Open(filepath.Join(r.Home, "cardex.db"))
 		if err != nil {

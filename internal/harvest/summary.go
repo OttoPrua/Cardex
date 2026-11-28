@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,6 +14,8 @@ import (
 	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/workspace"
+
+	"github.com/OttoPrua/Cardex/internal/runner"
 )
 
 // FileChange is one path changed between the attempt's base and its worktree.
@@ -79,6 +80,9 @@ type Summary struct {
 	Files          []FileChange       `json:"files"`
 	Acceptance     []AcceptanceResult `json:"acceptance"`
 	Review         *ReviewSummary     `json:"review,omitempty"`
+	// CleanReviewCheckout is positive evidence only when both trusted Git
+	// inspections succeeded; absent means either unmeasured or unknown.
+	CleanReviewCheckout *bool `json:"clean_review_checkout,omitempty"`
 }
 
 type commandRun struct {
@@ -231,6 +235,7 @@ func buildSummary(ctx context.Context, in Input, dir, base string, acceptance []
 
 // WriteUnavailableSummary records an ended attempt whose checkout could not be harvested.
 func WriteUnavailableSummary(ctx context.Context, in Input) error {
+	ctx = runner.WithCompatibleCredentialEnv(ctx, in.Home)
 	if err := invalidateStageEvidence(in); err != nil {
 		return err
 	}
@@ -266,6 +271,32 @@ func acceptanceResults(ctx context.Context, home, dir, base string, runs []comma
 		out = append(out, item)
 	}
 	return out
+}
+
+// checkReviewCheckout compares HEAD, staged and working-tree data, and
+// untracked names. Summary file-count failures cannot certify cleanliness.
+func checkReviewCheckout(ctx context.Context, dir, base string) *bool {
+	head, err := gitOut(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		return nil
+	}
+	clean := head == base
+	for _, args := range [][]string{
+		{"diff", "--name-only", "--no-renames", "-z", base, "--"},
+		{"diff", "--cached", "--name-only", "--no-renames", "-z", base, "--"},
+		{"ls-files", "--others", "--exclude-standard", "-z"},
+	} {
+		paths, err := gitExec(ctx, dir, args...)
+		if err != nil {
+			return nil
+		}
+		for _, path := range strings.Split(string(paths), "\x00") {
+			if path != "" && path != ".cardex-result.md" {
+				clean = false
+			}
+		}
+	}
+	return &clean
 }
 
 func diffFiles(ctx context.Context, dir, base string) []FileChange {
@@ -390,8 +421,13 @@ func safeAttemptID(id string) bool {
 
 // gitExec is gitOut's body, split so tests can see the command shape stays portable.
 func gitExec(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
+	base := []string{"-C", dir}
+	env := proc.AcceptanceEnv(os.Environ())
+	if proc.ExactGitObjects(ctx) {
+		base = append(base, "--no-replace-objects")
+		env = proc.GitObjectScopeEnv(env)
+	}
+	cmd := proc.Git(ctx, append(env, "GIT_TERMINAL_PROMPT=0"), append(base, args...)...)
 	out, err := cmd.Output()
 	return out, workspace.GitFailure(ctx, dir, args, err, nil)
 }

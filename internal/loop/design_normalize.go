@@ -131,13 +131,77 @@ func (d Deps) noteNormalizeResolution(ctx context.Context, link normalizationLin
 	return d.noteEvent(ctx, entity, normalizeResolvedEvent, raw)
 }
 
+func normalizationWaitReason(link normalizationLink) string {
+	return fmt.Sprintf("%s (source attempt %s; normalization %s)", link.Reason, link.SourceAttempt, link.Normalize)
+}
+
+// normalizationMayApply distinguishes a source already applied from a source
+// held by a failed earlier attempt on this same normalizer. The latter hold
+// remains consumed for replay of the original artifact, but a newer, exactly
+// linked normalizer attempt may resolve it if nobody changed the source wait.
+func (d Deps) normalizationMayApply(ctx context.Context, source model.Card, link normalizationLink) (bool, error) {
+	entity := normalizationPlanEntity(link.SourceCard, link.SourceAttempt)
+	events, err := d.Store.ListEvents(ctx, entity)
+	if err != nil {
+		return false, err
+	}
+	var blocks []normalizationLink
+	for _, event := range events {
+		switch event.Type {
+		case evAbsorbed:
+			return false, nil
+		case normalizeBlockedEvent:
+			var old normalizationLink
+			if json.Unmarshal(event.Data, &old) != nil ||
+				old.SourceCard != link.SourceCard || old.SourceAttempt != link.SourceAttempt ||
+				old.Normalize != link.Normalize || old.NormalizeAttempt == "" ||
+				(old.Reason != normalizeFailed && old.Reason != normalizeInvalid) {
+				return false, nil
+			}
+			blocks = append(blocks, old)
+		}
+	}
+	if len(blocks) == 0 {
+		return true, nil
+	}
+	if source.Status != model.CardNeedsInput || source.WaitQuestionID != "" || link.NormalizeAttempt == "" {
+		return false, nil
+	}
+	attempts, err := d.Store.ListAttempts(ctx, link.Normalize)
+	if err != nil {
+		return false, err
+	}
+	current := currentAttempt(attempts)
+	if current == nil || current.ID != link.NormalizeAttempt {
+		return false, nil
+	}
+	indices := make(map[string]int, len(attempts))
+	for _, attempt := range attempts {
+		indices[attempt.ID] = attempt.Index
+	}
+	var latest normalizationLink
+	var latestIndex int
+	for _, old := range blocks {
+		index, ok := indices[old.NormalizeAttempt]
+		if !ok || index >= current.Index {
+			return false, nil
+		}
+		if latest.NormalizeAttempt == "" || index > latestIndex {
+			latest, latestIndex = old, index
+		} else if index == latestIndex && old != latest {
+			return false, nil
+		}
+	}
+	return source.WaitReason == normalizationWaitReason(latest), nil
+}
+
 func (d Deps) blockNormalization(ctx context.Context, source model.Card, link normalizationLink) error {
 	fresh, err := d.Store.GetCard(ctx, source.ID)
 	if err != nil {
 		return err
 	}
 	fresh.Status = model.CardNeedsInput
-	fresh.WaitReason = fmt.Sprintf("%s (source attempt %s; normalization %s)", link.Reason, link.SourceAttempt, link.Normalize)
+	fresh.WaitReason = normalizationWaitReason(link)
 	if err := d.Store.UpdateCard(ctx, &fresh); err != nil {
 		return err
 	}
@@ -149,6 +213,11 @@ func (d Deps) blockNormalization(ctx context.Context, source model.Card, link no
 	raw, err := json.Marshal(link)
 	if err != nil {
 		return err
+	}
+	if link.NormalizeAttempt != "" {
+		// A new retry can fail for a different reason. Preserve the typed
+		// evidence for every effective attempt, not just the first hold.
+		return d.Store.AppendEvent(ctx, &model.Event{Entity: entity, Type: normalizeBlockedEvent, Data: raw})
 	}
 	return d.noteEvent(ctx, entity, normalizeBlockedEvent, raw)
 }

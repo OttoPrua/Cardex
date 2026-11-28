@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/OttoPrua/Cardex/internal/harvest"
 	"github.com/OttoPrua/Cardex/internal/homeguard"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
@@ -106,7 +110,11 @@ func verifyAttempt(home string, card model.Card, a model.Attempt) verifyView {
 	if err != nil || !ok {
 		return fail("incomplete", "newest attempt has no readable summary")
 	}
-	if sum.AttemptID != a.ID || sum.BaseCommit != a.BaseCommit || sum.HeadCommit != a.HeadCommit ||
+	headMatches := sum.HeadCommit == a.HeadCommit
+	if card.Kind == model.KindReview && a.HeadCommit == "" {
+		headMatches = cleanReviewHead(home, card, a, sum)
+	}
+	if sum.AttemptID != a.ID || sum.BaseCommit != a.BaseCommit || !headMatches ||
 		sum.Channel != a.Route.Channel || sum.Model != a.Route.Model {
 		return fail("failed", "summary does not match the newest attempt")
 	}
@@ -158,5 +166,30 @@ func verifyAttempt(home string, card model.Card, a model.Attempt) verifyView {
 	} else if v.AcceptanceCount == 0 {
 		return fail("incomplete", "no recorded acceptance command")
 	}
+	v.Head = sum.HeadCommit
 	return fail("verified", "recorded evidence passed; nothing was rerun")
+}
+
+// A successful, unchanged review has no commit to write to the attempt
+// row. Harvest still records its checkout HEAD. Use that recorded HEAD
+// only when it is the same full Git object ID as the attempt's pinned base.
+func cleanReviewHead(home string, card model.Card, attempt model.Attempt, summary harvest.Summary) bool {
+	if card.Kind != model.KindReview || attempt.HeadCommit != "" || summary.HeadCommit != attempt.BaseCommit ||
+		attempt.Exit == nil || *attempt.Exit != 0 || summary.CleanReviewCheckout == nil || !*summary.CleanReviewCheckout ||
+		summary.Files == nil || len(summary.Files) != 0 || summary.Review == nil {
+		return false
+	}
+	id := attempt.BaseCommit
+	if (len(id) != 40 && len(id) != 64) || strings.Trim(id, "0") == "" || strings.ToLower(id) != id {
+		return false
+	}
+	if _, err := hex.DecodeString(id); err != nil {
+		return false
+	}
+	if summary.Review.Source != roots.EvidenceRef(home, attempt.ID, attempt.PromptPath, "result.md") {
+		return false
+	}
+	resultPath := filepath.Join(filepath.Dir(harvest.SummaryPath(home, attempt)), "result.md")
+	fi, err := os.Lstat(resultPath)
+	return err == nil && fi.Mode().IsRegular() && fi.Size() > 0
 }

@@ -3,6 +3,7 @@ package host
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"syscall"
@@ -55,6 +57,9 @@ func run(ctx context.Context, home, attemptID string) error {
 	if err != nil {
 		return fmt.Errorf("host: load card: %w", err)
 	}
+	if card.UsesStrictReviewObjects(attempt) {
+		ctx = proc.WithExactGitObjects(ctx)
+	}
 	if card.StrictDeps {
 		allowed, err := strictLaunchGate(ctx, db, &attempt, strictProbe)
 		if err != nil || !allowed {
@@ -68,6 +73,9 @@ func run(ctx context.Context, home, attemptID string) error {
 	approvedBindingID := ""
 	if attempt.RouteReason.Dispatch != nil {
 		approvedBindingID = attempt.RouteReason.Dispatch.CompatibleBindingID
+	}
+	if syntheticCompatibleRelay == nil && (approvedBindingID != "" || channel.CompatibleRuntimeHeld()) {
+		return holdCompatibleHostAttempt(ctx, db, card, attempt)
 	}
 	if approvedBindingID != "" && approvedBindingID != runner.CompatibleBindingID(channel.EngineProfile) {
 		return handoffReview(ctx, db, &attempt, &card, "api channel dispatch binding changed; select an approved route again")
@@ -96,12 +104,15 @@ func run(ctx context.Context, home, attemptID string) error {
 	}
 
 	cfg := loadConfig(home)
+	credentialNames := runner.CompatibleConfigCredentialNames(cfg.Engines)
+	ctx = proc.WithCompatibleCredentialNames(ctx, credentialNames)
 	spec := runner.LaunchSpec{
 		AttemptID:    attempt.ID,
 		AttemptIndex: attempt.Index,
 		WorkDir:      attempt.Worktree,
 		PromptPath:   promptPath,
 		Model:        attempt.Route.Model,
+		DropEnv:      proc.CompatibleCredentialNames(ctx),
 	}
 	if goalMode {
 		spec.SessionID = attempt.ID
@@ -123,6 +134,20 @@ func run(ctx context.Context, home, attemptID string) error {
 		}
 		spec.Script = raw
 		if runner.IsCompatibleEngine(raw) {
+			if syntheticCompatibleRelay == nil {
+				sum := sha256.Sum256(raw)
+				proof := store.CompatibleRefusal{
+					ProfileDigest: fmt.Sprintf("%x", sum),
+					Verify: func(current model.Channel) bool {
+						if !reflect.DeepEqual(current, channel) {
+							return false
+						}
+						currentRaw, reason := resolveEngineProfile(loadConfig(home), current.EngineProfile)
+						return reason == "" && runner.IsCompatibleEngine(currentRaw) && sha256.Sum256(currentRaw) == sum
+					},
+				}
+				return db.HoldCompatibleRefusal(ctx, card, attempt, observeCompatibleObjective(ctx, db, card), time.Now(), proof)
+			}
 			apiIsolated = true
 			spec.CardKind = card.Kind
 			if !runner.IsCompatibleBinding(channel.EngineProfile) {
@@ -161,7 +186,7 @@ func run(ctx context.Context, home, attemptID string) error {
 			}
 			spec.ConfigDir = configDir
 			defer cleanupClaudeConfig(db, attempt.ID, configDir)
-			relay, err = startCompatibleRelay(ctx, verified, fileRoots...)
+			relay, err = syntheticCompatibleRelay(ctx, verified, fileRoots...)
 			if err != nil {
 				return handoffReview(ctx, db, &attempt, &card, err.Error())
 			}
@@ -229,7 +254,11 @@ func run(ctx context.Context, home, attemptID string) error {
 	// Card cancel is watched only once the executor starts; Chrome startup is
 	// bounded by browserStartTimeout.
 	if card.StrictDeps && requiresBrowser(card) {
-		allowed, err := strictLaunchGate(ctx, db, &attempt, strictExec)
+		reviewScope, err := proveStrictHostReviewScope(ctx, db, card, attempt)
+		if err != nil {
+			return err
+		}
+		allowed, err := strictLaunchGateWithReviewScope(ctx, db, &attempt, strictExec, reviewScope)
 		if err != nil || !allowed {
 			return err
 		}
@@ -258,6 +287,9 @@ func run(ctx context.Context, home, attemptID string) error {
 		}
 	}
 	cmd, err := commandForEnv(argv, env, apiIsolated)
+	if err == nil && !apiIsolated {
+		cmd.Env = proc.CompatibleChildEnv(ctx, cmd.Env)
+	}
 	if err != nil {
 		return failStart(ctx, db, &attempt, err)
 	}
@@ -265,7 +297,11 @@ func run(ctx context.Context, home, attemptID string) error {
 	// The shim is first on PATH. The executor keeps tool homes and GIT_*;
 	// only `go test` is started with AcceptanceEnv.
 	if !apiIsolated {
-		cmd.Env, err = proc.PrependGoTestWrap(cmd.Env, filepath.Join(attemptDir, "go-wrap"))
+		wrapGo := proc.PrependGoTestWrap
+		if card.UsesStrictReviewObjects(attempt) {
+			wrapGo = proc.PrependExactGoTestWrap
+		}
+		cmd.Env, err = wrapGo(cmd.Env, filepath.Join(attemptDir, "go-wrap"))
 		if err != nil {
 			return failStart(ctx, db, &attempt, err)
 		}
@@ -343,7 +379,17 @@ func run(ctx context.Context, home, attemptID string) error {
 	// launch: a dependency can change after this check, and an already
 	// admitted process is not revoked by later dependency changes.
 	if card.StrictDeps {
-		allowed, err := strictLaunchGate(ctx, db, &attempt, strictExec)
+		reviewScope, scopeErr := proveStrictHostReviewScope(ctx, db, card, attempt)
+		if card.UsesStrictReviewObjects(attempt) {
+			// Scope the actual post-wrapper child, not just CardeX evidence
+			// commands. Plain Git used by the reviewer must see the same objects.
+			wrapped.Env = proc.GitObjectScopeEnv(wrapped.Env)
+		}
+		allowed := false
+		err := scopeErr
+		if err == nil {
+			allowed, err = strictLaunchGateWithReviewScope(ctx, db, &attempt, strictExec, reviewScope)
+		}
 		if err != nil || !allowed {
 			closePipe(logWrite, logRead)
 			if copied != nil {
@@ -443,6 +489,15 @@ func run(ctx context.Context, home, attemptID string) error {
 	} else {
 		if err := wrapped.Start(); err != nil {
 			closePipe(logWrite, logRead)
+			// Cmd.Start failed without handing us a process. The subsequent
+			// process-group persistence failures are NOT no-spawn paths.
+			// Exclude preparatory browser/relay children from this proof.
+			if card.StrictDeps && wrapped.Process == nil && !requiresBrowser(card) && relay == nil {
+				if copied != nil {
+					<-copied
+				}
+				return failStrictNoExecutor(ctx, db, &attempt, err)
+			}
 			return failStart(ctx, db, &attempt, err)
 		}
 		pid = wrapped.Process.Pid
@@ -612,7 +667,10 @@ func mergeEnv(base, extra []string) []string {
 	return out
 }
 
-var startCompatibleRelay = runner.StartCompatibleRelay
+// Populated exclusively by a host test helper. Production cannot activate
+// compatible provider traffic by configuring an engine, changing health, or
+// invoking a prepared attempt directly.
+var syntheticCompatibleRelay func(context.Context, []byte, ...string) (*runner.CompatibleRelay, error)
 
 func isolateClaudeConfig(attemptDir string) (string, error) {
 	if err := os.MkdirAll(attemptDir, 0o700); err != nil {
@@ -995,4 +1053,17 @@ func sandboxOff(ctx context.Context, db *store.Store, card model.Card) bool {
 		return false
 	}
 	return p.Sandbox == "off"
+}
+
+// A host refusal records the attempt even when objective state cannot be
+// proved. Changing a live card also requires a matching objective snapshot.
+func holdCompatibleHostAttempt(ctx context.Context, db *store.Store, card model.Card, attempt model.Attempt) error {
+	return db.HoldCompatibleAttempt(ctx, card, attempt, observeCompatibleObjective(ctx, db, card), time.Now())
+}
+
+func observeCompatibleObjective(ctx context.Context, db *store.Store, card model.Card) *model.Objective {
+	if objective, err := db.GetObjective(ctx, card.Objective); err == nil {
+		return &objective
+	}
+	return nil
 }

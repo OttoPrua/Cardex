@@ -14,6 +14,8 @@ import (
 	"github.com/OttoPrua/Cardex/internal/notify"
 	"github.com/OttoPrua/Cardex/internal/store"
 	"github.com/OttoPrua/Cardex/internal/workspace"
+
+	"github.com/OttoPrua/Cardex/internal/runner"
 )
 
 type disposeKey int
@@ -87,6 +89,7 @@ func Dispose(ctx context.Context, card *model.Card, res harvest.Result) error {
 	if receipt, ok := ctx.Value(disposeReceiptKey).(*DispositionReceipt); ok && receipt != nil {
 		*receipt = DispositionReceipt{}
 	}
+	ctx = runner.WithCompatibleCredentialEnv(ctx, home)
 	db, owned, err := disposeStore(ctx, home)
 	if err != nil {
 		return err

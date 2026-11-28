@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 // ParseSymbols returns top-level functions, methods as Type.Method, and types
@@ -254,8 +255,13 @@ func showFile(ctx context.Context, repo, rev, path string) ([]byte, error) {
 }
 
 func gitBytes(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	base := []string{"-C", dir}
+	env := os.Environ()
+	if proc.ExactGitObjects(ctx) {
+		base = append(base, "--no-replace-objects")
+		env = proc.GitObjectScopeEnv(env)
+	}
+	cmd := proc.Git(ctx, append(env, "GIT_TERMINAL_PROMPT=0"), append(base, args...)...)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {

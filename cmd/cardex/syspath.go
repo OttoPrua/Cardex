@@ -60,6 +60,14 @@ func ensureRuntimePath(args []string) error {
 	}
 	configured, err := configuredRuntimePath(dir)
 	if err != nil {
+		if channelHealthStopOnly(rest) {
+			// This command uses the local store but runs no executor, Git or
+			// credential adapter. Broken tool config must not block disabling
+			// a live binding. Keep the inherited environment unchanged.
+			if fi, statErr := os.Lstat(filepath.Join(dir, "cardex.db")); statErr == nil && fi.Mode().IsRegular() {
+				return nil
+			}
+		}
 		return err
 	}
 	if configured != "" {
@@ -102,4 +110,54 @@ func configuredRuntimePath(home string) (string, error) {
 		}
 	}
 	return strings.Join(out, string(os.PathListSeparator)), nil
+}
+
+// channelHealthStopOnly is intentionally narrower than channel set. It does
+// not move flags across operands, accept duplicate fields, or interpret a
+// flag-like argument as a value for some other flag.
+func channelHealthStopOnly(args []string) bool {
+	if len(args) < 2 || args[0] != "channel" || args[1] != "set" {
+		return false
+	}
+	id, health := "", ""
+	for i := 2; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			if id != "" || i != len(args)-1 {
+				return false
+			}
+			id = arg
+			continue
+		}
+		name, value, equals := strings.Cut(arg, "=")
+		if name != "--id" && name != "-id" && name != "--health" && name != "-health" {
+			return false
+		}
+		if !equals {
+			i++
+			if i == len(args) {
+				return false
+			}
+			value = args[i]
+		}
+		if value == "" || strings.HasPrefix(value, "-") {
+			return false
+		}
+		switch name {
+		case "--id", "-id":
+			if id != "" {
+				return false
+			}
+			id = value
+		default:
+			if health != "" {
+				return false
+			}
+			health = strings.TrimSpace(value)
+			if health != "degraded" && health != "auth_failed" {
+				return false
+			}
+		}
+	}
+	return strings.TrimSpace(id) != "" && health != ""
 }

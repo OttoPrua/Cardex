@@ -6,13 +6,16 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OttoPrua/Cardex/internal/host"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
@@ -175,6 +178,11 @@ func TestAPIChannelRejectsUnusableTargetWithoutStarting(t *testing.T) {
 		t.Skip("claude stub is a shell script; windows launch is covered by GOOS=windows go build")
 	}
 	const canary = "cdx-canary-a-7f3e9c"
+	restore := host.SetCompatibleRelayForTest(func(context.Context, []byte, ...string) (*runner.CompatibleRelay, error) {
+		t.Fatal("invalid configuration reached a starter")
+		return nil, nil
+	})
+	defer restore()
 	bin := t.TempDir()
 	marker := filepath.Join(bin, "started")
 	stub := "#!/bin/sh\ntouch " + strconv.Quote(marker) + "\n"
@@ -312,6 +320,214 @@ func TestAPIChannelStaleDispatchStopsBeforeCredentialOrExecutor(t *testing.T) {
 			}
 			if _, ok := eventType(events, "host_start"); ok {
 				t.Fatal("stale attempt started an executor")
+			}
+		})
+	}
+}
+
+func TestAPIChannelDefaultRuntimeHoldStopsHealthyPreparedAttempt(t *testing.T) {
+	ctx := context.Background()
+	home, id, work := seedPreparedCard(t, t.TempDir(), model.RunnerClaude, "gateway", 1, func(c *model.Card) {
+		c.Kind = model.KindResearch
+		c.Status = model.CardReady
+	}, nil)
+	profile := `{"engines":{"gateway":{"protocol":"anthropic-compatible","base_url":"https://gateway.example.test","default_model":"fixture-model","credential":{"source":"env","name":"CARDEX_API_FIXTURE"}}}}`
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CARDEX_API_FIXTURE", "synthetic-only")
+	db, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.CreateObjective(ctx, &model.Objective{ID: "o", Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeSafe}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := db.GetAttempt(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err := db.GetChannel(ctx, a.Route.Channel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch, err = runner.ValidateChannelBinding(home, ch, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch.Health = model.HealthOK
+	if err := db.UpdateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	a.Route.Model = ch.Models[0]
+	a.RouteReason.Dispatch = &model.RouteDispatch{CompatibleBindingID: runner.CompatibleBindingID(ch.EngineProfile)}
+	if err := db.UpdateAttempt(ctx, &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Run(ctx, home, id); err != nil {
+		t.Fatal(err)
+	}
+	got, events := loadAttempt(t, home, id)
+	c, err := db.GetCard(ctx, a.Card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Outcome != model.OutcomeNoOutput || got.ErrorExcerpt != model.CompatibleRuntimeHold || c.Status != model.CardNeedsInput {
+		t.Fatal("default runtime trusted a historical active row")
+	}
+	if _, exists := eventType(events, "host_start"); exists {
+		t.Fatal("default runtime launched a compatible child")
+	}
+	if _, err := os.Stat(filepath.Join(work, ".cardex-result.md")); !os.IsNotExist(err) {
+		t.Fatal("hold wrote a worktree result")
+	}
+	assertNoCanary(t, home, "synthetic-only")
+}
+
+func TestAPIChannelOrdinaryChildDoesNotInheritProviderReferences(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executor fixture uses a shell script")
+	}
+	const currentCanary = "fixture-current-value"
+	const reservedCanary = "fixture-reserved-value"
+	const ordinaryValue = "fixture-ordinary-value"
+	t.Setenv("fixture_api_current", currentCanary)
+	t.Setenv("CARDEX_API_ORPHAN", reservedCanary)
+	t.Setenv("FIXTURE_ORDINARY", ordinaryValue)
+	bin := t.TempDir()
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	home, id, _ := seedPreparedCard(t, t.TempDir(), model.RunnerClaude, "legacy", 1, nil, nil)
+	profile := `{"engines":{
+		"legacy":{"base_url":"https://legacy.example.test","auth_env":"FIXTURE_ORDINARY"},
+		"gateway":{"protocol":"anthropic-compatible","credential":{"source":"env","name":"FIXTURE_API_CURRENT"},"invalid_option":true}
+	}}`
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Never print values. Check that the pre-existing ordinary profile still
+	// receives its own auth and both API references are absent.
+	stub := `#!/bin/sh
+	test -z "${fixture_api_current+x}" &&
+	test -z "${CARDEX_API_ORPHAN+x}" &&
+	test "$ANTHROPIC_AUTH_TOKEN" = fixture-ordinary-value &&
+	printf '%s\n' legacy-environment-retained
+	`
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := host.Run(context.Background(), home, id); err != nil {
+		t.Fatal(err)
+	}
+	a, _ := loadAttempt(t, home, id)
+	out, err := os.ReadFile(filepath.Join(roots.AttemptDir(home, id, a.PromptPath), "output.log"))
+	if err != nil || a.Exit == nil || *a.Exit != 0 || !bytes.Contains(out, []byte("legacy-environment-retained")) {
+		t.Fatalf("ordinary child sandbox fixture failed: %v", err)
+	}
+	assertNoCanary(t, home, currentCanary)
+	assertNoCanary(t, home, reservedCanary)
+}
+
+func TestAPIChannelHoldSealsUntaggedRawProfileWithoutWire(t *testing.T) {
+	ctx := t.Context()
+	home, id, work := seedPreparedCard(t, t.TempDir(), model.RunnerClaude, "raw-api", 1, func(c *model.Card) {
+		c.Kind, c.Status = model.KindResearch, model.CardReady
+	}, nil)
+	profile := `{"engines":{"raw-api":{"protocol":"anthropic-compatible","base_url":"https://gateway.example.test","default_model":"fixture-model","credential":{"source":"env","name":"CARDEX_API_FIXTURE"}}}}`
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(profile), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, ".cardex-result.md"), []byte("must not be accepted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open(filepath.Join(home, "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err := db.CreateObjective(ctx, &model.Objective{ID: "o", Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeSafe}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := host.Run(ctx, home, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, events := loadAttempt(t, home, id)
+	if a.Outcome != model.OutcomeNoOutput || a.EndedAt.IsZero() || a.ErrorExcerpt != model.CompatibleRuntimeHold {
+		t.Fatalf("unsafe terminalization: %+v", a)
+	}
+	count := 0
+	for _, e := range events {
+		if e.Type == "host_start" {
+			t.Fatal("untagged raw compatible profile launched")
+		}
+		if e.Type == "compatible_runtime_refused_no_wire" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("typed refusal receipts: %d", count)
+	}
+	card, err := db.GetCard(ctx, a.Card)
+	if err != nil || card.Status != model.CardNeedsInput {
+		t.Fatalf("current card was not held: %+v %v", card, err)
+	}
+}
+
+func TestAPIChannelHoldRawDuplicatePreservesStartedAttempt(t *testing.T) {
+	for _, mode := range []string{"live-pid", "start-time", "exit-only", "ended", "host-start-event"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := t.Context()
+			home, id, _ := seedPreparedCard(t, t.TempDir(), model.RunnerClaude, "raw-api", 1, func(c *model.Card) {
+				c.Kind, c.Status = model.KindResearch, model.CardRunning
+			}, nil)
+			profile := `{"engines":{"raw-api":{"protocol":"anthropic-compatible","base_url":"https://gateway.example.test","default_model":"fixture-model","credential":{"source":"env","name":"CARDEX_API_FIXTURE"}}}}`
+			if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(profile), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			db, err := store.Open(filepath.Join(home, "cardex.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if err := db.CreateObjective(ctx, &model.Objective{ID: "o", Status: model.ObjectiveActive, Mode: model.ModeManual, FreezeMode: model.FreezeSafe}); err != nil {
+				t.Fatal(err)
+			}
+			a, err := db.GetAttempt(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "live-pid":
+				a.PID = os.Getpid()
+			case "start-time":
+				a.StartedAt = time.Now()
+			case "exit-only":
+				zero := 0
+				a.Exit = &zero
+			case "ended":
+				a.EndedAt = time.Now()
+			case "host-start-event":
+				if err := db.AppendEvent(ctx, &model.Event{Entity: "attempt:" + id, Type: "host_start"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := db.UpdateAttempt(ctx, &a); err != nil {
+				t.Fatal(err)
+			}
+			before, eventsBefore := loadAttempt(t, home, id)
+			cardBefore, err := db.GetCard(ctx, a.Card)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := host.Run(ctx, home, id); err != nil {
+				t.Fatal(err)
+			}
+			after, eventsAfter := loadAttempt(t, home, id)
+			cardAfter, err := db.GetCard(ctx, a.Card)
+			if err != nil || !reflect.DeepEqual(before, after) || !reflect.DeepEqual(eventsBefore, eventsAfter) || !reflect.DeepEqual(cardBefore, cardAfter) {
+				t.Fatalf("duplicate refusal rewrote execution history: before=%+v after=%+v", before, after)
 			}
 		})
 	}

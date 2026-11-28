@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -261,6 +263,112 @@ func TestStrictWorkspaceCompletionRejectsNonAttributableReceipt(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := strictWorkspaceCompletion(a, tc.events); got != tc.want {
 				t.Fatalf("completion=%t want=%t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStrictNeverSpawnRetryReleasesExactPriorCheckout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a Unix synthetic non-starting executable")
+	}
+	ctx := t.Context()
+	home, db, card, _ := seedStrictAdmission(t)
+	bin := t.TempDir()
+	// The runner resolves only this fixture. Its invalid interpreter means
+	// Start must fail without running our file or a real installed CLI.
+	if err := os.WriteFile(filepath.Join(bin, "codex"), []byte("#!"+filepath.Join(bin, "missing-interpreter")+"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	card.Channel, card.Sandbox = "cha", "off"
+	if err := db.UpdateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	ch, err := db.GetChannel(ctx, "cha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch.Runner = model.RunnerCodex
+	if err := db.UpdateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	r := New(home)
+	r.Script = func(model.Card) ([]byte, bool) {
+		return []byte(`{"attempts":{"1":{"exit_code":0,"output":"synthetic retry"}}}`), true
+	}
+	var launches int
+	var firstErr error
+	r.Launch = func(ctx context.Context, home, id string) (int, error) {
+		launches++
+		err := host.Run(host.WithWorkspace(ctx, workspace.Git{}), home, id)
+		if launches == 1 {
+			firstErr = err
+		}
+		// Same semantics as production: spawning the host succeeded even
+		// when starting the child executor in that host did not.
+		return os.Getpid(), nil
+	}
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.ListAttempts(ctx, card.ID)
+	if err != nil || launches != 1 || len(rows) != 1 || firstErr == nil {
+		t.Fatalf("expected one concrete spawn failure: starts=%d attempts=%+v start=%v err=%v", launches, rows, firstErr, err)
+	}
+	prior := rows[0]
+	if prior.Exit == nil || *prior.Exit != 127 || prior.PID == 0 || prior.EndedAt.IsZero() {
+		t.Fatalf("failed start did not create expected prepared-owned receipt: %+v", prior)
+	}
+	events, err := db.ListEvents(ctx, "attempt:"+prior.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if e.Type == "executor_pgid" || e.Type == "workspace_commit" {
+			t.Fatalf("fixture unexpectedly started executor or committed: %+v", e)
+		}
+	}
+	ch.Runner = model.RunnerFake
+	if err := db.UpdateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = db.ListAttempts(ctx, card.ID)
+	if err != nil || launches != 2 || len(rows) != 2 {
+		t.Fatalf("exact no-spawn checkout stalled retry: starts=%d attempts=%+v err=%v; card=%+v", launches, rows, err, mustCard(t, db, card.ID))
+	}
+	if gitOutput(t, prior.Worktree, "rev-parse", "--abbrev-ref", "HEAD") != "HEAD" {
+		t.Fatal("previous checkout was not detached safely")
+	}
+}
+
+func TestStrictNoExecutorCompletionRequiresExactProvenReceipt(t *testing.T) {
+	now, exit := time.Now().UTC(), 127
+	a := model.Attempt{ID: "a", Card: "c", Worktree: "/synthetic/w/c-a", Branch: "cardex/o/c/c",
+		BaseCommit: "synthetic", StartedAt: now, EndedAt: now.Add(time.Second), PID: 17, Exit: &exit, Outcome: model.OutcomeNoOutput}
+	event := func(kind, id string) model.Event {
+		return model.Event{Type: kind, Entity: "attempt:" + a.ID, TS: a.EndedAt, Data: []byte(`{"checkout_id":"` + id + `"}`)}
+	}
+	good := event(model.StrictNoExecutorEvent, a.StrictCheckoutID())
+	for _, tt := range []struct {
+		name   string
+		events []model.Event
+		want   bool
+	}{
+		{"actual no executor receipt", []model.Event{good}, true},
+		{"generic failure after process group could be persisted", []model.Event{{Type: "host_finish", Entity: good.Entity, TS: good.TS,
+			Data: []byte(`{"exit":127,"started":false}`)}}, false},
+		{"wrong owner", []model.Event{event(model.StrictNoExecutorEvent, "another-checkout")}, false},
+		{"duplicate claim", []model.Event{good, good}, false},
+		{"positive process evidence", []model.Event{good, event("executor_pgid", "")}, false},
+		{"Git completion present", []model.Event{good, event("workspace_commit", "")}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := strictNoExecutorCompletion(a, tt.events); got != tt.want {
+				t.Fatalf("completion=%t want=%t", got, tt.want)
 			}
 		})
 	}

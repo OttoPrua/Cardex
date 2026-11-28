@@ -3,27 +3,24 @@ package runner
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"io"
-	"log"
-	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/OttoPrua/Cardex/internal/model"
 )
 
 const maxCompatibleRequest = 32 << 20
 
-// CompatibleRelay authenticates exactly two Anthropic API paths for one launch.
-// The provider token stays in the host. The CLI receives an ephemeral loopback
-// capability, not the provider token, and cannot request another origin.
+// CompatibleRelay is the per-attempt transport interface for an isolated
+// child. Runtime construction is held in this build; tests use synthetic
+// capabilities and providers.
 type CompatibleRelay struct {
 	LocalURL, LocalKey string
 	secret             string
@@ -46,70 +43,11 @@ func (r *CompatibleRelay) CopyOutput(dst io.Writer, src io.Reader) {
 	_ = redactKey.finish()
 }
 
-func StartCompatibleRelay(ctx context.Context, raw []byte, managedRoots ...string) (*CompatibleRelay, error) {
-	prof, err := parseCompatible(raw)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateCompatible(prof); err != nil {
-		return nil, err
-	}
-	// Go's Unix platform certificate loader consults these process variables
-	// even when a transport has no proxy and the child environment is clean.
-	if os.Getenv("SSL_CERT_FILE") != "" || os.Getenv("SSL_CERT_DIR") != "" {
-		return nil, errors.New("api channel cannot verify system certificate roots with TLS overrides set")
-	}
-	var protected []os.FileInfo
-	if prof.Credential.Source == "file" {
-		if len(managedRoots) < 3 {
-			return nil, errors.New("credential file workspace boundary cannot be verified")
-		}
-		real, identities, err := credentialFileLocation(prof.Credential.Path, managedRoots)
-		if err != nil {
-			return nil, err
-		}
-		if real != prof.Credential.Path {
-			return nil, errors.New("credential file location changed after validation")
-		}
-		protected = identities
-	}
-	endpoint, _ := validateEndpoint(prof.BaseURL)
-	target, _ := url.Parse(endpoint)
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		return nil, errors.New("api channel cannot start isolated auth transport")
-	}
-	var entropy [32]byte
-	if _, err := rand.Read(entropy[:]); err != nil {
-		_ = listener.Close()
-		return nil, errors.New("api channel cannot create isolated auth transport capability")
-	}
-	secret, err := resolveCredential(prof.Credential, protected...)
-	if err != nil {
-		_ = listener.Close()
-		return nil, err
-	}
-	key := "cdx-relay-" + hex.EncodeToString(entropy[:])
-	// Explicit transport: no inherited proxy, no custom CA from env, no
-	// redirects (RoundTrip performs one exchange rather than following them).
-	transport := newCompatibleTransport(target.Hostname(), target.Port(), net.DefaultResolver.LookupNetIP,
-		(&net.Dialer{Timeout: 15 * time.Second}).DialContext)
-	server := &http.Server{
-		Handler:           compatibleRelayHandler(target, listener.Addr().String(), key, secret, transport),
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       30 * time.Second,
-		MaxHeaderBytes:    1 << 16,
-		BaseContext:       func(net.Listener) context.Context { return ctx },
-		ErrorLog:          log.New(io.Discard, "", 0),
-	}
-	go func() { _ = server.Serve(listener) }()
-	return &CompatibleRelay{
-		LocalURL: "http://" + listener.Addr().String(), LocalKey: key, secret: secret,
-		close: func() {
-			_ = server.Close()
-			transport.CloseIdleConnections()
-		},
-	}, nil
+// StartCompatibleRelay cannot construct a provider transport in this build.
+// A local flag, healthy DB row, or already prepared attempt cannot authorize
+// disclosure. There is no production listener or credential resolution here.
+func StartCompatibleRelay(context.Context, []byte, ...string) (*CompatibleRelay, error) {
+	return nil, errors.New(model.CompatibleRuntimeHold)
 }
 
 func newCompatibleTransport(host, port string, lookup compatibleLookup, dial compatibleDial) *http.Transport {

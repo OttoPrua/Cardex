@@ -67,7 +67,7 @@ func TestServeLaunchUsesGit(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	pid, err := launchDetached(home, id, dir)
+	pid, err := launchDetached(context.Background(), home, id, dir)
 	if err != nil {
 		t.Fatal(err)
 	}

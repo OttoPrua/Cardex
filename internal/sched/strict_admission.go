@@ -250,7 +250,7 @@ func strictGitPreparation(ctx context.Context, db *store.Store, v strictLaunchVi
 			if err != nil {
 				return err
 			}
-			if strictWorkspaceCompletion(other, events) {
+			if strictWorkspaceCompletion(other, events) || strictNoExecutorCompletion(other, events) {
 				closed = append(closed, other.Worktree)
 			}
 		}
@@ -279,6 +279,32 @@ func strictWorkspaceCompletion(attempt model.Attempt, events []model.Event) bool
 			return false
 		}
 		found = true
+	}
+	return found
+}
+
+// A typed never-spawn proof is distinct from a generic host_finish with
+// started:false, which can also describe a failed group receipt after start.
+func strictNoExecutorCompletion(attempt model.Attempt, events []model.Event) bool {
+	if attempt.PID <= 0 || attempt.Exit == nil || *attempt.Exit != 127 ||
+		attempt.HeadCommit != "" || attempt.StartedAt.IsZero() || attempt.EndedAt.IsZero() || attempt.Outcome == "" {
+		return false
+	}
+	found := false
+	for _, e := range events {
+		switch e.Type {
+		case "workspace_commit", "executor_pgid":
+			return false
+		case model.StrictNoExecutorEvent:
+			var proof struct {
+				CheckoutID string `json:"checkout_id"`
+			}
+			if found || e.TS.Before(attempt.EndedAt) || e.Entity != "attempt:"+attempt.ID ||
+				json.Unmarshal(e.Data, &proof) != nil || proof.CheckoutID != attempt.StrictCheckoutID() {
+				return false
+			}
+			found = true
+		}
 	}
 	return found
 }

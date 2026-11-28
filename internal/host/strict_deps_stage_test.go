@@ -18,7 +18,8 @@ func TestStrictHostRechecksAfterClaimWithoutTouchingAnotherHost(t *testing.T) {
 	}
 	defer db.Close()
 	up := model.Card{ID: "up", Kind: model.KindDev, Status: model.CardDone}
-	card := model.Card{ID: "down", Kind: model.KindDev, Status: model.CardRunning, StrictDeps: true, Deps: []string{up.ID}}
+	seedStrictHostObjective(t, db)
+	card := model.Card{ID: "down", Objective: "strict-objective", Kind: model.KindDev, Status: model.CardRunning, StrictDeps: true, Deps: []string{up.ID}}
 	for _, c := range []*model.Card{&up, &card} {
 		if err := db.CreateCard(ctx, c); err != nil {
 			t.Fatal(err)
@@ -70,7 +71,8 @@ func TestStrictDirectHostDoesNotRewindNewerAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	card := model.Card{ID: "strict", Kind: model.KindDev, Status: model.CardRunning, StrictDeps: true}
+	seedStrictHostObjective(t, db)
+	card := model.Card{ID: "strict", Objective: "strict-objective", Kind: model.KindDev, Status: model.CardRunning, StrictDeps: true}
 	if err := db.CreateCard(ctx, &card); err != nil {
 		t.Fatal(err)
 	}
@@ -95,5 +97,65 @@ func TestStrictDirectHostDoesNotRewindNewerAttempt(t *testing.T) {
 	receipt, err := db.GetAttempt(ctx, newer.ID)
 	if err != nil || receipt.Outcome != model.OutcomePassed {
 		t.Fatalf("newer receipt changed %+v err %v", receipt, err)
+	}
+}
+
+func seedStrictHostObjective(t *testing.T, db *store.Store) {
+	t.Helper()
+	if err := db.CreateObjective(t.Context(), &model.Objective{ID: "strict-objective", Mode: model.ModeManual, FreezeMode: model.FreezeFast, Status: model.ObjectiveActive}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStrictHostDefersObjectivePausedAfterClaim(t *testing.T) {
+	ctx := t.Context()
+	db, err := store.Open(filepath.Join(t.TempDir(), "cardex.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	seedStrictHostObjective(t, db)
+	card := model.Card{ID: "strict", Objective: "strict-objective", Status: model.CardRunning, Kind: model.KindDev, StrictDeps: true}
+	if err := db.CreateCard(ctx, &card); err != nil {
+		t.Fatal(err)
+	}
+	a := model.Attempt{ID: "prepared", Card: card.ID}
+	if err := db.CreateAttempt(ctx, &a); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := strictLaunchGate(ctx, db, &a, strictClaim)
+	if err != nil || !ok {
+		t.Fatalf("initial claim %t %v", ok, err)
+	}
+	obj, err := db.GetObjective(ctx, card.Objective)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj.Status = model.ObjectivePaused
+	if err := db.UpdateObjective(ctx, &obj); err != nil {
+		t.Fatal(err)
+	}
+	ok, err = strictLaunchGate(ctx, db, &a, strictExec)
+	if err != nil || ok {
+		t.Fatalf("paused objective reached final admission: %t %v", ok, err)
+	}
+	saved, err := db.GetAttempt(ctx, a.ID)
+	if err != nil || saved.PID != 0 || !saved.StartedAt.IsZero() || saved.Exit != nil || saved.Outcome != "" {
+		t.Fatalf("deferred preparation not reusable: %+v %v", saved, err)
+	}
+	current, err := db.GetObjective(ctx, obj.ID)
+	if err != nil || current.Status != model.ObjectivePaused {
+		t.Fatalf("host altered objective: %+v %v", current, err)
+	}
+	ok, err = strictLaunchGate(ctx, db, &saved, strictProbe)
+	if err != nil || ok {
+		t.Fatalf("paused direct host probe: %t %v", ok, err)
+	}
+	obj.Status = model.ObjectiveDoneCandidate
+	if err := db.UpdateObjective(ctx, &obj); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := strictLaunchGate(ctx, db, &saved, strictClaim); err != nil || !ok {
+		t.Fatalf("resume after objective reopened: %t %v", ok, err)
 	}
 }

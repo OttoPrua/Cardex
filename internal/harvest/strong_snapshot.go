@@ -44,8 +44,26 @@ func ReadStrongSnapshot(ctx context.Context, bareDir, commit string, paths []str
 	if err != nil || !bytes.Equal(bytes.TrimSpace(bare), []byte("true")) {
 		return nil, model.ErrStrongArtifact
 	}
-	kind, err := strongGit(ctx, bareDir, 16, "cat-file", "-t", commit)
-	if err != nil || !bytes.Equal(bytes.TrimSpace(kind), []byte("commit")) {
+	format, err := strongGit(ctx, bareDir, 16, "rev-parse", "--show-object-format=storage")
+	if err != nil {
+		return nil, model.ErrStrongArtifact
+	}
+	var oidLen int
+	switch string(bytes.TrimSpace(format)) {
+	case "sha1":
+		oidLen = 40
+	case "sha256":
+		oidLen = 64
+	default:
+		return nil, model.ErrStrongArtifact
+	}
+	if len(commit) != oidLen {
+		return nil, model.ErrStrongArtifact
+	}
+	// Git also resolves abbreviated OIDs and names. Require a commit whose
+	// canonical storage ID is exactly the approved pin, not an alias or tag.
+	resolved, err := strongGit(ctx, bareDir, oidLen+2, "rev-parse", "--verify", "--end-of-options", commit+"^{commit}")
+	if err != nil || !bytes.Equal(bytes.TrimSpace(resolved), []byte(commit)) {
 		return nil, model.ErrStrongArtifact
 	}
 	seen := make(map[string]bool, len(paths))
@@ -63,7 +81,7 @@ func ReadStrongSnapshot(ctx context.Context, bareDir, commit string, paths []str
 		}
 		header, path, ok := strings.Cut(string(row[:len(row)-1]), "\t")
 		fields := strings.Split(header, " ")
-		if !ok || path != p || len(fields) != 3 || (fields[0] != "100644" && fields[0] != "100755") || fields[1] != "blob" || !IsCommitID(fields[2]) {
+		if !ok || path != p || len(fields) != 3 || (fields[0] != "100644" && fields[0] != "100755") || fields[1] != "blob" || len(fields[2]) != oidLen || !IsCommitID(fields[2]) {
 			return nil, model.ErrStrongArtifact
 		}
 		sizeRaw, err := strongGit(ctx, bareDir, 32, "cat-file", "-s", fields[2])

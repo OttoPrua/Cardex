@@ -11,7 +11,7 @@ import (
 
 // recoveryTarget consumes only an explicit typed route recovery written by the
 // operator retry transaction. Historical questions cannot restore a channel.
-func (r *Runner) recoveryTarget(ctx context.Context, db *store.Store, card model.Card, attempts []model.Attempt, channels []model.Channel, quotas route.Quotas) (model.Route, bool, error) {
+func (r *Runner) recoveryTarget(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, attempts []model.Attempt, channels []model.Channel, quotas route.Quotas) (model.Route, bool, error) {
 	events, err := db.ListEvents(ctx, "card:"+card.ID)
 	if err != nil {
 		return model.Route{}, false, err
@@ -40,6 +40,19 @@ func (r *Runner) recoveryTarget(ctx context.Context, db *store.Store, card model
 		return target, false, err
 	}
 	channel, found := channelByID(channels, target.Channel)
+	if found && channel.CompatibleRuntimeHeld() {
+		return target, true, r.holdCompatibleCard(ctx, db, card, obj, func(tx context.Context) (bool, error) {
+			events, err := db.ListEvents(tx, "card:"+card.ID)
+			if err != nil {
+				return false, err
+			}
+			current, ok := route.RecoveryPin(card, events)
+			if !ok || current != target {
+				return false, nil
+			}
+			return heldCompatibleChannel(tx, db, target.Channel)
+		})
+	}
 	if bad || !found || (target.Model != "" && !channelOffers(channel, target.Model)) {
 		return target, true, r.lockAutoRouteRestart(ctx, db, &card)
 	}

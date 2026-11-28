@@ -10,6 +10,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/host"
 	"github.com/OttoPrua/Cardex/internal/proc"
+	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
@@ -45,13 +46,14 @@ func attemptFromArgs(args []string) string {
 // launchDetached starts the current executable as `host <attempt-id>` in a
 // new process group. CARDEX_SCHED_HOST tells this package's init to call
 // host.Run. The attempt argument must match the launcher marker.
-func launchDetached(home, attemptID, dir string) (int, error) {
+func launchDetached(ctx context.Context, home, attemptID, dir string) (int, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return 0, err
 	}
 	cmd := exec.Command(exe, "host", attemptID)
-	cmd.Env = append(os.Environ(),
+	ctx = runner.WithCompatibleCredentialEnv(ctx, home)
+	cmd.Env = append(proc.CompatibleChildEnv(ctx, os.Environ()),
 		"CARDEX_HOME="+home,
 		"CARDEX_SCHED_HOST=1",
 		"CARDEX_SCHED_ATTEMPT="+attemptID,

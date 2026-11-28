@@ -33,6 +33,9 @@ func TestStrictHostDirectLaunchDefersAndResumes(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer db.Close()
+			if err := db.CreateObjective(ctx, &model.Objective{ID: "o", Mode: model.ModeManual, FreezeMode: model.FreezeFast, Status: model.ObjectiveActive}); err != nil {
+				t.Fatal(err)
+			}
 			up := model.Card{ID: "upstream", Kind: model.KindDev, Status: model.CardCanceled}
 			if err := db.CreateCard(ctx, &up); err != nil {
 				t.Fatal(err)
@@ -98,6 +101,9 @@ func TestStrictAPIChannelStillEnforcesBindingAndHealthAfterDependenciesPass(t *t
 				t.Fatal(err)
 			}
 			defer db.Close()
+			if err := db.CreateObjective(ctx, &model.Objective{ID: "o", Mode: model.ModeManual, FreezeMode: model.FreezeFast, Status: model.ObjectiveActive}); err != nil {
+				t.Fatal(err)
+			}
 			subject := model.Card{ID: "subject", Kind: model.KindDev, Status: model.CardReady}
 			partner := model.Card{ID: "upstream", Kind: model.KindDev, Status: model.CardCanceled}
 			for _, c := range []*model.Card{&subject, &partner} {

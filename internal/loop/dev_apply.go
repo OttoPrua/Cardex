@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -2245,7 +2244,7 @@ func (st *step) mergeIfApproved() error {
 	if st.snap.project.RepoPath == "" || st.snap.obj.IntegrationBranch == "" {
 		return fmt.Errorf("done merge requires a project repo and an integration branch")
 	}
-	if err := mergeLocal(st.snap.project.RepoPath, st.snap.obj.IntegrationBranch); err != nil {
+	if err := mergeLocal(st.ctx, st.snap.project.RepoPath, st.snap.obj.IntegrationBranch); err != nil {
 		return err
 	}
 	st.snap.obj.Status = model.ObjectiveDone
@@ -2274,7 +2273,7 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 	if repo == "" || branch == "" {
 		return false, nil
 	}
-	if _, err := acceptGit(repo, "rev-parse", "--verify", "--quiet", branch); err != nil {
+	if _, err := acceptGit(ctx, repo, "rev-parse", "--verify", "--quiet", branch); err != nil {
 		return false, nil
 	}
 	var parent string
@@ -2298,14 +2297,14 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 	}
 	defer cleanup()
 	dir := filepath.Join(parent, "wt")
-	if _, err := acceptGit(repo, "worktree", "add", "--detach", dir, branch); err != nil {
+	if _, err := acceptGit(ctx, repo, "worktree", "add", "--detach", dir, branch); err != nil {
 		return false, err
 	}
-	defer acceptGit(repo, "worktree", "remove", "--force", dir)
+	defer acceptGit(context.WithoutCancel(ctx), repo, "worktree", "remove", "--force", dir)
 	for _, command := range commands {
 		cmd := proc.Shell(ctx, command)
 		cmd.Dir = dir
-		cmd.Env = append(proc.AcceptanceEnv(env), "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = append(proc.AcceptanceEnv(proc.CompatibleChildEnv(ctx, env)), "GIT_TERMINAL_PROMPT=0")
 		if err := cmd.Run(); err != nil {
 			return false, nil
 		}
@@ -2313,23 +2312,23 @@ func acceptancePasses(ctx context.Context, repo, branch string, commands []strin
 	return true, nil
 }
 
-func mergeLocal(repo, integration string) error {
-	main, err := mainBranch(repo)
+func mergeLocal(ctx context.Context, repo, integration string) error {
+	main, err := mainBranch(ctx, repo)
 	if err != nil {
 		return err
 	}
-	if _, err := git(repo, "checkout", main); err != nil {
+	if _, err := git(ctx, repo, "checkout", main); err != nil {
 		return err
 	}
-	if _, err := git(repo, "merge", "--no-edit", integration); err != nil {
+	if _, err := git(ctx, repo, "merge", "--no-edit", integration); err != nil {
 		return err
 	}
 	return nil
 }
 
-func mainBranch(repo string) (string, error) {
+func mainBranch(ctx context.Context, repo string) (string, error) {
 	for _, name := range []string{"main", "master"} {
-		if _, err := git(repo, "rev-parse", "--verify", "--quiet", name); err == nil {
+		if _, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", name); err == nil {
 			return name, nil
 		}
 	}
@@ -2348,35 +2347,34 @@ func (st *step) devCandidateReviewed(parent model.Card, attempt model.Attempt) (
 		return "", ""
 	}
 	ref := "refs/heads/cardex/" + obj + "/c/" + parent.ID
-	if out, err := git(repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err == nil {
+	if out, err := git(st.ctx, repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}"); err == nil {
 		candidate = strings.TrimSpace(out)
 	}
 	if base := strings.TrimSpace(attempt.BaseCommit); base != "" {
-		if out, err := git(repo, "rev-parse", "--verify", "--quiet", "--end-of-options", base+"^{commit}"); err == nil {
+		if out, err := git(st.ctx, repo, "rev-parse", "--verify", "--quiet", "--end-of-options", base+"^{commit}"); err == nil {
 			reviewed = strings.TrimSpace(out)
 		}
 	}
 	return reviewed, candidate
 }
 
-func git(repo string, args ...string) (string, error) {
-	return gitWith(repo, gitEnv(), args...)
+func git(ctx context.Context, repo string, args ...string) (string, error) {
+	return gitWith(ctx, repo, gitEnv(), args...)
 }
 
 // acceptGit runs the git commands that prepare an acceptance worktree.
 // Those must not follow serve's GIT_EXEC_PATH, template, or config.
-func acceptGit(repo string, args ...string) (string, error) {
-	return gitWith(repo, acceptGitEnv(), args...)
+func acceptGit(ctx context.Context, repo string, args ...string) (string, error) {
+	return gitWith(ctx, repo, acceptGitEnv(), args...)
 }
 
-func gitWith(repo string, env []string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{
+func gitWith(ctx context.Context, repo string, env []string, args ...string) (string, error) {
+	cmd := proc.Git(ctx, env, append([]string{
 		"-C", repo,
 		"-c", "user.name=cardex",
 		"-c", "user.email=cardex@cardex.invalid",
 		"-c", "commit.gpgsign=false",
 	}, args...)...)
-	cmd.Env = env
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

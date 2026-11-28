@@ -178,7 +178,7 @@ func channelFindings(db *store.Store, home string, runProbes bool) []finding {
 		channels = nil
 	}
 	if err == nil {
-		out = append(out, cliFindings(ctx, channels, runProbes)...)
+		out = append(out, cliFindings(context.WithValue(ctx, loginProbeHomeKey{}, home), channels, runProbes)...)
 	}
 	h := positioning.Inspect(home, db)
 	unapproved := approvalFindings(ctx, h)
@@ -234,7 +234,7 @@ func tierAvailable(channels []model.Channel, pos []model.Positioning, tier model
 		return false
 	}
 	for _, ch := range channels {
-		if ch.Health != model.HealthOK {
+		if ch.Health != model.HealthOK || ch.CompatibleRuntimeHeld() {
 			continue
 		}
 		for _, name := range ch.Models {

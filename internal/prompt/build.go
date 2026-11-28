@@ -14,6 +14,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 const (
@@ -71,12 +73,17 @@ func Build(ctx context.Context, in Input) (string, error) {
 		b.Write(in.Stage.Data)
 		b.WriteString("\n<!-- /cardex-stage-handoff -->\n")
 		if in.Stage.Review {
+			diffCommand := "git diff --no-ext-diff --no-textconv"
+			if in.Stage.StrictReviewObjects {
+				diffCommand = "git --no-replace-objects diff --no-ext-diff --no-textconv"
+				b.WriteString("只使用宿主已关闭对象替换和 graft 的 Git 环境；不要改写 Git 环境或映射。宿主只在启动前核对工作树，历史验收不等于在本次环境重跑。若不能核实实际工作树与冻结提交一致，写 blocked。\n")
+			}
 			if in.Stage.ReviewUnavailable {
 				b.WriteString("冻结差异和验收证据不可用。仅保留当前复核任务，不读作者会话、历史提示词、既往意见或执行器日志。依赖缺失证据的结论写 blocked；不要宣称已核实候选。\n")
 			} else if in.Stage.ReviewAcceptanceUnavailable {
-				b.WriteString("冻结差异已定位，既有验收证据不可用。用 git diff --no-ext-diff --no-textconv 比较 handoff.diff 的 base 和 candidate。只核对当前任务，独立执行任务允许的验证；只有无法核实会影响结论的证据时才写 blocked。不要宣称未执行的验收已通过，不读作者会话、历史提示词、既往意见或执行器输出日志。\n")
+				b.WriteString("冻结差异已定位，既有验收证据不可用。用 " + diffCommand + " 比较 handoff.diff 的 base 和 candidate。只核对当前任务，独立执行任务允许的验证；只有无法核实会影响结论的证据时才写 blocked。不要宣称未执行的验收已通过，不读作者会话、历史提示词、既往意见或执行器输出日志。\n")
 			} else {
-				b.WriteString("只对照当前任务、验收证据和冻结差异。用 git diff --no-ext-diff --no-textconv 比较 handoff.diff 的 base 和 candidate，不读作者会话、历史提示词或执行器输出日志。\n")
+				b.WriteString("只对照当前任务、验收证据和冻结差异。用 " + diffCommand + " 比较 handoff.diff 的 base 和 candidate，不读作者会话、历史提示词或执行器输出日志。\n")
 			}
 			in.Card.Body = beforeEscalationNotes(in.Card.Body)
 		}
@@ -170,7 +177,7 @@ func readRevision(ctx context.Context, repo, revision, filePath string) (string,
 		return "", fmt.Errorf("prompt: repo and revision required to read %s", filePath)
 	}
 	spec := revision + ":" + filePath
-	cmd := exec.CommandContext(ctx, "git", "--no-pager", "-C", repo, "show", spec)
+	cmd := proc.Git(ctx, nil, "--no-pager", "-C", repo, "show", spec)
 	out, err := cmd.Output()
 	if err != nil {
 		var exit *exec.ExitError

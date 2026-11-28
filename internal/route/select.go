@@ -21,6 +21,11 @@ func Select(ctx context.Context, req Request) (model.Route, model.RouteReason, e
 		now = time.Now().UTC()
 	}
 	tier := resolveTier(req)
+	if filtered := ExplicitCompatibleHold(req); len(filtered) > 0 {
+		reason := emptyReason()
+		reason.Filtered = filtered
+		return model.Route{}, reason, ErrCompatibleRuntimeHeld
+	}
 	if channelID, modelName := EffectivePin(req); channelID != "" || modelName != "" {
 		ch, chosen, err := matchPinned(req.Channels, channelID, modelName)
 		if err != nil {
@@ -251,7 +256,7 @@ func findPinTarget(channels []model.Channel, channelID, modelName string) (model
 		if modelName == "" || !offers(ch, modelName) {
 			continue
 		}
-		if ch.Health == model.HealthOK {
+		if ch.Health == model.HealthOK && !ch.CompatibleRuntimeHeld() {
 			return ch, modelName, true
 		}
 		if !found {
@@ -265,13 +270,45 @@ func findPinTarget(channels []model.Channel, channelID, modelName string) (model
 	return model.Channel{}, modelName, false
 }
 
+// ExplicitCompatibleHold detects an explicitly named compatible route before
+// workflow code can release the unavailable pin and send this card elsewhere.
+// A model-only pin may use an ordinary carrier offering that exact model.
+func ExplicitCompatibleHold(req Request) []model.FilteredCandidate {
+	channelID, modelName := req.Card.Channel, req.Card.Model
+	if channelID == "" && modelName == "" {
+		channelID, modelName = req.Objective.Channel, req.Objective.Model
+	}
+	if channelID == "" && modelName == "" {
+		return nil
+	}
+	var held []model.FilteredCandidate
+	for _, ch := range req.Channels {
+		if channelID != "" {
+			if ch.ID != channelID {
+				continue
+			}
+		} else if !offers(ch, modelName) {
+			continue
+		}
+		if !ch.CompatibleRuntimeHeld() {
+			return nil
+		}
+		name := modelName
+		if name == "" && len(ch.Models) != 0 {
+			name = ch.Models[0]
+		}
+		held = append(held, model.FilteredCandidate{Channel: ch.ID, Model: name, Reason: ReasonCompatibleRuntime})
+	}
+	return held
+}
+
 func matchPinned(channels []model.Channel, channelID, modelName string) (model.Channel, string, error) {
 	if channelID != "" {
 		for _, ch := range channels {
 			if ch.ID != channelID {
 				continue
 			}
-			if ch.Health != model.HealthOK {
+			if ch.Health != model.HealthOK || ch.CompatibleRuntimeHeld() {
 				return model.Channel{}, "", ErrPinnedUnavailable
 			}
 			chosen := modelName
@@ -285,7 +322,7 @@ func matchPinned(channels []model.Channel, channelID, modelName string) (model.C
 	var fallback model.Channel
 	found := false
 	for _, ch := range channels {
-		if !offers(ch, modelName) {
+		if !offers(ch, modelName) || ch.CompatibleRuntimeHeld() {
 			continue
 		}
 		if ch.Health == model.HealthOK {
@@ -341,6 +378,10 @@ func collect(ctx context.Context, req Request, tier model.Tier) ([]cand, []model
 		}
 		for _, ch := range req.Channels {
 			if !offers(ch, row.Model) {
+				continue
+			}
+			if ch.CompatibleRuntimeHeld() {
+				filtered = append(filtered, model.FilteredCandidate{Channel: ch.ID, Model: row.Model, Reason: ReasonCompatibleRuntime})
 				continue
 			}
 			fam := row.Family

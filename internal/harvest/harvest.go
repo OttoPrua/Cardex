@@ -18,6 +18,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/roots"
+	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/strongcustody"
 	"github.com/OttoPrua/Cardex/internal/workspace"
 )
@@ -28,6 +29,11 @@ const defaultAcceptanceTimeout = 10 * time.Minute
 func Harvest(ctx context.Context, in Input) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
+	}
+	if d := in.Attempt.RouteReason.Dispatch; d != nil && d.CompatibleBindingID != "" {
+		// An old API1 child had no authority to create workflow evidence.
+		// Refuse it even through callers outside the ordinary scheduler sweep.
+		return Result{Outcome: model.OutcomeNoOutput, Excerpt: model.CompatibleRuntimeHold}, nil
 	}
 	var raw string
 	var result resultState
@@ -57,7 +63,11 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if dir == "" {
 		return Result{}, fmt.Errorf("harvest: worktree is required")
 	}
+	ctx = runner.WithCompatibleCredentialEnv(ctx, in.Home)
 	ctx = workspace.WithGitEvidence(ctx, in.Card.ID, in.Attempt.ID, dir)
+	if in.Card.UsesStrictReviewObjects(in.Attempt) {
+		ctx = proc.WithExactGitObjects(ctx)
+	}
 	events, truncated := readEvents(in.Output)
 	base := strings.TrimSpace(in.Attempt.BaseCommit)
 	if base == "" {
@@ -71,9 +81,16 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if err != nil {
 		return Result{}, claimGitFailure(ctx, dir, err)
 	}
+	var cleanReviewCheckout *bool
+	if in.Card.Kind == model.KindReview && in.Attempt.HeadCommit == "" && strings.TrimSpace(in.Attempt.BaseCommit) != "" {
+		cleanReviewCheckout = checkReviewCheckout(ctx, dir, base)
+	}
 	frozenCandidate := stageCandidate(ctx, in, dir)
 	acceptRan := hasAcceptance(in.Card.Acceptance)
-	env := proc.AcceptanceEnv(os.Environ())
+	env := proc.AcceptanceEnv(proc.CompatibleChildEnv(ctx, os.Environ()))
+	if proc.ExactGitObjects(ctx) {
+		env = proc.GitObjectScopeEnv(env)
+	}
 	var scratchRoot string
 	if acceptRan {
 		scratchRoot = roots.Load(in.Home).EffectiveScratch(in.Scratch)
@@ -87,6 +104,9 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	_ = cleanup()
 	if err != nil {
 		return Result{}, err
+	}
+	if cleanReviewCheckout != nil && *cleanReviewCheckout {
+		cleanReviewCheckout = checkReviewCheckout(ctx, dir, base)
 	}
 	if in.CaptureStrongResult == nil {
 		raw, result, err = readResult(filepath.Join(dir, ".cardex-result.md"))
@@ -126,6 +146,7 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	}
 	acceptance := acceptanceResults(ctx, in.Home, dir, base, runs, env, scratchRoot)
 	sum := buildSummary(ctx, in, dir, base, acceptance, raw, result != resultMissing)
+	sum.CleanReviewCheckout = cleanReviewCheckout
 	if werr := writeSummary(in.Home, in.Attempt, sum); werr != nil {
 		res.EvidenceErr = errors.Join(res.EvidenceErr, werr)
 	}
@@ -246,7 +267,12 @@ func runAcceptance(ctx context.Context, dir string, commands []string, env []str
 func runAcceptanceCommand(ctx context.Context, dir, command string, env []string) (commandRun, error) {
 	cmd := proc.Shell(ctx, command)
 	cmd.Dir = dir
-	cmd.Env = append(append([]string{}, env...), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = proc.CompatibleChildEnv(ctx, append(append([]string{}, env...), "GIT_TERMINAL_PROMPT=0"))
+	if proc.ExactGitObjects(ctx) {
+		// Apply fixed non-secret controls at the final executable boundary.
+		// The baseline and the candidate use this same runner.
+		cmd.Env = append(proc.GitObjectScopeEnv(cmd.Env), "GIT_TERMINAL_PROMPT=0")
+	}
 	proc.NewGroup(cmd)
 	cmd.WaitDelay = time.Second
 	cmd.Cancel = func() error {

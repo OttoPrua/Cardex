@@ -715,3 +715,41 @@ func TestCurrentAndProposeReadOneSnapshot(t *testing.T) {
 		})
 	}
 }
+
+func TestAPIChannelPositioningApprovalRefusesConflictingFamily(t *testing.T) {
+	ctx := context.Background()
+	h, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	first, err := h.Propose(ctx, []model.Positioning{{Model: "fixture-model", Family: "vendor-a", Tiers: []model.Tier{model.TierT2}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Approve(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	conflict, err := h.Propose(ctx, []model.Positioning{{Model: "fixture-model", Family: "elsewhere", Tiers: []model.Tier{model.TierT2}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stage after the conflicting proposal is created, so checks at propose
+	// time alone cannot pass this test.
+	ch := model.Channel{ID: "gateway", Runner: model.RunnerClaude, Health: model.HealthDegraded,
+		EngineProfile: "anthropic-compatible:fixture", Family: "vendor-a", Models: []string{"fixture-model"}}
+	if err := h.db.CreateChannel(ctx, &ch); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Approve(ctx, conflict.ID); err == nil || !strings.Contains(err.Error(), "routing conflict") {
+		t.Fatalf("conflicting approval published: %v", err)
+	}
+	curr, err := h.Current(ctx)
+	if err != nil || len(curr) != 1 || curr[0].Version != 1 || curr[0].Family != "vendor-a" {
+		t.Fatalf("failed approval changed the previous positioning: %+v %v", curr, err)
+	}
+	saved, err := h.readProposal(conflict.ID)
+	if err != nil || saved.Status != "proposed" {
+		t.Fatalf("failed approval changed proposal state: %+v %v", saved, err)
+	}
+}

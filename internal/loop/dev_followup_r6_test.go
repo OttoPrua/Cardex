@@ -57,10 +57,10 @@ func TestFollowupR6ReviewSelect(t *testing.T) {
 			if tc.row {
 				f.position("author-m", tc.rowFamily, model.TierT2)
 			}
-			f.position("rev-anth", "anthropic", model.TierT3)
-			f.position("rev-open", "openai", model.TierT3)
+			f.position("rev-anth", "anthropic", model.TierT1)
+			f.position("rev-open", "openai", model.TierT1)
 			if tc.rowFamily != "" {
-				f.position("rev-writer", "writer", model.TierT3)
+				f.position("rev-writer", "writer", model.TierT1)
 			}
 			card := f.card(model.Card{ID: "dev", Channel: author.ID, AuthorFamily: "openai"})
 			attempt := f.attempt(card, 0, model.OutcomePassed, author.ID, "")
@@ -344,7 +344,7 @@ func TestFollowupR6NormalizeAbsorb(t *testing.T) {
 	t.Run("Dispose auto design normalize absorbs", func(t *testing.T) {
 		f := newFx(t, model.ModeAuto)
 		parent := f.card(model.Card{ID: "src", Kind: model.KindDesign, Status: model.CardRunning})
-		norm := f.card(model.Card{ID: "norm", Kind: model.KindNormalize, Tier: model.TierT1, Status: model.CardHarvesting, Deps: []string{parent.ID}})
+		norm := f.card(model.Card{ID: "norm", Kind: model.KindNormalize, Tier: model.TierT3, Status: model.CardHarvesting, Deps: []string{parent.ID}})
 		disposePassed(t, f, norm, question)
 		assertAbsorbed(t, f, model.KindDesign, true, true, false)
 	})
@@ -442,7 +442,7 @@ func plantNormalize(t *testing.T, f *fx, kind model.CardKind, status model.CardS
 	ch := f.channel("ch-a", "a")
 	dir := writeResult(t, body)
 	parent := f.card(model.Card{ID: "src", Kind: kind, Status: status, Body: "old\n"})
-	norm := f.card(model.Card{ID: "norm", Kind: model.KindNormalize, Tier: model.TierT1, Status: model.CardHarvesting, Deps: []string{parent.ID}})
+	norm := f.card(model.Card{ID: "norm", Kind: model.KindNormalize, Tier: model.TierT3, Status: model.CardHarvesting, Deps: []string{parent.ID}})
 	attempt := f.attempt(norm, 0, model.OutcomePassed, ch.ID, "")
 	attempt.Worktree = dir
 	if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
@@ -621,7 +621,7 @@ func TestFollowupR6NormalizeOnce(t *testing.T) {
 			var attemptID string
 			if tc.dispose {
 				parent := f.card(model.Card{ID: "src", Kind: tc.kind, Status: model.CardRunning, Body: "old\n"})
-				norm := f.card(model.Card{ID: "norm", Kind: model.KindNormalize, Tier: model.TierT1, Status: model.CardHarvesting, Deps: []string{parent.ID}})
+				norm := f.card(model.Card{ID: "norm", Kind: model.KindNormalize, Tier: model.TierT3, Status: model.CardHarvesting, Deps: []string{parent.ID}})
 				disposePassed(t, f, norm, tc.body)
 				attemptID = norm.ID + "-d"
 				if !attemptAbsorbed(f, attemptID) {

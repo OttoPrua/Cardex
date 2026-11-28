@@ -128,15 +128,15 @@ Open the printed address to follow progress; debug with `card show ID` and `rout
 <details>
 <summary>Initial model placement example</summary>
 
-Model IDs must match the channels. T1 fact checks, T2 routine development, T3 design and review.
+Model IDs must match the channels. T3 fact checks, T2 routine development, T1 design and review.
 
 ```json
 {
   "positioning": [
     {"id": "starter-dev", "model": "YOUR_AUTHOR_MODEL_ID", "family": "gpt",
-     "tiers": ["T1", "T2"], "capabilities": [], "preference": 1},
+     "tiers": ["T3", "T2"], "capabilities": [], "preference": 1},
     {"id": "starter-review", "model": "YOUR_REVIEW_MODEL_ID", "family": "claude",
-     "tiers": ["T3"], "capabilities": [], "preference": 1}
+     "tiers": ["T1"], "capabilities": [], "preference": 1}
   ]
 }
 ```

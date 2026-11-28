@@ -78,7 +78,7 @@ func TestOpenCompletesEitherV8Schema(t *testing.T) {
 			}
 			prepareTestBackupOnWindows(t, filepath.Join(home, "bak"))
 			for range 2 {
-				reopened, err := Open(db.path)
+				reopened, err := OpenTierUpgrade(db.path)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -144,7 +144,7 @@ func TestBackupRunsOnlyOnRemigration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	db, err = Open(dbPath)
+	db, err = OpenTierUpgrade(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestBackupRunsOnlyOnRemigration(t *testing.T) {
 	if b, err := os.ReadFile(filepath.Join(backups, "keep.txt")); err != nil || string(b) != "keep" {
 		t.Fatalf("sibling %q %v", b, err)
 	}
-	db, err = Open(dbPath)
+	db, err = OpenTierUpgrade(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -77,7 +77,7 @@ func assertDesignFailure(t *testing.T, kind model.CardKind, accept bool, class m
 	seedRoutes(t, db)
 	card := devCard(obj, "c")
 	card.Kind = kind
-	card.Tier = model.TierT3
+	card.Tier = model.TierT1
 	card.Channel = "cha"
 	card.ReworkCount = rework
 	if accept {
@@ -386,7 +386,7 @@ func disposeListed(t *testing.T, kind model.CardKind, text string, batch bool, e
 	}
 	card := devCard(obj, "plan")
 	card.Kind = kind
-	card.Tier = model.TierT3
+	card.Tier = model.TierT1
 	card.Node = "n"
 	if batch {
 		if err := db.CreateCard(ctx, &card); err != nil {
@@ -456,7 +456,7 @@ func TestDesignFileEntersIntegration(t *testing.T) {
 			}
 			card := devCard(obj, "c")
 			card.Kind = tc.kind
-			card.Tier = model.TierT3
+			card.Tier = model.TierT1
 			card.Node = "n"
 			branch(t, repo, obj, card.ID, rel, "design-body\n")
 			wt := filepath.Join(t.TempDir(), "wt")

@@ -314,10 +314,10 @@ func resolveTier(req Request) model.Tier {
 
 func upOne(t model.Tier) (model.Tier, bool) {
 	switch t {
-	case model.TierT1:
+	case model.TierT3:
 		return model.TierT2, true
 	case model.TierT2:
-		return model.TierT3, true
+		return model.TierT1, true
 	default:
 		return "", false
 	}

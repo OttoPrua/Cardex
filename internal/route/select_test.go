@@ -359,9 +359,9 @@ func TestSelectFiltersAndOrder(t *testing.T) {
 		led, _, channels, pos := build(t, now, []spec{
 			{id: "web", modelName: "web-m", family: "f", tier: model.TierT2, caps: []string{"web"}, limit: 100},
 			{id: "plain", modelName: "plain-m", family: "f", tier: model.TierT2, limit: 100},
-			{id: "high", modelName: "high-m", family: "f", tier: model.TierT3, pref: 0, limit: 100},
+			{id: "high", modelName: "high-m", family: "f", tier: model.TierT1, pref: 0, limit: 100},
 		})
-		card := model.Card{Kind: model.KindDev, Tier: model.TierT1, Requires: []string{"web"}}
+		card := model.Card{Kind: model.KindDev, Tier: model.TierT3, Requires: []string{"web"}}
 		rt, reason, err := call(t, now, led, channels, pos, card, nil)
 		if err != nil || rt.Channel != "web" {
 			t.Fatalf("borrow one tier with requires %+v err %v reason %+v", rt, err, reason)
@@ -393,9 +393,9 @@ func TestSelectFiltersAndOrder(t *testing.T) {
 
 		led, _, channels, pos = build(t, now, []spec{
 			{id: "mid", modelName: "mid-m", family: "f", tier: model.TierT2, pref: 5, limit: 100},
-			{id: "top", modelName: "top-m", family: "f", tier: model.TierT3, pref: 0, limit: 100},
+			{id: "top", modelName: "top-m", family: "f", tier: model.TierT1, pref: 0, limit: 100},
 		})
-		rt, reason, err = call(t, now, led, channels, pos, model.Card{Kind: model.KindDev, Tier: model.TierT1}, nil)
+		rt, reason, err = call(t, now, led, channels, pos, model.Card{Kind: model.KindDev, Tier: model.TierT3}, nil)
 		if err != nil || rt.Channel != "mid" || reason.Candidates[0].Tier != model.TierT2 {
 			t.Fatalf("borrow t2 %+v reason %+v err %v", rt, reason, err)
 		}
@@ -407,7 +407,7 @@ func TestSelectFiltersAndOrder(t *testing.T) {
 		if err != nil || rt.Channel != "mid" {
 			t.Fatalf("same tier %+v err %v", rt, err)
 		}
-		_, _, err = call(t, now, led, []model.Channel{channels[1]}, []model.Positioning{pos[1]}, model.Card{Kind: model.KindDev, Tier: model.TierT1}, nil)
+		_, _, err = call(t, now, led, []model.Channel{channels[1]}, []model.Positioning{pos[1]}, model.Card{Kind: model.KindDev, Tier: model.TierT3}, nil)
 		if !errors.Is(err, ErrNoCandidate) {
 			t.Fatalf("t1 to t3 err %v", err)
 		}
@@ -415,7 +415,7 @@ func TestSelectFiltersAndOrder(t *testing.T) {
 		if err != nil || rt.Channel != "top" || rt.Model != "top-m" {
 			t.Fatalf("t2 borrows t3 %+v err %v", rt, err)
 		}
-		_, _, err = call(t, now, led, []model.Channel{channels[0]}, []model.Positioning{pos[0]}, model.Card{Kind: model.KindDev, Tier: model.TierT3}, nil)
+		_, _, err = call(t, now, led, []model.Channel{channels[0]}, []model.Positioning{pos[0]}, model.Card{Kind: model.KindDev, Tier: model.TierT1}, nil)
 		if !errors.Is(err, ErrNoCandidate) {
 			t.Fatalf("downward err %v", err)
 		}
@@ -423,10 +423,10 @@ func TestSelectFiltersAndOrder(t *testing.T) {
 
 	t.Run("unhealthy same tier borrows one", func(t *testing.T) {
 		led, _, channels, pos := build(t, now, []spec{
-			{id: "sick", modelName: "sick-m", family: "f", tier: model.TierT1, health: model.HealthAuthFailed, limit: 100},
+			{id: "sick", modelName: "sick-m", family: "f", tier: model.TierT3, health: model.HealthAuthFailed, limit: 100},
 			{id: "up", modelName: "up-m", family: "f", tier: model.TierT2, limit: 100},
 		})
-		rt, reason, err := call(t, now, led, channels, pos, model.Card{Kind: model.KindDev, Tier: model.TierT1}, nil)
+		rt, reason, err := call(t, now, led, channels, pos, model.Card{Kind: model.KindDev, Tier: model.TierT3}, nil)
 		if err != nil || rt.Channel != "up" || rt.Model != "up-m" {
 			t.Fatalf("unhealthy tier did not borrow %+v err %v", rt, err)
 		}
@@ -438,10 +438,10 @@ func TestSelectFiltersAndOrder(t *testing.T) {
 
 	t.Run("review family mismatch", func(t *testing.T) {
 		led, _, channels, pos := build(t, now, []spec{
-			{id: "author", modelName: "author-m", family: "anthropic", tier: model.TierT3, limit: 100},
-			{id: "other", modelName: "other-m", family: "openai", tier: model.TierT3, limit: 100},
+			{id: "author", modelName: "author-m", family: "anthropic", tier: model.TierT1, limit: 100},
+			{id: "other", modelName: "other-m", family: "openai", tier: model.TierT1, limit: 100},
 		})
-		card := model.Card{Kind: model.KindReview, Tier: model.TierT3, AuthorFamily: "anthropic"}
+		card := model.Card{Kind: model.KindReview, Tier: model.TierT1, AuthorFamily: "anthropic"}
 		rt, reason, err := call(t, now, led, channels, pos, card, nil)
 		if err != nil || rt.Channel != "other" {
 			t.Fatalf("route %+v err %v", rt, err)
@@ -464,23 +464,23 @@ func TestSelectFiltersAndOrder(t *testing.T) {
 
 	t.Run("tier order", func(t *testing.T) {
 		led, _, channels, pos := build(t, now, []spec{
-			{id: "low", modelName: "low-m", family: "f", tier: model.TierT1, limit: 100},
+			{id: "low", modelName: "low-m", family: "f", tier: model.TierT3, limit: 100},
 			{id: "mid", modelName: "mid-m", family: "f", tier: model.TierT2, limit: 100, used: 40},
 		})
 		rt, _, err := call(t, now, led, channels, pos, model.Card{Kind: model.KindDev}, func(r *Request) {
-			r.Classified = model.TierT1
+			r.Classified = model.TierT3
 		})
 		if err != nil || rt.Channel != "low" {
 			t.Fatalf("classified %+v err %v", rt, err)
 		}
 		rt, _, err = call(t, now, led, channels, pos, model.Card{Kind: model.KindDev, Tier: model.TierT2}, func(r *Request) {
-			r.Classified = model.TierT1
+			r.Classified = model.TierT3
 		})
 		if err != nil || rt.Channel != "mid" {
 			t.Fatalf("card tier %+v err %v", rt, err)
 		}
 		led, _, channels, pos = build(t, now, []spec{
-			{id: "research", modelName: "research-m", family: "f", tier: model.TierT1, limit: 100},
+			{id: "research", modelName: "research-m", family: "f", tier: model.TierT3, limit: 100},
 		})
 		rt, _, err = call(t, now, led, channels, pos, model.Card{Kind: model.KindResearch}, nil)
 		if err != nil || rt.Channel != "research" {
@@ -618,18 +618,18 @@ func TestBorrowOnlyAfterTierIsUnusable(t *testing.T) {
 		want    want
 	}{
 		{
-			name: "health", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			name: "health", card: model.Card{Kind: model.KindDev, Tier: model.TierT3},
 			specs: []spec{
-				{id: "sick", modelName: "sick-m", tier: model.TierT1, health: model.HealthAuthFailed, limit: 100},
+				{id: "sick", modelName: "sick-m", tier: model.TierT3, health: model.HealthAuthFailed, limit: 100},
 				{id: "up-sick", modelName: "up-sick-m", tier: model.TierT2, health: model.HealthDegraded, limit: 100},
 				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100},
 			},
 			want: want{channel: "up", reasons: map[string]string{"sick": ReasonHealth, "up-sick": ReasonHealth}},
 		},
 		{
-			name: "concurrency", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			name: "concurrency", card: model.Card{Kind: model.KindDev, Tier: model.TierT3},
 			specs: []spec{
-				{id: "busy", modelName: "busy-m", tier: model.TierT1, conc: 1, limit: 100},
+				{id: "busy", modelName: "busy-m", tier: model.TierT3, conc: 1, limit: 100},
 				{id: "up-busy", modelName: "up-busy-m", tier: model.TierT2, conc: 1, limit: 100},
 				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100},
 			},
@@ -637,18 +637,18 @@ func TestBorrowOnlyAfterTierIsUnusable(t *testing.T) {
 			want:  want{channel: "up", reasons: map[string]string{"busy": ReasonConcurrency, "up-busy": ReasonConcurrency}},
 		},
 		{
-			name: "redline", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			name: "redline", card: model.Card{Kind: model.KindDev, Tier: model.TierT3},
 			specs: []spec{
-				{id: "low", modelName: "low-m", tier: model.TierT1, limit: 100, used: 90, redline: 0.2},
+				{id: "low", modelName: "low-m", tier: model.TierT3, limit: 100, used: 90, redline: 0.2},
 				{id: "up-low", modelName: "up-low-m", tier: model.TierT2, limit: 100, used: 90, redline: 0.2},
 				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100, used: 10, redline: 0.2},
 			},
 			want: want{channel: "up", reasons: map[string]string{"low": ReasonRedline, "up-low": ReasonRedline}},
 		},
 		{
-			name: "blocked", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			name: "blocked", card: model.Card{Kind: model.KindDev, Tier: model.TierT3},
 			specs: []spec{
-				{id: "held", modelName: "held-m", tier: model.TierT1, limit: 100},
+				{id: "held", modelName: "held-m", tier: model.TierT3, limit: 100},
 				{id: "up-held", modelName: "up-held-m", tier: model.TierT2, limit: 100},
 				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100},
 			},
@@ -656,73 +656,73 @@ func TestBorrowOnlyAfterTierIsUnusable(t *testing.T) {
 			want:  want{channel: "up", reasons: map[string]string{"held": ReasonBlocked, "up-held": ReasonBlocked}},
 		},
 		{
-			name: "cutoff", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			name: "cutoff", card: model.Card{Kind: model.KindDev, Tier: model.TierT3},
 			specs: []spec{
-				{id: "hot", modelName: "hot-m", tier: model.TierT1, limit: 100, used: 99},
+				{id: "hot", modelName: "hot-m", tier: model.TierT3, limit: 100, used: 99},
 				{id: "up-hot", modelName: "up-hot-m", tier: model.TierT2, limit: 100, used: 99},
 				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100, used: 10},
 			},
 			want: want{channel: "up", reasons: map[string]string{"hot": ReasonCutoff, "up-hot": ReasonCutoff}},
 		},
 		{
-			name: "unknown quota", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			name: "unknown quota", card: model.Card{Kind: model.KindDev, Tier: model.TierT3},
 			unknown: "exclude",
 			specs: []spec{
-				{id: "mystery", modelName: "mystery-m", tier: model.TierT1},
+				{id: "mystery", modelName: "mystery-m", tier: model.TierT3},
 				{id: "up-mystery", modelName: "up-mystery-m", tier: model.TierT2},
 				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100},
 			},
 			want: want{channel: "up", reasons: map[string]string{"mystery": ReasonUnknownQuota, "up-mystery": ReasonUnknownQuota}},
 		},
 		{
-			name: "review family", card: model.Card{Kind: model.KindReview, Tier: model.TierT1, AuthorFamily: "anthropic"},
+			name: "review family", card: model.Card{Kind: model.KindReview, Tier: model.TierT3, AuthorFamily: "anthropic"},
 			specs: []spec{
-				{id: "author", modelName: "author-m", family: "anthropic", tier: model.TierT1, limit: 100},
+				{id: "author", modelName: "author-m", family: "anthropic", tier: model.TierT3, limit: 100},
 				{id: "up-author", modelName: "up-author-m", family: "anthropic", tier: model.TierT2, limit: 100},
 				{id: "up", modelName: "up-m", family: "openai", tier: model.TierT2, limit: 100},
 			},
 			want: want{channel: "up", reasons: map[string]string{"author": ReasonFamily, "up-author": ReasonFamily}},
 		},
 		{
-			name: "request cap", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			name: "request cap", card: model.Card{Kind: model.KindDev, Tier: model.TierT3},
 			specs: []spec{
-				{id: "hot", modelName: "hot-m", tier: model.TierT1, requests: 100, requestUse: 99},
+				{id: "hot", modelName: "hot-m", tier: model.TierT3, requests: 100, requestUse: 99},
 				{id: "up-hot", modelName: "up-hot-m", tier: model.TierT2, requests: 100, requestUse: 99},
 				{id: "up", modelName: "up-m", tier: model.TierT2, requests: 100, requestUse: 1},
 			},
 			want: want{channel: "up", reasons: map[string]string{"hot": ReasonCutoff, "up-hot": ReasonCutoff}},
 		},
 		{
-			name: "two steps up", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
-			specs: []spec{{id: "top", modelName: "top-m", tier: model.TierT3, limit: 100}},
+			name: "two steps up", card: model.Card{Kind: model.KindDev, Tier: model.TierT3},
+			specs: []spec{{id: "top", modelName: "top-m", tier: model.TierT1, limit: 100}},
 			want:  want{err: ErrNoCandidate, absent: []string{"top"}},
 		},
 		{
-			name: "unusable across two tiers", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			name: "unusable across two tiers", card: model.Card{Kind: model.KindDev, Tier: model.TierT3},
 			specs: []spec{
-				{id: "sick", modelName: "sick-m", tier: model.TierT1, health: model.HealthAuthFailed, limit: 100},
+				{id: "sick", modelName: "sick-m", tier: model.TierT3, health: model.HealthAuthFailed, limit: 100},
 				{id: "sick2", modelName: "sick2-m", tier: model.TierT2, health: model.HealthAuthFailed, limit: 100},
-				{id: "top", modelName: "top-m", tier: model.TierT3, limit: 100},
+				{id: "top", modelName: "top-m", tier: model.TierT1, limit: 100},
 			},
 			want: want{err: ErrNoCandidate, reasons: map[string]string{"sick": ReasonHealth, "sick2": ReasonHealth}, absent: []string{"top"}},
 		},
 		{
 			name: "downward", card: model.Card{Kind: model.KindDev, Tier: model.TierT2},
-			specs: []spec{{id: "low", modelName: "low-m", tier: model.TierT1, limit: 100}},
+			specs: []spec{{id: "low", modelName: "low-m", tier: model.TierT3, limit: 100}},
 			want:  want{err: ErrNoCandidate, absent: []string{"low"}},
 		},
 		{
-			name: "usable tier does not borrow", card: model.Card{Kind: model.KindDev, Tier: model.TierT1},
+			name: "usable tier does not borrow", card: model.Card{Kind: model.KindDev, Tier: model.TierT3},
 			specs: []spec{
-				{id: "here", modelName: "here-m", tier: model.TierT1, limit: 100, used: 10},
+				{id: "here", modelName: "here-m", tier: model.TierT3, limit: 100, used: 10},
 				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100},
 			},
 			want: want{channel: "here", absent: []string{"up"}},
 		},
 		{
-			name: "pin does not borrow", card: model.Card{Kind: model.KindDev, Tier: model.TierT1, Channel: "sick"},
+			name: "pin does not borrow", card: model.Card{Kind: model.KindDev, Tier: model.TierT3, Channel: "sick"},
 			specs: []spec{
-				{id: "sick", modelName: "sick-m", tier: model.TierT1, health: model.HealthAuthFailed, limit: 100},
+				{id: "sick", modelName: "sick-m", tier: model.TierT3, health: model.HealthAuthFailed, limit: 100},
 				{id: "up", modelName: "up-m", tier: model.TierT2, limit: 100},
 			},
 			want: want{err: ErrPinnedUnavailable, absent: []string{"up"}},

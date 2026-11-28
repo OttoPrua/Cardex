@@ -63,8 +63,23 @@ func collectDoctor(home string) ([]string, []finding) {
 		out = append(out, finding{"database cannot be opened because the home is unavailable", "pass a writable --home"})
 	} else {
 		err = store.Inspect(absDB(resolved), func(db *store.Store) {
-			if _, verr := db.SchemaVersion(ctx); verr != nil {
+			v, verr := db.SchemaVersion(ctx)
+			if verr != nil {
 				dbFindings = append(dbFindings, finding{"migration version cannot be read: " + verr.Error(), "open this home with the current cardex binary so the migration table can be read"})
+				return
+			}
+			active, activationErr := db.TierConventionActive(ctx)
+			if activationErr != nil {
+				dbFindings = append(dbFindings, finding{"tier activation receipt cannot be read: " + activationErr.Error(), "check the store with the current cardex binary"})
+				return
+			}
+			if !active && v >= store.TierConventionSchema {
+				dbFindings = append(dbFindings, finding{"database has no valid tier activation receipt", "validate the database and use a verified backup before retrying"})
+				return
+			}
+			if !active {
+				dbFindings = append(dbFindings, finding{store.ErrTierUpgradeRequired.Error(), "back up the existing home before activating the new tier convention"})
+				return
 			}
 			var perr error
 			projects, perr = db.ListProjects(ctx)

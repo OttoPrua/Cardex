@@ -107,7 +107,7 @@ func TestOpenForWriteReusesMigrationSnapshot(t *testing.T) {
 	}
 	defer source.Close()
 	if _, err := source.db.ExecContext(ctx,
-		"DELETE FROM schema_migrations WHERE version = ?", latestSchema); err != nil {
+		"DROP TRIGGER strict_attempt_update"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"backups_dir":"snapshots"}`), 0o600); err != nil {
@@ -122,13 +122,18 @@ func TestOpenForWriteReusesMigrationSnapshot(t *testing.T) {
 	if version, err := writer.SchemaVersion(ctx); err != nil || version != latestSchema {
 		t.Fatalf("migrated schema version %d: %v", version, err)
 	}
+	var installed int
+	if err := writer.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_schema WHERE name='strict_attempt_update'").Scan(&installed); err != nil || installed != 1 {
+		t.Fatalf("migration fence not repaired: %d %v", installed, err)
+	}
 	copies := dbCopies(t, filepath.Join(home, "snapshots"))
 	if len(copies) != 1 {
 		t.Fatalf("one backup should protect both migrations and the owner write, got %v", copies)
 	}
 	if err := Inspect(copies[0], func(frozen *Store) {
-		if version, err := frozen.SchemaVersion(ctx); err != nil || version != latestSchema-1 {
-			t.Fatalf("backup must precede migration, found schema version %d: %v", version, err)
+		var n int
+		if err := frozen.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM sqlite_schema WHERE name='strict_attempt_update'").Scan(&n); err != nil || n != 0 {
+			t.Fatalf("backup must precede fence repair: %d %v", n, err)
 		}
 	}); err != nil {
 		t.Fatal(err)

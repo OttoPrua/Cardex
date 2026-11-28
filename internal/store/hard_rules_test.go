@@ -38,7 +38,7 @@ func TestMigration12KeepsExistingRowsWithoutHardRules(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db, err = Open(path)
+	db, err = OpenTierUpgrade(path)
 	if err != nil {
 		t.Fatal(err)
 	}

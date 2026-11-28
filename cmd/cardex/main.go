@@ -24,6 +24,7 @@ import (
 const usage = `cardex — v2 command surface
 
 commands:
+  migrate tiers --yes   explicitly activate the tier convention on an old store
   setup [--yes]          first run: find CLIs, check sign-in, add channels
   serve
   project add|list|show|set
@@ -83,6 +84,9 @@ func Main(args []string, stdout, stderr io.Writer) int {
 	}
 	if rest[0] == "doctor" {
 		return cmdDoctor(home, rest[1:], stdout, stderr)
+	}
+	if rest[0] == "migrate" {
+		return cmdMigrateTiers(home, asJSON, rest[1:], stdout, stderr)
 	}
 	// Import handles its own existing-home boundary, including dry-run.
 	if len(rest) >= 2 && rest[0] == "card" && rest[1] == "import" {

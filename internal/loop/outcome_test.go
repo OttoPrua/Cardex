@@ -280,8 +280,8 @@ func TestDevStepOutcomeRows(t *testing.T) {
 			Objective: f.objective(),
 			Channels:  channels,
 			Positioning: []model.Positioning{
-				{Model: "author-m", Family: "anthropic", Tiers: []model.Tier{model.TierT3}},
-				{Model: "other-m", Family: "openai", Tiers: []model.Tier{model.TierT3}},
+				{Model: "author-m", Family: "anthropic", Tiers: []model.Tier{model.TierT1}},
+				{Model: "other-m", Family: "openai", Tiers: []model.Tier{model.TierT1}},
 			},
 			Quota: led,
 			Now:   time.Now(),
@@ -797,7 +797,7 @@ func TestDevStepAbsorption(t *testing.T) {
 			`{"key":"keep","kind":"dev","title":"Keep","deps":["a"]},`+"\n"+
 			`{"key":"out","kind":"dev","title":"Outside","node":"other"}`+"\n"+
 			"]\n```\n")
-		card := f.card(model.Card{ID: "plan", Kind: model.KindPlan, Tier: model.TierT3, Channel: ch.ID})
+		card := f.card(model.Card{ID: "plan", Kind: model.KindPlan, Tier: model.TierT1, Channel: ch.ID})
 		attempt := f.attempt(card, 0, model.OutcomePassed, ch.ID, "")
 		attempt.Worktree = dir
 		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
@@ -855,7 +855,7 @@ func TestDevStepAbsorption(t *testing.T) {
 		f := newFx(t, model.ModeManual)
 		ch := f.channel("ch-a", "a")
 		dir := writeResult(t, "{not json")
-		card := f.card(model.Card{ID: "plan", Kind: model.KindPlan, Tier: model.TierT3, Channel: ch.ID})
+		card := f.card(model.Card{ID: "plan", Kind: model.KindPlan, Tier: model.TierT1, Channel: ch.ID})
 		attempt := f.attempt(card, 0, model.OutcomePassed, ch.ID, "")
 		attempt.Worktree = dir
 		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
@@ -873,7 +873,7 @@ func TestDevStepAbsorption(t *testing.T) {
 		dev := f.card(model.Card{ID: "dev", Status: model.CardReviewing, Channel: ch.ID})
 		f.attempt(dev, 0, model.OutcomePassed, ch.ID, "")
 		dir := writeResult(t, "## 复核结论\npass\n")
-		review := f.card(model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardHarvesting, Deps: []string{"dev"}})
+		review := f.card(model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT1, Status: model.CardHarvesting, Deps: []string{"dev"}})
 		attempt := f.attempt(review, 0, model.OutcomePassed, ch.ID, "")
 		attempt.Worktree = dir
 		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
@@ -889,7 +889,7 @@ func TestDevStepAbsorption(t *testing.T) {
 		dev2 := f2.card(model.Card{ID: "dev", Status: model.CardReviewing, Channel: ch2.ID})
 		worked := f2.attempt(dev2, 0, "", ch2.ID, "")
 		dir2 := writeResult(t, "## 复核结论\nrework\nfix the boundary check\n- 补测试：cover an empty request\n")
-		review2 := f2.card(model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardHarvesting, Deps: []string{"dev"}})
+		review2 := f2.card(model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT1, Status: model.CardHarvesting, Deps: []string{"dev"}})
 		attempt2 := f2.attempt(review2, 0, model.OutcomePassed, ch2.ID, "")
 		attempt2.Worktree = dir2
 		if err := f2.db.UpdateAttempt(f2.ctx, &attempt2); err != nil {
@@ -908,7 +908,7 @@ func TestDevStepAbsorption(t *testing.T) {
 		ch3 := f3.channel("ch-a", "a")
 		f3.card(model.Card{ID: "dev", Status: model.CardReviewing, Channel: ch3.ID, ReworkCount: 2})
 		dir3 := writeResult(t, "## 复核结论\nrework\nstill broken\n")
-		review3 := f3.card(model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardHarvesting, Deps: []string{"dev"}})
+		review3 := f3.card(model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT1, Status: model.CardHarvesting, Deps: []string{"dev"}})
 		attempt3 := f3.attempt(review3, 0, model.OutcomePassed, ch3.ID, "")
 		attempt3.Worktree = dir3
 		if err := f3.db.UpdateAttempt(f3.ctx, &attempt3); err != nil {
@@ -931,7 +931,7 @@ func TestDevStepAbsorption(t *testing.T) {
 		dev := f.card(model.Card{ID: "dev", Status: model.CardReviewing, Channel: ch.ID, AuthorFamily: "author"})
 		f.attempt(dev, 0, "", ch.ID, "")
 		dir := writeResult(t, "## 复核结论\nrework\nfix the boundary check\n")
-		review := f.card(model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardHarvesting, Deps: []string{"dev"}, AuthorFamily: "author"})
+		review := f.card(model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT1, Status: model.CardHarvesting, Deps: []string{"dev"}, AuthorFamily: "author"})
 		attempt := f.attempt(review, 0, model.OutcomePassed, ch.ID, "")
 		attempt.Worktree = dir
 		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {
@@ -976,7 +976,7 @@ func TestDevStepAbsorption(t *testing.T) {
 			t.Fatal(err)
 		}
 		dir := writeResult(t, "EXTRACTED-RESULT")
-		norm := f.card(model.Card{ID: "norm", Kind: model.KindNormalize, Tier: model.TierT1, Status: model.CardHarvesting, Deps: []string{"dev"}})
+		norm := f.card(model.Card{ID: "norm", Kind: model.KindNormalize, Tier: model.TierT3, Status: model.CardHarvesting, Deps: []string{"dev"}})
 		attempt := f.attempt(norm, 0, model.OutcomePassed, ch.ID, "")
 		attempt.Worktree = dir
 		if err := f.db.UpdateAttempt(f.ctx, &attempt); err != nil {

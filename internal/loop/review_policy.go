@@ -18,8 +18,8 @@ import (
 // A passed dev-family card resolves its review mode card → objective →
 // project; the first non-empty value wins and all empty means auto.
 // auto is review for dev-family kinds. off merges without a review card.
-// check opens a T1 completion check. review opens a review whose tier
-// follows the diff: small and low-risk goes to T1, risky or large to T3,
+// check opens a T3 completion check. review opens a review whose tier
+// follows the diff: small and low-risk goes to T3, risky or large to T1,
 // the rest stays at the author's tier.
 
 // Review verdicts beyond pass and rework.
@@ -70,25 +70,25 @@ func planReview(card model.Card, obj model.Objective, project model.Project, sta
 	case model.ReviewOff:
 		return reviewPlan{Mode: mode, Why: "review off"}
 	case model.ReviewCheck:
-		return reviewPlan{Mode: mode, Tier: model.TierT1, Why: "completion check"}
+		return reviewPlan{Mode: mode, Tier: model.TierT3, Why: "completion check"}
 	}
 	author := card.Tier
 	if author == "" {
 		author = model.DefaultTier(card.Kind)
 	}
 	if stat == nil {
-		return reviewPlan{Mode: model.ReviewFull, Tier: model.TierT3, Why: "diff unavailable"}
+		return reviewPlan{Mode: model.ReviewFull, Tier: model.TierT1, Why: "diff unavailable"}
 	}
 	for _, p := range stat.Paths {
 		if riskyPath.MatchString(p) || forbiddenHit(p, project.ForbiddenPaths) {
-			return reviewPlan{Mode: model.ReviewFull, Tier: model.TierT3, Why: "risky path " + p}
+			return reviewPlan{Mode: model.ReviewFull, Tier: model.TierT1, Why: "risky path " + p}
 		}
 	}
 	if stat.Lines > largeDiffLines || stat.Files > largeDiffFiles {
-		return reviewPlan{Mode: model.ReviewFull, Tier: model.TierT3, Why: fmt.Sprintf("large diff %d lines %d files", stat.Lines, stat.Files)}
+		return reviewPlan{Mode: model.ReviewFull, Tier: model.TierT1, Why: fmt.Sprintf("large diff %d lines %d files", stat.Lines, stat.Files)}
 	}
 	if stat.Lines <= smallDiffLines && stat.Files <= smallDiffFiles {
-		return reviewPlan{Mode: model.ReviewFull, Tier: model.TierT1, Why: fmt.Sprintf("small diff %d lines %d files", stat.Lines, stat.Files)}
+		return reviewPlan{Mode: model.ReviewFull, Tier: model.TierT3, Why: fmt.Sprintf("small diff %d lines %d files", stat.Lines, stat.Files)}
 	}
 	return reviewPlan{Mode: model.ReviewFull, Tier: author, Why: fmt.Sprintf("author tier, diff %d lines %d files", stat.Lines, stat.Files)}
 }
@@ -161,7 +161,7 @@ func reviewBody(plan reviewPlan, family string) string {
 }
 
 // ReviewHoldMarker starts the floor a rework review must keep.
-const ReviewHoldMarker = "<!-- cardex-review-hold -->"
+const ReviewHoldMarker = model.ReviewHoldMarker
 
 // AppendReviewHold records the tier and model pin a later launch must not lower.
 func AppendReviewHold(body string, tier model.Tier, channel, modelName string) string {
@@ -170,7 +170,8 @@ func AppendReviewHold(body string, tier model.Tier, channel, modelName string) s
 	b.WriteByte('\n')
 	b.WriteString(ReviewHoldMarker)
 	b.WriteByte('\n')
-	fmt.Fprintf(&b, "tier=%s\n", tier)
+	wire, _ := model.TranslateLegacyTier(tier)
+	fmt.Fprintf(&b, "tier=%s\n", wire)
 	if channel != "" {
 		fmt.Fprintf(&b, "channel=%s\n", channel)
 	}
@@ -186,44 +187,8 @@ func ReviewHold(card model.Card) (tier model.Tier, channel, modelName string, ok
 	if card.Kind != "" && card.Kind != model.KindReview {
 		return "", "", "", false
 	}
-	idx := strings.Index(card.Body, ReviewHoldMarker)
-	if idx < 0 {
-		return "", "", "", false
-	}
-	rest := card.Body[idx+len(ReviewHoldMarker):]
-	for _, line := range strings.Split(rest, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			if tier != "" {
-				break
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "<!--") {
-			break
-		}
-		key, val, found := strings.Cut(line, "=")
-		if !found {
-			break
-		}
-		switch strings.TrimSpace(key) {
-		case "tier":
-			tier = model.Tier(strings.TrimSpace(val))
-		case "channel":
-			channel = strings.TrimSpace(val)
-		case "model":
-			modelName = strings.TrimSpace(val)
-		default:
-			if tier != "" {
-				return tier, channel, modelName, tier.Rank() > 0
-			}
-			return "", "", "", false
-		}
-	}
-	if tier.Rank() == 0 {
-		return "", "", "", false
-	}
-	return tier, channel, modelName, true
+	tier, channel, modelName, found, err := model.ParseReviewHold(card.Body)
+	return tier, channel, modelName, found && err == nil
 }
 
 func raiseReviewFloor(plan reviewPlan, prior model.Card) reviewPlan {
@@ -323,10 +288,10 @@ func modelMeetsFloor(rows []model.Positioning, ch model.Channel, name string, fl
 
 func upTier(t model.Tier) (model.Tier, bool) {
 	switch t {
-	case model.TierT1:
+	case model.TierT3:
 		return model.TierT2, true
 	case model.TierT2:
-		return model.TierT3, true
+		return model.TierT1, true
 	default:
 		return t, false
 	}

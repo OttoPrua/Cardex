@@ -47,7 +47,7 @@ func (s *Store) CreateAttempt(ctx context.Context, a *model.Attempt) error {
 const attemptWriteColumns = `card_id, attempt_index, channel, model, route_reason, worktree, branch, base_commit, head_commit, pid, started_at, ended_at, exit_code, exited, usage, outcome, error_class, error_excerpt, prompt_path`
 
 func (s *Store) insertAttempt(ctx context.Context, a *model.Attempt) error {
-	reason, err := mustJSON(a.RouteReason)
+	reason, err := marshalRouteReason(a.RouteReason)
 	if err != nil {
 		return err
 	}
@@ -80,7 +80,7 @@ func (s *Store) UpdateAttempt(ctx context.Context, a *model.Attempt) error {
 	if err := prepareAttempt(a); err != nil {
 		return err
 	}
-	reason, err := mustJSON(a.RouteReason)
+	reason, err := marshalRouteReason(a.RouteReason)
 	if err != nil {
 		return err
 	}
@@ -150,6 +150,10 @@ func scanAttempt(sc scanner) (model.Attempt, error) {
 	if err := parseJSON(reason, &a.RouteReason); err != nil {
 		return a, err
 	}
+	var err error
+	if a.RouteReason, err = translateRouteTiers(a.RouteReason); err != nil {
+		return a, err
+	}
 	if a.RouteReason.Candidates == nil {
 		a.RouteReason.Candidates = []model.RouteCandidate{}
 	}
@@ -162,7 +166,6 @@ func scanAttempt(sc scanner) (model.Attempt, error) {
 	if err := parseJSON(usage, &a.Usage); err != nil {
 		return a, err
 	}
-	var err error
 	if a.StartedAt, err = parseTime(started); err != nil {
 		return a, err
 	}

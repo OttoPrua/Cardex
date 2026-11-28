@@ -15,10 +15,10 @@ import (
 // An empty tier is classified before the route is chosen. A preset tier does not call Call.
 func TestLaunchClassifiesEmptyTier(t *testing.T) {
 	t1 := func(context.Context, string, string) (string, error) {
-		return "TIER: T1\nREASON: small change\n", nil
+		return "TIER: T3\nREASON: small change\n", nil
 	}
 	t3 := func(context.Context, string, string) (string, error) {
-		return "TIER: T3\nREASON: broad design\n", nil
+		return "TIER: T1\nREASON: broad design\n", nil
 	}
 	bad := func(context.Context, string, string) (string, error) {
 		return "", errors.New("classifier down")
@@ -35,12 +35,12 @@ func TestLaunchClassifiesEmptyTier(t *testing.T) {
 		want      model.Tier
 		wantCalls int
 	}{
-		{name: "dispatch empty success", kind: model.KindDev, via: "dispatch", call: t1, want: model.TierT1, wantCalls: 1},
+		{name: "dispatch empty success", kind: model.KindDev, via: "dispatch", call: t1, want: model.TierT3, wantCalls: 1},
 		{name: "dispatch call failure", kind: model.KindDev, via: "dispatch", call: bad, want: model.DefaultTier(model.KindDev), wantCalls: 1},
 		{name: "dispatch unusable text", kind: model.KindDev, via: "dispatch", call: junk, want: model.DefaultTier(model.KindDev), wantCalls: 1},
 		{name: "dispatch nil call", kind: model.KindDev, via: "dispatch", want: model.DefaultTier(model.KindDev)},
-		{name: "dispatch tier already set", kind: model.KindDev, tier: model.TierT3, via: "dispatch", call: t1, want: model.TierT3},
-		{name: "fill empty success", kind: model.KindBacklog, via: "fill", call: t3, want: model.TierT3, wantCalls: 1},
+		{name: "dispatch tier already set", kind: model.KindDev, tier: model.TierT1, via: "dispatch", call: t1, want: model.TierT1},
+		{name: "fill empty success", kind: model.KindBacklog, via: "fill", call: t3, want: model.TierT1, wantCalls: 1},
 		{name: "fill call failure", kind: model.KindBacklog, via: "fill", call: bad, want: model.DefaultTier(model.KindBacklog), wantCalls: 1},
 		{name: "fill tier already set", kind: model.KindBacklog, tier: model.TierT2, via: "fill", call: t3, want: model.TierT2},
 	}

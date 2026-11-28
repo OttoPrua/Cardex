@@ -115,7 +115,7 @@ func TestListCardsChangedSinceAfterMigration(t *testing.T) {
 		if err := db.CreateCard(ctx, &card); err != nil {
 			t.Fatal(err)
 		}
-		if err := db.CreateAttempt(ctx, &model.Attempt{ID: "a-" + card.ID, Card: card.ID, StartedAt: sample.started}); err != nil {
+		if err := db.CreateAttempt(ctx, &model.Attempt{ID: "a-" + card.ID, Card: card.ID, StartedAt: sample.started, EndedAt: sample.started}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -131,7 +131,7 @@ func TestListCardsChangedSinceAfterMigration(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	upgraded, err := Open(path)
+	upgraded, err := OpenTierUpgrade(path)
 	if err != nil {
 		t.Fatal(err)
 	}

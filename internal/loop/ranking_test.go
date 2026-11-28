@@ -13,6 +13,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/harvest"
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/positioning"
 	"github.com/OttoPrua/Cardex/internal/prompt"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
@@ -1231,10 +1232,11 @@ func positioningModels(t *testing.T, db *store.Store) []string {
 }
 
 type savedProposal struct {
-	ID      string              `json:"id"`
-	Entries []model.Positioning `json:"entries"`
-	Diff    string              `json:"diff"`
-	Status  string              `json:"status"`
+	TierConvention string              `json:"tier_convention,omitempty"`
+	ID             string              `json:"id"`
+	Entries        []model.Positioning `json:"entries"`
+	Diff           string              `json:"diff"`
+	Status         string              `json:"status"`
 }
 
 func mustProposals(t *testing.T) []savedProposal {
@@ -1330,4 +1332,47 @@ func proposalCount(t *testing.T) int {
 		}
 	}
 	return n
+}
+
+func TestRankingOldApprovalDoesNotBlockVersionedProposal(t *testing.T) {
+	home, db := rankingHome(t)
+	ctx := t.Context()
+	table, err := positioning.Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer table.Close()
+	fresh, err := table.Propose(ctx, []model.Positioning{{
+		ID: "new", Model: "fixture-strong", Tiers: []model.Tier{model.TierT1}, Preference: 1,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "positioning", "proposals")
+	old := []byte(`{"id":"old","status":"proposed","entries":[{"id":"old","model":"obsolete","tiers":["T3"]}]}`)
+	if err := os.WriteFile(filepath.Join(dir, "old.json"), old, 0600); err != nil {
+		t.Fatal(err)
+	}
+	currentWire, err := os.ReadFile(filepath.Join(dir, fresh.ID+".json"))
+	if err != nil || !strings.Contains(string(currentWire), `"tiers":["T3"]`) {
+		t.Fatalf("proposal not legacy-compatible: %s, %v", currentWire, err)
+	}
+	for _, spec := range []struct{ q, proposal string }{{"first", "old"}, {"second", fresh.ID}} {
+		if err := db.CreateQuestion(ctx, &model.Question{
+			ID: spec.q, Scope: "fixture", ScopeKind: "card", Kind: model.QuestionCustom,
+			Text: rankingMark + " " + spec.proposal, Options: []string{rankingApprove}, Answer: rankingApprove,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := FollowRanking(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.ListPositioning(ctx)
+	if err != nil || len(rows) != 1 || rows[0].Model != "fixture-strong" || rows[0].Tiers[0] != model.TierT1 {
+		t.Fatalf("new approval lost: %+v, %v", rows, err)
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "old.json")); err != nil || string(got) != string(old) {
+		t.Fatal("old approved question unexpectedly rewrote its proposal")
+	}
 }

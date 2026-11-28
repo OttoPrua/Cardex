@@ -29,7 +29,7 @@ func TestStrictDepsMigrationAndRoundTrip(t *testing.T) {
 	if err := original.Close(); err != nil {
 		t.Fatal(err)
 	}
-	db, err := Open(original.path)
+	db, err := OpenTierUpgrade(original.path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestStrictDepsV13MigratesBothV12ShapesAndFresh(t *testing.T) {
 			}
 
 			for range 2 {
-				db, err := Open(initial.path)
+				db, err := OpenTierUpgrade(initial.path)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -278,7 +278,7 @@ func TestStrictRuntimeFenceRepairsExistingV13UnderMigrationBackup(t *testing.T) 
 			}
 			prepareTestBackupOnWindows(t, snapshots)
 
-			db, err := Open(path)
+			db, err := OpenTierUpgrade(path)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -330,5 +330,64 @@ func TestStrictRuntimeFenceRepairsExistingV13UnderMigrationBackup(t *testing.T) 
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestStrictDepsV13TierUpgradePreservesStrictGuardAndRouteWire(t *testing.T) {
+	ctx := t.Context()
+	db := openDB(t)
+	old := model.Card{ID: "old", Kind: model.KindDev, Status: model.CardReady,
+		StrictDeps: true, Deps: []string{"upstream"}, Tier: model.TierT1}
+	if err := db.CreateCard(ctx, &old); err != nil {
+		t.Fatal(err)
+	}
+	for _, stmt := range []string{
+		"DELETE FROM schema_migrations WHERE version>13",
+		"DROP TABLE tier_semantics_activation",
+		"DROP TABLE strong_producers",
+		"DROP TABLE strong_tasks",
+		"DROP TABLE strong_artifacts",
+		"DROP TABLE strong_input_bindings",
+	} {
+		if _, err := db.db.ExecContext(ctx, stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	path := db.path
+	if v, err := db.SchemaVersion(ctx); err != nil || v != 13 {
+		t.Fatalf("expected current D1-v13 fixture, got %d: %v", v, err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	prepareTestBackupOnWindows(t, filepath.Join(filepath.Dir(path), "backups"))
+	if ordinary, err := Open(path); err != ErrTierUpgradeRequired {
+		if ordinary != nil {
+			_ = ordinary.Close()
+		}
+		t.Fatalf("ordinary open implicitly activated T1: %v", err)
+	}
+	db, err := OpenTierUpgrade(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if v, err := db.SchemaVersion(ctx); err != nil || v != TierConventionSchema {
+		t.Fatalf("expected upgraded schema %d, got %d: %v", TierConventionSchema, v, err)
+	}
+	if versionRows(t, db, 13) != 1 || versionRows(t, db, TierConventionSchema) != 1 {
+		t.Fatal("D1 and T1 activation markers do not coexist")
+	}
+	got, err := db.GetCard(ctx, old.ID)
+	if err != nil || !got.StrictDeps || got.Tier != model.TierT1 || !slices.Equal(got.Deps, old.Deps) {
+		t.Fatalf("activated card %+v: %v", got, err)
+	}
+	var tier, deps string
+	if err := db.db.QueryRowContext(ctx, "SELECT tier,deps FROM cards WHERE id='old'").Scan(&tier, &deps); err != nil ||
+		tier != "T3" || deps != `["upstream","`+strictRuntimeGuard+`"]` {
+		t.Fatalf("old tier and strict guard must remain on wire: %q %q %v", tier, deps, err)
+	}
+	if copies := dbCopies(t, filepath.Join(filepath.Dir(path), "backups")); len(copies) != 1 {
+		t.Fatalf("expected one protected pre-activation backup, got %d", len(copies))
 	}
 }

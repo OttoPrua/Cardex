@@ -86,7 +86,7 @@ func TestClassifySkipsTieredCard(t *testing.T) {
 	_, objID := seedRepo(t, db, repo, "true")
 	card := model.Card{
 		ID: "c", Objective: objID, Kind: model.KindDev, Title: "c",
-		Tier: model.TierT1, Status: model.CardReady, Body: "already tiered",
+		Tier: model.TierT3, Status: model.CardReady, Body: "already tiered",
 	}
 	if err := db.CreateCard(ctx, &card); err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestClassifySkipsTieredCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := mustCard(t, db, "c")
-	if got.Tier != model.TierT1 {
+	if got.Tier != model.TierT3 {
 		t.Fatalf("tier changed to %s", got.Tier)
 	}
 	if n := classifyErrors(t, db, "c"); n != 0 {
@@ -147,7 +147,7 @@ func TestClassifyHostTierFromScript(t *testing.T) {
 	if err := db.CreateChannel(ctx, &ch); err != nil {
 		t.Fatal(err)
 	}
-	script := []byte(`{"attempts":{"0":{"output":"TIER: T1\nREASON: small change\n","exit_code":0}}}`)
+	script := []byte(`{"attempts":{"0":{"output":"TIER: T3\nREASON: small change\n","exit_code":0}}}`)
 	if err := os.MkdirAll(filepath.Join(home, "scripts"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestClassifyHostTierFromScript(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := mustCard(t, db, "c")
-	if got.Tier != model.TierT1 {
+	if got.Tier != model.TierT3 {
 		t.Fatalf("tier %s", got.Tier)
 	}
 	if n := classifyErrors(t, db, "c"); n != 0 {

@@ -77,16 +77,17 @@ func reviewProgressText(raw string) string {
 }
 
 type reviewReceipt struct {
-	Card          string `json:"card"`
-	Review        string `json:"review"`
-	From          string `json:"from"`
-	ReviewCard    string `json:"review_card_id"`
-	ReviewAttempt string `json:"review_attempt_id"`
-	Mode          string `json:"mode"`
-	Tier          string `json:"tier"`
-	Reason        string `json:"reason"`
-	Hint          string `json:"hint"`
-	Verdict       string `json:"verdict"`
+	Card           string `json:"card"`
+	Review         string `json:"review"`
+	From           string `json:"from"`
+	ReviewCard     string `json:"review_card_id"`
+	ReviewAttempt  string `json:"review_attempt_id"`
+	Mode           string `json:"mode"`
+	Tier           string `json:"tier"`
+	TierConvention string `json:"tier_convention"`
+	Reason         string `json:"reason"`
+	Hint           string `json:"hint"`
+	Verdict        string `json:"verdict"`
 }
 
 type reviewProgressEvent struct {
@@ -199,8 +200,9 @@ func (s *Store) reviewProgress(ctx context.Context, cardID string) (ReviewProgre
 			}
 		}
 	}
+	tier, _ := model.TierFromConvention(model.Tier(plan.Tier), plan.TierConvention)
 	progress := ReviewProgress{
-		Mode: reviewProgressText(plan.Mode), Tier: reviewProgressText(plan.Tier),
+		Mode: reviewProgressText(plan.Mode), Tier: string(tier),
 		Reason: reviewProgressText(plan.Reason),
 	}
 	switch plan.Type {

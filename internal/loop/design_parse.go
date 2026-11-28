@@ -94,17 +94,17 @@ func nodeBlocked(n model.DesignNode) bool {
 
 func bumpTier(t model.Tier) model.Tier {
 	switch t {
-	case model.TierNone, model.TierT1:
+	case model.TierNone, model.TierT3:
 		return model.TierT2
 	case model.TierT2:
-		return model.TierT3
+		return model.TierT1
 	default:
-		return model.TierT3
+		return model.TierT1
 	}
 }
 
 func researchTier(q model.OpenQuestion) model.Tier {
-	t := model.TierT1
+	t := model.TierT3
 	n := q.Asks
 	if n < 0 {
 		n = 0

@@ -109,7 +109,7 @@ func TestReviewPassFollowsReviewedCard(t *testing.T) {
 			t.Fatalf("%s author rate %v row %+v", kind, row.ReviewPassRate, row)
 		}
 	}
-	reviewer := findScoreRow(t, rows, reviewerModel, model.KindReview, model.TierT3)
+	reviewer := findScoreRow(t, rows, reviewerModel, model.KindReview, model.TierT1)
 	if reviewer.ReviewPassRate != 0 {
 		t.Fatalf("reviewer bucket includes the pass %+v", reviewer)
 	}
@@ -134,7 +134,7 @@ func TestReviewPassFollowsReviewedCard(t *testing.T) {
 			t.Fatalf("%s second pass counted twice: %v", kind, row.ReviewPassRate)
 		}
 	}
-	if row := findScoreRow(t, again, reviewerModel, model.KindReview, model.TierT3); row.ReviewPassRate != 0 {
+	if row := findScoreRow(t, again, reviewerModel, model.KindReview, model.TierT1); row.ReviewPassRate != 0 {
 		t.Fatalf("reviewer bucket after second pass %+v", row)
 	}
 }
@@ -144,9 +144,9 @@ func TestReviewPassUsesBindNotPayload(t *testing.T) {
 	db := openScoreDB(t, home)
 	ctx := context.Background()
 	author := &model.Card{ID: "author", Kind: model.KindDev, Tier: model.TierT2, Title: "author", Status: model.CardDone}
-	decoy := &model.Card{ID: "missing-target", Kind: model.KindDev, Tier: model.TierT1, Title: "decoy", Status: model.CardDone}
+	decoy := &model.Card{ID: "missing-target", Kind: model.KindDev, Tier: model.TierT3, Title: "decoy", Status: model.CardDone}
 	review := &model.Card{
-		ID: "review", Kind: model.KindReview, Tier: model.TierT3, Title: "review", Status: model.CardDone,
+		ID: "review", Kind: model.KindReview, Tier: model.TierT1, Title: "review", Status: model.CardDone,
 		Deps: []string{"gone"},
 	}
 	for _, card := range []*model.Card{author, decoy, review} {
@@ -191,10 +191,10 @@ func TestReviewPassUsesBindNotPayload(t *testing.T) {
 	if !nearRate(authorRow.ReviewPassRate, 1) {
 		t.Fatalf("bind did not credit the reviewed card %+v", authorRow)
 	}
-	if row := findScoreRow(t, rows, "model-b", model.KindReview, model.TierT3); row.ReviewPassRate != 0 {
+	if row := findScoreRow(t, rows, "model-b", model.KindReview, model.TierT1); row.ReviewPassRate != 0 {
 		t.Fatalf("payload credited the reviewer %+v", row)
 	}
-	if row := findScoreRow(t, rows, "model-d", model.KindDev, model.TierT1); row.ReviewPassRate != 0 {
+	if row := findScoreRow(t, rows, "model-d", model.KindDev, model.TierT3); row.ReviewPassRate != 0 {
 		t.Fatalf("unrelated card credited %+v", row)
 	}
 }

@@ -573,7 +573,7 @@ func (d Deps) advanceNode(ctx context.Context, obj model.Objective, nodeID strin
 				Kind:         model.KindReview,
 				Title:        "复核 " + node.ID,
 				Body:         "复核节点 " + node.ID + "\n",
-				Tier:         model.TierT3,
+				Tier:         model.TierT1,
 				Status:       model.CardReady,
 				AuthorFamily: family,
 				Deps:         []string{designID},
@@ -741,7 +741,7 @@ func (d Deps) createInventory(ctx context.Context, obj model.Objective) error {
 		Kind:      model.KindResearch,
 		Title:     "盘点",
 		Body:      body,
-		Tier:      model.TierT1,
+		Tier:      model.TierT3,
 		Status:    model.CardReady,
 	})
 }
@@ -1671,7 +1671,7 @@ func (d Deps) recoverUnparsed(ctx context.Context, obj model.Objective, card mod
 			}
 			existing = &model.Card{
 				Objective: obj.ID, Node: card.Node, Kind: model.KindNormalize, Title: "整理",
-				Body: "整理 " + card.ID + "\n", Tier: model.TierT1, Status: model.CardReady, Deps: []string{card.ID},
+				Body: "整理 " + card.ID + "\n", Tier: model.TierT3, Status: model.CardReady, Deps: []string{card.ID},
 			}
 			if err := d.addCard(ctx, obj, existing); err != nil {
 				return err

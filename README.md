@@ -158,22 +158,23 @@ codexbar usage --provider codex --source cli --format json | cardex channel impo
 
 本次不接入浏览器抓取、API 账单金额、本地 token 估算或 CodexBar `cost`。不具备上述来源、未授权、响应不可读或字段不足时继续 unknown。验证适配器而不访问任何真实账号：`go test -v ./internal/quota ./internal/board ./cmd/cardex -run 'Subscription|CodexBar|ChannelImportUsage'`。
 
-等级展示不修改路由或数据库：当前版本沿用 T3 最强的旧编号，并在页内说明目标约定 T1 最强、T0 稀缺且需确认；新版默认设计等级切为 T1 后，说明会随代码切换。旧记录不自动翻号，页面提示也不代替调度器的确认校验。
 
 > ⚠️ 看板**没有鉴权**，只绑定本机或 Tailscale 等私有地址，不要用 `0.0.0.0` 暴露到公网。
 
 <details>
 <summary>初始模型定位示例</summary>
 
-模型 ID 要和渠道登记的一致。T1 事实核对，T2 常规开发，T3 设计与复核。
+升级旧库会换算已存档位以保持实际路由，旧记录保留出处。参见[档位迁移与回滚](docs/v2/tier-migration.md)。
+
+模型 ID 要和渠道登记的一致。T3 事实核对，T2 常规开发，T1 设计与复核。
 
 ```json
 {
   "positioning": [
     {"id": "starter-dev", "model": "YOUR_AUTHOR_MODEL_ID", "family": "gpt",
-     "tiers": ["T1", "T2"], "capabilities": [], "preference": 1},
+     "tiers": ["T3", "T2"], "capabilities": [], "preference": 1},
     {"id": "starter-review", "model": "YOUR_REVIEW_MODEL_ID", "family": "claude",
-     "tiers": ["T3"], "capabilities": [], "preference": 1}
+     "tiers": ["T1"], "capabilities": [], "preference": 1}
   ]
 }
 ```

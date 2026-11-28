@@ -26,9 +26,9 @@ func TestHeldReviewDoesNotDropPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	card := model.Card{
-		ID: "rv", Objective: obj, Kind: model.KindReview, Title: "rework review", Tier: model.TierT3,
+		ID: "rv", Objective: obj, Kind: model.KindReview, Title: "rework review", Tier: model.TierT1,
 		Status: model.CardReady, Channel: "cha", Model: "model-a",
-		Body:       loop.AppendReviewHold("复核模式：review，档位 T3。", model.TierT3, "cha", "model-a"),
+		Body:       loop.AppendReviewHold("复核模式：review，档位 T1。", model.TierT1, "cha", "model-a"),
 		Deps:       []string{"dev"},
 		Acceptance: []string{"true"},
 	}
@@ -73,24 +73,24 @@ func TestHeldReviewRouteDoesNotLowerModel(t *testing.T) {
 	}
 	channels := []model.Channel{{
 		ID: "cha", Runner: model.RunnerFake, Family: "fam", SourceGroup: "fam",
-		Models: []string{"low", "high"}, Concurrency: 2, Health: model.HealthOK, Tier: model.TierT1,
+		Models: []string{"low", "high"}, Concurrency: 2, Health: model.HealthOK, Tier: model.TierT3,
 	}}
 	pos := []model.Positioning{
-		{Model: "low", Family: "fam", Tiers: []model.Tier{model.TierT1}},
-		{Model: "high", Family: "fam", Tiers: []model.Tier{model.TierT3}},
+		{Model: "low", Family: "fam", Tiers: []model.Tier{model.TierT3}},
+		{Model: "high", Family: "fam", Tiers: []model.Tier{model.TierT1}},
 	}
 	r := New(home)
-	body := loop.AppendReviewHold("复核模式：review，档位 T3。", model.TierT3, "cha", "low")
+	body := loop.AppendReviewHold("复核模式：review，档位 T1。", model.TierT1, "cha", "low")
 
 	t.Run("pinned model below the floor asks", func(t *testing.T) {
 		card := model.Card{
-			ID: "rv-low", Objective: obj.ID, Kind: model.KindReview, Title: "rework review", Tier: model.TierT3,
+			ID: "rv-low", Objective: obj.ID, Kind: model.KindReview, Title: "rework review", Tier: model.TierT1,
 			Status: model.CardReady, Channel: "cha", Model: "low", Body: body, Deps: []string{"dev"},
 		}
 		if err := db.CreateCard(ctx, &card); err != nil {
 			t.Fatal(err)
 		}
-		rt, _, _, asked, err := r.chooseHeldReviewRoute(ctx, db, card, obj, channels, pos, nil, nil, model.TierT3)
+		rt, _, _, asked, err := r.chooseHeldReviewRoute(ctx, db, card, obj, channels, pos, nil, nil, model.TierT1)
 		if err != nil || !asked || rt.Channel != "" || rt.Model != "" {
 			t.Fatalf("route %+v asked %v err %v", rt, asked, err)
 		}
@@ -107,12 +107,12 @@ func TestHeldReviewRouteDoesNotLowerModel(t *testing.T) {
 
 	t.Run("channel pin uses a model that meets the floor", func(t *testing.T) {
 		card := model.Card{
-			ID: "rv-ch", Objective: obj.ID, Kind: model.KindReview, Title: "rework review", Tier: model.TierT3,
+			ID: "rv-ch", Objective: obj.ID, Kind: model.KindReview, Title: "rework review", Tier: model.TierT1,
 			Status: model.CardReady, Channel: "cha",
-			Body: loop.AppendReviewHold("复核模式：review，档位 T3。", model.TierT3, "cha", ""),
+			Body: loop.AppendReviewHold("复核模式：review，档位 T1。", model.TierT1, "cha", ""),
 		}
 		before := append([]string(nil), channels[0].Models...)
-		rt, _, _, asked, err := r.chooseHeldReviewRoute(ctx, db, card, obj, channels, pos, nil, nil, model.TierT3)
+		rt, _, _, asked, err := r.chooseHeldReviewRoute(ctx, db, card, obj, channels, pos, nil, nil, model.TierT1)
 		if err != nil || asked || rt.Channel != "cha" || rt.Model != "high" {
 			t.Fatalf("route %+v asked %v err %v", rt, asked, err)
 		}
@@ -123,11 +123,11 @@ func TestHeldReviewRouteDoesNotLowerModel(t *testing.T) {
 
 	t.Run("pinned model at the floor stays", func(t *testing.T) {
 		card := model.Card{
-			ID: "rv-high", Objective: obj.ID, Kind: model.KindReview, Title: "rework review", Tier: model.TierT3,
+			ID: "rv-high", Objective: obj.ID, Kind: model.KindReview, Title: "rework review", Tier: model.TierT1,
 			Status: model.CardReady, Channel: "cha", Model: "high",
-			Body: loop.AppendReviewHold("复核模式：review，档位 T3。", model.TierT3, "cha", "high"),
+			Body: loop.AppendReviewHold("复核模式：review，档位 T1。", model.TierT1, "cha", "high"),
 		}
-		rt, _, _, asked, err := r.chooseHeldReviewRoute(ctx, db, card, obj, channels, pos, nil, nil, model.TierT3)
+		rt, _, _, asked, err := r.chooseHeldReviewRoute(ctx, db, card, obj, channels, pos, nil, nil, model.TierT1)
 		if err != nil || asked || rt.Channel != "cha" || rt.Model != "high" {
 			t.Fatalf("route %+v asked %v err %v", rt, asked, err)
 		}
@@ -135,14 +135,14 @@ func TestHeldReviewRouteDoesNotLowerModel(t *testing.T) {
 
 	t.Run("old marker restores a missing model pin", func(t *testing.T) {
 		card := model.Card{
-			ID: "rv-marker", Objective: obj.ID, Kind: model.KindReview, Tier: model.TierT3,
+			ID: "rv-marker", Objective: obj.ID, Kind: model.KindReview, Tier: model.TierT1,
 			Status: model.CardReady, Channel: "cha",
-			Body: loop.AppendReviewHold("held", model.TierT3, "cha", "low"),
+			Body: loop.AppendReviewHold("held", model.TierT1, "cha", "low"),
 		}
 		if err := db.CreateCard(ctx, &card); err != nil {
 			t.Fatal(err)
 		}
-		rt, _, _, asked, err := r.resolveLaunchRoute(ctx, db, card, obj, channels, pos, nil, nil, model.TierT3)
+		rt, _, _, asked, err := r.resolveLaunchRoute(ctx, db, card, obj, channels, pos, nil, nil, model.TierT1)
 		if err != nil || !asked || rt.Model != "" {
 			t.Fatalf("route %+v asked %v err %v", rt, asked, err)
 		}
@@ -159,14 +159,14 @@ func TestHeldReviewWaitsForConcurrency(t *testing.T) {
 		t.Fatal(err)
 	}
 	channels := []model.Channel{{ID: "reviewer", Family: "reviewer", Models: []string{"strong"}, Health: model.HealthOK, Concurrency: 1}}
-	pos := []model.Positioning{{Model: "strong", Tiers: []model.Tier{model.TierT3}}}
+	pos := []model.Positioning{{Model: "strong", Tiers: []model.Tier{model.TierT1}}}
 	r := New(home)
 	for _, pin := range []struct{ id, channel, name string }{
 		{"auto", "", ""}, {"pinned", "reviewer", "strong"},
 	} {
 		t.Run(pin.id, func(t *testing.T) {
-			card := model.Card{ID: pin.id, Objective: objID, Kind: model.KindReview, Status: model.CardReady, Tier: model.TierT3,
-				Body: loop.AppendReviewHold("held", model.TierT3, pin.channel, pin.name)}
+			card := model.Card{ID: pin.id, Objective: objID, Kind: model.KindReview, Status: model.CardReady, Tier: model.TierT1,
+				Body: loop.AppendReviewHold("held", model.TierT1, pin.channel, pin.name)}
 			if err := db.CreateCard(ctx, &card); err != nil {
 				t.Fatal(err)
 			}
@@ -181,7 +181,7 @@ func TestHeldReviewWaitsForConcurrency(t *testing.T) {
 				t.Fatalf("questions %+v err %v", questions, err)
 			}
 			rt, reason, _, settled, err := r.resolveLaunchRoute(ctx, db, card, obj, channels, pos, nil, nil, model.TierNone)
-			if err != nil || settled || rt.Channel != "reviewer" || reason.SelectedTier(rt) != model.TierT3 {
+			if err != nil || settled || rt.Channel != "reviewer" || reason.SelectedTier(rt) != model.TierT1 {
 				t.Fatalf("free route %+v reason %+v settled %v err %v", rt, reason, settled, err)
 			}
 		})
@@ -206,9 +206,9 @@ func TestReviewSummaryIgnoresAuthorPinAndRetainsRetryTier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The cross-family review has to borrow T2 from its requested T1.
+	// The cross-family review has to borrow T2 from its requested T3.
 	pos := []model.Positioning{
-		{Model: "draft", Family: "author", Tiers: []model.Tier{model.TierT1}},
+		{Model: "draft", Family: "author", Tiers: []model.Tier{model.TierT3}},
 		{Model: "strong", Family: "reviewer", Tiers: []model.Tier{model.TierT2}},
 	}
 	for _, row := range pos {
@@ -218,7 +218,7 @@ func TestReviewSummaryIgnoresAuthorPinAndRetainsRetryTier(t *testing.T) {
 		}
 	}
 	card := model.Card{ID: "rv", Objective: objID, Kind: model.KindReview, Title: "review", Status: model.CardReady,
-		Tier: model.TierT1, AuthorFamily: "author", Deps: []string{"dev"}}
+		Tier: model.TierT3, AuthorFamily: "author", Deps: []string{"dev"}}
 	dev := model.Card{ID: "dev", Objective: objID, Kind: model.KindDev, Title: "dev", Status: model.CardReviewing}
 	for _, c := range []*model.Card{&dev, &card} {
 		if err := db.CreateCard(ctx, c); err != nil {
@@ -235,7 +235,7 @@ func TestReviewSummaryIgnoresAuthorPinAndRetainsRetryTier(t *testing.T) {
 		t.Helper()
 		sum, err := harvest.LoadSummary(harvest.SummaryPath(home, model.Attempt{ID: id}))
 		if err != nil || !sum.Match || sum.Runner != string(model.RunnerFake) || sum.Channel != "reviewer" || sum.Model != "strong" ||
-			sum.Tier != model.TierT2 || sum.Expected != (harvest.ExpectedRun{Tier: "T1"}) {
+			sum.Tier != model.TierT2 || sum.Expected != (harvest.ExpectedRun{Tier: "T3"}) {
 			t.Fatalf("summary %+v err %v", sum, err)
 		}
 	}

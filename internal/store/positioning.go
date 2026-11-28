@@ -66,7 +66,11 @@ func (s *Store) CreatePositioning(ctx context.Context, p *model.Positioning) err
 	if err := preparePositioning(p); err != nil {
 		return err
 	}
-	tiers, err := mustJSON(p.Tiers)
+	wire, err := translateTiers(p.Tiers)
+	if err != nil {
+		return err
+	}
+	tiers, err := mustJSON(wire)
 	if err != nil {
 		return err
 	}
@@ -95,7 +99,11 @@ func (s *Store) UpdatePositioning(ctx context.Context, p *model.Positioning) err
 	if err := preparePositioning(p); err != nil {
 		return err
 	}
-	tiers, err := mustJSON(p.Tiers)
+	wire, err := translateTiers(p.Tiers)
+	if err != nil {
+		return err
+	}
+	tiers, err := mustJSON(wire)
 	if err != nil {
 		return err
 	}
@@ -143,6 +151,10 @@ func scanPositioning(sc scanner) (model.Positioning, error) {
 		return p, err
 	}
 	if err := parseJSON(tiers, &p.Tiers); err != nil {
+		return p, err
+	}
+	var err error
+	if p.Tiers, err = translateTiers(p.Tiers); err != nil {
 		return p, err
 	}
 	if err := parseJSON(caps, &p.Capabilities); err != nil {

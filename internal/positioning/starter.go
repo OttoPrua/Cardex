@@ -67,8 +67,8 @@ func (h *Home) pendingLocked() ([]Proposal, error) {
 		if json.Unmarshal(b, &p) != nil {
 			continue
 		}
-		if p.Status == "proposed" || p.Status == "" {
-			out = append(out, Proposal{ID: p.ID, Entries: cloneEntries(p.Entries), Diff: p.Diff})
+		if (p.Status == "proposed" || p.Status == "") && p.TierConvention == ProposalTierWire {
+			out = append(out, Proposal{ID: p.ID, Entries: TranslateProposalWireTiers(p.Entries), Diff: p.Diff})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

@@ -715,7 +715,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	}
 	if d.Tier != model.TierNone {
 		selected := reason.SelectedTier(rt)
-		for _, tier := range []model.Tier{model.TierT3, model.TierT2, model.TierT1} {
+		for _, tier := range []model.Tier{model.TierT1, model.TierT2, model.TierT3} {
 			if tier.Rank() <= selected.Rank() && loop.ReviewFloorMet(channels, pos, rt.Channel, rt.Model, tier) {
 				d.ActualTier = tier
 				break
@@ -1334,15 +1334,17 @@ func resetSoon(reset, now time.Time) bool {
 }
 
 type scheduleFile struct {
-	Schedules []scheduleEntry `json:"schedules"`
+	TierConvention string          `json:"tier_convention"`
+	Schedules      []scheduleEntry `json:"schedules"`
 }
 
 type scheduleEntry struct {
-	Name     string       `json:"name"`
-	Every    string       `json:"every"`
-	Cron     string       `json:"cron"`
-	CronLite string       `json:"cron-lite"`
-	Template cardTemplate `json:"card_template"`
+	tierConvention string
+	Name           string       `json:"name"`
+	Every          string       `json:"every"`
+	Cron           string       `json:"cron"`
+	CronLite       string       `json:"cron-lite"`
+	Template       cardTemplate `json:"card_template"`
 }
 
 type cardTemplate struct {
@@ -1380,6 +1382,7 @@ func (r *Runner) schedules(ctx context.Context, db *store.Store) error {
 		return err
 	}
 	for _, entry := range file.Schedules {
+		entry.tierConvention = file.TierConvention
 		if strings.TrimSpace(entry.Name) == "" {
 			continue
 		}
@@ -1466,6 +1469,12 @@ func writeScheduleFault(home, name string, reason error) error {
 
 func enqueueTemplate(ctx context.Context, db *store.Store, objs []model.Objective, entry scheduleEntry, slot string) error {
 	tmpl := entry.Template
+	if _, err := model.TierFromConvention(model.TierNone, entry.tierConvention); err != nil {
+		return err
+	}
+	// Retain the existing soft default for a bad template tier. A valid old
+	// label is converted before dispatch so the ability tier does not change.
+	tierLabel, _ := model.TierFromConvention(model.Tier(strings.TrimSpace(tmpl.Tier)), entry.tierConvention)
 	objID := strings.TrimSpace(tmpl.Objective)
 	if objID == "" {
 		for _, obj := range objs {
@@ -1482,8 +1491,8 @@ func enqueueTemplate(ctx context.Context, db *store.Store, objs []model.Objectiv
 	if !kind.Valid() || kind == "" {
 		kind = model.KindRanking
 	}
-	tier := model.Tier(strings.TrimSpace(tmpl.Tier))
-	if !tier.Valid() || tier == "" {
+	tier := tierLabel
+	if tier == model.TierNone {
 		tier = model.DefaultTier(kind)
 	}
 	title := tmpl.Title

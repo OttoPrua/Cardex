@@ -139,7 +139,7 @@ func TestReviewProgressPinnedAttemptAcrossSurfaces(t *testing.T) {
 	rawBoard := f.get("/api/cards/subject")
 	oldManual := len(raw) + len(f.cli(0, "card", "show", "review", "--json"))
 	t.Logf("full CLI parent: %d bytes; manual parent+review: %d bytes; board parent: %d bytes", len(raw), oldManual, len(rawBoard))
-	want := map[string]string{"phase": "absorbed", "review_card_id": "review", "review_attempt_id": "a-exact", "verdict": "pass", "relation": "planned", "tier": "T3"}
+	want := map[string]string{"phase": "absorbed", "review_card_id": "review", "review_attempt_id": "a-exact", "verdict": "pass", "relation": "planned", "tier": "T1"}
 	a, b := progressJSON(t, raw, want), progressJSON(t, rawBoard, want)
 	for k, v := range a {
 		if b[k] != v {

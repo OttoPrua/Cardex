@@ -16,7 +16,7 @@ func TestReworkReviewKeepsTier(t *testing.T) {
 		ch := f.channel("ch-a", "author")
 		dev := f.card(model.Card{ID: "dev", Status: model.CardHarvesting, Channel: ch.ID, Tier: model.TierT2})
 		f.card(model.Card{
-			ID: "rev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardDone,
+			ID: "rev", Kind: model.KindReview, Tier: model.TierT1, Status: model.CardDone,
 			Deps: []string{"dev"}, Title: "prior review",
 		})
 		att := f.attempt(dev, 1, model.OutcomePassed, ch.ID, "")
@@ -27,10 +27,10 @@ func TestReworkReviewKeepsTier(t *testing.T) {
 		}
 		f.step()
 		fresh := readyReview(t, f, "dev")
-		if fresh.Tier != model.TierT3 || fresh.Channel != "" || fresh.Model != "" {
+		if fresh.Tier != model.TierT1 || fresh.Channel != "" || fresh.Model != "" {
 			t.Fatalf("review %+v", fresh)
 		}
-		if !strings.Contains(fresh.Body, ReviewHoldMarker) || !strings.Contains(fresh.Body, "tier=T3") {
+		if floor, _, _, ok := ReviewHold(fresh); !ok || floor != model.TierT1 || !strings.Contains(fresh.Body, "tier=T3") {
 			t.Fatalf("body %s", fresh.Body)
 		}
 		if f.mustCard("dev").Status != model.CardReviewing {
@@ -41,10 +41,10 @@ func TestReworkReviewKeepsTier(t *testing.T) {
 	t.Run("prior channel and model are copied", func(t *testing.T) {
 		f := newFx(t, model.ModeManual)
 		ch := f.channel("hold", "fam", "model-a")
-		f.position("model-a", "fam", model.TierT3)
+		f.position("model-a", "fam", model.TierT1)
 		dev := f.card(model.Card{ID: "dev", Status: model.CardHarvesting, Channel: ch.ID, Tier: model.TierT2})
 		f.card(model.Card{
-			ID: "rev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardDone,
+			ID: "rev", Kind: model.KindReview, Tier: model.TierT1, Status: model.CardDone,
 			Deps: []string{"dev"}, Channel: ch.ID, Model: "model-a", Title: "prior review",
 		})
 		att := f.attempt(dev, 1, model.OutcomePassed, ch.ID, "")
@@ -55,7 +55,7 @@ func TestReworkReviewKeepsTier(t *testing.T) {
 		}
 		f.step()
 		fresh := readyReview(t, f, "dev")
-		if fresh.Tier != model.TierT3 || fresh.Channel != ch.ID || fresh.Model != "model-a" {
+		if fresh.Tier != model.TierT1 || fresh.Channel != ch.ID || fresh.Model != "model-a" {
 			t.Fatalf("review %+v", fresh)
 		}
 		if !strings.Contains(fresh.Body, "channel="+ch.ID) || !strings.Contains(fresh.Body, "model=model-a") {
@@ -66,10 +66,10 @@ func TestReworkReviewKeepsTier(t *testing.T) {
 	t.Run("model below the floor asks instead of lowering", func(t *testing.T) {
 		f := newFx(t, model.ModeManual)
 		ch := f.channel("hold", "fam", "model-a")
-		f.position("model-a", "fam", model.TierT1)
+		f.position("model-a", "fam", model.TierT3)
 		dev := f.card(model.Card{ID: "dev", Status: model.CardHarvesting, Channel: ch.ID, Tier: model.TierT2})
 		f.card(model.Card{
-			ID: "rev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardDone,
+			ID: "rev", Kind: model.KindReview, Tier: model.TierT1, Status: model.CardDone,
 			Deps: []string{"dev"}, Channel: ch.ID, Model: "model-a", Title: "prior review",
 		})
 		att := f.attempt(dev, 1, model.OutcomePassed, ch.ID, "")
@@ -80,7 +80,7 @@ func TestReworkReviewKeepsTier(t *testing.T) {
 		}
 		f.step()
 		got := f.mustCard("dev")
-		if got.Status != model.CardNeedsInput || !strings.Contains(got.WaitReason, "review hold unmet") || !strings.Contains(got.WaitReason, "T3") || !strings.Contains(got.WaitReason, "model-a") {
+		if got.Status != model.CardNeedsInput || !strings.Contains(got.WaitReason, "review hold unmet") || !strings.Contains(got.WaitReason, "T1") || !strings.Contains(got.WaitReason, "model-a") {
 			t.Fatalf("dev %+v", got)
 		}
 		if len(cardsKind(f, model.KindReview)) != 1 {
@@ -100,12 +100,12 @@ func TestReworkReviewKeepsTier(t *testing.T) {
 		f.position("model-a", "fam", model.TierT2)
 		dev := f.card(model.Card{ID: "dev", Status: model.CardHarvesting, Tier: model.TierT2})
 		prior := f.card(model.Card{
-			ID: "rev", Kind: model.KindReview, Tier: model.TierT1, Status: model.CardDone,
+			ID: "rev", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardDone,
 			Deps: []string{dev.ID},
 		})
 		reviewAttempt := f.attempt(prior, 0, model.OutcomePassed, ch.ID, "")
 		reviewAttempt.Route.Model = "model-a"
-		reviewAttempt.RouteReason.Dispatch = &model.RouteDispatch{Model: "model-a", Tier: model.TierT1, ActualTier: model.TierT2}
+		reviewAttempt.RouteReason.Dispatch = &model.RouteDispatch{Model: "model-a", Tier: model.TierT3, ActualTier: model.TierT2}
 		reviewAttempt.RouteReason.Candidates = []model.RouteCandidate{{Channel: ch.ID, Model: "model-a", Tier: model.TierT2}}
 		if err := f.db.UpdateAttempt(f.ctx, &reviewAttempt); err != nil {
 			t.Fatal(err)
@@ -129,19 +129,19 @@ func TestReworkReviewKeepsTier(t *testing.T) {
 		f := newFx(t, model.ModeManual)
 		author := f.channel("author", "author-family", "draft")
 		reviewer := f.channel("reviewer", "reviewer-family", "strong")
-		f.position("draft", author.Family, model.TierT1)
-		f.position("strong", reviewer.Family, model.TierT3)
+		f.position("draft", author.Family, model.TierT3)
+		f.position("strong", reviewer.Family, model.TierT1)
 		obj := f.objective()
 		obj.Channel, obj.Model = author.ID, "draft"
 		if err := f.db.UpdateObjective(f.ctx, &obj); err != nil {
 			t.Fatal(err)
 		}
-		dev := f.card(model.Card{ID: "dev", Status: model.CardHarvesting, Tier: model.TierT1})
+		dev := f.card(model.Card{ID: "dev", Status: model.CardHarvesting, Tier: model.TierT3})
 		prior := f.card(model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT2, Status: model.CardDone,
 			AuthorFamily: author.Family, Deps: []string{dev.ID}})
 		reviewAttempt := f.attempt(prior, 0, model.OutcomePassed, reviewer.ID, "")
 		reviewAttempt.Route.Model = "strong"
-		reviewAttempt.RouteReason.Dispatch = &model.RouteDispatch{Channel: obj.Channel, Model: obj.Model, Tier: model.TierT2, ActualTier: model.TierT3}
+		reviewAttempt.RouteReason.Dispatch = &model.RouteDispatch{Channel: obj.Channel, Model: obj.Model, Tier: model.TierT2, ActualTier: model.TierT1}
 		if err := f.db.UpdateAttempt(f.ctx, &reviewAttempt); err != nil {
 			t.Fatal(err)
 		}
@@ -157,13 +157,13 @@ func TestReworkReviewKeepsTier(t *testing.T) {
 		f.step()
 		fresh := readyReview(t, f, dev.ID)
 		floor, channel, modelName, held := ReviewHold(fresh)
-		if fresh.AuthorFamily != author.Family || fresh.Tier != model.TierT3 || fresh.Channel != "" || fresh.Model != "" ||
+		if fresh.AuthorFamily != author.Family || fresh.Tier != model.TierT1 || fresh.Channel != "" || fresh.Model != "" ||
 			!held || floor != fresh.Tier || channel != "" || modelName != "" {
 			t.Fatalf("review %+v", fresh)
 		}
 	})
 
-	t.Run("first review of a small diff stays T1", func(t *testing.T) {
+	t.Run("first review of a small diff stays T3", func(t *testing.T) {
 		f := newFx(t, model.ModeManual)
 		ch := f.channel("ch-a", "author")
 		dev := f.card(model.Card{ID: "dev", Status: model.CardHarvesting, Channel: ch.ID, Tier: model.TierT2})
@@ -175,20 +175,20 @@ func TestReworkReviewKeepsTier(t *testing.T) {
 		}
 		f.step()
 		fresh := readyReview(t, f, "dev")
-		if fresh.Tier != model.TierT1 || strings.Contains(fresh.Body, ReviewHoldMarker) {
+		if fresh.Tier != model.TierT3 || strings.Contains(fresh.Body, ReviewHoldMarker) {
 			t.Fatalf("review %+v body %s", fresh, fresh.Body)
 		}
 	})
 }
 
 func TestReviewHoldRoundTrip(t *testing.T) {
-	body := AppendReviewHold("复核模式：review，档位 T3。", model.TierT3, "hold", "model-a")
+	body := AppendReviewHold("复核模式：review，档位 T1。", model.TierT1, "hold", "model-a")
 	tier, channel, modelName, ok := ReviewHold(model.Card{Body: body})
-	if !ok || tier != model.TierT3 || channel != "hold" || modelName != "model-a" {
+	if !ok || tier != model.TierT1 || channel != "hold" || modelName != "model-a" {
 		t.Fatalf("hold %s %s %s %v", tier, channel, modelName, ok)
 	}
-	plan := raiseReviewFloor(reviewPlan{Mode: model.ReviewCheck, Tier: model.TierT1, Why: "completion check"}, model.Card{Tier: model.TierT3, Review: string(model.ReviewFull)})
-	if plan.Mode != model.ReviewFull || plan.Tier != model.TierT3 {
+	plan := raiseReviewFloor(reviewPlan{Mode: model.ReviewCheck, Tier: model.TierT3, Why: "completion check"}, model.Card{Tier: model.TierT1, Review: string(model.ReviewFull)})
+	if plan.Mode != model.ReviewFull || plan.Tier != model.TierT1 {
 		t.Fatalf("plan %+v", plan)
 	}
 }

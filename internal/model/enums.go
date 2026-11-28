@@ -26,9 +26,9 @@ type Tier string
 
 const (
 	TierNone Tier = ""   // 尚未分级。
-	TierT1   Tier = "T1" // 低风险或整理。
+	TierT1   Tier = "T1" // 设计、复核或高难度。
 	TierT2   Tier = "T2" // 普通实现。
-	TierT3   Tier = "T3" // 设计、复核或高难度。
+	TierT3   Tier = "T3" // 低风险或整理。
 )
 
 // Outcome is the harvest result. Values are the design §5 table.
@@ -190,11 +190,11 @@ func AllCardKinds() []CardKind {
 func DefaultTier(k CardKind) Tier {
 	switch k {
 	case KindDesign, KindPlan, KindSkeleton, KindReview, KindReplan:
-		return TierT3
+		return TierT1
 	case KindSpike, KindDev, KindRepair, KindRebase, KindRanking:
 		return TierT2
 	case KindResearch, KindNormalize, KindBacklog:
-		return TierT1
+		return TierT3
 	default:
 		return TierT2
 	}
@@ -314,14 +314,14 @@ func (k CardKind) Valid() bool { return oneOf(k, AllCardKinds()) }
 // Valid reports whether t is empty or T1–T3.
 func (t Tier) Valid() bool { return t == TierNone || oneOf(t, AllTiers()) }
 
-// Rank 把档位排成数：T1 是 1，T2 是 2，T3 是 3。空或未知是 0。
+// Rank 把档位排成数：T3 是 1，T2 是 2，T1 是 3。空或未知是 0。
 func (t Tier) Rank() int {
 	switch t {
-	case TierT1:
+	case TierT3:
 		return 1
 	case TierT2:
 		return 2
-	case TierT3:
+	case TierT1:
 		return 3
 	default:
 		return 0
@@ -385,7 +385,7 @@ const (
 	ReviewInherit ReviewMode = ""       // 沿用上一层；三层都空时等同 auto。
 	ReviewAuto    ReviewMode = "auto"   // 按卡种和改动风险决定。
 	ReviewOff     ReviewMode = "off"    // 不复核，验收通过即排队合并。
-	ReviewCheck   ReviewMode = "check"  // 完成度检查：T1，只核对交付物是否齐全。
+	ReviewCheck   ReviewMode = "check"  // 完成度检查：T3，只核对交付物是否齐全。
 	ReviewFull    ReviewMode = "review" // 正常复核：档位按改动风险定。
 )
 

@@ -96,19 +96,19 @@ func TestClosedSetsAccepted(t *testing.T) {
 
 func TestDefaultTiers(t *testing.T) {
 	want := map[CardKind]Tier{
-		KindDesign:    TierT3,
-		KindResearch:  TierT1,
+		KindDesign:    TierT1,
+		KindResearch:  TierT3,
 		KindSpike:     TierT2,
-		KindPlan:      TierT3,
-		KindSkeleton:  TierT3,
+		KindPlan:      TierT1,
+		KindSkeleton:  TierT1,
 		KindDev:       TierT2,
-		KindReview:    TierT3,
+		KindReview:    TierT1,
 		KindRepair:    TierT2,
 		KindRebase:    TierT2,
-		KindReplan:    TierT3,
-		KindNormalize: TierT1,
+		KindReplan:    TierT1,
+		KindNormalize: TierT3,
 		KindRanking:   TierT2,
-		KindBacklog:   TierT1,
+		KindBacklog:   TierT3,
 	}
 	if len(want) != len(AllCardKinds()) {
 		t.Fatalf("default tier table %d kinds, AllCardKinds %d", len(want), len(AllCardKinds()))

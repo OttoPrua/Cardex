@@ -142,7 +142,7 @@ func TestModelAndQuotaViews(t *testing.T) {
 		t.Fatal("quota details leaked into model tab")
 	}
 	quota := do(t, http.MethodGet, "/channels?tab=quota")
-	assertContains(t, quota.Body.String(), "shared-subscription", "不设上限", "unknown（未接入）", "本地窗口快照", "旧版编号：T3 最强", "新约定：T1 最强", "T0")
+	assertContains(t, quota.Body.String(), "shared-subscription", "不设上限", "unknown（未接入）", "本地窗口快照", "当前数据库使用新编号：T1 最强", "T3 较轻量")
 	assertContains(t, quota.Body.String(), ".channel .ch-head[id]{scroll-margin-top:96px}", ".channel .ch-head[id]{scroll-margin-top:160px}")
 	if strings.Contains(quota.Body.String(), "class=\"model-activity\"") {
 		t.Fatal("model details leaked into quota tab")

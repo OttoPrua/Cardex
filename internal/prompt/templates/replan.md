@@ -11,3 +11,5 @@
 按实际结果同步维护 context.md，不要只调整卡清单。
 
 在 `## 新卡` 里给出调整后的 JSON 卡清单。每张卡的字段是 `key`、`kind`、`title`、`body`、`tier?`、`claims?`、`deps?`、`acceptance?`。
+
+档位使用当前编号：T1 最强，T2 常规，T3 轻量。

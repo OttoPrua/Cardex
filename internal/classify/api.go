@@ -13,6 +13,7 @@ const ClassifyTimeout = 30 * time.Second
 
 // PromptTemplate is the fixed classifier prompt compiled into the package.
 const PromptTemplate = `Classify this Cardex card as exactly one tier: T1, T2, or T3.
+T1 is the strongest tier (design, difficult changes, high-risk review); T2 is routine implementation; T3 is the lightest (fact-checking and cleanup).
 Reply with exactly two lines and no other text:
 TIER: <T1|T2|T3>
 REASON: <one sentence>

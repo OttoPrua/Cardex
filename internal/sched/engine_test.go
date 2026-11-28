@@ -42,7 +42,7 @@ func TestDesignPhaseErrorStoresEventAndDisposes(t *testing.T) {
 	}
 	card := model.Card{
 		ID: "inv", Objective: obj.ID, Kind: model.KindResearch, Title: "盘点",
-		Body: "Q0\n", Tier: model.TierT1, Status: model.CardDone,
+		Body: "Q0\n", Tier: model.TierT3, Status: model.CardDone,
 	}
 	if err := db.CreateCard(ctx, &card); err != nil {
 		t.Fatal(err)
@@ -108,7 +108,7 @@ func TestDesignErrorLeavesRunningSibling(t *testing.T) {
 				seedInventoryFailure(t, db)
 				card := model.Card{
 					ID: "sib", Objective: "auto", Kind: kind, Title: "旁路",
-					Body: "进行中", Tier: model.TierT1, Status: model.CardRunning,
+					Body: "进行中", Tier: model.TierT3, Status: model.CardRunning,
 				}
 				if err := db.CreateCard(ctx, &card); err != nil {
 					t.Fatal(err)
@@ -175,11 +175,11 @@ func TestDesignErrorDisposesNamedExit(t *testing.T) {
 	}
 	card := model.Card{
 		ID: "named", Objective: obj.ID, Kind: model.KindResearch, Title: "研究",
-		Body: "notes", Tier: model.TierT1, Status: model.CardRunning,
+		Body: "notes", Tier: model.TierT3, Status: model.CardRunning,
 	}
 	other := model.Card{
 		ID: "other", Objective: obj.ID, Kind: model.KindPlan, Title: "拆卡",
-		Body: "notes", Tier: model.TierT3, Status: model.CardRunning,
+		Body: "notes", Tier: model.TierT1, Status: model.CardRunning,
 	}
 	devCard := model.Card{
 		ID: "devcard", Objective: obj.ID, Kind: model.KindDev, Title: "实现",
@@ -295,7 +295,7 @@ func TestDesignErrorHarvestWritesEvidence(t *testing.T) {
 	}
 	card := model.Card{
 		ID: "named", Objective: obj.ID, Kind: model.KindResearch, Title: "研究",
-		Body: "notes", Tier: model.TierT1, Status: model.CardRunning,
+		Body: "notes", Tier: model.TierT3, Status: model.CardRunning,
 		Acceptance: []string{"false"},
 	}
 	if err := db.CreateCard(ctx, &card); err != nil {
@@ -355,7 +355,7 @@ func seedInventoryFailure(t *testing.T, db *store.Store) {
 	}
 	card := model.Card{
 		ID: "inv", Objective: obj.ID, Kind: model.KindResearch, Title: "盘点",
-		Body: "Q0\n", Tier: model.TierT1, Status: model.CardDone,
+		Body: "Q0\n", Tier: model.TierT3, Status: model.CardDone,
 	}
 	if err := db.CreateCard(ctx, &card); err != nil {
 		t.Fatal(err)

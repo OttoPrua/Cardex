@@ -322,8 +322,10 @@ func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 		if _, err := st.blockOnQuestion(&card, false, model.QuestionCustom, reason); err != nil {
 			return err
 		}
+		wire, _ := model.TranslateLegacyTier(plan.Tier)
 		return st.event("card:"+card.ID, "review_hold_unmet", map[string]string{
-			"card": card.ID, "tier": string(plan.Tier), "channel": holdChannel, "model": holdModel, "reason": reason,
+			"card": card.ID, "tier": string(wire), "tier_convention": model.LegacyTierWire,
+			"channel": holdChannel, "model": holdModel, "reason": reason,
 		})
 	}
 	card.Status = model.CardReviewing
@@ -356,7 +358,8 @@ func (st *step) ensureReview(card model.Card, attempt model.Attempt) error {
 	if err != nil {
 		return err
 	}
-	return st.event("card:"+card.ID, "review_planned", map[string]string{"card": card.ID, "review": created.ID, "mode": string(plan.Mode), "tier": string(plan.Tier), "reason": plan.Why})
+	wire, _ := model.TranslateLegacyTier(plan.Tier)
+	return st.event("card:"+card.ID, "review_planned", map[string]string{"card": card.ID, "review": created.ID, "mode": string(plan.Mode), "tier": string(wire), "tier_convention": model.LegacyTierWire, "reason": plan.Why})
 }
 
 // priorReview is the latest finished review of cardID. Canceled and unanswered reviews do not set the floor.
@@ -452,7 +455,7 @@ func (st *step) createNormalize(card model.Card, attemptID string) error {
 		Node:      card.Node,
 		Kind:      model.KindNormalize,
 		Title:     "normalize " + card.Title,
-		Tier:      model.TierT1,
+		Tier:      model.TierT3,
 		Status:    model.CardReady,
 		Deps:      []string{card.ID},
 	})
@@ -1228,7 +1231,7 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		card.Status = model.CardDone
 		return st.saveCard(card)
 	case verdictEscalate:
-		// An unsure reviewer hands over one tier up; at T3 it is a person's call.
+		// An unsure reviewer hands over one tier up; at T1 it is a person's call.
 		if err := st.noteReviewVerdict(parent, card, attempt, verdict, stored, false); err != nil {
 			return err
 		}
@@ -1238,12 +1241,12 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		}
 		cur := card.Tier
 		if cur == "" {
-			cur = model.TierT3
+			cur = model.TierT1
 		}
 		next, ok := upTier(cur)
 		if !ok {
 			parent.WaitReason = ""
-			_, err := st.blockOnQuestion(&parent, foreign, model.QuestionCustom, "review escalated at T3: "+opinion)
+			_, err := st.blockOnQuestion(&parent, foreign, model.QuestionCustom, "review escalated at T1: "+opinion)
 			return err
 		}
 		up := model.Card{
@@ -1262,7 +1265,8 @@ func (st *step) absorbReview(card model.Card, attempt model.Attempt) error {
 		if err != nil {
 			return err
 		}
-		return st.event("card:"+parent.ID, "review_escalated", map[string]string{"card": parent.ID, "from": card.ID, "review": created.ID, "tier": string(next)})
+		wire, _ := model.TranslateLegacyTier(next)
+		return st.event("card:"+parent.ID, "review_escalated", map[string]string{"card": parent.ID, "from": card.ID, "review": created.ID, "tier": string(wire), "tier_convention": model.LegacyTierWire})
 	}
 	if verdict == "pass" {
 		parent.Status = model.CardMergeQueued
@@ -1747,7 +1751,7 @@ func (st *step) advance() error {
 			Node:      node.ID,
 			Kind:      model.KindReplan,
 			Title:     "replan " + node.ID,
-			Tier:      model.TierT3,
+			Tier:      model.TierT1,
 			Status:    model.CardReady,
 			Deps:      replanDeps(split),
 		}); err != nil {

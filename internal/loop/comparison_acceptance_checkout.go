@@ -23,7 +23,7 @@ import (
 func (st *step) testComparisonAcceptance(pin comparisonAcceptancePin) (bool, error) {
 	ctx := proc.WithExactGitObjects(st.ctx)
 	repo := st.snap.project.RepoPath
-	if !pin.valid() || !workspace.VerifyOptionalAcceptanceRepository(ctx, repo) {
+	if !pin.valid() || !workspace.VerifyOptionalAcceptanceRepository(ctx, repo, st.comparisonWorktreeRoot()) {
 		return false, nil
 	}
 	scratch := roots.Load(st.home).EffectiveScratch(st.snap.project.ScratchDir)

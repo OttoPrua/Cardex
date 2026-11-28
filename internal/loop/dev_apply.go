@@ -2229,7 +2229,7 @@ func (st *step) complete() error {
 		if alreadyGated && previous.Question == "" {
 			return nil
 		}
-		if !workspace.VerifyOptionalAcceptanceRepository(st.ctx, st.snap.project.RepoPath) {
+		if !st.verifyComparisonAcceptanceSource() {
 			return nil
 		}
 		pin, ok := st.currentComparisonAcceptance()

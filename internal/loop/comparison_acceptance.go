@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -44,6 +45,20 @@ func (p comparisonAcceptancePin) question() string {
 	return "Objective acceptance passed at exact integration commit " + p.OID + "; approve this commit for a local primary fast-forward."
 }
 
+func (st *step) comparisonWorktreeRoot() string {
+	// Match the scheduler's Git.Create root, without inferring ownership
+	// from a Git pointer or broadening to siblings of the configured root.
+	root := st.snap.project.WorktreeRoot
+	if strings.TrimSpace(root) == "" {
+		root = filepath.Join(st.home, "worktrees")
+	}
+	return root
+}
+
+func (st *step) verifyComparisonAcceptanceSource() bool {
+	return workspace.VerifyOptionalAcceptanceRepository(st.ctx, st.snap.project.RepoPath, st.comparisonWorktreeRoot())
+}
+
 func (st *step) resolveComparisonRef(ref string) (string, bool) {
 	repo := st.snap.project.RepoPath
 	if repo == "" || !strings.HasPrefix(ref, "refs/heads/") {
@@ -74,12 +89,12 @@ func (st *step) currentComparisonAcceptance() (comparisonAcceptancePin, bool) {
 	if !ok {
 		return comparisonAcceptancePin{}, false
 	}
-	// Bind the exact acceptance definition and project/repository identity;
-	// the receipt exposes only its digest, never commands or paths.
+	// Bind the exact acceptance definition and project/repository/worktree
+	// root identity; the receipt exposes only its digest, never the paths.
 	raw, _ := json.Marshal(struct {
-		Version, Objective, Project, Repo, Ref string
-		Commands, Checklist                    []string
-	}{"cardex-optional-comparison-v1", obj.ID, obj.Project, st.snap.project.RepoPath, ref,
+		Version, Objective, Project, Repo, Ref, WorktreeRoot string
+		Commands, Checklist                                  []string
+	}{"cardex-optional-comparison-v2", obj.ID, obj.Project, st.snap.project.RepoPath, ref, st.comparisonWorktreeRoot(),
 		append([]string{}, obj.Acceptance.Commands...), append([]string{}, obj.Acceptance.Checklist...)})
 	sum := sha256.Sum256(raw)
 	return comparisonAcceptancePin{Ref: ref, OID: oid, Scope: hex.EncodeToString(sum[:])}, true
@@ -88,7 +103,7 @@ func (st *step) currentComparisonAcceptance() (comparisonAcceptancePin, bool) {
 func (st *step) openComparisonCandidate(pin comparisonAcceptancePin, excluded []string, previous comparisonExemption) error {
 	// If the externally mutable branch advanced while tests ran, do not
 	// even ask for this result; qualify the current tip on a later step.
-	if !workspace.VerifyOptionalAcceptanceRepository(st.ctx, st.snap.project.RepoPath) {
+	if !st.verifyComparisonAcceptanceSource() {
 		return nil
 	}
 	if current, ok := st.currentComparisonAcceptance(); !ok || current != pin {
@@ -184,7 +199,7 @@ func (st *step) prepareAcceptedComparison(approval model.Question) error {
 // An unsupported or temporarily busy repository is not evidence that the
 // approved integration commit changed. Do not inspect its refs or mutate it.
 func (st *step) checkComparisonAcceptanceRepo(question string) (bool, error) {
-	if workspace.VerifyOptionalAcceptanceRepository(st.ctx, st.snap.project.RepoPath) {
+	if st.verifyComparisonAcceptanceSource() {
 		return true, nil
 	}
 	return false, st.noteComparisonGitHeld(question, "acceptance_repository_unverified", workspace.ErrOptionalCandidateHeld)
@@ -202,7 +217,7 @@ func (st *step) prepareComparisonGitEntry(question string, pin comparisonAccepta
 			}
 			return st.noteComparisonGitHeld(question, "primary_ref_unavailable", workspace.ErrOptionalCandidateHeld)
 		}
-		err := (workspace.Git{}).CheckOptionalCandidate(st.ctx, st.snap.project.RepoPath, primary, pin.Ref, base, pin.OID)
+		err := (workspace.Git{}).CheckOptionalCandidate(st.ctx, st.snap.project.RepoPath, primary, pin.Ref, base, pin.OID, st.comparisonWorktreeRoot())
 		if err != nil {
 			_, storeErr := st.recordComparisonGitResult(question, pin, err)
 			return storeErr
@@ -231,6 +246,11 @@ func (st *step) recordComparisonGitResult(question string, pin comparisonAccepta
 	}
 	reason := "local_git_verification_failed"
 	switch {
+	case errors.Is(err, workspace.ErrOptionalPrecommitNoWrite):
+		// Git proved that no commit packet was attempted and both direct
+		// refs remain exact. Do not count this as a merge, consume the
+		// approval, or keep the phase-1 fence open.
+		reason = "git_prepare_no_write_retriable"
 	case errors.Is(err, workspace.ErrOptionalPrimaryCheckedOut):
 		reason = "primary_checked_out"
 	case errors.Is(err, workspace.ErrOptionalCandidateDiverged):

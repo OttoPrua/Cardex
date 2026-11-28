@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 func changeComparisonIntegration(t *testing.T, repo, path, body string) string {
@@ -306,6 +307,208 @@ func TestAPI2OptionalBusyRepositoryDoesNotRevokeCurrentApproval(t *testing.T) {
 	if f.objective().Status != model.ObjectiveDone || gitSHA(t, repo, "main") != target ||
 		len(questionsKind(f, model.QuestionDone)) != 1 {
 		t.Fatal("making primary eligible did not consume the original exact valid approval")
+	}
+}
+
+func TestAPI2MarkedAcceptanceWithNormalCardeXWorktree(t *testing.T) {
+	for _, configured := range []bool{false, true} {
+		name := "default-home-worktrees"
+		if configured {
+			name = "configured-sibling-root"
+		}
+		t.Run(name, func(t *testing.T) {
+			f, repo, main := api2CompletionFixture(t)
+			physicalHome, err := filepath.EvalSymlinks(f.home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.home = physicalHome // canonicalize only this test's owned home
+			root := filepath.Join(physicalHome, "worktrees")
+			if configured {
+				root = filepath.Join(filepath.Dir(repo), "configured-cardex-worktrees")
+				setAPI2FixtureWorktreeRoot(t, f, root)
+			}
+			g := workspace.Git{}
+			wt, err := g.Create(f.ctx, workspace.CreateRequest{CardID: "finished", AttemptID: "synthetic-run",
+				ObjectiveID: f.obj.ID, RepoPath: repo, WorktreeRoot: root, IntegrationBranch: "integration"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			excludes := gitOut(t, wt.Path, "config", "--worktree", "--get", "core.excludesFile")
+			admin := strings.TrimSpace(gitOut(t, wt.Path, "rev-parse", "--absolute-git-dir"))
+			extension := strings.TrimSpace(gitOut(t, repo, "config", "--local", "--get", "extensions.worktreeConfig"))
+			if root == filepath.Dir(repo) || wt.Path != filepath.Join(root, "finished-synthetic-run") ||
+				strings.TrimSpace(excludes) != filepath.Join(admin, "info", "exclude") || extension != "true" {
+				t.Fatal("fixture did not create the real CardeX linked admin/config")
+			}
+			c := api2StandaloneCard(f, nil)
+			api2HoldUnlaunchedCard(f, c)
+			f.setCommands([]string{`test -f marker && test ! -e .git/config.worktree && test ! -e .git/worktrees`})
+			f.step()
+			target := gitSHA(t, repo, "integration")
+			q := pendingComparisonApproval(t, f, target, "")
+			if gitSHA(t, repo, "main") != main || gitSHA(t, wt.Path, "HEAD") != wt.BaseCommit {
+				t.Fatal("qualification altered a real source checkout")
+			}
+			approveComparisonFixture(t, f, q)
+			f.step()
+			if f.objective().Status != model.ObjectiveDone || gitSHA(t, repo, "main") != target ||
+				gitSHA(t, wt.Path, "HEAD") != wt.BaseCommit || gitOut(t, wt.Path, "config", "--worktree", "--get", "core.excludesFile") != excludes ||
+				len(questionsKind(f, model.QuestionDone)) != 1 || len(f.events("merged_local")) != 1 {
+				t.Fatal("normal checked-out CardeX linked branch blocked exact approval, or was modified by completion")
+			}
+		})
+	}
+}
+
+func setAPI2FixtureWorktreeRoot(t *testing.T, f *fx, root string) {
+	t.Helper()
+	p, err := f.db.GetProject(f.ctx, f.obj.Project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.WorktreeRoot = root
+	if err := f.db.UpdateProject(f.ctx, &p); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAPI2MarkedAcceptanceRejectsWrongOrUnownedLinkedRoot(t *testing.T) {
+	for _, setup := range []string{"wrong-configured-root", "missing-matching-home-root", "foreign-nested-link"} {
+		t.Run(setup, func(t *testing.T) {
+			f, repo, main := api2CompletionFixture(t)
+			configured := filepath.Join(filepath.Dir(repo), "configured-only")
+			if setup != "missing-matching-home-root" {
+				setAPI2FixtureWorktreeRoot(t, f, configured)
+			}
+			if setup == "foreign-nested-link" {
+				foreign := filepath.Join(configured, "not-direct", "foreign")
+				if err := os.MkdirAll(filepath.Dir(foreign), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				gitRun(t, repo, "worktree", "add", "--detach", foreign, "integration")
+			} else {
+				_, err := (workspace.Git{}).Create(f.ctx, workspace.CreateRequest{CardID: "finished", AttemptID: "unowned-fixture",
+					ObjectiveID: f.obj.ID, RepoPath: repo, WorktreeRoot: filepath.Join(filepath.Dir(repo), "different-cardex-root"), IntegrationBranch: "integration"})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			c := api2StandaloneCard(f, nil)
+			api2HoldUnlaunchedCard(f, c)
+			ran := filepath.Join(t.TempDir(), "must-not-run")
+			f.setCommands([]string{"test -f marker && printf 'called\n' > " + strconv.Quote(ran)})
+			f.step()
+			if _, err := os.Stat(ran); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("unowned root ran acceptance: %v", err)
+			}
+			if f.objective().Status != model.ObjectiveActive || len(questionsKind(f, model.QuestionDone)) != 0 ||
+				len(f.events(comparisonGitEntryEvent)) != 0 || gitSHA(t, repo, "main") != main {
+				t.Fatal("an unrelated root inferred itself into optional completion")
+			}
+		})
+	}
+}
+
+func TestAPI2MarkedApprovalPinsEffectiveRootAcrossEntry(t *testing.T) {
+	f, repo, main := api2CompletionFixture(t)
+	c := api2StandaloneCard(f, nil)
+	api2HoldUnlaunchedCard(f, c)
+	setAPI2FixtureWorktreeRoot(t, f, filepath.Join(filepath.Dir(repo), "approved-old-root"))
+	f.step()
+	target := gitSHA(t, repo, "integration")
+	previous := pendingComparisonApproval(t, f, target, "")
+	approveComparisonFixture(t, f, previous)
+	var entry *comparisonGitEntry
+	if err := f.db.WithTopLevelWriteTx(f.ctx, func(tx context.Context) error {
+		fresh, err := loadSnap(tx, f.db, f.obj.ID)
+		if err != nil {
+			return err
+		}
+		st := &step{ctx: tx, db: f.db, home: f.home, snap: fresh, now: clockFrom(tx), completionReserved: true}
+		err = st.complete()
+		entry = st.comparisonPrepared
+		return err
+	}); err != nil || entry == nil {
+		t.Fatalf("missing exact approved entry: %v", err)
+	}
+	setAPI2FixtureWorktreeRoot(t, f, filepath.Join(filepath.Dir(repo), "changed-root"))
+	if err := executeComparisonEntry(f.ctx, f.db, f.obj.ID, *entry, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.events(comparisonApprovalInvalidated)) != 1 || len(f.events(comparisonGitEntryClosedEvent)) != 1 ||
+		len(f.events("merged_local")) != 0 || gitSHA(t, repo, "main") != main ||
+		len(questionsKind(f, model.QuestionDone)) != 1 {
+		t.Fatal("new project root used the old scope at the second writer boundary")
+	}
+	f.step()
+	fresh := pendingComparisonApproval(t, f, target, previous.ID)
+	approveComparisonFixture(t, f, fresh)
+	f.step()
+	if f.objective().Status != model.ObjectiveDone || gitSHA(t, repo, "main") != target ||
+		len(questionsKind(f, model.QuestionDone)) != 2 {
+		t.Fatal("fresh proof and question did not authorize the unchanged OID with the new exact root")
+	}
+}
+
+func TestAPI2ActualPrepareRefLockClosesEntryAndKeepsExactApproval(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses local Git shell to install real synthetic contention")
+	}
+	f, repo, main := api2CompletionFixture(t)
+	card := api2StandaloneCard(f, nil)
+	api2HoldUnlaunchedCard(f, card)
+	f.step()
+	target := gitSHA(t, repo, "integration")
+	q := pendingComparisonApproval(t, f, target, "")
+	approveComparisonFixture(t, f, q)
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shim := t.TempDir()
+	lock := filepath.Join(repo, ".git", "refs", "heads", "main.lock")
+	// Contention begins on entering the actual update-ref process, after
+	// the durable phase-1 intent and its read-only preflight have passed.
+	body := "#!/bin/sh\ncase \" $* \" in\n" +
+		"  *' update-ref '*' --stdin '*)\n" +
+		"    (set -C; printf '%s\\n' blocked > " + strconv.Quote(lock) + ") || exit 95;;\n" +
+		"esac\nexec " + strconv.Quote(realGit) + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(shim, "git"), []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := os.Getenv("PATH")
+	t.Setenv("PATH", shim+string(os.PathListSeparator)+oldPath)
+	err = ResumeOptionalComparisonCandidate(f.ctx, f.db, f.objective())
+	t.Setenv("PATH", oldPath)
+	if !errors.Is(err, workspace.ErrOptionalPrecommitNoWrite) {
+		t.Fatalf("the actual Git lock did not produce a definite prepare-only hold: %v", err)
+	}
+	locked, err := os.ReadFile(lock)
+	attempts, attemptsErr := f.db.ListAttempts(f.ctx, card.ID)
+	held := f.events(comparisonGitHeld)
+	if err != nil || string(locked) != "blocked\n" || attemptsErr != nil || len(attempts) != 0 ||
+		len(held) != 1 || !strings.Contains(string(held[0].Data), "git_prepare_no_write_retriable") ||
+		len(f.events(comparisonGitEntryEvent)) != 1 || len(f.events(comparisonGitEntryClosedEvent)) != 1 ||
+		len(f.events(comparisonGitUnknown)) != 0 || len(f.events(comparisonApprovalInvalidated)) != 0 ||
+		len(f.events("merged_local")) != 0 || len(questionsKind(f, model.QuestionDone)) != 1 ||
+		f.objective().Status != model.ObjectiveDoneCandidate || gitSHA(t, repo, "main") != main ||
+		gitSHA(t, repo, "integration") != target {
+		t.Fatal("a proven precommit no-write was recorded as a merge/revocation/unknown, or altered either zero-cost ref")
+	}
+	if err := os.Remove(lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := ResumeOptionalComparisonCandidate(f.ctx, f.db, f.objective()); err != nil {
+		t.Fatal(err)
+	}
+	questions := questionsKind(f, model.QuestionDone)
+	if len(questions) != 1 || questions[0].ID != q.ID || !approved(questions[0].Answer) ||
+		len(f.events(comparisonGitEntryEvent)) != 2 || len(f.events(comparisonGitEntryClosedEvent)) != 2 ||
+		len(f.events("merged_local")) != 1 || gitSHA(t, repo, "main") != target ||
+		f.objective().Status != model.ObjectiveDone {
+		t.Fatal("release did not consume the same exact approval for the real fast-forward")
 	}
 }
 

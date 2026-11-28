@@ -237,7 +237,7 @@ func TestOptionalCandidateMergeDoesNotTakeOverExistingRefLock(t *testing.T) {
 	}
 	err := (Git{}).MergeOptionalCandidate(t.Context(), repo, "refs/heads/main", "refs/heads/integration", base, candidate)
 	after, readErr := os.ReadFile(lock)
-	if !errors.Is(err, ErrOptionalRefProofAmbiguous) || errors.Is(err, ErrOptionalCandidateUpdateUnknown) ||
+	if !errors.Is(err, ErrOptionalPrecommitNoWrite) || errors.Is(err, ErrOptionalRefProofAmbiguous) || errors.Is(err, ErrOptionalCandidateUpdateUnknown) ||
 		readErr != nil || string(after) != before || gitOut(t, repo, "rev-parse", "refs/heads/main") != base {
 		t.Fatalf("existing lock could not be safely held: %v %v", err, readErr)
 	}
@@ -364,6 +364,103 @@ func TestOptionalCandidateAcceptanceRepoRejectsCheckoutFilters(t *testing.T) {
 			defer gitRun(t, repo, "config", "--unset", key)
 			if VerifyOptionalAcceptanceRepository(t.Context(), repo) {
 				t.Fatal("unproved checkout substitution was qualified")
+			}
+		})
+	}
+}
+
+func TestOptionalCandidateAcceptsRegisteredCardexWorktreeConfig(t *testing.T) {
+	for _, mode := range []string{"configured-root", "default-sibling", "unknown-override", "hook-override", "redirected-backlink", "primary-linked"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := t.Context()
+			repo := optionalMainRepo(t)
+			parent, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			approved := filepath.Join(parent, "configured")
+			if mode == "default-sibling" {
+				approved = filepath.Join(parent, "home", "worktrees")
+			}
+			base := gitOut(t, repo, "rev-parse", "HEAD")
+			gitRun(t, repo, "checkout", "-b", "integration")
+			optionalFixtureCommit(t, repo, "candidate.txt", "candidate")
+			candidate := gitOut(t, repo, "rev-parse", "HEAD")
+			g := Git{}
+			wt, err := g.Create(ctx, CreateRequest{
+				RepoPath: repo, WorktreeRoot: approved, IntegrationBranch: "integration",
+				CardID: "card", AttemptID: "attempt", ObjectiveID: "objective",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := g.BlockPush(ctx, wt.Path); err != nil {
+				t.Fatal(err)
+			}
+			if VerifyOptionalAcceptanceRepository(ctx, repo) {
+				t.Fatal("arbitrary registered sibling accepted without explicit configured root")
+			}
+			switch mode {
+			case "unknown-override":
+				gitRun(t, wt.Path, "config", "--worktree", "filter.synthetic.smudge", "fixture-never-run")
+			case "hook-override":
+				gitRun(t, wt.Path, "config", "--worktree", "core.hooksPath", filepath.Join(parent, "foreign-hooks"))
+			case "redirected-backlink":
+				if err := os.WriteFile(filepath.Join(wt.Path, ".git"), []byte("gitdir: "+filepath.Join(parent, "other")+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "primary-linked":
+				gitRun(t, wt.Path, "checkout", "main")
+			}
+			qualified := VerifyOptionalAcceptanceRepository(ctx, repo, approved)
+			err = g.MergeOptionalCandidate(ctx, repo, "refs/heads/main", "refs/heads/integration", base, candidate, approved)
+			if mode == "configured-root" || mode == "default-sibling" {
+				if !qualified || err != nil || gitOut(t, repo, "rev-parse", "refs/heads/main") != candidate ||
+					gitOut(t, wt.Path, "rev-parse", "HEAD") != candidate {
+					t.Fatalf("ordinary CardeX-created worktree prevented exact local completion: qualified=%v err=%v", qualified, err)
+				}
+			} else {
+				want := ErrOptionalRefProofAmbiguous
+				if mode == "primary-linked" {
+					want = ErrOptionalPrimaryCheckedOut
+				}
+				if !errors.Is(err, want) || gitOut(t, repo, "rev-parse", "refs/heads/main") != base ||
+					(mode != "primary-linked" && qualified) {
+					t.Fatalf("unsafe worktree config/occupancy was not held: qualified=%v err=%v", qualified, err)
+				}
+			}
+		})
+	}
+}
+
+func TestOptionalCandidatePrepareRejectsMismatchEvenIfTipReset(t *testing.T) {
+	repo := t.TempDir()
+	primary, integration := "refs/heads/main", "refs/heads/integration"
+	lock := filepath.ToSlash(filepath.Join(repo, ".git", "refs", "heads", "main.lock"))
+	validLock := "fatal: prepare: cannot lock ref '" + primary + "': Unable to create '" + lock + "': File exists.\n"
+	mismatch := "fatal: prepare: cannot lock ref '" + integration + "': is at 0a but expected 1b\n"
+	for _, tc := range []struct {
+		name, stderr string
+		start        bool
+		exit         int
+		tips, want   error
+	}{
+		{"observed mismatch then same tip", mismatch, true, 128, nil, ErrOptionalRefProofAmbiguous},
+		{"observed integration mismatch then reset while primary moved", mismatch, true, 128, ErrOptionalCandidateChanged, ErrOptionalRefProofAmbiguous},
+		{"lock but primary moved before recheck", validLock, true, 128, ErrOptionalCandidateChanged, ErrOptionalRefProofAmbiguous},
+		{"current direct integration changed", mismatch, true, 128, ErrOptionalIntegrationChanged, ErrOptionalIntegrationChanged},
+		{"recognized lock and exact tips", validLock, true, 128, nil, ErrOptionalPrecommitNoWrite},
+		{"lock and mismatch mixed", validLock + mismatch, true, 128, nil, ErrOptionalRefProofAmbiguous},
+		{"lock without start ack", validLock, false, 128, nil, ErrOptionalRefProofAmbiguous},
+		{"lock without known Git exit", validLock, true, -1, nil, ErrOptionalRefProofAmbiguous},
+		{"overflow lock", validLock + strings.Repeat("x", 4096), true, 128, nil, ErrOptionalRefProofAmbiguous},
+		{"missing proof", "", true, 128, nil, ErrOptionalRefProofAmbiguous},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var d optionalPrivateDiagnostic
+			_, _ = d.Write([]byte(tc.stderr))
+			if got := optionalPrepareOutcome(repo, primary, integration, tc.start, tc.exit, d, tc.tips); !errors.Is(got, tc.want) {
+				t.Fatalf("prepare classification = %v, want %v", got, tc.want)
 			}
 		})
 	}

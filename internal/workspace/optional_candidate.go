@@ -19,6 +19,7 @@ var (
 	ErrOptionalCandidateHeld          = errors.New("optional completion held")
 	ErrOptionalIntegrationChanged     = errors.New("approved integration ref no longer matches")
 	ErrOptionalRefProofAmbiguous      = errors.New("local Git ref proof or precommit transaction could not be verified")
+	ErrOptionalPrecommitNoWrite       = errors.New("optional completion did not send a ref commit; exact refs still match")
 	ErrOptionalPrimaryCheckedOut      = errors.New("primary branch is checked out")
 	ErrOptionalCandidateDiverged      = errors.New("candidate cannot fast-forward the approved primary")
 	ErrOptionalCandidateChanged       = errors.New("primary branch tip changed")
@@ -34,10 +35,10 @@ func optionalHold(reason error) error {
 // It never checks out a branch, runs a merge driver or hook, or creates an
 // untested merge commit. A checked-out or diverged primary is a visible hold.
 // The Git transaction is not atomic with the caller's database transaction.
-func (Git) MergeOptionalCandidate(ctx context.Context, repo, primary, integration, expectedPrimary, candidate string) error {
+func (Git) MergeOptionalCandidate(ctx context.Context, repo, primary, integration, expectedPrimary, candidate string, approvedWorktreeRoot ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	proof, length, err := checkOptionalCandidate(ctx, repo, primary, integration, expectedPrimary, candidate)
+	proof, length, err := checkOptionalCandidate(ctx, repo, primary, integration, expectedPrimary, candidate, approvedWorktreeRoot)
 	if err != nil {
 		return optionalHold(err)
 	}
@@ -47,10 +48,10 @@ func (Git) MergeOptionalCandidate(ctx context.Context, repo, primary, integratio
 
 // CheckOptionalCandidate only proves current eligibility. It neither reserves
 // the refs nor grants authority, and the same proof is repeated at execution.
-func (Git) CheckOptionalCandidate(ctx context.Context, repo, primary, integration, expectedPrimary, candidate string) error {
+func (Git) CheckOptionalCandidate(ctx context.Context, repo, primary, integration, expectedPrimary, candidate string, approvedWorktreeRoot ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	proof, _, err := checkOptionalCandidate(ctx, repo, primary, integration, expectedPrimary, candidate)
+	proof, _, err := checkOptionalCandidate(ctx, repo, primary, integration, expectedPrimary, candidate, approvedWorktreeRoot)
 	if err != nil {
 		return optionalHold(err)
 	}
@@ -58,12 +59,12 @@ func (Git) CheckOptionalCandidate(ctx context.Context, repo, primary, integratio
 	return nil
 }
 
-func checkOptionalCandidate(ctx context.Context, repo, primary, integration, expectedPrimary, candidate string) (*optionalRepoProof, int, error) {
+func checkOptionalCandidate(ctx context.Context, repo, primary, integration, expectedPrimary, candidate string, approvedWorktreeRoot []string) (*optionalRepoProof, int, error) {
 	if !filepath.IsAbs(repo) || (primary != "refs/heads/main" && primary != "refs/heads/master") ||
 		!strings.HasPrefix(integration, "refs/heads/") || integration == primary || strings.ContainsAny(integration, " \t\r\n\x00") {
 		return nil, 0, ErrOptionalRefProofAmbiguous
 	}
-	proof, err := proveOptionalRepo(ctx, repo)
+	proof, err := proveOptionalRepo(ctx, repo, approvedWorktreeRoot)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -159,7 +160,7 @@ func optionalTargetFree(ctx context.Context, repo, primary string, proof *option
 	if !proof.safe(ctx, repo) {
 		return ErrOptionalRefProofAmbiguous
 	}
-	paths, err := optionalAdminStates(proof.admin, repo, primary)
+	paths, err := optionalAdminStates(ctx, proof.admin, repo, primary, proof.worktreeRoot)
 	if err != nil {
 		return err
 	}
@@ -202,7 +203,7 @@ func optionalPorcelain(raw, primary string, paths map[string]bool, oidLen int) e
 // Only rooted ordinary linked checkout descriptors are supported. For a
 // foreign/unsupported link we can still report a typed busy/primary hold from
 // its Git-owned admin, but never hand its path to a subprocess as evidence.
-func optionalAdminStates(root *os.Root, repo, primary string) (map[string]bool, error) {
+func optionalAdminStates(ctx context.Context, root *os.Root, repo, primary, worktreeRoot string) (map[string]bool, error) {
 	paths := map[string]bool{repo: true}
 	if err := optionalAdminIdle(root); err != nil {
 		return nil, err
@@ -244,8 +245,9 @@ func optionalAdminStates(root *os.Root, repo, primary string) (map[string]bool, 
 		head, e1 := optionalFileBytes(child, "HEAD")
 		pointer, e2 := optionalFileBytes(child, "gitdir")
 		common, e3 := optionalFileBytes(child, "commondir")
+		cfgErr := optionalWorktreeConfig(ctx, child, repo, filepath.Join(repo, ".git", "worktrees", entry.Name()))
 		_ = child.Close()
-		if e1 != nil || e2 != nil || e3 != nil {
+		if e1 != nil || e2 != nil || e3 != nil || cfgErr != nil {
 			return nil, errOptionalProof
 		}
 		if strings.TrimSpace(string(head)) == "ref: "+primary {
@@ -254,7 +256,9 @@ func optionalAdminStates(root *os.Root, repo, primary string) (map[string]bool, 
 		gitdir := strings.TrimSuffix(string(pointer), "\n")
 		linked := filepath.Dir(gitdir)
 		rel, relErr := filepath.Rel(repo, linked)
-		if relErr != nil || rel == "." || !filepath.IsLocal(rel) || filepath.Base(gitdir) != ".git" ||
+		insideRepo := relErr == nil && rel != "." && filepath.IsLocal(rel)
+		atConfiguredRoot := worktreeRoot != "" && filepath.Dir(linked) == worktreeRoot
+		if (!insideRepo && !atConfiguredRoot) || filepath.Base(gitdir) != ".git" ||
 			!filepath.IsAbs(gitdir) || gitdir != filepath.Clean(gitdir) || paths[linked] ||
 			filepath.FromSlash(strings.TrimSpace(string(common))) != filepath.Join("..", "..") {
 			return nil, errOptionalProof
@@ -285,6 +289,8 @@ func optionalAdminIdle(root *os.Root) error {
 
 func optionalRefTransaction(ctx context.Context, repo, primary, integration, oldOID, newOID string, proof *optionalRepoProof, oidLen int) error {
 	cmd := optionalGit(ctx, repo, "update-ref", "--no-deref", "--stdin")
+	var diagnostics optionalPrivateDiagnostic
+	cmd.Stderr = &diagnostics
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return optionalHold(errOptionalProof)
@@ -307,14 +313,25 @@ func optionalRefTransaction(ctx context.Context, repo, primary, integration, old
 	}()
 	read := bufio.NewScanner(io.LimitReader(out, 128))
 	ack := func(expected string) bool { return read.Scan() && read.Text() == expected+": ok" }
-	if _, err := fmt.Fprintf(in, "start\nverify %s %s\nupdate %s %s %s\nprepare\n", integration, newOID, primary, newOID, oldOID); err != nil ||
-		!ack("start") || !ack("prepare") {
-		// If direct current refs prove drift, retain the exact reason;
-		// otherwise a lock/CAS/protocol failure is ambiguous, not primary drift.
-		if err := optionalTipsMatch(ctx, repo, primary, integration, oldOID, newOID); err != nil {
-			return optionalHold(err)
+	packet := fmt.Sprintf("start\nverify %s %s\nupdate %s %s %s\nprepare\n", integration, newOID, primary, newOID, oldOID)
+	n, writeErr := io.WriteString(in, packet)
+	startAck := writeErr == nil && n == len(packet) && ack("start")
+	if !startAck || !ack("prepare") {
+		// No commit packet was sent. Reap before comparing the bounded,
+		// private diagnostic and never surface its path or text.
+		_ = in.Close()
+		exitErr := cmd.Wait()
+		waited = true
+		if !proof.safe(ctx, repo) {
+			return optionalHold(ErrOptionalRefProofAmbiguous)
 		}
-		return optionalHold(ErrOptionalRefProofAmbiguous)
+		tipsErr := optionalTipsMatch(ctx, repo, primary, integration, oldOID, newOID)
+		exitCode := -1
+		var exited *exec.ExitError
+		if errors.As(exitErr, &exited) {
+			exitCode = exited.ExitCode()
+		}
+		return optionalHold(optionalPrepareOutcome(repo, primary, integration, startAck, exitCode, diagnostics, tipsErr))
 	}
 	if err := optionalTargetFree(ctx, repo, primary, proof, oidLen); err != nil {
 		return optionalHold(err)
@@ -327,6 +344,67 @@ func optionalRefTransaction(ctx context.Context, repo, primary, integration, old
 		waited = true
 		return err
 	})
+}
+
+// optionalPrivateDiagnostic never lets a subprocess make its raw output
+// visible in workflow errors or logs. Overflow also defeats lock proof.
+type optionalPrivateDiagnostic struct {
+	buf      []byte
+	overflow bool
+}
+
+func (d *optionalPrivateDiagnostic) Write(p []byte) (int, error) {
+	const max = 4096
+	n := len(p)
+	if len(p) > max-len(d.buf) {
+		d.overflow = true
+		p = p[:max-len(d.buf)]
+	}
+	d.buf = append(d.buf, p...)
+	return n, nil
+}
+
+func optionalPrepareOutcome(repo, primary, integration string, startAck bool, exitCode int, diagnostics optionalPrivateDiagnostic, tipsErr error) error {
+	// Only a proven current integration mismatch is conclusive after a
+	// failed prepare. An apparent primary-only change cannot rule out an
+	// integration compare failure followed by an external reset.
+	if errors.Is(tipsErr, ErrOptionalIntegrationChanged) {
+		return ErrOptionalIntegrationChanged
+	}
+	if tipsErr != nil {
+		return ErrOptionalRefProofAmbiguous
+	}
+	if !startAck || exitCode != 128 ||
+		diagnostics.overflow || !optionalExactLockDiagnostic(repo, primary, integration, string(diagnostics.buf)) {
+		return ErrOptionalRefProofAmbiguous
+	}
+	return ErrOptionalPrecommitNoWrite
+}
+
+func optionalExactLockDiagnostic(repo, primary, integration, raw string) bool {
+	if strings.ContainsAny(repo, "\r\n\x00") {
+		return false
+	}
+	// Accept only the known files-backend EEXIST diagnostic for one of the
+	// two admitted refs and its literal lockfile. A compare mismatch ("is at
+	// ... but expected ...") can never match even if later tips are reset.
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	line, tail, _ := strings.Cut(raw, "\n")
+	const guidance = "\nAnother git process seems to be running in this repository, e.g.\nan editor opened by 'git commit'. Please make sure all processes\nare terminated then try again. If it still fails, a git process\nmay have crashed in this repository earlier:\nremove the file manually to continue.\n"
+	const newerGuidance = "Another git process seems to be running in this repository, or the lock file may be stale"
+	if strings.TrimSpace(tail) != "" && strings.TrimSpace(tail) != strings.TrimSpace(guidance) && strings.TrimSpace(tail) != newerGuidance {
+		return false
+	}
+	for _, ref := range []string{primary, integration} {
+		lock := filepath.Join(repo, ".git", filepath.FromSlash(ref)+".lock")
+		for _, path := range []string{lock, filepath.ToSlash(lock)} {
+			want := "fatal: prepare: cannot lock ref '" + ref + "': Unable to create '" + path + "': File exists."
+			if line == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Once the commit write has been attempted, even failure to write/observe

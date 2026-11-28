@@ -223,7 +223,7 @@ func (st *step) executeComparisonEntry(e comparisonGitEntry, automatic bool) err
 	if !safe || unfinished {
 		return st.closeComparisonEntry(e)
 	}
-	err = (workspace.Git{}).MergeOptionalCandidate(st.ctx, st.snap.project.RepoPath, e.Primary, e.Acceptance.Ref, e.Before, e.Acceptance.OID)
+	err = (workspace.Git{}).MergeOptionalCandidate(st.ctx, st.snap.project.RepoPath, e.Primary, e.Acceptance.Ref, e.Before, e.Acceptance.OID, st.comparisonWorktreeRoot())
 	if err == nil {
 		if err := st.finishObjectiveMerge(e.Acceptance.OID); err != nil {
 			return err // durable entry remains open, never replayed

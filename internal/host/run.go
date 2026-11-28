@@ -52,15 +52,12 @@ func run(ctx context.Context, home, attemptID string) error {
 	}
 	defer db.Close()
 
-	attempt, err := db.GetAttempt(ctx, attemptID)
+	preclaim, err := db.ReadHostPreclaim(ctx, attemptID)
 	if err != nil {
-		return fmt.Errorf("host: load attempt: %w", err)
+		return err
 	}
+	attempt, card := preclaim.Attempt, preclaim.Card
 	promptPath := roots.ResolveStored(home, attempt.PromptPath)
-	card, err := db.GetCard(ctx, attempt.Card)
-	if err != nil {
-		return fmt.Errorf("host: load card: %w", err)
-	}
 	strict := card.StrictComparison() || attempt.StrictComparison()
 	if strict && syntheticStrictComparisonRelay == nil {
 		// Never take an execution claim or touch the generic D1 admission for
@@ -100,6 +97,12 @@ func run(ctx context.Context, home, attemptID string) error {
 	if strict && !comparisonTargetReady(card, attempt, channel) {
 		return stopHostComparison(ctx, db, &attempt, &card, "strict comparison target is no longer available")
 	}
+	handoff := func(reason string) error {
+		if strict {
+			return handoffReview(ctx, db, &attempt, &card, reason)
+		}
+		return handoffBeforeClaim(ctx, db, preclaim, channel, reason)
+	}
 	approvedBindingID := ""
 	if attempt.RouteReason.Dispatch != nil {
 		approvedBindingID = attempt.RouteReason.Dispatch.CompatibleBindingID
@@ -108,7 +111,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		return db.HoldPreparedCompatibleAttempt(ctx, card, attempt, observeCompatibleObjective(ctx, db, card), time.Now())
 	}
 	if approvedBindingID != "" && approvedBindingID != runner.CompatibleBindingID(channel.EngineProfile) {
-		return handoffReview(ctx, db, &attempt, &card, "api channel dispatch binding changed; select an approved route again")
+		return handoff("api channel dispatch binding changed; select an approved route again")
 	}
 	r, ok := runner.Lookup(string(channel.Runner))
 	if !ok {
@@ -155,12 +158,12 @@ func run(ctx context.Context, home, attemptID string) error {
 	var relay *runner.CompatibleRelay
 	apiIsolated := false
 	if channel.Runner != model.RunnerClaude && runner.IsCompatibleBinding(channel.EngineProfile) {
-		return handoffReview(ctx, db, &attempt, &card, "api channel requires the claude runner")
+		return handoff("api channel requires the claude runner")
 	}
 	if channel.Runner == model.RunnerClaude && strings.TrimSpace(channel.EngineProfile) != "" {
 		raw, reason := resolveEngineProfile(cfg, channel.EngineProfile)
 		if reason != "" {
-			return handoffReview(ctx, db, &attempt, &card, reason)
+			return handoff(reason)
 		}
 		spec.Script = raw
 		if runner.IsCompatibleEngine(raw) {
@@ -181,20 +184,20 @@ func run(ctx context.Context, home, attemptID string) error {
 			apiIsolated = true
 			spec.CardKind = card.Kind
 			if !runner.IsCompatibleBinding(channel.EngineProfile) {
-				return handoffReview(ctx, db, &attempt, &card, "api channel requires an explicit channel set binding")
+				return handoff("api channel requires an explicit channel set binding")
 			}
 			if requiresBrowser(card) || requiresGoal(card) {
-				return handoffReview(ctx, db, &attempt, &card, "api channel cannot provide requested browser or goal isolation")
+				return handoff("api channel cannot provide requested browser or goal isolation")
 			}
 			var fileRoots []string
 			if runner.CompatibleFileRef(raw) {
 				obj, err := db.GetObjective(ctx, card.Objective)
 				if err != nil {
-					return handoffReview(ctx, db, &attempt, &card, "api channel cannot verify credential outside the repository")
+					return handoff("api channel cannot verify credential outside the repository")
 				}
 				project, err := db.GetProject(ctx, obj.Project)
 				if err != nil || project.RepoPath == "" {
-					return handoffReview(ctx, db, &attempt, &card, "api channel cannot verify credential outside the repository")
+					return handoff("api channel cannot verify credential outside the repository")
 				}
 				fileRoots = []string{home, project.RepoPath, attempt.Worktree}
 				if project.WorktreeRoot != "" {
@@ -203,16 +206,16 @@ func run(ctx context.Context, home, attemptID string) error {
 			}
 			verified, err := runner.ValidateCompatibleLaunch(spec, channel, approvedBindingID, fileRoots...)
 			if err != nil {
-				return handoffReview(ctx, db, &attempt, &card, err.Error())
+				return handoff(err.Error())
 			}
 			spec.Script = verified
 			if _, reason := attemptDeadline(attemptDir); reason != "" {
-				return handoffReview(ctx, db, &attempt, &card, reason)
+				return handoff(reason)
 			}
 			spec.DropEnv = runner.CompatibleChildDropNames(home)
 			configDir, err := isolateClaudeConfig(attemptDir)
 			if err != nil {
-				return handoffReview(ctx, db, &attempt, &card, err.Error())
+				return handoff(err.Error())
 			}
 			spec.ConfigDir = configDir
 			defer cleanupClaudeConfig(db, attempt.ID, configDir)
@@ -222,7 +225,7 @@ func run(ctx context.Context, home, attemptID string) error {
 			}
 			relay, err = startRelay(ctx, verified, fileRoots...)
 			if err != nil {
-				return handoffReview(ctx, db, &attempt, &card, err.Error())
+				return handoff(err.Error())
 			}
 			defer relay.Close()
 			if strict {
@@ -257,10 +260,29 @@ func run(ctx context.Context, home, attemptID string) error {
 	} else if cfg.invalid {
 		appendEvent(ctx, db, attempt.ID, "host_config", map[string]string{"message": "config.json ignored"})
 	}
+	var legacyObjective *model.Objective
+	namedLegacy := !strict && !apiIsolated && !card.StrictDeps && channel.Runner == model.RunnerClaude &&
+		strings.TrimSpace(channel.EngineProfile) != "" && !channel.CompatibleRuntimeHeld() && approvedBindingID == ""
+	if namedLegacy {
+		legacyObjective = observeCompatibleObjective(ctx, db, card)
+	}
 	argv, env, err := r.Build(spec)
 	if err != nil {
 		if apiIsolated {
-			return handoffReview(ctx, db, &attempt, &card, err.Error())
+			return handoff(err.Error())
+		}
+		if namedLegacy && legacyObjective != nil && runner.IsLegacyClaudeBuildBlock(err) {
+			buildErr, digest := err, sha256.Sum256(spec.Script)
+			held, holdErr := db.HoldLegacyClaudeBuild(ctx, card, attempt, *legacyObjective, channel, time.Now(), func() bool {
+				current := loadConfig(home)
+				raw, reason := resolveEngineProfile(current, channel.EngineProfile)
+				dropEnv := runner.CompatibleConfigCredentialNames(current.Engines)
+				return reason == "" && sha256.Sum256(raw) == digest &&
+					runner.LegacyClaudeBuildBlockCurrent(buildErr, raw, dropEnv)
+			})
+			if holdErr != nil || held {
+				return holdErr
+			}
 		}
 		return err
 	}
@@ -282,7 +304,7 @@ func run(ctx context.Context, home, attemptID string) error {
 	limit, durationReason := attemptDeadline(attemptDir)
 	if durationReason != "" {
 		// A missing, empty, or non-positive limit must not start the executor.
-		return handoffReview(ctx, db, &attempt, &card, durationReason)
+		return handoff(durationReason)
 	}
 
 	if card.StrictDeps {
@@ -299,6 +321,21 @@ func run(ctx context.Context, home, attemptID string) error {
 			}
 			if !reflect.DeepEqual(fresh, attempt) || fresh.Outcome != "" || fresh.Exit != nil || !fresh.EndedAt.IsZero() || (fresh.PID != 0 && fresh.PID != os.Getpid()) {
 				return nil
+			}
+			if !strict && syntheticCompatibleRelay == nil {
+				// A host built before the historical park must not claim just
+				// because that park deliberately preserved the old attempt row.
+				freshCard, err := db.GetCard(tx, fresh.Card)
+				if err != nil {
+					return err
+				}
+				freshChannel, err := db.GetChannel(tx, fresh.Route.Channel)
+				if err != nil {
+					return err
+				}
+				if freshCard.WaitReason == model.CompatibleHistoricalRecoveryHold || freshChannel.CompatibleRuntimeHeld() {
+					return nil
+				}
 			}
 			attempt.PID = os.Getpid()
 			if attempt.StartedAt.IsZero() {
@@ -798,6 +835,10 @@ func cleanupClaudeConfig(db *store.Store, attemptID, dir string) {
 	appendEvent(context.Background(), db, attemptID, "api_channel_cleanup", map[string]any{
 		"removed": err == nil,
 	})
+}
+
+func handoffBeforeClaim(ctx context.Context, db *store.Store, observed store.HostPreclaim, channel model.Channel, reason string) error {
+	return db.RecordHostPreclaimHandoff(ctx, observed, channel, reason, trimExcerpt(reason), time.Now())
 }
 
 func handoffReview(ctx context.Context, db *store.Store, attempt *model.Attempt, card *model.Card, reason string) error {

@@ -14,7 +14,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
-const EventDependencyDeferred = "host_dependency_deferred"
+const EventDependencyDeferred = model.EventHostDependencyDeferred
 
 type strictLaunchStage uint8
 
@@ -182,7 +182,11 @@ func strictLaunchGateWithReviewScope(ctx context.Context, db *store.Store, attem
 					}
 				}
 			}
-			raw, err := json.Marshal(map[string]string{"card": card.ID, "reason": reason})
+			deferral := model.HostDependencyDeferral{Card: card.ID, Reason: reason}
+			if stage == strictProbe && card.StrictDeps {
+				deferral.Attempt, deferral.Phase = a.ID, model.HostDependencyPreclaimProbe
+			}
+			raw, err := json.Marshal(deferral)
 			if err != nil {
 				return err
 			}

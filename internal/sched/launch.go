@@ -47,9 +47,16 @@ func attemptFromArgs(args []string) string {
 // new process group. CARDEX_SCHED_HOST tells this package's init to call
 // host.Run. The attempt argument must match the launcher marker.
 func launchDetached(ctx context.Context, home, attemptID, dir string) (int, error) {
+	pid, _, err := startDetached(ctx, home, attemptID, dir)
+	return pid, err
+}
+
+// The local launcher exit is a polling hint, not execution evidence. Only
+// the host can record its typed build block or claim/finish the actual attempt.
+func startDetached(ctx context.Context, home, attemptID, dir string) (int, <-chan struct{}, error) {
 	exe, err := os.Executable()
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	cmd := exec.Command(exe, "host", attemptID)
 	ctx = runner.WithCompatibleCredentialEnv(ctx, home)
@@ -60,26 +67,28 @@ func launchDetached(ctx context.Context, home, attemptID, dir string) (int, erro
 	)
 	proc.Detach(cmd)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	logf, err := os.OpenFile(filepath.Join(dir, "launcher.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	if err := cmd.Start(); err != nil {
 		logf.Close()
-		return 0, err
+		return 0, nil, err
 	}
+	exited := make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
 		_ = logf.Close()
+		close(exited)
 	}()
-	return cmd.Process.Pid, nil
+	return cmd.Process.Pid, exited, nil
 }
 
-func waitPID(ctx context.Context, dbAttempt func() (int, bool)) {
+func waitPID(ctx context.Context, exited <-chan struct{}, dbAttempt func() (int, bool)) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if ctx.Err() != nil {
@@ -90,6 +99,9 @@ func waitPID(ctx context.Context, dbAttempt func() (int, bool)) {
 		}
 		timer := time.NewTimer(20 * time.Millisecond)
 		select {
+		case <-exited:
+			timer.Stop()
+			return
 		case <-ctx.Done():
 			timer.Stop()
 			return

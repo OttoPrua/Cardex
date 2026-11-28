@@ -153,7 +153,7 @@ func disposeTx(ctx context.Context, db *store.Store, home string, card *model.Ca
 	if attempt.Card != card.ID {
 		return nil, fmt.Errorf("loop: Dispose: attempt does not belong to card %s", card.ID)
 	}
-	held, err := compatibleAttemptHeld(ctx, db, attempt.ID)
+	held, err := attemptDispositionHeld(ctx, db, attempt.ID)
 	if err != nil || held || attempt.HistoricalCompatibleHoldQuarantine() {
 		if held || attempt.HistoricalCompatibleHoldQuarantine() {
 			if receipt, ok := ctx.Value(disposeReceiptKey).(*DispositionReceipt); ok && receipt != nil {
@@ -278,13 +278,13 @@ func ensureDevDisposed(ctx context.Context, db *store.Store, attempt model.Attem
 	return markDevDisposed(ctx, db, attempt, outcome)
 }
 
-func compatibleAttemptHeld(ctx context.Context, db *store.Store, id string) (bool, error) {
+func attemptDispositionHeld(ctx context.Context, db *store.Store, id string) (bool, error) {
 	events, err := db.ListEvents(ctx, "attempt:"+id)
 	if err != nil {
 		return false, err
 	}
 	for _, event := range events {
-		if event.Type == model.EventCompatibleAttemptHeld || event.Type == model.EventCompatibleRefusedNoWire {
+		if event.Type == model.EventCompatibleAttemptHeld || event.Type == model.EventCompatibleRefusedNoWire || event.Type == model.EventLegacyClaudeBuildHeld {
 			return true, nil
 		}
 	}

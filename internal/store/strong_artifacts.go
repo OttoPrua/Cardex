@@ -37,7 +37,7 @@ func (s *Store) SaveStrongArtifact(ctx context.Context, sealed *strongcustody.Re
 	if len(refs) == 0 {
 		refs = nil
 	}
-	if len(refs) > MaxStrongInputs || (len(refs) > 0 && source.Role != model.StrongPeer) {
+	if len(refs) > MaxStrongInputs || (len(refs) > 0 && !strongPeerRole(source.Role)) {
 		return model.StrongArtifactRef{}, model.ErrStrongArtifact
 	}
 	serialized := capture.ReferenceBytes
@@ -61,7 +61,7 @@ func (s *Store) SaveStrongArtifact(ctx context.Context, sealed *strongcustody.Re
 		if err != nil || a.Card != reg.Card || a.Worktree != reg.Worktree || !passedStrongAttempt(a) {
 			return model.ErrStrongArtifact
 		}
-		if source.Role == model.StrongPeer {
+		if strongPeerRole(source.Role) {
 			peerInputs, err := s.readStrongBindings(ctx, source)
 			if err != nil {
 				return model.ErrStrongArtifact
@@ -125,7 +125,7 @@ func (s *Store) readStrongArtifact(ctx context.Context, ref model.StrongArtifact
 	}
 	var refs []string
 	if model.StrongArtifactDigest([]byte(refsJSON)) != refsSHA || (refsJSON != "" && json.Unmarshal([]byte(refsJSON), &refs) != nil) || len(refs) > MaxStrongInputs ||
-		(len(refs) > 0 && source.Role != model.StrongPeer) {
+		(len(refs) > 0 && !strongPeerRole(source.Role)) {
 		return model.StrongStage{}, nil, nil, model.ErrStrongArtifact
 	}
 	return source, body, refs, nil
@@ -136,6 +136,17 @@ func allowedStrongBinding(target, source model.StrongStage) bool {
 		return false
 	}
 	switch target.Role {
+	case model.StrongWorkflowEvidence:
+		return source.Role == model.StrongFraming
+	case model.StrongWorkflowBlind:
+		return source.Role == model.StrongWorkflowEvidence
+	case model.StrongWorkflowPeer:
+		return source.Role == model.StrongWorkflowBlind && source.Seat != target.Seat
+	case model.StrongVerification:
+		return source.Role == model.StrongWorkflowEvidence || source.Role == model.StrongWorkflowPeer
+	case model.StrongWorkflowSynthesis:
+		return source.Role == model.StrongWorkflowBlind || source.Role == model.StrongWorkflowPeer ||
+			source.Role == model.StrongWorkflowEvidence || source.Role == model.StrongVerification
 	case model.StrongPeer:
 		return source.Role == model.StrongBlind && source.Seat != target.Seat
 	case model.StrongSynthesis:
@@ -210,8 +221,22 @@ func (s *Store) currentStrongManifestSHA(ctx context.Context, target model.Stron
 		}
 		return model.StrongEmptyManifestSHA(), nil
 	}
+	if strongOptionalInputs(target.Role) {
+		var exists int
+		err := s.q(ctx).QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM strong_input_bindings WHERE run_id=? AND target_stage=?)`, target.Run, target.Stage).Scan(&exists)
+		if err != nil {
+			return "", err
+		}
+		if exists == 0 {
+			return model.StrongEmptyManifestSHA(), nil
+		}
+	}
 	_, sha, err := s.readStrongManifest(ctx, target)
 	return sha, err
+}
+
+func strongOptionalInputs(role model.StrongRole) bool {
+	return role == model.StrongWorkflowEvidence || role == model.StrongFraming
 }
 
 func (s *Store) readStrongManifest(ctx context.Context, target model.StrongStage) ([]model.StrongArtifactRef, string, error) {
@@ -239,11 +264,15 @@ func (s *Store) StrongInputs(ctx context.Context, target model.StrongStage) ([]S
 	if !target.Valid() {
 		return nil, model.ErrStrongArtifact
 	}
-	if target.Role == model.StrongBlind || target.Role == model.StrongEvidence {
-		return nil, nil
-	}
 	var materials []StrongMaterial
 	err := s.WithTx(ctx, func(ctx context.Context) error {
+		manifest, err := s.currentStrongManifestSHA(ctx, target)
+		if err != nil {
+			return err
+		}
+		if manifest == model.StrongEmptyManifestSHA() {
+			return nil
+		}
 		refs, err := s.readStrongBindings(ctx, target)
 		if err != nil {
 			return err
@@ -260,7 +289,7 @@ func (s *Store) StrongInputs(ctx context.Context, target model.StrongStage) ([]S
 				return model.ErrStrongArtifact
 			}
 			materials[i] = StrongMaterial{Alias: strongAlias(target.Role, i+1), Body: body}
-			if target.Role != model.StrongSynthesis || len(citations) == 0 {
+			if !strongSynthesisRole(target.Role) || len(citations) == 0 {
 				continue
 			}
 			peerInputs, err := s.readStrongBindings(ctx, source)
@@ -318,7 +347,7 @@ func (s *Store) StrongTask(ctx context.Context, run, expectedSHA string) ([]byte
 }
 
 func strongAlias(role model.StrongRole, i int) string {
-	if role == model.StrongSynthesis {
+	if strongSynthesisRole(role) {
 		return fmt.Sprintf("Source %02d", i)
 	}
 	return fmt.Sprintf("Material %02d", i)
@@ -385,4 +414,11 @@ func (s *Store) CheckStrongAnonymity(ctx context.Context, target model.StrongSta
 		}
 	}
 	return nil
+}
+
+func strongPeerRole(r model.StrongRole) bool {
+	return r == model.StrongPeer || r == model.StrongWorkflowPeer
+}
+func strongSynthesisRole(r model.StrongRole) bool {
+	return r == model.StrongSynthesis || r == model.StrongWorkflowSynthesis
 }

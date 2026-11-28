@@ -63,11 +63,17 @@ func StrongResultMarkdown(body []byte) bool {
 type StrongRole string
 
 const (
-	StrongBlind     StrongRole = "blind"
-	StrongPeer      StrongRole = "peer"
-	StrongSynthesis StrongRole = "synthesis"
-	StrongRecheck   StrongRole = "recheck"
-	StrongEvidence  StrongRole = "evidence"
+	StrongBlind             StrongRole = "blind"
+	StrongPeer              StrongRole = "peer"
+	StrongSynthesis         StrongRole = "synthesis"
+	StrongRecheck           StrongRole = "recheck"
+	StrongEvidence          StrongRole = "evidence"
+	StrongWorkflowBlind     StrongRole = "workflow_blind"
+	StrongWorkflowPeer      StrongRole = "workflow_peer"
+	StrongWorkflowSynthesis StrongRole = "workflow_synthesis"
+	StrongWorkflowEvidence  StrongRole = "workflow_evidence"
+	StrongFraming           StrongRole = "workflow_framing"
+	StrongVerification      StrongRole = "workflow_verification"
 )
 
 // StrongStage is trusted controller scope, not recipient-visible metadata.
@@ -81,9 +87,9 @@ func (s StrongStage) Valid() bool {
 		return false
 	}
 	switch s.Role {
-	case StrongBlind, StrongPeer:
+	case StrongBlind, StrongPeer, StrongWorkflowBlind, StrongWorkflowPeer:
 		return StrongKey(s.Seat)
-	case StrongSynthesis, StrongRecheck, StrongEvidence:
+	case StrongSynthesis, StrongRecheck, StrongEvidence, StrongFraming, StrongVerification, StrongWorkflowSynthesis, StrongWorkflowEvidence:
 		return s.Seat == ""
 	default:
 		return false

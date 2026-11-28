@@ -31,28 +31,29 @@ type scriptDoc struct {
 }
 
 type scriptAttempt struct {
-	WriteFiles       []scriptFile      `json:"write_files"`
-	ChangeFuncs      []scriptFunc      `json:"change_funcs"`
-	Result           *string           `json:"result"`
-	ExitCode         *int              `json:"exit_code"`
-	TruncatedEvents  bool              `json:"truncated_events"`
-	QuotaHit         *scriptQuota      `json:"quota_hit"`
-	AuthFailure      bool              `json:"auth_failure"`
-	PermissionDenied bool              `json:"permission_denied"`
-	Refusal          bool              `json:"refusal"`
-	Sleep            string            `json:"sleep"`
-	Silent           bool              `json:"silent"`
-	Output           string            `json:"output"`
-	Stderr           string            `json:"stderr"`
-	OutsideWrite     string            `json:"outside_write"`
-	GrandchildMarker string            `json:"grandchild_marker"`
-	GrandchildAfter  string            `json:"grandchild_after"`
-	GrandchildDetach bool              `json:"grandchild_detach"`
-	TailAfter        string            `json:"tail_after"`
-	Tail             string            `json:"tail"`
-	Hold             string            `json:"hold"`
-	Env              map[string]string `json:"env"`
-	EchoEnv          []string          `json:"echo_env"`
+	WriteFiles          []scriptFile      `json:"write_files"`
+	ChangeFuncs         []scriptFunc      `json:"change_funcs"`
+	Result              *string           `json:"result"`
+	ExitCode            *int              `json:"exit_code"`
+	TruncatedEvents     bool              `json:"truncated_events"`
+	QuotaHit            *scriptQuota      `json:"quota_hit"`
+	AuthFailure         bool              `json:"auth_failure"`
+	PermissionDenied    bool              `json:"permission_denied"`
+	Refusal             bool              `json:"refusal"`
+	Sleep               string            `json:"sleep"`
+	Silent              bool              `json:"silent"`
+	Output              string            `json:"output"`
+	Stderr              string            `json:"stderr"`
+	OutsideWrite        string            `json:"outside_write"`
+	GrandchildMarker    string            `json:"grandchild_marker"`
+	GrandchildAfter     string            `json:"grandchild_after"`
+	GrandchildDetach    bool              `json:"grandchild_detach"`
+	TailAfter           string            `json:"tail_after"`
+	Tail                string            `json:"tail"`
+	Hold                string            `json:"hold"`
+	Env                 map[string]string `json:"env"`
+	PromptEvidenceFacts bool              `json:"prompt_evidence_facts"`
+	EchoEnv             []string          `json:"echo_env"`
 }
 
 type scriptFile struct {
@@ -327,6 +328,38 @@ func (f Fake) run(ctx context.Context, spec LaunchSpec, child bool) (RunResult, 
 			return RunResult{}, err
 		}
 	}
+	if step.PromptEvidenceFacts {
+		// Synthetic fixture: the Fake child copies facts from the actual file-
+		// transported bundle instead of receiving them in its answer script.
+		if step.Result == nil || spec.PromptPath == "" {
+			return RunResult{}, errors.New("fake: missing evidence input")
+		}
+		data := spec.strongFixtureInput
+		if len(data) == 0 || len(data) > model.StrongBundleMax {
+			return RunResult{}, errors.New("fake: evidence input unreadable or oversized")
+		}
+		var bundle struct {
+			Evidence []struct {
+				Body []byte `json:"body"`
+				Size int    `json:"size"`
+				SHA  string `json:"sha256"`
+			} `json:"evidence"`
+		}
+		if json.Unmarshal(data, &bundle) != nil || len(bundle.Evidence) == 0 {
+			return RunResult{}, errors.New("fake: actual evidence absent")
+		}
+		facts := make([]string, 0, len(bundle.Evidence))
+		for _, file := range bundle.Evidence {
+			fact := strings.TrimSpace(string(file.Body))
+			if len(file.Body) != file.Size || model.StrongArtifactDigest(file.Body) != file.SHA || fact == "" || strings.ContainsAny(fact, "\r\n") {
+				return RunResult{}, errors.New("fake: invalid fixture evidence")
+			}
+			facts = append(facts, fact)
+		}
+		result := strings.TrimSuffix(*step.Result, "\n") + "\nFacts: " + strings.Join(facts, " | ") + "\n"
+		step.Result = &result
+	}
+
 	if step.Result != nil {
 		dest := filepath.Join(spec.WorkDir, ".cardex-result.md")
 		if err := os.WriteFile(dest, []byte(*step.Result), 0o644); err != nil {

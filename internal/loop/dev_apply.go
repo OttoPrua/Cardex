@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -826,6 +827,10 @@ func (st *step) openQuestion(kind model.QuestionKind, scope, scopeKind, text str
 			return question.ID, nil
 		}
 	}
+	return st.openFreshQuestion(kind, scope, scopeKind, text, deliver)
+}
+
+func (st *step) openFreshQuestion(kind model.QuestionKind, scope, scopeKind, text string, deliver bool) (string, error) {
 	question := model.Question{
 		Objective: st.snap.obj.ID,
 		Scope:     scope,
@@ -2174,14 +2179,68 @@ func (st *step) complete() error {
 	if obj.Status == model.ObjectiveDone || st.snap.hasEvent("objective:"+obj.ID, "merged_local") {
 		return nil
 	}
+	if st.snap.comparisonNeedsReconciliation() {
+		return comparisonResumeDiagnostic(obj)
+	}
+	if !st.completionReserved {
+		// The generic step's snapshot was loaded before its transaction;
+		// even its lack of a comparison receipt may be stale. Reserve only
+		// once this step could complete, not for routine planning or budget
+		// work. The marked Git lane still requires its own two transactions.
+		if obj.Status == model.ObjectiveDoneCandidate || st.pending(model.QuestionDone, obj.ID) {
+			q, _ := st.snap.doneApproval()
+			if !approved(q.Answer) {
+				return nil
+			}
+		} else if obj.Status != model.ObjectiveActive || !st.allFrozen() {
+			return nil
+		}
+		if err := st.db.ReserveObjectiveCompletionWriter(st.ctx, obj.ID); err != nil {
+			return err
+		}
+		fresh, err := loadSnap(st.ctx, st.db, obj.ID)
+		if err != nil {
+			return err
+		}
+		st.snap = fresh
+		obj = fresh.obj
+		if fresh.comparisonNeedsReconciliation() {
+			return comparisonResumeDiagnostic(obj)
+		}
+		if obj.Status == model.ObjectiveDone || fresh.hasEvent("objective:"+obj.ID, "merged_local") {
+			return nil
+		}
+	}
 	if obj.Status == model.ObjectiveDoneCandidate || st.pending(model.QuestionDone, obj.ID) {
 		return st.mergeIfApproved()
 	}
 	if obj.Status != model.ObjectiveActive {
 		return nil
 	}
-	if !st.allFrozen() || st.anyUnfinished() {
+	if !st.allFrozen() {
 		return nil
+	}
+	unfinished, excluded, err := st.anyUnfinished()
+	if err != nil || unfinished {
+		return err
+	}
+	previous, alreadyGated := st.snap.comparisonCompletionReceipt()
+	if len(excluded) != 0 || alreadyGated {
+		if alreadyGated && previous.Question == "" {
+			return nil
+		}
+		if !st.verifyComparisonAcceptanceSource() {
+			return nil
+		}
+		pin, ok := st.currentComparisonAcceptance()
+		if !ok {
+			return nil
+		}
+		ok, err = st.testComparisonAcceptance(pin)
+		if err != nil || !ok {
+			return err
+		}
+		return st.openComparisonCandidate(pin, excluded, previous)
 	}
 	ok, err := acceptancePasses(st.ctx, st.snap.project.RepoPath, obj.IntegrationBranch, obj.Acceptance.Commands, roots.Load(st.home).EffectiveScratch(st.snap.project.ScratchDir))
 	if err != nil {
@@ -2210,7 +2269,8 @@ func (st *step) allFrozen() bool {
 	return true
 }
 
-func (st *step) anyUnfinished() bool {
+func (st *step) anyUnfinished() (bool, []string, error) {
+	var exempted []string
 	for _, card := range st.snap.cards {
 		// The weekly ranking card stays on the active objective until it can run.
 		// It is not that objective's unfinished work.
@@ -2220,10 +2280,14 @@ func (st *step) anyUnfinished() bool {
 		switch card.Status {
 		case model.CardMerged, model.CardDone, model.CardFailed, model.CardCanceled:
 		default:
-			return true
+			optional, err := st.optionalHeldComparison(card)
+			if err != nil || !optional {
+				return true, nil, err
+			}
+			exempted = append(exempted, card.ID)
 		}
 	}
-	return false
+	return false, exempted, nil
 }
 
 func (st *step) pending(kind model.QuestionKind, scope string) bool {
@@ -2236,16 +2300,15 @@ func (st *step) pending(kind model.QuestionKind, scope string) bool {
 }
 
 func (st *step) mergeIfApproved() error {
-	var answer string
-	found := false
-	for _, question := range st.snap.questions {
-		if question.Kind == model.QuestionDone && question.Objective == st.snap.obj.ID {
-			answer = question.Answer
-			found = true
-		}
-	}
-	if !found || !approved(answer) {
+	approval, gated := st.snap.doneApproval()
+	if !approved(approval.Answer) {
 		return nil
+	}
+	if gated {
+		if !st.completionReserved || st.snap.obj.Status != model.ObjectiveDoneCandidate || st.snap.comparisonMergeUnknown() {
+			return nil
+		}
+		return st.prepareAcceptedComparison(approval)
 	}
 	if st.snap.project.RepoPath == "" || st.snap.obj.IntegrationBranch == "" {
 		return fmt.Errorf("done merge requires a project repo and an integration branch")
@@ -2253,14 +2316,19 @@ func (st *step) mergeIfApproved() error {
 	if err := mergeLocal(st.ctx, st.snap.project.RepoPath, st.snap.obj.IntegrationBranch); err != nil {
 		return err
 	}
+	return st.finishObjectiveMerge("")
+}
+
+func (st *step) finishObjectiveMerge(exactCommit string) error {
 	st.snap.obj.Status = model.ObjectiveDone
 	if err := st.saveObjective(); err != nil {
 		return err
 	}
-	return st.event("objective:"+st.snap.obj.ID, "merged_local", map[string]string{
-		"branch": st.snap.obj.IntegrationBranch,
-		"repo":   st.snap.project.RepoPath,
-	})
+	receipt := map[string]string{"branch": st.snap.obj.IntegrationBranch, "repo": st.snap.project.RepoPath}
+	if exactCommit != "" {
+		receipt["accepted_commit"] = exactCommit
+	}
+	return st.event("objective:"+st.snap.obj.ID, "merged_local", receipt)
 }
 
 func approved(answer string) bool {
@@ -2371,7 +2439,30 @@ func git(ctx context.Context, repo string, args ...string) (string, error) {
 // acceptGit runs the git commands that prepare an acceptance worktree.
 // Those must not follow serve's GIT_EXEC_PATH, template, or config.
 func acceptGit(ctx context.Context, repo string, args ...string) (string, error) {
-	return gitWith(ctx, repo, acceptGitEnv(), args...)
+	if !proc.ExactGitObjects(ctx) {
+		return gitWith(ctx, repo, acceptGitEnv(), args...)
+	}
+	out, err := exactAcceptanceGit(ctx, repo, args...).Output()
+	return string(out), err
+}
+
+func exactAcceptanceGit(ctx context.Context, dir string, args ...string) *exec.Cmd {
+	cmd := proc.Git(ctx, acceptGitEnv(), append([]string{"-C", dir, "--no-replace-objects", "--no-optional-locks",
+		"-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false"}, args...)...)
+	cmd.Env = exactAcceptanceGitEnv(cmd.Env)
+	return cmd
+}
+
+func exactAcceptanceGitEnv(base []string) []string {
+	// Apply these fixed settings after both the env and credential scrubs.
+	return append(proc.GitObjectScopeEnv(base), "GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_ATTR_NOSYSTEM=1",
+		"GIT_NO_LAZY_FETCH=1", "GIT_ALLOW_PROTOCOL=", "GIT_CONFIG_COUNT=5",
+		"GIT_CONFIG_KEY_0=core.hooksPath", "GIT_CONFIG_VALUE_0="+os.DevNull,
+		"GIT_CONFIG_KEY_1=core.fsmonitor", "GIT_CONFIG_VALUE_1=false",
+		"GIT_CONFIG_KEY_2=core.attributesFile", "GIT_CONFIG_VALUE_2="+os.DevNull,
+		"GIT_CONFIG_KEY_3=core.autocrlf", "GIT_CONFIG_VALUE_3=false",
+		"GIT_CONFIG_KEY_4=core.eol", "GIT_CONFIG_VALUE_4=lf")
 }
 
 func gitWith(ctx context.Context, repo string, env []string, args ...string) (string, error) {

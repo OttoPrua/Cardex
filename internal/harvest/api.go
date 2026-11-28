@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/strongcustody"
 )
 
 // ErrNotImplemented is kept for compatibility; nothing in this package returns it now.
@@ -22,20 +23,22 @@ type Input struct {
 	Scratch    string           // 项目 scratch_dir。空则用 home 的 scratch_dir，再空则用进程临时目录。
 	Runner     string           // 实际执行这次尝试的 runner。空则摘要里留空。
 	// ExpectedChannel 和 ExpectedModel 是目标或卡上固定的渠道和模型。都空表示没有固定值。
-	ExpectedChannel string
-	ExpectedModel   string
-	ExpectedTier    string // 复核卡的档位。空表示不拿档位做对照。
+	ExpectedChannel     string
+	ExpectedModel       string
+	CaptureStrongResult *strongcustody.Capture // Only an opted-in strong stage requests a complete canonical result.
+	ExpectedTier        string                 // 复核卡的档位。空表示不拿档位做对照。
 }
 
 // Result is the outcome and the evidence behind it.
 type Result struct {
-	Outcome     model.Outcome    // 由工作区证据决定的结果。
-	ErrorClass  model.ErrorClass // 错误类。
-	Excerpt     string           // 错误或失败摘录。
-	Claims      []model.Claim    // 按实际改动更新后的声明；超出声明不算失败。
-	Evidence    string           // 判定依据。
-	ResultText  string           // 宽松解析前的结果文件原文。
-	EvidenceErr error            // acceptance.log 或 result.md 写失败。outcome 不变。
+	Outcome      model.Outcome         // 由工作区证据决定的结果。
+	ErrorClass   model.ErrorClass      // 错误类。
+	Excerpt      string                // 错误或失败摘录。
+	Claims       []model.Claim         // 按实际改动更新后的声明；超出声明不算失败。
+	Evidence     string                // 判定依据。
+	ResultText   string                // 宽松解析前的结果文件原文。
+	StrongResult *strongcustody.Result // Present only for complete, valid, successful opted-in results.
+	EvidenceErr  error                 // acceptance.log 或 result.md 写失败。outcome 不变。
 }
 
 // Harvest reads the exit code, the event stream, the diff, acceptance, and the result file.

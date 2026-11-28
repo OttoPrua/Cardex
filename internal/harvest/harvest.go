@@ -18,6 +18,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/roots"
+	"github.com/OttoPrua/Cardex/internal/strongcustody"
 	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
@@ -27,6 +28,24 @@ const defaultAcceptanceTimeout = 10 * time.Minute
 func Harvest(ctx context.Context, in Input) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
+	}
+	var raw string
+	var result resultState
+	var complete *strongcustody.Result
+	if in.CaptureStrongResult != nil {
+		if in.Card.ID != in.Attempt.Card {
+			return Result{}, model.ErrStrongArtifact
+		}
+		var err error
+		complete, err = in.CaptureStrongResult.Seal(ctx, in.Attempt)
+		if err != nil {
+			return Result{}, err
+		}
+		result = resultMissing
+		if complete != nil {
+			raw = string(complete.Record().Body)
+			result = resultValid
+		}
 	}
 	if err := invalidateStageEvidence(in); err != nil {
 		return Result{}, err
@@ -69,9 +88,11 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	raw, result, err := readResult(filepath.Join(dir, ".cardex-result.md"))
-	if err != nil {
-		return Result{}, err
+	if in.CaptureStrongResult == nil {
+		raw, result, err = readResult(filepath.Join(dir, ".cardex-result.md"))
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	outcome := decide(facts{
 		ProducesCode: producesCode(in.Card.Kind),
@@ -90,6 +111,9 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 		ResultText: raw,
 		Evidence: fmt.Sprintf("exit=%d events=%d truncated=%t changes=%t acceptance=%s result=%s class=%s",
 			in.Exit, events, truncated, len(changed) > 0, acceptLabel(acc), resultLabel(result), in.ErrorClass),
+	}
+	if complete != nil && in.Exit == 0 && outcome == model.OutcomePassed {
+		res.StrongResult = complete
 	}
 	if outcome == model.OutcomeViolation {
 		res.ErrorClass = model.ErrorViolation

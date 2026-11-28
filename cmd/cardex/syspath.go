@@ -45,12 +45,12 @@ func withSystemPath(list, goos string) string {
 // ensureRuntimePath runs at executable entry, before any credential adapter,
 // Git subprocess, shell, or background worker resolves a command name.
 func ensureRuntimePath(args []string) error {
-	inherited := os.Getenv("PATH")
 	home, _, rest, err := splitGlobal(args)
-	if err == nil && len(rest) > 0 && (rest[0] == "snapshot" || rest[0] == "verify") {
+	if err == nil && len(rest) > 0 && (rest[0] == "snapshot" || rest[0] == "verify" || isOfflineChannelQuote(rest)) {
 		// Evidence-only commands need neither executables nor config reads.
 		return nil
 	}
+	inherited := os.Getenv("PATH")
 	if err != nil || isGlobalHelp(rest) || len(rest) == 0 || rest[0] == "version" || rest[0] == "--version" || rest[0] == "-v" {
 		return os.Setenv("PATH", withSystemPath(inherited, runtime.GOOS))
 	}

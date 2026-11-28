@@ -97,6 +97,11 @@ func Main(args []string, stdout, stderr io.Writer) int {
 		// that setup can create a home even if the preview is invalid.
 		return channelSet(home, asJSON, rest[2:], stdout, stderr)
 	}
+	// Offline fixture calculations must not touch any home, DB, engine
+	// config, credential, or configured proxy.
+	if isOfflineChannelQuote(rest) {
+		return channelQuoteFixture(rest[2:], stdout, stderr)
+	}
 	applyCommandProxy(home, stderr)
 	switch rest[0] {
 	case "proxy":

@@ -1038,6 +1038,7 @@ a.ic-title:hover{text-decoration:underline}
 {{if .ErrorExcerpt}}<div class="excerpt">{{.ErrorExcerpt}}</div>{{end}}
 {{if .Events}}<details><summary>{{len .Events}} 条事件</summary><div class="events">{{range .Events}}<div class="ev"><span class="chip">{{.Type}}</span><code>{{.DataText}}</code><span class="k">event {{.Type}} {{.DataText}}</span></div>{{end}}</div></details>{{end}}
 <details><summary>选路原因</summary><pre class="route-reason">{{.RouteReasonJSON}}</pre></details>
+{{if .APIMetering}}<details><summary>兼容 API 用量证据（非账单）</summary><pre class="route-reason">{{.APIMeteringJSON}}</pre></details>{{end}}
 </li>
 {{end}}</ul>{{else}}<div class="empty">这张卡还没有尝试。</div>{{end}}
 </div>

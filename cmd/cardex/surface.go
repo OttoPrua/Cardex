@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/OttoPrua/Cardex/internal/apiusage"
 	"github.com/OttoPrua/Cardex/internal/host"
 	"github.com/OttoPrua/Cardex/internal/importer"
 	"github.com/OttoPrua/Cardex/internal/model"
@@ -484,6 +485,7 @@ parameters:
   set    --id <id> --if-models <token> [--add-model <name>] [--remove-model <name>]
   check  [--probe --channel ID --model ID --confirm-possible-charge]
   import-usage --id <channel> --provider <provider> --input <CodexBar JSON file or ->
+  quote-fixture --help   read offline fixtures; show synthetic amounts only by explicit flag
 `
 
 func cmdChannel(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
@@ -501,6 +503,8 @@ func cmdChannel(home string, asJSON bool, args []string, stdout, stderr io.Write
 		return channelCheck(home, asJSON, args[1:], stdout, stderr)
 	case "import-usage":
 		return channelImportUsage(home, asJSON, args[1:], stdout, stderr)
+	case "quote-fixture":
+		return channelQuoteFixture(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown channel verb %q\n", args[0])
 		return 2
@@ -931,6 +935,7 @@ func cmdRoute(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		Scores:     []model.RouteScore{},
 	}
 	var comparison *model.ComparisonResult
+	var metering *apiusage.View
 	if len(attempts) > 0 {
 		best := attempts[0]
 		for _, attempt := range attempts[1:] {
@@ -939,6 +944,10 @@ func cmdRoute(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 			}
 		}
 		reason = best.RouteReason
+		if e, meteringErr := db.GetAPIAttemptMetering(context.Background(), best); meteringErr == nil && e != nil {
+			v := e.View()
+			metering = &v
+		}
 		if best.StrictComparison() {
 			comparison, err = db.GetStrictComparisonResult(context.Background(), best.ID)
 			if err != nil {
@@ -953,7 +962,8 @@ func cmdRoute(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 	code := writeJSON(stdout, struct {
 		model.RouteReason
 		Comparison *model.ComparisonResult `json:"comparison_result,omitempty"`
-	}{reason, comparison})
+		Metering   *apiusage.View          `json:"api_metering,omitempty"`
+	}{reason, comparison, metering})
 	if !asJSON && code == 0 {
 		if line := lastNoCandidate(db, cardID); line != "" {
 			fmt.Fprintln(stdout, line)

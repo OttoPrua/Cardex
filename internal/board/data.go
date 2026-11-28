@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OttoPrua/Cardex/internal/apiusage"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/quota"
 	"github.com/OttoPrua/Cardex/internal/roots"
@@ -328,11 +329,23 @@ type attemptView struct {
 	LogTailURL   string            `json:"log_tail_url"`
 	Ended        bool              `json:"ended"`
 	Evidence     []string          `json:"evidence"`
+	APIMetering  *apiusage.View    `json:"api_metering,omitempty"`
 }
 
 // RouteReasonJSON is the route reason as HTML-escaped text in the card template.
 func (a attemptView) RouteReasonJSON() string {
 	b, err := json.Marshal(a.RouteReason)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func (a attemptView) APIMeteringJSON() string {
+	if a.APIMetering == nil {
+		return ""
+	}
+	b, err := json.MarshalIndent(a.APIMetering, "", "  ")
 	if err != nil {
 		return ""
 	}
@@ -787,8 +800,14 @@ func loadCardSnapshot(ctx context.Context, db *store.Store, id string) (*cardVie
 		for _, e := range events {
 			evs = append(evs, eventView{Type: e.Type, Data: eventData(e.Data)})
 		}
+		var metering *apiusage.View
+		if e, meteringErr := db.GetAPIAttemptMetering(ctx, a); meteringErr == nil && e != nil {
+			v := e.View()
+			metering = &v
+		}
 		view.Attempts = append(view.Attempts, attemptView{
 			ID:           a.ID,
+			APIMetering:  metering,
 			RouteReason:  a.RouteReason,
 			Outcome:      string(a.Outcome),
 			ErrorExcerpt: a.ErrorExcerpt,

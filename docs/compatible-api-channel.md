@@ -174,3 +174,105 @@ allowlisted values and discards raw metadata and usage. It stores an
 isolated comparison result visible under
 `route explain <card> --json`; ordinary research, scorecard and ranking do not
 use it. Existing ordinary routes retain their current fallback.
+
+## Offline usage and synthetic price snapshots (API3)
+
+API3 keeps compatible metering apart from the legacy token/quota ledger,
+ranking, and any account billing. It adds no provider requests, credential
+resolution, rate discovery, receipt collection from a real provider, or
+production price activation. Do not upload actual account receipts or real
+rates through the fixture path. This release has no provider-dollar amount.
+
+The offline fixture command bypasses executable runtime setup and does not
+read configuration or open or write a CardeX home. Supply one
+bounded local JSON result; a synthetic Messages response uses `type: message`
+and the exact fixture model. Use `--format recorded-claude-cli` for one archived
+terminal `type: result` object. The latter is clearly marked `recorded_claude_cli`
+and never produces an amount, even with a supplied snapshot. It prefers one
+top-level usage summary over a single exact-key `modelUsage` summary rather
+than combining the two. Unsafely ambiguous records are refused; conflicting
+subtotals are marked disputed. CLI model labels and `modelUsage.costUSD` are
+not provider identity, a supplier rate, or a bill. The metering view identifies
+archive attribution as `scheduled_route_only` and a synthetic model match as
+`synthetic_fixture_model_match`, never a real identity verification. The
+evidence trust field explicitly says `unverified_transcription` or
+`synthetic_only`; neither is an authentic production observation.
+
+```sh
+cardex channel quote-fixture --usage synthetic-message.json --price synthetic-price.json \
+  --channel fixture-a --model fixture-model \
+  --binding aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  --at 2026-10-18T10:00:00Z --show-synthetic-estimate
+```
+
+Without the amount flag the command is metering-only. Missing data is
+`null` / unknown, including an omitted zero. The complete token total is
+input + output + cache reads + cache writes when all four are known and
+reconcile. Cache-write durations and reasoning are subsets, never extra
+tokens. If a parent bucket is missing, its known disjoint components may
+contribute to the checked `known_token_lower_bound`, not create a known
+parent, a complete total, or a price. Server web search/fetch request
+counters are separate. Only these
+allowlisted fields and service tier/speed labels survive; prompt, response
+text, credentials, headers and other metadata do not.
+
+A price fixture is a single immutable, explicit version scoped to **channel,
+exact model and compatible binding digest**, currency, service tier,
+speed, and a half-open effective interval. Example, using purely invented
+rates (these numbers are not any provider's):
+
+```json
+{
+  "source": "synthetic_fixture",
+  "channel": "fixture-a",
+  "model": "fixture-model",
+  "binding": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "version": "fixture-v1",
+  "currency": "USD",
+  "service_tier": "standard",
+  "speed": "standard",
+  "effective_from": "2026-10-18T09:00:00Z",
+  "effective_until": "2026-10-18T11:00:00Z",
+  "rates": {
+    "input_currency_micros_per_million": 1000000,
+    "output_currency_micros_per_million": 2000000,
+    "cache_read_currency_micros_per_million": 0,
+    "cache_write_currency_micros_per_million": 0,
+    "web_search_currency_micros_per_request": 0,
+    "web_fetch_currency_micros_per_request": 0
+  }
+}
+```
+
+Provide a single cache-write rate or both duration rates
+(`cache_write_5m_currency_micros_per_million` and
+`cache_write_1h_currency_micros_per_million`), not both schemes. All required
+counters and rates must be explicitly known, even where zero, and the
+price fingerprint must match the receipt. No default model, another
+channel's rates, rebinding, a neighboring version, or currency conversion
+is used. The estimate accumulates exact arithmetic and rounds once to the
+nearest currency micro (half up); JSON encodes that integer amount as a
+decimal string. Incomplete scopes, conflicts, and overflow produce unknown,
+not a zero bill.
+
+The typed store scaffolding keeps one canonical, immutable receipt per
+sealed attempt, a separate namespace for synthetic probes, and one fixed
+snapshot per channel/model/version. Identical replay is idempotent; new
+attempt IDs and new versions remain distinct. The offline envelope pins the
+card and the successful terminal execution witness. The prelaunch capture
+binds the assigned card, attempt, route, exact original card body digest,
+and input/worktree custody; only the combined digest is recorded. Missing, lost, held, rebound or differently owned
+executions remain unknown. Ordinary test fixture completion requires a
+matching prelaunch fixture capture. A recorded CLI document can still be
+inspected offline, but old database rows without trustworthy original
+custody stay unknown and are not backfilled. Both strict markers must agree,
+and comparison metering requires the matching origin-bound one-shot API2
+claim, admitted generation and isolated result, not merely route metadata.
+A host may claim before execution starts; generation and result must belong
+to that execution.
+The board and route explanation can display existing metering receipts
+without amounts. There is no public
+fixture ingestion into the production database and no live producer wired.
+An independently authenticated operator and verified external rate/usage
+evidence would be required before a real readiness claim. Actual charges
+would require separate verified billing evidence, not these estimates.

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -444,6 +445,9 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	base := fs.String("base", "", "base commit")
 	sandboxMode := fs.String("sandbox", "", "on or off; empty inherits the project default (on unless the project says off); fixed once the card exists")
 	cardReview := fs.String("review", "", "review mode after a passed dev card: auto, off, check, review; empty inherits objective then project")
+	strict := fs.Bool("strict-comparison", false, "run a standalone research comparison with no channel/model fallback")
+	compareChannel := fs.String("channel", "", "explicit compatible channel for a strict comparison")
+	compareModel := fs.String("model", "", "exact model for a strict comparison")
 	status := fs.String("status", string(model.CardReady), "status")
 	originFlag := fs.String("origin", "", "origin session kind:id; a present flag wins over CARDEX_ORIGIN")
 	if code, ok := parseSet(fs, args); !ok {
@@ -457,6 +461,22 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	if *objective == "" {
 		fmt.Fprintln(stderr, "--objective is required")
 		return 2
+	}
+	if slices.Contains(requires, model.RequireStrictComparison) || (!*strict && (flagSeen(fs, "channel") || flagSeen(fs, "model"))) {
+		fmt.Fprintln(stderr, "use --strict-comparison --channel ID --model ID together for strict comparisons")
+		return 2
+	}
+	if *strict {
+		if !flagSeen(fs, "kind") {
+			*kind = string(model.KindResearch)
+		}
+		if strings.TrimSpace(*compareChannel) == "" || strings.TrimSpace(*compareModel) == "" ||
+			*node != "" || *kind != string(model.KindResearch) || len(requires) != 0 || *sandboxMode == "off" ||
+			strings.TrimSpace(*body) == "" || len(*body) > model.ComparisonMaxQuestion || strings.ContainsRune(*body, '\x00') || len(acceptance) != 0 {
+			fmt.Fprintln(stderr, "strict comparison requires --channel and --model and a bounded --body, standalone research, and no other capabilities, acceptance, or sandbox bypass")
+			return 2
+		}
+		requires = append(requires, model.RequireStrictComparison)
 	}
 	kindVal, kindOK := normalizeKind(*kind)
 	tierVal, tierOK := normalizeTier(*tier)
@@ -485,6 +505,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 		Title: titleVal, Body: *body, Tier: tierVal, Requires: requires,
 		Deps: deps, StrictDeps: *strictDeps, Acceptance: acceptance, Base: *base, Status: statusVal,
 		WaitReason: strings.Join(reasons, "; "), Sandbox: *sandboxMode, Review: *cardReview,
+		Channel: strings.TrimSpace(*compareChannel), Model: strings.TrimSpace(*compareModel),
 	}
 	if c.ID == "" {
 		gen, err := newID("c")

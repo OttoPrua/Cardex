@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,31 @@ type CompatibleRelay struct {
 	LocalURL, LocalKey string
 	secret             string
 	close              func()
+	comparison         *compatibleComparison
+}
+
+// RequireModelEvidence enables a strict per-attempt generation guard before
+// the executor is allowed to know the loopback capability.
+func (r *CompatibleRelay) RequireModelEvidence(expected, prompt string, ready ...func(context.Context, bool) bool) {
+	if r.comparison == nil {
+		r.comparison = &compatibleComparison{}
+	}
+	r.comparison.setup(expected, prompt, ready...)
+}
+
+func (r *CompatibleRelay) ModelEvidence() model.ProviderModelEvidence {
+	if r.comparison == nil {
+		return model.ProviderModelEvidence{Returned: model.UnknownProviderModel, Source: model.ModelSourceUnknown, Status: "request_missing"}
+	}
+	return r.comparison.snapshot()
+}
+
+// ComparisonAnswer returns only normalized text from a verified response.
+func (r *CompatibleRelay) ComparisonAnswer() string {
+	if r.comparison == nil {
+		return ""
+	}
+	return r.comparison.verifiedAnswer()
 }
 
 func (r *CompatibleRelay) Close() {
@@ -50,6 +76,39 @@ func StartCompatibleRelay(context.Context, []byte, ...string) (*CompatibleRelay,
 	return nil, errors.New(model.CompatibleRuntimeHold)
 }
 
+// CredentialCurrent revalidates and resolves only this same already approved
+// reference; rotations or an inaccessible reference cannot authorize sending
+// a stale in-memory credential. Neither value is recorded.
+func (r *CompatibleRelay) CredentialCurrent(raw []byte, roots ...string) bool {
+	if r.secret == "" {
+		return false
+	}
+	prof, err := parseCompatible(raw)
+	if err != nil || validateCompatible(prof) != nil {
+		return false
+	}
+	current, err := resolveRelayCredential(prof, roots)
+	return err == nil && subtle.ConstantTimeCompare([]byte(r.secret), []byte(current)) == 1
+}
+
+func resolveRelayCredential(prof compatibleProfile, managedRoots []string) (string, error) {
+	var protected []os.FileInfo
+	if prof.Credential.Source == "file" {
+		if len(managedRoots) < 3 {
+			return "", errors.New("credential file workspace boundary cannot be verified")
+		}
+		real, identities, err := credentialFileLocation(prof.Credential.Path, managedRoots)
+		if err != nil {
+			return "", err
+		}
+		if real != prof.Credential.Path {
+			return "", errors.New("credential file location changed after validation")
+		}
+		protected = identities
+	}
+	return resolveCredential(prof.Credential, protected...)
+}
+
 func newCompatibleTransport(host, port string, lookup compatibleLookup, dial compatibleDial) *http.Transport {
 	if port == "" {
 		port = "443"
@@ -66,7 +125,11 @@ func newCompatibleTransport(host, port string, lookup compatibleLookup, dial com
 	}
 }
 
-func compatibleRelayHandler(endpoint *url.URL, localHost, key, secret string, transport http.RoundTripper) http.Handler {
+func compatibleRelayHandler(endpoint *url.URL, localHost, key, secret string, transport http.RoundTripper, comparisons ...*compatibleComparison) http.Handler {
+	var comparison *compatibleComparison
+	if len(comparisons) != 0 {
+		comparison = comparisons[0]
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		// The Anthropic SDK adds the fixed beta qualifier to its beta Messages
 		// routes. No arbitrary query, origin, or path can pass the relay.
@@ -92,10 +155,19 @@ func compatibleRelayHandler(endpoint *url.URL, localHost, key, secret string, tr
 			return
 		}
 
+		isGeneration := req.URL.Path == "/v1/messages"
+		strict := false
+		if comparison != nil {
+			strict, body = comparison.authorizeRequest(req.Context(), body, isGeneration)
+			if body == nil {
+				compatibleError(w, http.StatusConflict)
+				return
+			}
+		}
 		target := *endpoint
 		target.Path = strings.TrimRight(target.Path, "/") + req.URL.Path
 		target.RawPath = ""
-		if beta {
+		if beta && !strict {
 			target.RawQuery = "beta=true"
 		}
 		up, err := http.NewRequestWithContext(req.Context(), http.MethodPost, target.String(), bytes.NewReader(body))
@@ -103,11 +175,19 @@ func compatibleRelayHandler(endpoint *url.URL, localHost, key, secret string, tr
 			compatibleError(w, http.StatusBadGateway)
 			return
 		}
+		if strict {
+			up.GetBody = nil
+		}
 		up.Header.Set("Authorization", "Bearer "+secret)
 		up.Header.Set("Content-Type", "application/json")
-		for _, h := range []string{"Accept", "Anthropic-Version", "Anthropic-Beta"} {
-			for _, value := range req.Header.Values(h) {
-				up.Header.Add(h, value)
+		if strict {
+			up.Header.Set("Accept", "application/json, text/event-stream")
+			up.Header.Set("Anthropic-Version", "2023-06-01")
+		} else {
+			for _, h := range []string{"Accept", "Anthropic-Version", "Anthropic-Beta"} {
+				for _, value := range req.Header.Values(h) {
+					up.Header.Add(h, value)
+				}
 			}
 		}
 		resp, err := transport.RoundTrip(up)
@@ -129,8 +209,25 @@ func compatibleRelayHandler(endpoint *url.URL, localHost, key, secret string, tr
 			compatibleError(w, http.StatusBadGateway)
 			return
 		}
+		stream := strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream")
+		var response io.Reader = resp.Body
+		if strict && isGeneration {
+			// Before relaying answer bytes, verify the identity from the
+			// authenticated provider response, never from caller/CLI output.
+			raw, err := io.ReadAll(io.LimitReader(resp.Body, maxComparisonResponse+1))
+			if err != nil || len(raw) > maxComparisonResponse || !comparison.observe(raw, stream, secret) {
+				compatibleError(w, http.StatusBadGateway)
+				return
+			}
+			reply := comparison.childReply(stream)
+			if reply == nil {
+				compatibleError(w, http.StatusConflict)
+				return
+			}
+			response = bytes.NewReader(reply)
+		}
 		// Do not propagate upstream headers that could reflect authentication.
-		if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		if stream {
 			w.Header().Set("Content-Type", "text/event-stream")
 		} else {
 			w.Header().Set("Content-Type", "application/json")
@@ -139,7 +236,7 @@ func compatibleRelayHandler(endpoint *url.URL, localHost, key, secret string, tr
 		filter := newCompatibleRedactor(w, secret)
 		buf := make([]byte, 16<<10)
 		for {
-			n, err := resp.Body.Read(buf)
+			n, err := response.Read(buf)
 			if n > 0 {
 				if _, writeErr := filter.Write(buf[:n]); writeErr != nil {
 					return

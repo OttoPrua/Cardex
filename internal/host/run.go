@@ -27,6 +27,10 @@ import (
 	"github.com/OttoPrua/Cardex/internal/store"
 )
 
+// Set only by the test harness. A same-UID CLI, environment variable,
+// staged or historically healthy channel cannot supply a live adapter.
+var syntheticStrictComparisonRelay func(context.Context, []byte, ...string) (*runner.CompatibleRelay, error)
+
 type ptyChooser interface {
 	NeedsPTYFor(runner.LaunchSpec) bool
 }
@@ -57,6 +61,13 @@ func run(ctx context.Context, home, attemptID string) error {
 	if err != nil {
 		return fmt.Errorf("host: load card: %w", err)
 	}
+	strict := card.StrictComparison() || attempt.StrictComparison()
+	if strict && syntheticStrictComparisonRelay == nil {
+		// Never take an execution claim or touch the generic D1 admission for
+		// a disabled provider. Only the writer can prove this is still the
+		// same pristine, current strict dispatch and persist a no-wire refusal.
+		return refuseDisabledComparison(ctx, db, card, attempt)
+	}
 	if card.UsesStrictReviewObjects(attempt) {
 		ctx = proc.WithExactGitObjects(ctx)
 	}
@@ -66,15 +77,34 @@ func run(ctx context.Context, home, attemptID string) error {
 			return err
 		}
 	}
+	var claim store.StrictComparisonClaim
+	if strict {
+		var claimed bool
+		claim, claimed, err = db.ClaimStrictComparison(ctx, attempt)
+		if err != nil {
+			return fmt.Errorf("host: cannot claim strict comparison attempt: %w", err)
+		}
+		if !claimed {
+			// The existing/finished owner is authoritative. A duplicate
+			// invocation must not resolve credentials or modify its result.
+			return nil
+		}
+	}
 	channel, err := db.GetChannel(ctx, attempt.Route.Channel)
 	if err != nil {
+		if strict {
+			return stopHostComparison(ctx, db, &attempt, &card, "strict comparison channel is unavailable")
+		}
 		return fmt.Errorf("host: load channel: %w", err)
+	}
+	if strict && !comparisonTargetReady(card, attempt, channel) {
+		return stopHostComparison(ctx, db, &attempt, &card, "strict comparison target is no longer available")
 	}
 	approvedBindingID := ""
 	if attempt.RouteReason.Dispatch != nil {
 		approvedBindingID = attempt.RouteReason.Dispatch.CompatibleBindingID
 	}
-	if syntheticCompatibleRelay == nil && (approvedBindingID != "" || channel.CompatibleRuntimeHeld()) {
+	if !strict && syntheticCompatibleRelay == nil && (approvedBindingID != "" || channel.CompatibleRuntimeHeld()) {
 		return holdCompatibleHostAttempt(ctx, db, card, attempt)
 	}
 	if approvedBindingID != "" && approvedBindingID != runner.CompatibleBindingID(channel.EngineProfile) {
@@ -134,7 +164,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		}
 		spec.Script = raw
 		if runner.IsCompatibleEngine(raw) {
-			if syntheticCompatibleRelay == nil {
+			if !strict && syntheticCompatibleRelay == nil {
 				sum := sha256.Sum256(raw)
 				proof := store.CompatibleRefusal{
 					ProfileDigest: fmt.Sprintf("%x", sum),
@@ -186,11 +216,42 @@ func run(ctx context.Context, home, attemptID string) error {
 			}
 			spec.ConfigDir = configDir
 			defer cleanupClaudeConfig(db, attempt.ID, configDir)
-			relay, err = syntheticCompatibleRelay(ctx, verified, fileRoots...)
+			startRelay := syntheticCompatibleRelay
+			if strict {
+				startRelay = syntheticStrictComparisonRelay
+			}
+			relay, err = startRelay(ctx, verified, fileRoots...)
 			if err != nil {
 				return handoffReview(ctx, db, &attempt, &card, err.Error())
 			}
 			defer relay.Close()
+			if strict {
+				pinned := attempt
+				validatedSpec := spec
+				prompt, _ := card.ComparisonInput()
+				approvedBody := card.Body
+				relay.RequireModelEvidence(pinned.Route.Model, prompt, func(requestCtx context.Context, generation bool) bool {
+					// No private input crosses the relay if the pinned
+					// binding/status changed while the process was starting.
+					freshChannel, chErr := db.GetChannel(requestCtx, pinned.Route.Channel)
+					freshCard, cardErr := db.GetCard(requestCtx, pinned.Card)
+					if chErr != nil || cardErr != nil || !comparisonTargetReady(freshCard, pinned, freshChannel) {
+						return false
+					}
+					raw, reason := resolveEngineProfile(loadConfig(home), freshChannel.EngineProfile)
+					if reason != "" {
+						return false
+					}
+					snapshot := validatedSpec
+					snapshot.Script = raw
+					verified, err := runner.ValidateCompatibleLaunch(snapshot, freshChannel, approvedBindingID, fileRoots...)
+					if err != nil || !relay.CredentialCurrent(verified, fileRoots...) {
+						return false
+					}
+					allowed, err := db.AuthorizeStrictComparisonRequest(requestCtx, claim, freshChannel.EngineProfile, approvedBody, generation)
+					return err == nil && allowed
+				})
+			}
 			spec.RelayURL, spec.RelayKey = relay.LocalURL, relay.LocalKey
 		}
 	} else if cfg.invalid {
@@ -317,7 +378,10 @@ func run(ctx context.Context, home, attemptID string) error {
 	var logRead, logWrite *os.File
 	var copied chan struct{}
 	if !needPTY {
-		if promptPath != "" {
+		if strict {
+			prompt, _ := card.ComparisonInput()
+			cmd.Stdin = strings.NewReader(prompt)
+		} else if promptPath != "" {
 			prompt, err := openPrompt(ctx, promptPath)
 			if err != nil {
 				return failStart(ctx, db, &attempt, err)
@@ -334,7 +398,11 @@ func run(ctx context.Context, home, attemptID string) error {
 		copied = make(chan struct{})
 		go func() {
 			defer close(copied)
-			if relay != nil {
+			if strict {
+				// Strict results come only from the authenticated relay.
+				// Do not retain arbitrary executor stdout/stderr as answers.
+				_, _ = io.Copy(io.Discard, logRead)
+			} else if relay != nil {
 				relay.CopyOutput(capture, logRead)
 			} else {
 				_, _ = io.Copy(capture, logRead)
@@ -352,7 +420,7 @@ func run(ctx context.Context, home, attemptID string) error {
 		writable = append(writable, scratchDir)
 	}
 	wrap := sandbox.Wrap
-	if sandboxOff(ctx, db, card) {
+	if !strict && sandboxOff(ctx, db, card) {
 		wrap = func(c *exec.Cmd, _ []string) (*exec.Cmd, error) { return sandbox.Off(c) }
 	}
 	wrapped, err := wrap(cmd, writable)
@@ -374,10 +442,21 @@ func run(ctx context.Context, home, attemptID string) error {
 		proc.NewGroup(wrapped)
 	}
 
+	if strict {
+		fresh, channelErr := db.GetChannel(ctx, attempt.Route.Channel)
+		freshCard, cardErr := db.GetCard(ctx, attempt.Card)
+		if channelErr != nil || cardErr != nil || !comparisonTargetReady(freshCard, attempt, fresh) {
+			closePipe(logWrite, logRead)
+			if copied != nil {
+				<-copied
+			}
+			return stopHostComparison(ctx, db, &attempt, &card, "strict comparison target changed before executor start")
+		}
+	}
+
 	// This is the last atomic database decision before executor spawn.
-	// Do not hold a database transaction across operating-system process
-	// launch: a dependency can change after this check, and an already
-	// admitted process is not revoked by later dependency changes.
+	// Do not hold a database transaction across process launch. A change
+	// after this decision does not revoke a process already admitted.
 	if card.StrictDeps {
 		reviewScope, scopeErr := proveStrictHostReviewScope(ctx, db, card, attempt)
 		if card.UsesStrictReviewObjects(attempt) {
@@ -398,7 +477,6 @@ func run(ctx context.Context, home, attemptID string) error {
 			return err
 		}
 	}
-
 	appendEvent(ctx, db, attempt.ID, "host_start", map[string]any{
 		"runner":      r.Name(),
 		"pty":         needPTY,
@@ -537,6 +615,24 @@ func run(ctx context.Context, home, attemptID string) error {
 		driveErr = nil
 	}
 	output := capture.Bytes()
+	if strict {
+		proof := relay.ModelEvidence()
+		attempt.RouteReason.ProviderModel = &proof
+		answer := relay.ComparisonAnswer()
+		if exitCode(waitErr) != 0 || timedOut || driveErr != nil || !attempt.VerifiedComparison(card) || answer == "" {
+			why := "strict comparison did not produce a verified response"
+			if proof.Status == "identity_mismatch" {
+				why = "strict comparison provider returned a different model"
+			}
+			return stopHostComparison(ctx, db, &attempt, &card, why)
+		}
+		pctx, cancel := persistContext(ctx)
+		defer cancel()
+		if err := db.CompleteStrictComparison(pctx, claim, proof, answer); err != nil {
+			return stopHostComparison(ctx, db, &attempt, &card, "strict comparison result could not be finalized")
+		}
+		return nil
+	}
 	if err := capture.Close(); err != nil {
 		_ = finish(ctx, db, &attempt, card, output, exitCode(waitErr), r, err, driveErr, timedOut, goalStatus)
 		return err
@@ -691,6 +787,9 @@ func cleanupClaudeConfig(db *store.Store, attemptID, dir string) {
 }
 
 func handoffReview(ctx context.Context, db *store.Store, attempt *model.Attempt, card *model.Card, reason string) error {
+	if card.StrictComparison() || attempt.StrictComparison() {
+		return stopHostComparison(ctx, db, attempt, card, reason)
+	}
 	attempt.EndedAt = time.Now().UTC()
 	attempt.ErrorExcerpt = trimExcerpt(reason)
 	card.Status = model.CardNeedsInput

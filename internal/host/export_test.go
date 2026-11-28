@@ -26,3 +26,9 @@ func SetCompatibleRelayForTest(start func(context.Context, []byte, ...string) (*
 	syntheticCompatibleRelay = start
 	return func() { syntheticCompatibleRelay = old }
 }
+
+func SetStrictComparisonRelayForTest(start func(context.Context, []byte, ...string) (*runner.CompatibleRelay, error)) func() {
+	old := syntheticStrictComparisonRelay
+	syntheticStrictComparisonRelay = start
+	return func() { syntheticStrictComparisonRelay = old }
+}

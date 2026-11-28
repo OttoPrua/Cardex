@@ -75,7 +75,13 @@ func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Ca
 	if err != nil {
 		return "", err
 	}
-	r.applyLaunchBackoff(&fresh, prior)
+	strict := fresh.StrictComparison() || (attempt != nil && attempt.StrictComparison())
+	if strict {
+		fresh.Status = model.CardNeedsInput
+		fresh.WaitReason = "strict comparison could not start; no automatic retry"
+	} else {
+		r.applyLaunchBackoff(&fresh, prior)
+	}
 	if rt.Channel == "" && attempt != nil {
 		rt = attempt.Route
 	}
@@ -113,7 +119,7 @@ func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Ca
 	} else {
 		prior++
 	}
-	if prior >= 3 {
+	if !strict && prior >= 3 {
 		if qerr := r.openLaunchQuestion(ctx, db, card, step, summary); qerr != nil {
 			fmt.Fprintf(os.Stderr, "launch_failed question card=%s error=%v\n", card.ID, qerr)
 		}

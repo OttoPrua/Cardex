@@ -278,6 +278,17 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 			}
 			continue
 		}
+		if card.StrictComparison() || attempt.StrictComparison() {
+			// The host atomically finishes verified comparisons in their own
+			// store record. An unfinished, dead host cannot be replaced with
+			// a worktree artifact or scored through generic harvesting.
+			if err := r.stopComparison(ctx, db, &card, &attempt, "strict comparison ended without a verified provider result"); err != nil {
+				if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		d := attempt.RouteReason.Dispatch
 		channel, chErr := db.GetChannel(ctx, attempt.Route.Channel)
 		if (d != nil && d.CompatibleBindingID != "") || (chErr == nil && channel.CompatibleRuntimeHeld()) {
@@ -683,6 +694,14 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		}
 		return ch, err
 	}
+	// Real comparison approval is unavailable in this build. Do not make
+	// even a project checkout or classifier call for a pinned comparison,
+	// regardless of the channel's historical stored health.
+	if card.StrictComparison() {
+		return "", r.holdCompatibleCard(ctx, db, card, obj, func(context.Context) (bool, error) {
+			return true, nil
+		})
+	}
 	// Stop an explicit held API pin before even the classifier gets the
 	// card. Backlog fill passes one channel at a time, so use the full
 	// configured list to avoid dropping a pin to an out-of-scope API lane.
@@ -718,9 +737,13 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	}
 	// Keep an approved recovery pinned to its exact target. The approval
 	// transaction already changed the card; scheduler history cannot do so.
-	recovery, locked, err := r.recoveryTarget(ctx, db, card, obj, prev, channels, quotas)
-	if err != nil || locked {
-		return "", err
+	var recovery model.Route
+	if !card.StrictComparison() {
+		var locked bool
+		recovery, locked, err = r.recoveryTarget(ctx, db, card, obj, prev, channels, quotas)
+		if err != nil || locked {
+			return "", err
+		}
 	}
 	// dispatch and fill ignore ErrNoCandidate and ErrPinnedUnavailable.
 	// A stored channel that is missing, not ok, or blocked until a future reset
@@ -992,6 +1015,10 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 }
 
 func dispatchExpectation(card model.Card, obj model.Objective, classified model.Tier, channels []model.Channel, pos []model.Positioning) model.RouteDispatch {
+	if card.StrictComparison() {
+		_, digest := card.ComparisonInput()
+		return model.RouteDispatch{Channel: card.Channel, Model: card.Model, StrictComparison: true, ComparisonInputDigest: digest}
+	}
 	var d model.RouteDispatch
 	if card.Kind == model.KindReview {
 		d.Tier = card.Tier
@@ -1020,6 +1047,9 @@ func dispatchExpectation(card model.Card, obj model.Objective, classified model.
 func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, attempt *model.Attempt) (string, error) {
 	if !canDispatch(card) {
 		return "", nil
+	}
+	if card.StrictComparison() || attempt.StrictComparison() {
+		return "", db.RefuseDisabledComparison(ctx, card, *attempt, obj, r.now())
 	}
 	if d := attempt.RouteReason.Dispatch; d != nil && d.CompatibleBindingID != "" {
 		return "", db.HoldCompatibleAttempt(ctx, card, *attempt, &obj, r.now())
@@ -1079,6 +1109,17 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 	dir := roots.AttemptDir(r.Home, attempt.ID, attempt.PromptPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
+	}
+	if card.StrictComparison() || attempt.StrictComparison() {
+		text, digest := card.ComparisonInput()
+		if digest == "" || !attempt.StrictComparison() ||
+			digest != attempt.RouteReason.Dispatch.ComparisonInputDigest {
+			return errors.New("strict comparison input changed before prompt preparation")
+		}
+		if err := os.WriteFile(filepath.Join(dir, "prompt.txt"), []byte(text), 0o600); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "hard-duration"), []byte(hardDur), 0o600)
 	}
 	// Keep the card body's ## 事实摘要, including a direction-node Q0 that is
 	// not this node's question. Open questions do not replace that summary.

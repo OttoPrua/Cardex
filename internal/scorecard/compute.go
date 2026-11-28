@@ -65,7 +65,7 @@ func aggregate(ctx context.Context, db *store.Store) ([]Row, error) {
 	groups := map[bucketKey]*bucket{}
 	for _, attempt := range attempts {
 		card, ok := byID[attempt.Card]
-		if !ok {
+		if !ok || card.StrictComparison() || attempt.StrictComparison() {
 			continue
 		}
 		key := bucketKey{model: attempt.Route.Model, kind: card.Kind, tier: card.Tier}

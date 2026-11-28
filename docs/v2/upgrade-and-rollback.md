@@ -49,3 +49,9 @@ sqlite3 -readonly 'file:<NEW_BACKUP_DB_ABSOLUTE>?immutable=1' 'PRAGMA integrity_
 - 切换前失败：没有改变原入口或 DB 不需要恢复文件；查清原因后按原批准的运行方式恢复旧版。
 - 切换后、尚无新有效写入：停止新版及其宿主；保留失败现场另作证据，不覆盖备份。按已验证的旧版兼容关系，恢复每台机自己配套的旧二进制、服务入口及数据库快照；不要拿另一台的快照顶替。恢复目标要与新版 WAL／SHM 隔离，且替换前确认全部进程已退出。重新校验恢复库并核对旧版身份和状态，再恢复调度。
 - 切换后已有新写入或运行中任务：停止继续派发，保护新版数据和记录，不能直接用发布前快照回覆盖。由所有者确认如何保住新增工作、如何回迁，以及何时允许恢复。
+
+## 严格依赖卡的仓库准备保护
+
+启用严格依赖的卡在准备 Git checkout 前，会在 Git common directory（`git rev-parse --git-common-dir`）独占 `cardex-strict-preparation`。同一仓库的主 checkout 和 linked worktree 共用这个标记。普通卡的行为不变；不要在不同调度实例或旧版、普通手动 Git 工具之间并发操纵同一条 CardeX 工作分支。严格卡不会摘下未经确认已完成的 checkout；只读卡从同一 ref 建立独立的 detached checkout。
+
+这个标记没有超时，进程异常退出或 Git 被取消后可能保留。看到 “strict preparation slot held” 时，不要仅凭时间或 PID 消失清理它。先停派，查出标记记录的主机和尝试，确认该仓库的调度、宿主及其 Git 子进程全部结束，并核对没有新的所有者。只有确认后，才可移走该尝试的单个 `owner-…` 标记并移除空的准备目录；若证据不足或目录不空，保留现场。看到 “unverified branch checkout” 时，不要自动删除 worktree 或分支，先核对 checkout 的归属和所有写入者是否结束。

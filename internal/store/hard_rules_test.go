@@ -24,10 +24,12 @@ func TestMigration12KeepsExistingRowsWithoutHardRules(t *testing.T) {
 	if err := db.CreateObjective(ctx, &objective); err != nil {
 		t.Fatal(err)
 	}
+	dropStrictRuntimeFixture(t, db)
 	for _, stmt := range []string{
 		"ALTER TABLE projects DROP COLUMN hard_rules",
 		"ALTER TABLE objectives DROP COLUMN hard_rules",
-		"DELETE FROM schema_migrations WHERE version=12",
+		"ALTER TABLE cards DROP COLUMN strict_deps",
+		"DELETE FROM schema_migrations WHERE version>=12",
 	} {
 		if _, err := db.db.ExecContext(ctx, stmt); err != nil {
 			t.Fatal(err)

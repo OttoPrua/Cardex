@@ -504,12 +504,21 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 		return nil, err
 	}
 	live := map[string]bool{}
+	strictCards := map[string]bool{}
+	for _, card := range cards {
+		if card.StrictDeps {
+			strictCards[card.ID] = true
+		}
+	}
+	strictPrepared := map[string]bool{}
 	inUse := map[string]int{}
 	for _, attempt := range attempts {
 		if host.LiveHost(attempt) {
 			live[attempt.Card] = true
 		}
-		if attemptOccupies(attempt) {
+		if strictCards[attempt.Card] && attempt.PID == 0 && attemptOpen(attempt) {
+			strictPrepared[attempt.Card] = true
+		} else if attemptOccupies(attempt) {
 			inUse[attempt.Route.Channel]++
 		}
 	}
@@ -524,7 +533,8 @@ func (r *Runner) dispatch(ctx context.Context, db *store.Store) (map[string]bool
 	var occupy []model.Card
 	var ready []model.Card
 	for _, card := range cards {
-		if card.Status == model.CardRunning || card.Status == model.CardHarvesting {
+		if (card.Status == model.CardRunning && (!strictPrepared[card.ID] || live[card.ID])) ||
+			card.Status == model.CardHarvesting {
 			occupy = append(occupy, card)
 		}
 		// Paused, canceled, and other stopped cards stay put even when an
@@ -642,7 +652,17 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		if !canDispatch(card) {
 			return "", nil
 		}
-		return r.resumeAttempt(ctx, db, card, obj, open)
+		if card.StrictDeps {
+			// A blocked provisional attempt didn't reserve this channel.
+			if ch, ok := channelByID(channels, open.Route.Channel); ok && ch.Concurrency > 0 && inUse[ch.ID] >= ch.Concurrency {
+				return "", nil
+			}
+		}
+		ch, err := r.resumeAttempt(ctx, db, card, obj, open)
+		if card.StrictDeps && err == nil && ch != "" && inUse != nil {
+			inUse[ch]++
+		}
+		return ch, err
 	}
 	if missing, err := missingReviewSubject(ctx, db, card); err != nil || missing != "" {
 		if err != nil {
@@ -659,6 +679,9 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		return "", err
 	}
 	card, classified, err := r.classifyBeforeRoute(ctx, db, card)
+	if errors.Is(err, errStrictAdmissionChanged) {
+		return "", nil
+	}
 	if err != nil {
 		return "", err
 	}
@@ -705,7 +728,8 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	if r.holdFakeDesign(ctx, db, card, rt, channels) {
 		return "", nil
 	}
-	if rel.released {
+	strictView := strictLaunchView{card: card, obj: obj, project: project}
+	if rel.released && !card.StrictDeps {
 		card.Channel = rt.Channel
 		card.Model = rt.Model
 	}
@@ -745,6 +769,39 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		cont, detached = false, true
 		startPoint = reviewFallbackBase(ctx, db, wsCard, card.Base)
 	}
+	branch := cardBranchName(wsObj, wsCard)
+	var strictOwner *workspace.StrictPreparation
+	var closedCheckouts []string
+	gitStarted := false
+	if card.StrictDeps {
+		strictOwner, err = (workspace.Git{}).ReserveStrictPreparation(ctx, project.RepoPath, attemptID)
+		if err != nil {
+			return "", err
+		}
+		defer func() {
+			// A canceled Git command may leave subprocesses behind. Keep
+			// durable ownership fail-closed unless our Git returned normally.
+			if !gitStarted || ctx.Err() == nil {
+				strictOwner.Release()
+			}
+		}()
+		sharedBranch := branch
+		if readOnly || detached {
+			sharedBranch = "" // Detached readers never change another checkout.
+		}
+		closedCheckouts, err = strictGitPreparation(ctx, db, strictView, prev, sharedBranch)
+		if errors.Is(err, errStrictAdmissionChanged) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if readOnly && !detached {
+			// A review reads the named ref; it never detaches its author's
+			// source checkout to get a branch of its own.
+			cont, detached, startPoint = false, true, "refs/heads/"+branch
+		}
+	}
 	existed := cont || detached
 	root := project.WorktreeRoot
 	if strings.TrimSpace(root) == "" {
@@ -752,11 +809,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	}
 	targetWorktree := filepath.Join(root, wsCard+"-"+attemptID)
 	gitCtx := workspace.WithGitEvidence(ctx, card.ID, attemptID, targetWorktree)
-	baseSHA, err := workspace.Git{}.EnsureIntegrationBranch(gitCtx, project.RepoPath, obj.IntegrationBranch)
-	if err != nil {
-		return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, launchScratch{})
-	}
-	wt, err := addWorktree(gitCtx, workspace.CreateRequest{
+	req := workspace.CreateRequest{
 		CardID:            wsCard,
 		AttemptID:         attemptID,
 		ObjectiveID:       wsObj,
@@ -766,14 +819,34 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		StartPoint:        startPoint,
 		Continue:          cont,
 		Detach:            detached,
-	})
+		Strict:            card.StrictDeps,
+		StrictOwner:       strictOwner,
+		ClosedCheckouts:   closedCheckouts,
+	}
+	var baseSHA string
+	if card.StrictDeps {
+		// Read-only inspection of checked-out paths precedes even creation
+		// of a missing integration ref.
+		if err := (workspace.Git{}).CheckStrictContinuation(gitCtx, req); err != nil {
+			return "", err
+		}
+		gitStarted = true
+		baseSHA, err = (workspace.Git{}).EnsureStrictIntegrationBranch(gitCtx, req)
+	} else {
+		baseSHA, err = (workspace.Git{}).EnsureIntegrationBranch(gitCtx, project.RepoPath, obj.IntegrationBranch)
+	}
+	if err != nil {
+		return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, launchScratch{})
+	}
+	wt, err := addWorktree(gitCtx, req)
 	scratch := launchScratch{
 		repo:         project.RepoPath,
 		worktree:     targetWorktree,
-		branch:       cardBranchName(wsObj, wsCard),
+		branch:       branch,
 		base:         baseSHA,
 		dropWorktree: true,
 		dropBranch:   !existed,
+		strict:       &req,
 	}
 	if err != nil {
 		return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, scratch)
@@ -781,7 +854,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	scratch.worktree = wt.Path
 	scratch.branch = wt.Branch
 	scratch.base = wt.BaseCommit
-	if readOnly {
+	if readOnly && !card.StrictDeps {
 		if err := detachHead(workspace.WithGitEvidence(ctx, card.ID, attemptID, wt.Path), wt.Path); err != nil {
 			return r.failLaunch(ctx, db, &card, nil, launchStepWorktree, err, rt, scratch)
 		}
@@ -803,7 +876,20 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		PromptPath:  promptPath,
 		StartedAt:   r.now().UTC(),
 	}
-	if rel.failoverOrigin != "" {
+	if card.StrictDeps {
+		if err := r.prepareStrictAttempt(ctx, db, strictView, prev, &card, &attempt, pin, rel, rt); err != nil {
+			// Only discard our newly-created, uniquely named checkout.
+			// The shared branch may now belong to the winning preparation.
+			if ctx.Err() == nil {
+				workspace.Git{}.DropStrictLaunch(ctx, strictOwner, req, wt.Path, scratch.branch, scratch.base)
+			}
+			_ = os.Remove(dir)
+			if errors.Is(err, errStrictAdmissionChanged) {
+				return "", nil
+			}
+			return "", err
+		}
+	} else if rel.failoverOrigin != "" {
 		// Install the fallback and its lineage together with the attempt. A
 		// scheduler restart can resume the attempt without forgetting the
 		// previous releases or losing their audit event.
@@ -845,11 +931,23 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 			}
 		}
 	}
+	prepared := attempt
 	if err := r.writePrompt(ctx, db, card, obj, project, &attempt); err != nil {
 		return r.failLaunch(ctx, db, &card, &attempt, launchStepPrompt, err, rt, scratch)
 	}
-	if err := r.startAttempt(ctx, db, &attempt); err != nil {
+	if card.StrictDeps {
+		strictView.card = card
+		if err := confirmStrictHostStart(ctx, db, strictView, prepared, attempt); err != nil {
+			if errors.Is(err, errStrictAdmissionChanged) {
+				return "", nil
+			}
+			return "", err
+		}
+	}
+	if started, err := r.startAttempt(ctx, db, &attempt, card.StrictDeps); err != nil {
 		return r.failLaunch(ctx, db, &card, &attempt, launchStepHost, err, rt, scratch)
+	} else if !started {
+		return "", nil
 	}
 	reportServeEvent(ctx, "transition state=attempt_started")
 	if inUse != nil && rt.Channel != "" {
@@ -898,7 +996,16 @@ func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.
 		branch:   attempt.Branch,
 		base:     attempt.BaseCommit,
 	}
-	if card.Status != model.CardRunning {
+	prepared := *attempt
+	strictView := strictLaunchView{card: card, obj: obj, project: project}
+	if card.StrictDeps {
+		if err := resumeStrictAttempt(ctx, db, strictView, &card, prepared); err != nil {
+			if errors.Is(err, errStrictAdmissionChanged) {
+				return "", nil
+			}
+			return "", err
+		}
+	} else if card.Status != model.CardRunning {
 		card.Status = model.CardRunning
 		card.WaitReason = ""
 		if err := db.UpdateCard(ctx, &card); err != nil {
@@ -908,8 +1015,19 @@ func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.
 	if err := r.writePrompt(ctx, db, card, obj, project, attempt); err != nil {
 		return r.failLaunch(ctx, db, &card, attempt, launchStepPrompt, err, attempt.Route, scratch)
 	}
-	if err := r.startAttempt(ctx, db, attempt); err != nil {
+	if card.StrictDeps {
+		strictView.card = card
+		if err := confirmStrictHostStart(ctx, db, strictView, prepared, *attempt); err != nil {
+			if errors.Is(err, errStrictAdmissionChanged) {
+				return "", nil
+			}
+			return "", err
+		}
+	}
+	if started, err := r.startAttempt(ctx, db, attempt, card.StrictDeps); err != nil {
 		return r.failLaunch(ctx, db, &card, attempt, launchStepHost, err, attempt.Route, scratch)
+	} else if !started {
+		return "", nil
 	}
 	reportServeEvent(ctx, "transition state=attempt_resumed")
 	return attempt.Route.Channel, nil
@@ -969,6 +1087,11 @@ func (r *Runner) writePrompt(ctx context.Context, db *store.Store, card model.Ca
 	}
 	if attempt.PromptPath != promptPath {
 		attempt.PromptPath = promptPath
+		if card.StrictDeps {
+			// Persist under the strict pre-host check, not with an
+			// unverified attempt snapshot after prompt generation.
+			return nil
+		}
 		if err := db.UpdateAttempt(ctx, attempt); err != nil {
 			return err
 		}
@@ -998,7 +1121,7 @@ func stripEmptyFacts(text string) string {
 	}
 }
 
-func (r *Runner) startAttempt(ctx context.Context, db *store.Store, attempt *model.Attempt) error {
+func (r *Runner) startAttempt(ctx context.Context, db *store.Store, attempt *model.Attempt, strict bool) (bool, error) {
 	var pid int
 	var err error
 	if r.Launch != nil {
@@ -1008,7 +1131,7 @@ func (r *Runner) startAttempt(ctx context.Context, db *store.Store, attempt *mod
 		pid, err = launchDetached(r.Home, attempt.ID, dir)
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	waitPID(ctx, func() (int, bool) {
 		got, err := db.GetAttempt(ctx, attempt.ID)
@@ -1021,11 +1144,16 @@ func (r *Runner) startAttempt(ctx context.Context, db *store.Store, attempt *mod
 		return 0, false
 	})
 	got, err := db.GetAttempt(ctx, attempt.ID)
+	if strict {
+		// Only the host can claim a strict attempt. A deferral leaves it
+		// unstarted and eligible for a later retry of the same attempt.
+		return err == nil && got.PID > 0, nil
+	}
 	if err == nil && got.PID == 0 && got.EndedAt.IsZero() {
 		got.PID = pid
 		_ = db.UpdateAttempt(ctx, &got)
 	}
-	return nil
+	return true, nil
 }
 
 func (r *Runner) promptText(ctx context.Context, in prompt.Input) (string, error) {
@@ -1504,12 +1632,14 @@ func (r *Runner) allow(ctx context.Context, db *store.Store, card *model.Card, o
 	}
 	if reason := conflictReason(conflicts, card.ID); reason != "" {
 		if markWait && (card.Status != model.CardWaiting || card.WaitReason != reason) {
+			before := *card
 			card.Status = model.CardWaiting
 			card.WaitReason = reason
-			if err := db.UpdateCard(ctx, card); err != nil {
+			if changed, err := writeObservedCard(ctx, db, before, card); err != nil {
 				return false, err
+			} else if changed {
+				reportServeEvent(ctx, "transition state=claim_wait")
 			}
-			reportServeEvent(ctx, "transition state=claim_wait")
 		}
 		return false, nil
 	}
@@ -1600,32 +1730,9 @@ func canDispatch(card model.Card) bool {
 }
 
 func executionDepsDone(ctx context.Context, db *store.Store, card model.Card) bool {
-	// Deps[0] is the subject, not a completion gate. An rv- review with no
-	// dependency names its subject by id; that lookup happens at dispatch.
-	// A missing explicit subject is parked in allow before this gate.
-	skip := ""
-	switch card.Kind {
-	case model.KindReview, model.KindRepair, model.KindRebase, model.KindNormalize:
-		if len(card.Deps) > 0 {
-			skip = strings.TrimSpace(card.Deps[0])
-		}
-	}
-	for _, id := range card.Deps {
-		id = strings.TrimSpace(id)
-		if id == "" || id == skip {
-			continue
-		}
-		dep, err := db.GetCard(ctx, id)
-		if err != nil {
-			return false
-		}
-		switch dep.Status {
-		case model.CardMerged, model.CardDone, model.CardCanceled:
-		default:
-			return false
-		}
-	}
-	return true
+	// A missing explicit review subject is parked in allow before this gate.
+	reason, err := db.ExecutionDependencyBlocker(ctx, card)
+	return err == nil && reason == ""
 }
 
 func resumable(card model.Card, attempts []model.Attempt) bool {
@@ -1809,6 +1916,23 @@ func (r *Runner) noteMissingReviewSubject(ctx context.Context, db *store.Store, 
 	if card == nil {
 		return fmt.Errorf("sched: review subject %s does not exist", subject)
 	}
+	if card.StrictDeps {
+		_, err := withObservedCard(ctx, db, *card, func(ctx context.Context) error {
+			missing, err := missingReviewSubject(ctx, db, *card)
+			if err != nil {
+				return err
+			}
+			if missing != subject {
+				return errStrictAdmissionChanged
+			}
+			return r.recordMissingReviewSubject(ctx, db, card, subject)
+		})
+		return err
+	}
+	return r.recordMissingReviewSubject(ctx, db, card, subject)
+}
+
+func (r *Runner) recordMissingReviewSubject(ctx context.Context, db *store.Store, card *model.Card, subject string) error {
 	reason := "review subject " + subject + " does not exist"
 	fresh, err := db.GetCard(ctx, card.ID)
 	if err != nil {

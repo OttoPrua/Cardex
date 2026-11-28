@@ -438,6 +438,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	var requires, deps, acceptance, claims stringsFlag
 	fs.Var(&requires, "require", "capability")
 	fs.Var(&deps, "dep", "dependency card id")
+	strictDeps := fs.Bool("strict-deps", false, "execution dependencies must be done or merged; depend on the merged subject, not a review card. The first review/repair/rebase/normalize dependency remains the subject or source. Unclassified cards use the kind default. Upgrade all schedulers and hosts before enabling")
 	fs.Var(&acceptance, "acceptance", "acceptance command")
 	fs.Var(&claims, "claim", "path or path=symbol")
 	base := fs.String("base", "", "base commit")
@@ -482,7 +483,7 @@ func cardAdd(home string, asJSON bool, args []string, stdout, stderr io.Writer) 
 	c := model.Card{
 		ID: *id, Objective: *objective, Node: *node, Kind: kindVal,
 		Title: titleVal, Body: *body, Tier: tierVal, Requires: requires,
-		Deps: deps, Acceptance: acceptance, Base: *base, Status: statusVal,
+		Deps: deps, StrictDeps: *strictDeps, Acceptance: acceptance, Base: *base, Status: statusVal,
 		WaitReason: strings.Join(reasons, "; "), Sandbox: *sandboxMode, Review: *cardReview,
 	}
 	if c.ID == "" {
@@ -715,7 +716,13 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		return emitCardBrief(stdout, asJSON, buildCardBrief(c, attempts, events, question, *showClaims, allAttempts))
+		view := buildCardBrief(c, attempts, events, question, *showClaims, allAttempts)
+		view.DependencyBlocker, err = strictDependencyBlocker(ctx, db, c)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return emitCardBrief(stdout, asJSON, view)
 	}
 	var view struct {
 		cardView
@@ -728,6 +735,10 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 			return err
 		}
 		view.Card = c
+		view.DependencyBlocker, err = strictDependencyBlocker(ctx, db, c)
+		if err != nil {
+			return err
+		}
 		view.Origin, err = loadCardOrigin(ctx, db, c.ID)
 		if err != nil || !asJSON {
 			return err
@@ -754,7 +765,20 @@ func cardShow(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 	if useColor(stdout, asJSON) {
 		line += "\t" + colorStatus(string(c.Status))
 	}
+	if view.DependencyBlocker != "" {
+		line += "\t" + view.DependencyBlocker
+	}
 	return emit(stdout, asJSON, view, line)
+}
+
+// A dependency is a potential dispatch blocker only while the card is queued
+// or waiting. Don't report a strict prerequisite on a closed or active card.
+func strictDependencyBlocker(ctx context.Context, db *store.Store, c model.Card) (string, error) {
+	if !c.StrictDeps || (c.Status != model.CardReady && c.Status != model.CardWaiting) {
+		return "", nil
+	}
+	reason, err := db.ExecutionDependencyBlocker(ctx, c)
+	return clipBriefText(reason), err
 }
 
 type cardHistoryItem struct {

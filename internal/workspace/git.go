@@ -27,6 +27,11 @@ func (Git) Create(ctx context.Context, req CreateRequest) (Worktree, error) {
 		return Worktree{}, fmt.Errorf("workspace: incomplete create request")
 	}
 	branch := fmt.Sprintf("cardex/%s/c/%s", req.ObjectiveID, req.CardID)
+	if req.Strict {
+		if err := (Git{}).CheckStrictContinuation(ctx, req); err != nil {
+			return Worktree{}, err
+		}
+	}
 	path := filepath.Join(req.WorktreeRoot, req.CardID+"-"+req.AttemptID)
 	ctx = WithGitEvidence(ctx, req.CardID, req.AttemptID, path)
 	if err := os.MkdirAll(req.WorktreeRoot, 0o755); err != nil {
@@ -48,7 +53,20 @@ func (Git) Create(ctx context.Context, req CreateRequest) (Worktree, error) {
 	} else if req.Continue {
 		// The previous attempt's worktree still has this branch until merge.
 		// Detach it in place so the new worktree can check the branch out.
-		if err := detachCardBranch(ctx, req.RepoPath, branch); err != nil {
+		if req.Strict {
+			if err := req.StrictOwner.held(ctx, req.RepoPath, req.AttemptID); err != nil {
+				return Worktree{}, err
+			}
+			path, err := strictCheckedOutPath(ctx, req.RepoPath, branch, req.ClosedCheckouts)
+			if err != nil {
+				return Worktree{}, err
+			}
+			if path != "" {
+				if _, err := runGit(ctx, path, "checkout", "--detach"); err != nil {
+					return Worktree{}, err
+				}
+			}
+		} else if err := detachCardBranch(ctx, req.RepoPath, branch); err != nil {
 			return Worktree{}, err
 		}
 		if _, err := runGit(ctx, req.RepoPath, "worktree", "add", path, branch); err != nil {

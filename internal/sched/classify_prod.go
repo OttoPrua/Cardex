@@ -66,6 +66,9 @@ func (r *Runner) classifyAttempt(ctx context.Context, db *store.Store, cardID st
 	if err != nil {
 		return "", err
 	}
+	if card.StrictDeps {
+		return "", fmt.Errorf("sched: automatic classification is disabled for strict dependency cards")
+	}
 	sideID := "cls-" + card.ID
 	if _, err := db.GetCard(ctx, sideID); err != nil {
 		side := model.Card{

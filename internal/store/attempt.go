@@ -60,8 +60,8 @@ func (s *Store) insertAttempt(ctx context.Context, a *model.Attempt) error {
 		exitCode = *a.Exit
 		exited = 1
 	}
-	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO attempts(id, `+attemptWriteColumns+`, changed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		a.ID, a.Card, a.Index, a.Route.Channel, a.Route.Model, reason, a.Worktree, a.Branch, a.BaseCommit, a.HeadCommit, a.PID, formatTime(a.StartedAt), formatTime(a.EndedAt), exitCode, exited, usage, string(a.Outcome), string(a.ErrorClass), a.ErrorExcerpt, a.PromptPath, formatTime(time.Now()))
+	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO attempts(id, `+attemptWriteColumns+`, changed_at, strict_runtime_rev) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, (SELECT EXISTS(SELECT 1 FROM cards WHERE id=? AND strict_deps=1)))`,
+		a.ID, a.Card, a.Index, a.Route.Channel, a.Route.Model, reason, a.Worktree, a.Branch, a.BaseCommit, a.HeadCommit, a.PID, formatTime(a.StartedAt), formatTime(a.EndedAt), exitCode, exited, usage, string(a.Outcome), string(a.ErrorClass), a.ErrorExcerpt, a.PromptPath, formatTime(time.Now()), a.Card)
 	return err
 }
 
@@ -95,6 +95,8 @@ func (s *Store) UpdateAttempt(ctx context.Context, a *model.Attempt) error {
 	}
 	res, err := s.q(ctx).ExecContext(ctx, `WITH incoming(`+attemptWriteColumns+`) AS (VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?))
 		UPDATE attempts SET (`+attemptWriteColumns+`)=(SELECT * FROM incoming),
+			strict_runtime_rev=strict_runtime_rev+
+				(SELECT EXISTS(SELECT 1 FROM cards WHERE id IN (attempts.card_id,(SELECT card_id FROM incoming)) AND strict_deps=1)),
 			changed_at=CASE WHEN EXISTS (SELECT `+attemptWriteColumns+` EXCEPT SELECT * FROM incoming) THEN ? ELSE changed_at END WHERE id=?`,
 		a.Card, a.Index, a.Route.Channel, a.Route.Model, reason, a.Worktree, a.Branch, a.BaseCommit, a.HeadCommit, a.PID, formatTime(a.StartedAt), formatTime(a.EndedAt), exitCode, exited, usage, string(a.Outcome), string(a.ErrorClass), a.ErrorExcerpt, a.PromptPath, formatTime(time.Now()), a.ID)
 	return rowsAffected(res, err)

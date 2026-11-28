@@ -64,6 +64,8 @@ type cardBriefView struct {
 	Event       *cardBriefEvent    `json:"event"`
 	Question    *cardBriefQuestion `json:"question"`
 	Commit      string             `json:"commit"`
+
+	DependencyBlocker string `json:"dependency_blocker,omitempty"`
 }
 
 type objectiveStatusCount struct {
@@ -139,6 +141,9 @@ func formatCardBrief(view cardBriefView) string {
 	fmt.Fprintf(&b, "objective\t%s\n", view.Objective)
 	fmt.Fprintf(&b, "status\t%s\n", view.Status)
 	fmt.Fprintf(&b, "wait_reason\t%s\n", view.WaitReason)
+	if view.DependencyBlocker != "" {
+		fmt.Fprintf(&b, "dependency_blocker\t%s\n", view.DependencyBlocker)
+	}
 	fmt.Fprintf(&b, "tier\t%s\n", view.Tier)
 	fmt.Fprintf(&b, "rework_count\t%d\n", view.ReworkCount)
 	fmt.Fprintf(&b, "claims_count\t%d\n", view.ClaimsCount)

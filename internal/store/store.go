@@ -19,7 +19,7 @@ import (
 )
 
 // latestSchema is the migration applied by Open.
-const latestSchema = 12
+const latestSchema = 13
 
 // ErrAppendOnly is returned by event update and delete.
 var ErrAppendOnly = errors.New("event is append-only")
@@ -410,7 +410,17 @@ func (s *Store) migrate(ctx context.Context, beforeMigration func(context.Contex
 			return err
 		}
 	}
-	if (current < latestSchema || missingScratch || scratchOnlyV8) && beforeMigration != nil {
+	var missingStrictFence bool
+	if current >= 13 {
+		// Some unpublished v13 builds recorded the migration before the
+		// strict runtime fence landed. Inspect the physical shape under
+		// the same lock used for DDL and the pre-migration backup.
+		missingStrictFence, err = strictRuntimeFenceMissing(ctx, conn)
+		if err != nil {
+			return fmt.Errorf("inspect strict runtime fence: %w", err)
+		}
+	}
+	if (current < latestSchema || missingScratch || scratchOnlyV8 || missingStrictFence) && beforeMigration != nil {
 		if err := beforeMigration(ctx); err != nil {
 			return fmt.Errorf("backup before schema write: %w", err)
 		}
@@ -609,25 +619,49 @@ func (s *Store) migrate(ctx context.Context, beforeMigration func(context.Contex
 		}
 	}
 	if current < 12 {
-		for _, table := range []string{"projects", "objectives"} {
-			var has int
-			if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name='hard_rules'`, table).Scan(&has); err != nil {
-				return fmt.Errorf("migration 12: %w", err)
-			}
-			if has == 0 {
-				if _, err := conn.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN hard_rules TEXT NOT NULL DEFAULT '[]'`); err != nil {
-					return fmt.Errorf("migration 12: %w", err)
-				}
-			}
+		if err := ensureHardRulesColumns(ctx, conn); err != nil {
+			return fmt.Errorf("migration 12: %w", err)
 		}
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (12, ?)`, formatTime(time.Now())); err != nil {
 			return err
+		}
+	}
+	if current < 13 || missingStrictFence {
+		// An unpublished D1 candidate used schema 12 for strict_deps.
+		// Reconcile both shapes before recording 13; preserve existing values.
+		if current == 12 {
+			if err := ensureHardRulesColumns(ctx, conn); err != nil {
+				return fmt.Errorf("migration 13: %w", err)
+			}
+		}
+		if err := installStrictRuntimeFence(ctx, conn); err != nil {
+			return fmt.Errorf("migration 13 fence: %w", err)
+		}
+		if current < 13 {
+			if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (13, ?)`, formatTime(time.Now())); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
 		return err
 	}
 	committed = true
+	return nil
+}
+
+func ensureHardRulesColumns(ctx context.Context, conn *sql.Conn) error {
+	for _, table := range []string{"projects", "objectives"} {
+		var has int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info(?) WHERE name='hard_rules'`, table).Scan(&has); err != nil {
+			return err
+		}
+		if has == 0 {
+			if _, err := conn.ExecContext(ctx, `ALTER TABLE `+table+` ADD COLUMN hard_rules TEXT NOT NULL DEFAULT '[]'`); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

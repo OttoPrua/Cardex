@@ -55,6 +55,12 @@ func run(ctx context.Context, home, attemptID string) error {
 	if err != nil {
 		return fmt.Errorf("host: load card: %w", err)
 	}
+	if card.StrictDeps {
+		allowed, err := strictLaunchGate(ctx, db, &attempt, strictProbe)
+		if err != nil || !allowed {
+			return err
+		}
+	}
 	channel, err := db.GetChannel(ctx, attempt.Route.Channel)
 	if err != nil {
 		return fmt.Errorf("host: load channel: %w", err)
@@ -193,12 +199,19 @@ func run(ctx context.Context, home, attemptID string) error {
 		return handoffReview(ctx, db, &attempt, &card, durationReason)
 	}
 
-	attempt.PID = os.Getpid()
-	if attempt.StartedAt.IsZero() {
-		attempt.StartedAt = time.Now().UTC()
-	}
-	if err := db.UpdateAttempt(ctx, &attempt); err != nil {
-		return err
+	if card.StrictDeps {
+		allowed, err := strictLaunchGate(ctx, db, &attempt, strictClaim)
+		if err != nil || !allowed {
+			return err
+		}
+	} else {
+		attempt.PID = os.Getpid()
+		if attempt.StartedAt.IsZero() {
+			attempt.StartedAt = time.Now().UTC()
+		}
+		if err := db.UpdateAttempt(ctx, &attempt); err != nil {
+			return err
+		}
 	}
 
 	// Legacy launch keeps its existing proxy behavior. API1 uses one
@@ -215,6 +228,12 @@ func run(ctx context.Context, home, attemptID string) error {
 	// A browser_start event with an error is terminal: no browser_stop follows.
 	// Card cancel is watched only once the executor starts; Chrome startup is
 	// bounded by browserStartTimeout.
+	if card.StrictDeps && requiresBrowser(card) {
+		allowed, err := strictLaunchGate(ctx, db, &attempt, strictExec)
+		if err != nil || !allowed {
+			return err
+		}
+	}
 	if requiresBrowser(card) {
 		b, err := launchBrowser(ctx, cfg, attemptDir)
 		if err != nil {
@@ -317,6 +336,21 @@ func run(ctx context.Context, home, attemptID string) error {
 	}
 	if !needPTY {
 		proc.NewGroup(wrapped)
+	}
+
+	// This is the last atomic database decision before executor spawn.
+	// Do not hold a database transaction across operating-system process
+	// launch: a dependency can change after this check, and an already
+	// admitted process is not revoked by later dependency changes.
+	if card.StrictDeps {
+		allowed, err := strictLaunchGate(ctx, db, &attempt, strictExec)
+		if err != nil || !allowed {
+			closePipe(logWrite, logRead)
+			if copied != nil {
+				<-copied
+			}
+			return err
+		}
 	}
 
 	appendEvent(ctx, db, attempt.ID, "host_start", map[string]any{

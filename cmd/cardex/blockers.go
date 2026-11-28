@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/store"
@@ -74,10 +73,11 @@ func collectBlockers(ctx context.Context, db *store.Store, objective string) ([]
 	if err != nil {
 		return nil, err
 	}
-	statuses := make(map[string]model.CardStatus, len(states))
+	cards := make(map[string]*model.Card, len(states))
 	failedNormalizers := make(map[string][]string)
-	for _, state := range states {
-		statuses[state.ID] = state.Status
+	for i := range states {
+		state := &states[i]
+		cards[state.ID] = &state.Card
 		if state.Kind == model.KindNormalize && state.Status == model.CardFailed && len(state.Deps) > 0 {
 			parent := state.Deps[0]
 			failedNormalizers[parent] = append(failedNormalizers[parent], state.ID)
@@ -110,7 +110,7 @@ func collectBlockers(ctx context.Context, db *store.Store, objective string) ([]
 				case "":
 					row.Reason = "objective does not exist"
 				default:
-					row.Reason = dependencyBlocker(state.Card, statuses)
+					row.Reason = dependencyBlocker(state.Card, cards)
 				}
 			}
 			if row.Reason == "" {
@@ -173,34 +173,19 @@ func stoppedReason(ctx context.Context, db *store.Store, c model.Card, row *bloc
 	return nil
 }
 
-func dependencyBlocker(card model.Card, statuses map[string]model.CardStatus) string {
-	ignore := ""
-	// The scheduler treats Deps[0] as a subject, not a completion gate,
-	// for these four kinds. Do not show an in-flight subject as a blocker.
-	switch card.Kind {
-	case model.KindReview:
-		if subject, explicit := model.ReviewSubject(card); explicit && statuses[subject] == "" {
+func dependencyBlocker(card model.Card, cards map[string]*model.Card) string {
+	if card.Kind == model.KindReview {
+		if subject, explicit := model.ReviewSubject(card); explicit && cards[subject] == nil {
 			return "review subject " + subject + " does not exist"
 		}
-		fallthrough
-	case model.KindRepair, model.KindRebase, model.KindNormalize:
-		if len(card.Deps) > 0 {
-			ignore = strings.TrimSpace(card.Deps[0])
-		}
 	}
-	for _, id := range card.Deps {
-		id = strings.TrimSpace(id)
-		if id == "" || id == ignore {
-			continue
+	for _, id := range card.ExecutionDependencyIDs() {
+		dep := model.Card{}
+		if stored := cards[id]; stored != nil {
+			dep = *stored
 		}
-		status := statuses[id]
-		switch status {
-		case model.CardMerged, model.CardDone, model.CardCanceled:
-			continue
-		case "":
-			return "dependency " + id + " does not exist"
-		default:
-			return fmt.Sprintf("dependency %s is %s", id, status)
+		if reason := card.DependencyBlocker(id, dep); reason != "" {
+			return reason
 		}
 	}
 	return ""

@@ -130,3 +130,27 @@ var migration1 = []string{
 		data TEXT NOT NULL
 	)`,
 }
+
+var migration14 = []string{
+	`CREATE TABLE IF NOT EXISTS strong_producers (
+		attempt_id TEXT PRIMARY KEY, card_id TEXT NOT NULL, worktree TEXT NOT NULL,
+		run_id TEXT NOT NULL, stage_id TEXT NOT NULL, role TEXT NOT NULL, seat TEXT NOT NULL,
+		token TEXT NOT NULL UNIQUE, claimed INTEGER NOT NULL DEFAULT 0 CHECK(claimed IN (0,1)),
+		claim_token TEXT NOT NULL DEFAULT '', manifest_sha TEXT NOT NULL DEFAULT '',
+		bundle_sha TEXT NOT NULL DEFAULT '', task_sha TEXT NOT NULL DEFAULT ''
+	)`,
+	`CREATE TABLE IF NOT EXISTS strong_tasks (
+		run_id TEXT PRIMARY KEY, sha TEXT NOT NULL, size INTEGER NOT NULL, body BLOB NOT NULL
+	)`,
+	`CREATE TABLE IF NOT EXISTS strong_artifacts (
+		run_id TEXT NOT NULL, stage_id TEXT NOT NULL, attempt_id TEXT NOT NULL UNIQUE,
+		card_id TEXT NOT NULL, role TEXT NOT NULL, seat TEXT NOT NULL, origin TEXT NOT NULL, format TEXT NOT NULL,
+		sha TEXT NOT NULL, size INTEGER NOT NULL, body BLOB NOT NULL, references_json TEXT NOT NULL, references_sha TEXT NOT NULL, envelope_sha TEXT NOT NULL,
+		PRIMARY KEY(run_id, stage_id)
+	)`,
+	`CREATE TABLE IF NOT EXISTS strong_input_bindings (
+		run_id TEXT NOT NULL, target_stage TEXT NOT NULL, role TEXT NOT NULL, target_seat TEXT NOT NULL,
+		allowlist_json TEXT NOT NULL, allowlist_sha TEXT NOT NULL,
+		PRIMARY KEY(run_id, target_stage)
+	)`,
+}

@@ -156,20 +156,23 @@ type RouteScore struct {
 
 // RouteReason is the structured explanation stored on an attempt.
 type RouteReason struct {
-	Candidates []RouteCandidate    `json:"candidates"` // 候选列表。
-	Filtered   []FilteredCandidate `json:"filtered"`   // 被过滤的候选和原因。
-	Scores     []RouteScore        `json:"scores"`     // 最终分数。
-	Dispatch   *RouteDispatch      `json:"dispatch,omitempty"`
+	Candidates    []RouteCandidate       `json:"candidates"` // 候选列表。
+	Filtered      []FilteredCandidate    `json:"filtered"`   // 被过滤的候选和原因。
+	Scores        []RouteScore           `json:"scores"`     // 最终分数。
+	Dispatch      *RouteDispatch         `json:"dispatch,omitempty"`
+	ProviderModel *ProviderModelEvidence `json:"provider_model,omitempty"`
 }
 
 // RouteDispatch snapshots the runner and constraints before fallback updates a card's pin.
 type RouteDispatch struct {
-	Runner              RunnerName `json:"runner"`
-	Channel             string     `json:"expected_channel,omitempty"`
-	Model               string     `json:"expected_model,omitempty"`
-	Tier                Tier       `json:"expected_tier,omitempty"`
-	ActualTier          Tier       `json:"actual_tier,omitempty"`
-	CompatibleBindingID string     `json:"compatible_binding_id,omitempty"` // Nonsecret staged API identity.
+	Runner                RunnerName `json:"runner"`
+	Channel               string     `json:"expected_channel,omitempty"`
+	Model                 string     `json:"expected_model,omitempty"`
+	Tier                  Tier       `json:"expected_tier,omitempty"`
+	ActualTier            Tier       `json:"actual_tier,omitempty"`
+	CompatibleBindingID   string     `json:"compatible_binding_id,omitempty"` // Nonsecret staged API identity.
+	StrictComparison      bool       `json:"strict_comparison,omitempty"`
+	ComparisonInputDigest string     `json:"comparison_input_digest,omitempty"`
 }
 
 // SelectedTier returns the stored tier of the selected route, when known.

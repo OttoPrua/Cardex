@@ -4,6 +4,9 @@ API1 is configuration-only in this build. Compatible API channels can be
 registered, but cannot run cards or send provider requests. This is independent
 of config flags and legacy `health=ok` rows. `channel check` reports the hold
 without signing in to Claude or contacting the API provider for these channels.
+API2 adds a synthetic-only verification path for a bounded probe and exact
+comparison. It does not enable either activation or provider requests.
+
 
 ## Register without enabling a channel
 
@@ -117,3 +120,57 @@ the opt-in is not exposed.
 
 See [Claude Code file-tool permissions](https://code.claude.com/docs/en/permissions#block-file-tool-reads-and-writes-outside-the-working-directories) and
 [the Bash sandbox scope](https://code.claude.com/docs/en/sandboxing#how-sandboxing-relates-to-permissions-and-permission-modes).
+
+## API2 approval boundary
+
+The ordinary `channel check` still sends no new model request. The explicit
+form requires one staged channel, one exact model and acknowledgment of one
+potentially chargeable request:
+
+```sh
+cardex --json channel check --probe --channel gateway-a --model gateway-model-1 \
+    --confirm-possible-charge
+```
+
+**Live transports are disabled in this build.** The local CLI runs under
+the same OS identity as managed executors, so these flags cannot prove an
+independent operator approved a charge. Managed executors cannot use the
+probe path; even a normal CLI call returns `approval_unavailable` without
+reading a credential or sending a request. The one-shot probe contract is
+verified with synthetic transport only: fixed public prompt, no tools,
+eight-token output limit, one bounded Messages request, and no retries or
+redirects. A receipt contains only the origin (never the configured path),
+models, provenance and status. It does not mutate health or routing.
+
+## Explicit model comparisons (API2)
+
+A comparison is an opt-in standalone research record, not an ordinary
+pinned card. The caller must specify one channel, one exact model and the
+approved bounded question:
+
+```sh
+cardex card add --objective obj-id --title "Compare one model" \
+    --body "Use the approved comparison question." \
+    --strict-comparison --channel gateway-a --model gateway-model-1
+```
+
+This build stages comparison records but holds live execution until an
+independently authenticated operator/approval boundary is implemented. The
+scheduler waits before preparing a checkout, creating a prompt or dispatching
+a classifier for these cards. No CLI flag or environment value can enable a
+real comparison transport.
+
+The synthetic comparison harness freezes the exact versioned prompt and
+model digest and checks binding, health, current credential and ownership
+again before wire use. It consumes a permanent generation claim so that
+restarts, races and duplicate requests cannot send a second generation.
+It forwards only the approved standalone input, strips unapproved headers
+and content, does not forward `count_tokens`, and does not use any tools,
+automatic classifier, project prompt context, acceptance command or backup
+route. It accepts only bounded text and the exact model reported by the
+authenticated Messages response, never a CLI claim, output log or existing
+worktree artifact. It rebuilds the child's JSON/SSE reply from those two
+allowlisted values and discards raw metadata and usage. It stores an
+isolated comparison result visible under
+`route explain <card> --json`; ordinary research, scorecard and ranking do not
+use it. Existing ordinary routes retain their current fallback.

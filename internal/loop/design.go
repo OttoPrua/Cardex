@@ -95,7 +95,7 @@ func (d Deps) absorbTerminal(ctx context.Context, obj model.Objective) (map[stri
 		return nil, err
 	}
 	for _, card := range cards {
-		if !terminalCard(card.Status) {
+		if card.StrictComparison() || !terminalCard(card.Status) {
 			continue
 		}
 		consumed, err := d.currentAttemptConsumed(ctx, card)
@@ -724,7 +724,7 @@ func (d Deps) ensureDirection(ctx context.Context, obj model.Objective) error {
 func inventoryCard(cards []model.Card) *model.Card {
 	for i := range cards {
 		c := &cards[i]
-		if c.Kind == model.KindResearch && c.Node == "" && (strings.Contains(c.Title, "盘点") || strings.Contains(c.Body, "Q0")) {
+		if !c.StrictComparison() && c.Kind == model.KindResearch && c.Node == "" && (strings.Contains(c.Title, "盘点") || strings.Contains(c.Body, "Q0")) {
 			return c
 		}
 	}

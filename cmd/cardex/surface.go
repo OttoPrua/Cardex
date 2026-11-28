@@ -482,7 +482,7 @@ parameters:
   set    --id <id> --dry-run --model <name> [--model <name> ...]
   set    --id <id> --dry-run [--add-model <name>] [--remove-model <name>]
   set    --id <id> --if-models <token> [--add-model <name>] [--remove-model <name>]
-  check
+  check  [--probe --channel ID --model ID --confirm-possible-charge]
   import-usage --id <channel> --provider <provider> --input <CodexBar JSON file or ->
 `
 
@@ -498,7 +498,7 @@ func cmdChannel(home string, asJSON bool, args []string, stdout, stderr io.Write
 	case "set":
 		return channelSet(home, asJSON, args[1:], stdout, stderr)
 	case "check":
-		return channelCheck(home, args[1:], stdout, stderr)
+		return channelCheck(home, asJSON, args[1:], stdout, stderr)
 	case "import-usage":
 		return channelImportUsage(home, asJSON, args[1:], stdout, stderr)
 	default:
@@ -819,10 +819,22 @@ func parseWindows(raw []string) ([]model.QuotaWindow, error) {
 	return out, nil
 }
 
-func channelCheck(home string, args []string, stdout, stderr io.Writer) int {
-	fs := newFlagSet("channel check", "report channel sign-in, tier, redline, and window problems with suggestions", "no command arguments", stdout, stderr)
+var runCompatibleProbe = runner.ProbeCompatible
+
+func channelCheck(home string, asJSON bool, args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("channel check", "report channel sign-in, tier, redline, and window problems with suggestions", "no command arguments for local checks; [--probe --channel ID --model ID --confirm-possible-charge] --json", stdout, stderr)
+	probe := fs.Bool("probe", false, "send one minimal Anthropic-compatible Messages request")
+	channelID := fs.String("channel", "", "one staged compatible channel")
+	modelID := fs.String("model", "", "one exact model offered by that channel")
+	acceptCharge := fs.Bool("confirm-possible-charge", false, "explicitly authorize the single probe, which may incur a charge")
 	if code, ok := parseSet(fs, args); !ok {
 		return code
+	}
+	hasProbeFlags := flagSeen(fs, "probe") || flagSeen(fs, "channel") || flagSeen(fs, "model") || flagSeen(fs, "confirm-possible-charge")
+	if hasProbeFlags && (!*probe || !*acceptCharge || strings.TrimSpace(*channelID) == "" ||
+		strings.TrimSpace(*modelID) == "" || fs.NArg() != 0) {
+		fmt.Fprintln(stderr, "a probe requires --probe --channel ID --model ID --confirm-possible-charge")
+		return 2
 	}
 	resolved, err := resolveHome(home)
 	if err != nil {
@@ -835,6 +847,39 @@ func channelCheck(home string, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	defer db.Close()
+	if *probe {
+		if refuseManagedCardWrite(stderr) {
+			return 2
+		}
+		ctx := context.Background()
+		ch, err := db.GetChannel(ctx, *channelID)
+		if err != nil {
+			fmt.Fprintln(stderr, "compatible channel not found")
+			return 1
+		}
+		projects, err := db.ListProjects(ctx)
+		if err != nil {
+			fmt.Fprintln(stderr, "compatible channel workspace boundary unavailable")
+			return 1
+		}
+		var roots []string
+		for _, project := range projects {
+			roots = append(roots, project.RepoPath)
+			if project.WorktreeRoot != "" {
+				roots = append(roots, project.WorktreeRoot)
+			}
+		}
+		receipt := runCompatibleProbe(ctx, resolved, ch, *modelID, roots)
+		line := fmt.Sprintf("channel=%q endpoint=%q requested_model=%q returned_model=%q model_source=%s status=%s attempted=%t",
+			receipt.Channel, receipt.Endpoint, receipt.RequestedModel, receipt.ReturnedModel, receipt.ModelSource, receipt.Status, receipt.Attempted)
+		if code := emit(stdout, asJSON, receipt, line); code != 0 {
+			return code
+		}
+		if receipt.Status != "ok" {
+			return 1
+		}
+		return 0
+	}
 	for _, item := range channelFindings(db, resolved, true) {
 		fmt.Fprintf(stdout, "problem: %s\nsuggestion: %s\n", item.problem, item.suggestion)
 	}
@@ -885,6 +930,7 @@ func cmdRoute(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 		Filtered:   []model.FilteredCandidate{},
 		Scores:     []model.RouteScore{},
 	}
+	var comparison *model.ComparisonResult
 	if len(attempts) > 0 {
 		best := attempts[0]
 		for _, attempt := range attempts[1:] {
@@ -893,11 +939,21 @@ func cmdRoute(home string, asJSON bool, args []string, stdout, stderr io.Writer)
 			}
 		}
 		reason = best.RouteReason
+		if best.StrictComparison() {
+			comparison, err = db.GetStrictComparisonResult(context.Background(), best.ID)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+		}
 	}
 	if !asJSON {
 		fmt.Fprintf(stdout, "card %s\n", cardID)
 	}
-	code := writeJSON(stdout, reason)
+	code := writeJSON(stdout, struct {
+		model.RouteReason
+		Comparison *model.ComparisonResult `json:"comparison_result,omitempty"`
+	}{reason, comparison})
 	if !asJSON && code == 0 {
 		if line := lastNoCandidate(db, cardID); line != "" {
 			fmt.Fprintln(stdout, line)

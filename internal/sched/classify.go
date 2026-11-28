@@ -47,6 +47,11 @@ func (r *Runner) classifyBeforeRoute(ctx context.Context, db *store.Store, card 
 		}
 		return card, card.Tier, nil
 	}
+	if card.StrictComparison() {
+		// Do not send an explicit comparison's input to a side classifier.
+		card.Tier = model.DefaultTier(card.Kind)
+		return card, card.Tier, db.UpdateCard(ctx, &card)
+	}
 	var call classify.Call
 	if r != nil {
 		call = r.Classify

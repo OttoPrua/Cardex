@@ -30,6 +30,9 @@ func Harvest(ctx context.Context, in Input) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
+	if in.Card.StrictComparison() || in.Attempt.StrictComparison() {
+		return Result{Outcome: model.OutcomeUnavailable, Excerpt: "strict comparison excludes generic harvest"}, nil
+	}
 	if d := in.Attempt.RouteReason.Dispatch; d != nil && d.CompatibleBindingID != "" {
 		// An old API1 child had no authority to create workflow evidence.
 		// Refuse it even through callers outside the ordinary scheduler sweep.

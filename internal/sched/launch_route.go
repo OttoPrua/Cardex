@@ -42,6 +42,16 @@ type pinRelease struct {
 // channel at its concurrency limit, or outside this call's candidate set,
 // waits: no attempt, no fallback, and no drop.
 func (r *Runner) resolveLaunchRoute(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas, classified model.Tier) (model.Route, model.RouteReason, pinRelease, bool, error) {
+	if card.StrictComparison() {
+		rt, reason, err := route.Select(ctx, launchRequest(card, obj, channels, pos, inUse, quotas, classified, r.now()))
+		if errors.Is(err, route.ErrStrictComparisonUnavailable) {
+			card.Status = model.CardNeedsInput
+			card.WaitReason = "strict comparison target is unavailable; no route substitution was attempted"
+			err = db.UpdateCard(ctx, &card)
+			return model.Route{}, reason, pinRelease{}, err == nil, err
+		}
+		return rt, reason, pinRelease{}, false, err
+	}
 	if len(route.ExplicitCompatibleHold(launchRequest(card, obj, channels, pos, inUse, quotas, classified, r.now()))) != 0 {
 		return model.Route{}, model.RouteReason{}, pinRelease{}, true, r.holdExplicitCompatibleCard(ctx, db, card, obj, card)
 	}

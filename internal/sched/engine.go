@@ -157,7 +157,8 @@ func (r *Runner) disposeOpenDesign(ctx context.Context, db *store.Store, objecti
 			continue
 		}
 		card, err := db.GetCard(ctx, attempt.Card)
-		if err != nil || card.Objective != objectiveID || !designFamilyKind(card.Kind) {
+		if err != nil || card.StrictComparison() || attempt.StrictComparison() ||
+			card.Objective != objectiveID || !designFamilyKind(card.Kind) {
 			continue
 		}
 		if hit != nil {

@@ -32,8 +32,11 @@ type harvested struct {
 func (st *step) disposeAll() error {
 	var todo []harvested
 	for _, card := range st.snap.cards {
+		if card.StrictComparison() {
+			continue
+		}
 		for _, attempt := range st.snap.attempts[card.ID] {
-			if attempt.Outcome == "" || st.snap.disposed(attempt.ID) {
+			if attempt.StrictComparison() || attempt.Outcome == "" || st.snap.disposed(attempt.ID) {
 				continue
 			}
 			todo = append(todo, harvested{cardID: card.ID, attemptID: attempt.ID})
@@ -75,6 +78,9 @@ func (st *step) attempt(cardID, attemptID string) model.Attempt {
 // decideHarvest is the one dev, review, and normalize disposition.
 // Dispose and disposeAll both call it.
 func (st *step) decideHarvest(card model.Card, attempt model.Attempt) error {
+	if card.StrictComparison() || attempt.StrictComparison() {
+		return nil
+	}
 	if designOriginal(card.Kind) || card.Kind == model.KindNormalize {
 		d := Deps{Store: st.db}
 		current, err := d.currentAttemptID(st.ctx, card.ID)

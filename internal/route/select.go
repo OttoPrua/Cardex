@@ -21,6 +21,9 @@ func Select(ctx context.Context, req Request) (model.Route, model.RouteReason, e
 		now = time.Now().UTC()
 	}
 	tier := resolveTier(req)
+	if req.Card.StrictComparison() {
+		return selectStrictComparison(ctx, req, tier, now)
+	}
 	if filtered := ExplicitCompatibleHold(req); len(filtered) > 0 {
 		reason := emptyReason()
 		reason.Filtered = filtered

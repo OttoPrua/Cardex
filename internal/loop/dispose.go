@@ -156,6 +156,11 @@ func disposeTx(ctx context.Context, db *store.Store, home string, card *model.Ca
 	if err != nil {
 		return nil, err
 	}
+	if stored.StrictComparison() || card.StrictComparison() || attempt.StrictComparison() {
+		// Strict evidence is handled atomically by the isolated result store.
+		// A generic caller must not treat this as an ordinary consumable result.
+		return nil, fmt.Errorf("loop: strict comparison excludes generic disposition")
+	}
 	if stored.Kind != card.Kind || stored.Objective != card.Objective {
 		return nil, fmt.Errorf("loop: Dispose: current card identity changed")
 	}

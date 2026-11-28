@@ -80,7 +80,7 @@ func (r *Runner) classifyBeforeRoute(ctx context.Context, db *store.Store, card 
 // A missing row leaves the channel empty and Classify uses the kind default.
 func classifierChannel(ctx context.Context, db *store.Store) string {
 	ch, err := db.GetChannel(ctx, classifierChannelID)
-	if err != nil || ch.ID != classifierChannelID {
+	if err != nil || ch.ID != classifierChannelID || ch.CompatibleRuntimeHeld() {
 		return ""
 	}
 	return ch.ID

@@ -545,17 +545,7 @@ func routingConflict(ch model.Channel, others []model.Channel, rows []model.Posi
 			}
 		}
 	}
-	for _, row := range rows {
-		if row.Family == "" || row.Family == ch.Family {
-			continue
-		}
-		for _, m := range ch.Models {
-			if row.Model == m {
-				return fmt.Errorf("routing conflict: positioning %s gives model %q family %q", row.ID, m, row.Family)
-			}
-		}
-	}
-	return nil
+	return model.ValidateCompatiblePositioning(ch, rows)
 }
 
 func compatibleBindingID(name string, prof compatibleProfile, ch model.Channel) string {

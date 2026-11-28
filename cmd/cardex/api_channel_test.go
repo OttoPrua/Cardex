@@ -209,7 +209,7 @@ func TestAPIChannelPositioningConflict(t *testing.T) {
 	}
 }
 
-func TestAPIChannelEndpointEditRequiresSeparateActivation(t *testing.T) {
+func TestAPIChannelEndpointEditStagesWithoutRuntimeActivation(t *testing.T) {
 	home := t.TempDir()
 	config := func(target string) {
 		writeEngineConfig(t, home, `{"engines":{"vendor-a":{"protocol":"anthropic-compatible","base_url":"`+target+`","default_model":"vendor-a-model-1","credential":{"source":"env","name":"CARDEX_FIXTURE_VENDOR_A"}}}}`)
@@ -223,15 +223,15 @@ func TestAPIChannelEndpointEditRequiresSeparateActivation(t *testing.T) {
 	if code, detail := run("--runner", "claude", "--engine-profile", "vendor-a", "--family", "vendor-a"); code != 0 {
 		t.Fatalf("register: %d %s", code, detail)
 	}
-	if code, detail := run("--health", "ok"); code != 0 {
-		t.Fatalf("first activation: %d %s", code, detail)
+	if code, detail := run("--health", "ok"); code == 0 || !strings.Contains(detail, model.CompatibleRuntimeHold) {
+		t.Fatalf("activation should fail closed: %d %s", code, detail)
 	}
 	before := channelOf(t, home, "api-a")
 	config("https://second.example.test")
 	if code, _ := run("--health", "ok"); code == 0 {
 		t.Fatal("an edited endpoint inherited the old activation")
 	}
-	if got := channelOf(t, home, "api-a"); got.EngineProfile != before.EngineProfile || got.Health != model.HealthOK {
+	if got := channelOf(t, home, "api-a"); got.EngineProfile != before.EngineProfile || got.Health != model.HealthDegraded {
 		t.Fatal("rejected activation modified binding")
 	}
 	if code, detail := run("--engine-profile", "vendor-a"); code != 0 {
@@ -241,11 +241,11 @@ func TestAPIChannelEndpointEditRequiresSeparateActivation(t *testing.T) {
 	if staged.EngineProfile == before.EngineProfile || staged.Health != model.HealthDegraded {
 		t.Fatal("changed profile was not staged as a new, degraded identity")
 	}
-	if code, detail := run("--health", "ok"); code != 0 {
-		t.Fatalf("activate staged identity: %d %s", code, detail)
+	if code, detail := run("--health", "ok"); code == 0 || !strings.Contains(detail, model.CompatibleRuntimeHold) {
+		t.Fatalf("new identity should stay staging-only: %d %s", code, detail)
 	}
-	if got := channelOf(t, home, "api-a"); got.Health != model.HealthOK || got.EngineProfile != staged.EngineProfile {
-		t.Fatal("explicit activation did not apply to staged identity")
+	if got := channelOf(t, home, "api-a"); got.Health != model.HealthDegraded || got.EngineProfile != staged.EngineProfile {
+		t.Fatal("rejected activation changed staged identity")
 	}
 }
 
@@ -289,9 +289,18 @@ func TestAPIChannelHealthOnlyDeactivationWorksWithInvalidConfig(t *testing.T) {
 	if code, detail := run("--runner", "claude", "--engine-profile", "vendor-a", "--family", "vendor-a"); code != 0 {
 		t.Fatalf("register: %d %s", code, detail)
 	}
-	if code, detail := run("--health", "ok"); code != 0 {
-		t.Fatalf("activate: %d %s", code, detail)
-	}
+	// Simulate an older installed build's active row without enabling a
+	// real credential or provider.
+	withDB(t, home, func(db *store.Store) {
+		ch, err := db.GetChannel(context.Background(), "api-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ch.Health = model.HealthOK
+		if err := db.UpdateChannel(context.Background(), &ch); err != nil {
+			t.Fatal(err)
+		}
+	})
 	prior := channelOf(t, home, "api-a")
 	writeEngineConfig(t, home, "{invalid")
 	if code, _ := run("--health", "degraded", "--redline", "0.9"); code == 0 {
@@ -310,5 +319,53 @@ func TestAPIChannelHealthOnlyDeactivationWorksWithInvalidConfig(t *testing.T) {
 	writeEngineConfig(t, home, valid)
 	if got := channelOf(t, home, "api-a"); got.Health != model.HealthDegraded {
 		t.Fatal("repairing invalid config silently reactivated the channel")
+	}
+}
+
+func TestAPIChannelEmergencyDeactivationBypassesOnlyBrokenRuntimePath(t *testing.T) {
+	home := t.TempDir()
+	valid := `{"engines":{"vendor-a":{"protocol":"anthropic-compatible","base_url":"https://api.example.test","default_model":"fixture-model","credential":{"source":"env","name":"CARDEX_FIXTURE_VENDOR_A"}}}}`
+	writeEngineConfig(t, home, valid)
+	c := func(fields ...string) (int, string) {
+		t.Helper()
+		args := append([]string{"--home", home, "channel", "set", "--id", "api-a"}, fields...)
+		if err := ensureRuntimePath(args); err != nil {
+			return 2, err.Error()
+		}
+		code, _, detail := callCLI(t, args)
+		return code, detail
+	}
+	t.Setenv("PATH", os.Getenv("PATH"))
+	if code, detail := c("--runner", "claude", "--engine-profile", "vendor-a", "--family", "vendor-a"); code != 0 {
+		t.Fatalf("register: %d %s", code, detail)
+	}
+	// Simulate a pre-hold installation's active row, never bypass the
+	// configuration-only build's CLI runtime hold.
+	withDB(t, home, func(db *store.Store) {
+		ch, err := db.GetChannel(t.Context(), "api-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ch.Health = model.HealthOK
+		if err := db.UpdateChannel(t.Context(), &ch); err != nil {
+			t.Fatal(err)
+		}
+	})
+	prior := channelOf(t, home, "api-a")
+	writeEngineConfig(t, home, `{"runtime_path":["relative"]}`)
+	if code, detail := c("--health", "auth_failed", "--redline", "0.9"); code == 0 || !strings.Contains(detail, "runtime_path") {
+		t.Fatalf("mixed write bypassed path validation: %d %s", code, detail)
+	}
+	if got := channelOf(t, home, "api-a"); got.Health != prior.Health || got.Redline != prior.Redline {
+		t.Fatalf("mixed write changed the channel: %+v", got)
+	}
+	if code, detail := c("--health", "auth_failed"); code != 0 {
+		t.Fatalf("emergency deactivation: %d %s", code, detail)
+	}
+	if got := channelOf(t, home, "api-a"); got.Health != model.HealthAuthFailed || got.EngineProfile != prior.EngineProfile || got.Redline != prior.Redline {
+		t.Fatalf("health-only update changed unrelated state: %+v", got)
+	}
+	if code, detail := c("--health", "ok"); code == 0 || !strings.Contains(detail, "runtime_path") {
+		t.Fatalf("reactivation bypassed the path error: %d %s", code, detail)
 	}
 }

@@ -1177,3 +1177,29 @@ func TestCardImportMissingTransitiveDependencyAndDedup(t *testing.T) {
 		t.Fatalf("dependencies not deduplicated in first order: %q", got)
 	}
 }
+
+func TestCardImportExistingStrictGraphUsesLogicalDependencies(t *testing.T) {
+	home, _ := seedImportHome(t)
+	mustCLI(t, "--home", home, "card", "add", "--objective", "o1", "--id", "strict-empty", "--title", "empty strict", "--strict-deps")
+	mustCLI(t, "--home", home, "card", "add", "--objective", "o1", "--id", "strict-bound", "--title", "bound strict", "--strict-deps", "--dep", "c-keep")
+	file := writeManifest(t, t.TempDir(), map[string]any{"version": 1, "cards": []any{
+		map[string]any{"id": "downstream", "kind": "dev", "title": "synthetic", "body": "", "deps": []string{"strict-empty", "strict-bound"}},
+	}})
+	before := importFiles(t, home)
+	args := []string{"--home", home, "--json", "card", "import", "--objective", "o1", "--file", file}
+	code, out, errb := callCLI(t, args)
+	if code != 0 || !strings.Contains(out, "preview") {
+		t.Fatalf("preview: %d %s %s", code, out, errb)
+	}
+	assertImportFilesUnchanged(t, home, before)
+	code, out, errb = callCLI(t, append(args, "--apply"))
+	if code != 0 || !strings.Contains(out, "applied") {
+		t.Fatalf("apply: %d %s %s", code, out, errb)
+	}
+	db := openHome(t, home)
+	defer db.Close()
+	got := mustGetCard(t, db, "downstream")
+	if len(got.Deps) != 2 || got.Deps[0] != "strict-empty" || got.Deps[1] != "strict-bound" || got.StrictDeps {
+		t.Fatalf("changed downstream declared deps: %+v", got)
+	}
+}

@@ -12,6 +12,8 @@ import (
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/quota"
 	"github.com/OttoPrua/Cardex/internal/store"
+
+	"github.com/OttoPrua/Cardex/internal/runner"
 )
 
 const resultMarker = "\n\n<!-- cardex-result -->\n"
@@ -186,6 +188,7 @@ func devStep(ctx context.Context, objectiveID string) error {
 	if home == "" {
 		return fmt.Errorf("CARDEX_HOME is not set")
 	}
+	ctx = runner.WithCompatibleCredentialEnv(ctx, home)
 	db, err := store.Open(filepath.Join(home, "cardex.db"))
 	if err != nil {
 		return err

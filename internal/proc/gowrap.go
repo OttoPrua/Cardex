@@ -12,6 +12,7 @@ import (
 )
 
 const goWrapArg = "-cardex-wrap-go"
+const goWrapExactObjectsArg = "-cardex-wrap-go-exact-objects"
 const goRunArg = "-cardex-run-go-program"
 
 func init() {
@@ -19,8 +20,8 @@ func init() {
 		return
 	}
 	switch os.Args[1] {
-	case goWrapArg:
-		os.Exit(runGoWrap(os.Args[2:]))
+	case goWrapArg, goWrapExactObjectsArg:
+		os.Exit(runGoWrap(os.Args[2:], os.Args[1] == goWrapExactObjectsArg))
 	case goRunArg:
 		if len(os.Args) < 3 {
 			os.Exit(1)
@@ -33,6 +34,17 @@ func init() {
 // PrependGoTestWrap installs a go shim on PATH. The executor process keeps
 // its own environment; the shim applies AcceptanceEnv only to `go test`.
 func PrependGoTestWrap(env []string, dir string) ([]string, error) {
+	return prependGoTestWrap(env, dir, goWrapArg)
+}
+
+// PrependExactGoTestWrap installs a distinct, host-selected shim for a strict
+// review. Its go-test descendants receive only fixed Git protections, not
+// ambient Git variables or an inherited scope selector.
+func PrependExactGoTestWrap(env []string, dir string) ([]string, error) {
+	return prependGoTestWrap(env, dir, goWrapExactObjectsArg)
+}
+
+func prependGoTestWrap(env []string, dir, launchArg string) ([]string, error) {
 	if env == nil {
 		env = os.Environ()
 	}
@@ -47,7 +59,7 @@ func PrependGoTestWrap(env []string, dir string) ([]string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	if err := writeGoWrap(dir, exe); err != nil {
+	if err := writeGoWrap(dir, exe, launchArg); err != nil {
 		return nil, err
 	}
 	out := append([]string{}, env...)
@@ -56,16 +68,16 @@ func PrependGoTestWrap(env []string, dir string) ([]string, error) {
 	return out, nil
 }
 
-func writeGoWrap(dir, exe string) error {
+func writeGoWrap(dir, exe, launchArg string) error {
 	if runtime.GOOS == "windows" {
-		body := "@echo off\r\n" + winQuote(exe) + " " + goWrapArg + " %*\r\n"
+		body := "@echo off\r\n" + winQuote(exe) + " " + launchArg + " %*\r\n"
 		return os.WriteFile(filepath.Join(dir, "go.cmd"), []byte(body), 0o644)
 	}
-	body := "#!/bin/sh\nexec " + shSingle(exe) + " " + goWrapArg + " \"$@\"\n"
+	body := "#!/bin/sh\nexec " + shSingle(exe) + " " + launchArg + " \"$@\"\n"
 	return os.WriteFile(filepath.Join(dir, "go"), []byte(body), 0o755)
 }
 
-func runGoWrap(args []string) int {
+func runGoWrap(args []string, exactObjects bool) int {
 	bin, err := findRealGo(os.Getenv("PATH"), os.Getenv("CARDEX_GO_WRAP_DIR"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cardex:", err)
@@ -76,6 +88,9 @@ func runGoWrap(args []string) int {
 	switch subcommand {
 	case "test":
 		env = AcceptanceEnv(env)
+		if exactObjects {
+			env = GitObjectScopeEnv(env)
+		}
 	case "run":
 		if useGoRunLauncher() {
 			launcher, err := goRunLauncher()

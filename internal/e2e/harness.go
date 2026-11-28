@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -13,6 +12,8 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
+	"github.com/OttoPrua/Cardex/internal/runner"
 	"github.com/OttoPrua/Cardex/internal/sched"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
@@ -60,8 +61,9 @@ func (h *Harness) initRepo() error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	ctx := runner.WithCompatibleCredentialEnv(context.Background(), h.Home)
 	git := func(args ...string) error {
-		cmd := exec.Command("git", args...)
+		cmd := proc.Git(ctx, nil, args...)
 		cmd.Dir = dir
 		out, err := cmd.CombinedOutput()
 		if err != nil {

@@ -11,19 +11,23 @@ import (
 )
 
 const (
-	ReasonHealth       = "health"        // 健康状态不是 ok。
-	ReasonConcurrency  = "concurrency"   // 已达并发上限。
-	ReasonRedline      = "redline"       // 剩余比例小于等于红线。
-	ReasonBlocked      = "blocked"       // 在观测到的重置时间之前被封锁。
-	ReasonCutoff       = "cutoff"        // 已用超过 98%。
-	ReasonUnknownQuota = "unknown_quota" // 余量未知且配置为 exclude。
-	ReasonPriorFailure = "prior_failure" // 此卡在本轮故障切换中已放弃该渠道。
-	ReasonFamily       = "family"        // 复核卡优先换族：本档有别族可用时，同族候选被滤掉。
+	ReasonCompatibleRuntime = "compatible_runtime_disabled"
+	ReasonHealth            = "health"        // 健康状态不是 ok。
+	ReasonConcurrency       = "concurrency"   // 已达并发上限。
+	ReasonRedline           = "redline"       // 剩余比例小于等于红线。
+	ReasonBlocked           = "blocked"       // 在观测到的重置时间之前被封锁。
+	ReasonCutoff            = "cutoff"        // 已用超过 98%。
+	ReasonUnknownQuota      = "unknown_quota" // 余量未知且配置为 exclude。
+	ReasonPriorFailure      = "prior_failure" // 此卡在本轮故障切换中已放弃该渠道。
+	ReasonFamily            = "family"        // 复核卡优先换族：本档有别族可用时，同族候选被滤掉。
 )
 
 // ErrPinnedUnavailable means the explicit channel is missing or not healthy.
 // Select does not fall through to automatic selection.
 var ErrPinnedUnavailable = errors.New("pinned channel unavailable")
+
+// ErrCompatibleRuntimeHeld is not a reason to release a user's explicit pin.
+var ErrCompatibleRuntimeHeld = errors.New(model.CompatibleRuntimeHold)
 
 // ErrNoCandidate means no channel survived tier match and the automatic filters.
 var ErrNoCandidate = errors.New("no route candidate")

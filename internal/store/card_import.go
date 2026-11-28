@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/roots"
 )
 
@@ -136,12 +137,15 @@ func (s *Store) checkImportSchema(ctx context.Context) error {
 func (s *Store) CardImportDependencies(ctx context.Context, id string) ([]string, error) {
 	const maxEncodedDeps = 128 << 10
 	var raw sql.NullString
-	if err := s.q(ctx).QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(deps AS BLOB)) <= ? THEN deps END FROM cards WHERE id=?`, maxEncodedDeps, id).Scan(&raw); err != nil {
+	var strict bool
+	if err := s.q(ctx).QueryRowContext(ctx, `SELECT CASE WHEN length(CAST(deps AS BLOB)) <= ? THEN deps END, strict_deps FROM cards WHERE id=?`, maxEncodedDeps, id).Scan(&raw, &strict); err != nil {
 		return nil, err
 	}
 	var deps []string
 	if !raw.Valid || json.Unmarshal([]byte(raw.String), &deps) != nil {
 		return nil, errors.New("stored dependency data is malformed or too large")
 	}
-	return deps, nil
+	card := model.Card{Deps: deps, StrictDeps: strict}
+	readStrictDependencies(&card)
+	return card.Deps, nil
 }

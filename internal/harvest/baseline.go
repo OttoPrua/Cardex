@@ -113,7 +113,7 @@ func runAtBase(ctx context.Context, parent, repo, base, command string, env []st
 		return 0, nil, false
 	}
 	defer func() {
-		_, _ = gitExec(context.Background(), repo, "worktree", "remove", "--force", wt)
+		_, _ = gitExec(context.WithoutCancel(ctx), repo, "worktree", "remove", "--force", wt)
 		_ = os.RemoveAll(wt)
 	}()
 	if _, err := gitExec(ctx, repo, "-c", "core.hooksPath="+os.DevNull, "worktree", "add", "--detach", wt, base); err != nil {

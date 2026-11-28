@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/OttoPrua/Cardex/internal/runner"
 )
 
 // Exec runs one external command. Tests pass a stub; production is not wired here.
@@ -302,11 +304,11 @@ func (s *Service) deliverHop(ctx context.Context, msg Message, hop Hop, now time
 func (s *Service) deliverAdapter(ctx context.Context, home, kind, id string, msg Message, now time.Time, seq int) error {
 	switch kind {
 	case "codex":
-		return s.execArgv(ctx, codexArgv(id, msg.Text))
+		return s.execArgv(runner.WithCompatibleCredentialEnv(ctx, msg.Home), codexArgv(id, msg.Text))
 	case "hermes":
 		return s.deliverHermes(home, id, msg, now, seq, "hermes")
 	case "lark":
-		return s.execArgv(ctx, larkArgv(id, msg.Text))
+		return s.execArgv(runner.WithCompatibleCredentialEnv(ctx, msg.Home), larkArgv(id, msg.Text))
 	case "file":
 		return writeInbox(home, msg)
 	default:

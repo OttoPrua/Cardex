@@ -2,10 +2,12 @@ package sched
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/loop"
@@ -40,6 +42,9 @@ type pinRelease struct {
 // channel at its concurrency limit, or outside this call's candidate set,
 // waits: no attempt, no fallback, and no drop.
 func (r *Runner) resolveLaunchRoute(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, channels []model.Channel, pos []model.Positioning, inUse map[string]int, quotas route.Quotas, classified model.Tier) (model.Route, model.RouteReason, pinRelease, bool, error) {
+	if len(route.ExplicitCompatibleHold(launchRequest(card, obj, channels, pos, inUse, quotas, classified, r.now()))) != 0 {
+		return model.Route{}, model.RouteReason{}, pinRelease{}, true, r.holdExplicitCompatibleCard(ctx, db, card, obj, card)
+	}
 	if _, _, _, held := loop.ReviewHold(card); held {
 		return r.chooseHeldReviewRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
 	}
@@ -65,6 +70,20 @@ func (r *Runner) reuseSavedRoute(ctx context.Context, db *store.Store, card mode
 		return model.Route{}, model.RouteReason{}, pinRelease{}, false, err
 	}
 	ch, found := channelByID(configured, saved.Channel)
+	if found && ch.CompatibleRuntimeHeld() {
+		if card.Channel != "" || obj.Channel != "" {
+			return model.Route{}, model.RouteReason{}, pinRelease{}, true, r.holdCompatibleCard(ctx, db, card, obj, func(tx context.Context) (bool, error) {
+				current, ok, err := savedLaunchRoute(tx, db, card.ID)
+				if err != nil || !ok || current != saved {
+					return false, err
+				}
+				return heldCompatibleChannel(tx, db, saved.Channel)
+			})
+		}
+		// Do not allow a stale automatic launch-failure receipt to displace
+		// current eligible routes, but also never change an explicit API pin.
+		return r.chooseLaunchRoute(ctx, db, card, obj, channels, pos, inUse, quotas, classified)
+	}
 	if !found || ch.Health != model.HealthOK {
 		why := pinReasonMissing
 		health := ""
@@ -109,6 +128,61 @@ func (r *Runner) reuseSavedRoute(ctx context.Context, db *store.Store, card mode
 		Filtered: []model.FilteredCandidate{},
 		Scores:   []model.RouteScore{{Channel: rt.Channel, Model: rt.Model}},
 	}, pinRelease{}, false, nil
+}
+
+func (r *Runner) holdExplicitCompatibleCard(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, probe model.Card) error {
+	return r.holdCompatibleCard(ctx, db, card, obj, func(tx context.Context) (bool, error) {
+		configured, err := db.ListChannels(tx)
+		if err != nil {
+			return false, err
+		}
+		return len(route.ExplicitCompatibleHold(route.Request{Card: probe, Objective: obj, Channels: configured})) != 0, nil
+	})
+}
+
+func heldCompatibleChannel(ctx context.Context, db *store.Store, id string) (bool, error) {
+	ch, err := db.GetChannel(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil && ch.CompatibleRuntimeHeld(), err
+}
+
+// An unreserved dispatch observation cannot rewrite operator changes. This
+// applies equally to strict and legacy cards, and re-proves the route under
+// the same writer lock rather than holding based on a stale in-memory pin.
+func (r *Runner) holdCompatibleCard(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, routeStillHeld func(context.Context) (bool, error)) error {
+	return db.WithWriteTx(ctx, func(tx context.Context) error {
+		current, err := db.GetCard(tx, card.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil || !reflect.DeepEqual(current, card) || !canDispatch(current) {
+			return err
+		}
+		objective, err := db.GetObjective(tx, current.Objective)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil || !reflect.DeepEqual(objective, obj) ||
+			(objective.Status != model.ObjectiveActive && objective.Status != model.ObjectiveDoneCandidate) {
+			return err
+		}
+		attempts, err := db.ListAttempts(tx, current.ID)
+		if err != nil {
+			return err
+		}
+		for _, attempt := range attempts {
+			if attemptOpen(attempt) {
+				return nil
+			}
+		}
+		stillHeld, err := routeStillHeld(tx)
+		if err != nil || !stillHeld {
+			return err
+		}
+		return db.MarkCompatibleCardHeld(tx, current)
+	})
 }
 
 func channelByID(channels []model.Channel, id string) (model.Channel, bool) {
@@ -207,6 +281,9 @@ func (r *Runner) chooseHeldReviewRoute(ctx context.Context, db *store.Store, car
 	}
 	if originalModel != "" {
 		probe.Model = originalModel
+	}
+	if len(route.ExplicitCompatibleHold(launchRequest(probe, obj, channels, pos, inUse, quotas, classified, r.now()))) != 0 {
+		return model.Route{}, model.RouteReason{}, pinRelease{}, true, r.holdExplicitCompatibleCard(ctx, db, card, obj, probe)
 	}
 	probe.Channel, probe.Model = route.EffectivePin(launchRequest(probe, obj, channels, pos, inUse, quotas, classified, r.now()))
 
@@ -495,6 +572,9 @@ func channelUnusable(ctx context.Context, id string, channels []model.Channel, q
 	if found == nil {
 		return true, pinReasonMissing, nil
 	}
+	if found.CompatibleRuntimeHeld() {
+		return true, route.ReasonCompatibleRuntime, nil
+	}
 	if found.Health != model.HealthOK {
 		return true, route.ReasonHealth, nil
 	}
@@ -523,7 +603,7 @@ func modelPinUnusable(ctx context.Context, name string, channels []model.Channel
 			continue
 		}
 		saw = true
-		if ch.Health != model.HealthOK {
+		if ch.Health != model.HealthOK || ch.CompatibleRuntimeHeld() {
 			continue
 		}
 		held, err := quotaBlocked(ctx, quotas, ch.ID, now)

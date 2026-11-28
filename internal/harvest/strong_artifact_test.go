@@ -165,3 +165,59 @@ func TestStrongSnapshotBoundedOwnedGitChild(t *testing.T) {
 		t.Fatalf("exact positive after bounded overflow: length=%d error=%v", len(got), err)
 	}
 }
+
+func TestStrongSnapshotRequiresStorageFormatOID(t *testing.T) {
+	for _, tc := range []struct {
+		format string
+		length int
+	}{{"sha1", 40}, {"sha256", 64}} {
+		t.Run(tc.format, func(t *testing.T) {
+			ctx := context.Background()
+			fixture := t.TempDir()
+			repo := filepath.Join(fixture, "source")
+			bare := filepath.Join(fixture, "snapshot.git")
+			runGit(t, fixture, "init", "--object-format="+tc.format, repo)
+			const body = "synthetic exact Git object format evidence\n"
+			write(t, repo, "sample.txt", body)
+			runGit(t, repo, "add", "sample.txt")
+			runGit(t, repo, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "synthetic object format fixture")
+			runGit(t, repo, "clone", "--no-hardlinks", "--bare", repo, bare)
+			commit := strings.TrimSpace(runGitOut(t, repo, "rev-parse", "HEAD"))
+			if len(commit) != tc.length {
+				t.Fatalf("wrong fixture object format: %q", commit)
+			}
+			paths := []string{"sample.txt"}
+			if got, err := ReadStrongSnapshot(ctx, bare, commit, paths); err != nil || len(got) != 1 ||
+				string(got[0].Body) != body || got[0].SHA != model.StrongArtifactDigest([]byte(body)) {
+				t.Fatalf("full pinned commit did not resolve correctly: %v %v", got, err)
+			}
+
+			// A hex-shaped ref must not bind a nonexistent complete object ID to
+			// a different commit, even if Git resolves the name to a commit.
+			ref := strings.Repeat("1", tc.length)
+			runGit(t, bare, "update-ref", "refs/heads/"+ref, commit)
+			wrongLen := commit + strings.Repeat("0", 24)
+			if tc.length == 64 {
+				wrongLen = commit[:40]
+			}
+			blob := strings.TrimSpace(runGitOut(t, repo, "rev-parse", "HEAD:sample.txt"))
+			runGit(t, bare, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "-c", "tag.gpgsign=false", "tag", "-a", "synthetic", "-m", "synthetic annotated tag", commit)
+			tag := strings.TrimSpace(runGitOut(t, bare, "rev-parse", "refs/tags/synthetic"))
+			for _, candidate := range []string{wrongLen, strings.ToUpper(commit), commit[:7], ref, blob, tag} {
+				if got, err := ReadStrongSnapshot(ctx, bare, candidate, paths); got != nil || !errors.Is(err, model.ErrStrongArtifact) {
+					t.Errorf("accepted noncanonical or mismatched pin %q: %v %v", candidate, got, err)
+				}
+			}
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+			if got, err := ReadStrongSnapshot(canceled, bare, commit, paths); got != nil || !errors.Is(err, model.ErrStrongArtifact) {
+				t.Errorf("accepted a canceled snapshot: %v %v", got, err)
+			}
+			runGit(t, bare, "config", "core.repositoryformatversion", "1")
+			runGit(t, bare, "config", "extensions.objectformat", "synthetic-unsupported")
+			if got, err := ReadStrongSnapshot(ctx, bare, commit, paths); got != nil || !errors.Is(err, model.ErrStrongArtifact) {
+				t.Errorf("accepted unsupported repository object format: %v %v", got, err)
+			}
+		})
+	}
+}

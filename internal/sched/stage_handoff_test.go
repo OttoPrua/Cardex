@@ -440,9 +440,11 @@ func TestStageReviewKeepsPinnedGitRangeWithoutAcceptance(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		foreign bool
+		strict  bool
 	}{
-		{"pre-upgrade", false},
-		{"explicit-cross-objective-pin", true},
+		{"pre-upgrade", false, false},
+		{"explicit-cross-objective-pin", true, false},
+		{"strict-cross-objective-detached", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := t.Context()
@@ -511,7 +513,7 @@ func TestStageReviewKeepsPinnedGitRangeWithoutAcceptance(t *testing.T) {
 			}
 			rv := model.Card{ID: "review-linked", Objective: objID, Kind: model.KindReview, Title: "review the exact candidate",
 				Body:       "CURRENT-EXPLICIT-SCOPE\n上一档复核（T1）没把握，已升到 T2。上一档意见：SYNTHETIC-OLD-OPINION\n",
-				ReworkNote: "SYNTHETIC-OLD-NOTE", Deps: []string{src.ID}, Status: model.CardReady, Tier: model.TierT3}
+				ReworkNote: "SYNTHETIC-OLD-NOTE", Deps: []string{src.ID}, Status: model.CardReady, Tier: model.TierT3, StrictDeps: tc.strict}
 			if err := db.CreateCard(ctx, &rv); err != nil {
 				t.Fatal(err)
 			}
@@ -521,6 +523,9 @@ func TestStageReviewKeepsPinnedGitRangeWithoutAcceptance(t *testing.T) {
 				t.Fatal(err)
 			}
 			a := reviewAttempt(t, db, rv.ID)
+			if tc.strict && (a.Branch != "" || gitOutput(t, a.Worktree, "rev-parse", "--abbrev-ref", "HEAD") != "HEAD") {
+				t.Fatalf("strict review unexpectedly owned the source branch: %+v", a)
+			}
 			prompt := string(mustRead(t, a.PromptPath))
 			for _, want := range []string{"CURRENT-EXPLICIT-SCOPE", `"evidence_status":"acceptance_unavailable"`, `"base":"` + sourceBase + `"`, `"candidate":"` + head + `"`, "既有验收证据不可用", "独立执行任务允许的验证"} {
 				if !strings.Contains(prompt, want) {
@@ -556,13 +561,34 @@ func TestStageReviewKeepsPinnedGitRangeWithoutAcceptance(t *testing.T) {
 			}
 			// A subject pin alone does not authorize a different branch,
 			// a mismatched HEAD, or an attached or dirty checkout.
-			for _, bad := range []struct{ name, branch, sha, worktree string }{
-				{"wrong-branch", "unrelated", head, a.Worktree},
-				{"wrong-worktree-sha", candidateRef, sourceBase, a.Worktree},
-				{"attached", candidateRef, head, attached},
-				{"dirty", candidateRef, head, dirty},
-			} {
+			type badCheckout struct {
+				name, branch, sha, worktree string
+				persist                     bool
+			}
+			bads := []badCheckout{
+				{"wrong-branch", "unrelated", head, a.Worktree, false},
+				{"wrong-worktree-sha", candidateRef, sourceBase, a.Worktree, false},
+				{"attached", candidateRef, head, attached, false},
+				{"dirty", candidateRef, head, dirty, false},
+			}
+			if tc.strict {
+				bads = append(bads, badCheckout{
+					"unowned-branchless", "", head, a.Worktree, false,
+				}, badCheckout{
+					"owned-branchless-wrong-sha", "", sourceBase, a.Worktree, true,
+				}, badCheckout{
+					"owned-branchless-attached", "", head, attached, true,
+				}, badCheckout{
+					"owned-branchless-dirty", "", head, dirty, true,
+				})
+			}
+			for _, bad := range bads {
 				dest := model.Attempt{ID: bad.name, Card: rv.ID, Branch: bad.branch, Worktree: bad.worktree, BaseCommit: bad.sha}
+				if bad.persist {
+					if err := db.CreateAttempt(ctx, &dest); err != nil {
+						t.Fatal(err)
+					}
+				}
 				stageEvent(t, db, "attempt:"+dest.ID, model.ReviewSubjectEvent, model.PinnedReviewSubject{Subject: src.ID})
 				dest.PromptPath = filepath.Join(home, "attempts", dest.ID, "prompt.txt")
 				if err := r.writePrompt(ctx, db, rv, targetObj, model.Project{RepoPath: repo}, &dest); err != nil {
@@ -571,6 +597,65 @@ func TestStageReviewKeepsPinnedGitRangeWithoutAcceptance(t *testing.T) {
 				badPrompt := string(mustRead(t, dest.PromptPath))
 				if !strings.Contains(badPrompt, `"evidence_status":"unavailable"`) || strings.Contains(badPrompt, `"diff"`) {
 					t.Errorf("%s received an unverified Git range", bad.name)
+				}
+			}
+
+			if tc.strict {
+				// Git prints the requested original SHA even when a local
+				// replace ref made this checkout contain a different tree.
+				alterSrc := filepath.Join(t.TempDir(), "alter-source")
+				git(t, repo, "worktree", "add", "--detach", alterSrc, intermediate)
+				if err := os.WriteFile(filepath.Join(alterSrc, "replaced-only.txt"), []byte("synthetic different checkout"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				git(t, alterSrc, "add", "replaced-only.txt")
+				git(t, alterSrc, "-c", "user.name=cardex", "-c", "user.email=cardex@cardex.invalid", "commit", "-m", "different content")
+				replacement := rev(t, alterSrc, "HEAD")
+				if replacement == head {
+					t.Fatal("fixture must provide a different commit")
+				}
+				git(t, repo, "replace", head, replacement)
+				poisoned := filepath.Join(t.TempDir(), "replaced-review")
+				git(t, repo, "worktree", "add", "--detach", poisoned, head)
+				if _, err := os.Stat(filepath.Join(poisoned, "replaced-only.txt")); err != nil || rev(t, poisoned, "HEAD") != head {
+					t.Fatalf("replacement does not reproduce original-SHA/different-content state: %v", err)
+				}
+				dest := a
+				dest.Worktree, dest.PromptPath = poisoned, filepath.Join(home, "attempts", a.ID, "replacement-prompt.txt")
+				if err := db.UpdateAttempt(ctx, &dest); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.writePrompt(ctx, db, rv, targetObj, model.Project{RepoPath: repo}, &dest); err != nil {
+					t.Fatal(err)
+				}
+				replacePrompt := string(mustRead(t, dest.PromptPath))
+				if !strings.Contains(replacePrompt, `"evidence_status":"unavailable"`) || strings.Contains(replacePrompt, `"diff"`) {
+					t.Error("strict review certified different content under a replacement commit")
+				}
+				git(t, repo, "replace", "-d", head)
+				if err := db.UpdateAttempt(ctx, &a); err != nil {
+					t.Fatal(err)
+				}
+				grafts := filepath.Join(repo, ".git", "info", "grafts")
+				if err := os.WriteFile(grafts, []byte(head+" "+intermediate+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.writePrompt(ctx, db, rv, targetObj, model.Project{RepoPath: repo}, &a); err != nil {
+					t.Fatal(err)
+				}
+				graftPrompt := string(mustRead(t, a.PromptPath))
+				if !strings.Contains(graftPrompt, `"reason":"strict_review_git_object_scope_unverified"`) || strings.Contains(graftPrompt, `"diff"`) {
+					t.Error("strict review certified a scope with repo-local grafts")
+				}
+				if err := os.Remove(grafts); err != nil {
+					t.Fatal(err)
+				}
+				if err := r.writePrompt(ctx, db, rv, targetObj, model.Project{RepoPath: repo}, &a); err != nil {
+					t.Fatal(err)
+				}
+				recoveredPrompt := string(mustRead(t, a.PromptPath))
+				if !strings.Contains(recoveredPrompt, `"evidence_status":"acceptance_unavailable"`) {
+					t.Error("unmodified exact scope did not recover after removing synthetic overlays")
 				}
 			}
 

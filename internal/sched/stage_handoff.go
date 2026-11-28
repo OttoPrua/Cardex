@@ -20,6 +20,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/prompt"
 	"github.com/OttoPrua/Cardex/internal/roots"
 	"github.com/OttoPrua/Cardex/internal/store"
+	"github.com/OttoPrua/Cardex/internal/workspace"
 )
 
 const stageHandoffName = "stage-handoff.v1.json"
@@ -275,8 +276,8 @@ func stageReviewDiff(ctx context.Context, db *store.Store, source model.Card, at
 // an already pinned candidate whose versioned evidence could not be used.
 // Prove that the detached checkout, its recorded SHA, and the pinned
 // subject's branch are the same commit of the same local repository.
-func pinnedStageReviewRange(ctx context.Context, db *store.Store, subject string, obj model.Objective, repo string, dest model.Attempt) (*stageDiff, error) {
-	if subject == "" || dest.Branch == "" || dest.Worktree == "" || !harvest.IsCommitID(dest.BaseCommit) {
+func pinnedStageReviewRange(ctx context.Context, db *store.Store, subject string, targetCard model.Card, obj model.Objective, repo string, dest model.Attempt) (*stageDiff, error) {
+	if subject == "" || dest.Worktree == "" || !harvest.IsCommitID(dest.BaseCommit) {
 		return nil, nil
 	}
 	card, err := db.GetCard(ctx, subject)
@@ -305,7 +306,22 @@ func pinnedStageReviewRange(ctx context.Context, db *store.Store, subject string
 	}
 	wantBranch := cardBranchName(root.Objective, root.ID)
 	if dest.Branch != wantBranch {
-		return nil, nil
+		// A strict review never owns the writer's branch. Derive the ref
+		// only from its saved subject pin and exact persisted checkout.
+		if dest.Branch != "" || targetCard.Kind != model.KindReview || !targetCard.StrictDeps ||
+			dest.Card != targetCard.ID || targetCard.Objective != obj.ID {
+			return nil, nil
+		}
+		owned, err := db.GetAttempt(ctx, dest.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if owned.Card != dest.Card || owned.Index != dest.Index || owned.Branch != "" || owned.Worktree != dest.Worktree || owned.BaseCommit != dest.BaseCommit {
+			return nil, nil
+		}
 	}
 	sourceObj, err := db.GetObjective(ctx, root.Objective)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -426,6 +442,11 @@ func (r *Runner) buildStageContext(ctx context.Context, db *store.Store, card mo
 	if err != nil || link.Mode == "" {
 		return nil, err
 	}
+	strictScope := link.Mode == "independent_review" && card.UsesStrictReviewObjects(dest)
+	if strictScope {
+		ctx = proc.WithExactGitObjects(ctx)
+	}
+	const unsafeObjects = "strict_review_git_object_scope_unverified"
 	fallback := func(reason string) (*prompt.StageContext, error) {
 		// An unstarted attempt may resume after a previous prompt write.
 		// Do not leave a versioned artifact claiming that prompt used evidence.
@@ -442,9 +463,16 @@ func (r *Runner) buildStageContext(ctx context.Context, db *store.Store, card mo
 		}
 		// A cold review is an information boundary even when evidence
 		// cannot be loaded or recorded. Do not reopen the legacy context.
-		diff, err := pinnedStageReviewRange(ctx, db, link.Card, obj, repo, dest)
-		if err != nil {
-			return nil, err
+		var diff *stageDiff
+		if !strictScope || !strings.HasPrefix(reason, unsafeObjects) {
+			var err error
+			diff, err = pinnedStageReviewRange(ctx, db, link.Card, card, obj, repo, dest)
+			if err != nil {
+				return nil, err
+			}
+			if strictScope && diff != nil && !workspace.VerifyReviewObjectScope(ctx, repo, dest.Worktree, dest.BaseCommit) {
+				diff, reason = nil, unsafeObjects
+			}
 		}
 		status := "unavailable"
 		if diff != nil {
@@ -460,7 +488,10 @@ func (r *Runner) buildStageContext(ctx context.Context, db *store.Store, card mo
 		if err != nil {
 			return nil, err
 		}
-		return &prompt.StageContext{Data: body, Review: true, ReviewUnavailable: diff == nil, ReviewAcceptanceUnavailable: diff != nil}, nil
+		return &prompt.StageContext{Data: body, Review: true, ReviewUnavailable: diff == nil, ReviewAcceptanceUnavailable: diff != nil, StrictReviewObjects: strictScope}, nil
+	}
+	if strictScope && !workspace.VerifyReviewObjectScope(ctx, repo, dest.Worktree, dest.BaseCommit) {
+		return fallback(unsafeObjects)
 	}
 	sourceAttempt, err := stageSourceAttempt(ctx, db, link, dest)
 	if err != nil {
@@ -511,6 +542,14 @@ func (r *Runner) buildStageContext(ctx context.Context, db *store.Store, card mo
 		// The artifact is verification and frozen diff metadata, not input
 		// from a previous reviewer, even for a manually linked review.
 		record.Source.Review = nil
+		if strictScope {
+			// Historical artifact paths may have been collected in a legacy
+			// object environment. Recompute rather than re-certifying them.
+			record.Source.Paths, err = harvest.FrozenStagePaths(ctx, repo, evidence.Base, evidence.Candidate)
+			if err != nil {
+				return fallback("strict_review_source_paths_unverified")
+			}
+		}
 		record.FrozenDiff, err = stageReviewDiff(ctx, db, source, sourceAttempt, repo)
 		if err != nil {
 			return nil, err
@@ -541,6 +580,9 @@ func (r *Runner) buildStageContext(ctx context.Context, db *store.Store, card mo
 			return nil, err
 		}
 	}
+	if strictScope && !workspace.VerifyReviewObjectScope(ctx, repo, dest.Worktree, dest.BaseCommit) {
+		return fallback(unsafeObjects)
+	}
 	data, err := json.Marshal(record)
 	if err != nil {
 		return nil, err
@@ -551,7 +593,7 @@ func (r *Runner) buildStageContext(ctx context.Context, db *store.Store, card mo
 	if err := harvest.WriteStageJSON(dir, stageHandoffName, append(slices.Clone(data), '\n')); err != nil {
 		return fallback("stage_handoff_write_failed")
 	}
-	return &prompt.StageContext{Data: data, Review: link.Mode == "independent_review", Rework: link.Mode == "review_rework"}, nil
+	return &prompt.StageContext{Data: data, Review: link.Mode == "independent_review", StrictReviewObjects: strictScope, Rework: link.Mode == "review_rework"}, nil
 }
 
 func stageFilePresent(dir, name string) bool {
@@ -627,9 +669,13 @@ func stageGitOutput(ctx context.Context, repo string, args ...string) (string, e
 }
 
 func stageGitCommand(ctx context.Context, repo string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
-	cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
-	return cmd
+	base := []string{"-C", repo}
+	env := append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
+	if proc.ExactGitObjects(ctx) {
+		base = append(base, "--no-replace-objects")
+		env = append(proc.GitObjectScopeEnv(env), "GIT_TERMINAL_PROMPT=0")
+	}
+	return proc.Git(ctx, env, append(base, args...)...)
 }
 
 func noteStageFallback(ctx context.Context, db *store.Store, attempt, mode, reason string) error {

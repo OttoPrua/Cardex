@@ -356,6 +356,18 @@ func (h *Home) publishOnce(ctx context.Context, entries []model.Positioning, pub
 			}
 		}
 	}
+	// Validate inside the same write transaction as publication. A channel
+	// staged after proposal creation still counts; a conflicting update leaves
+	// the old version and the proposed file intact.
+	channels, err := h.db.ListChannels(ctx)
+	if err != nil {
+		return err
+	}
+	for _, ch := range channels {
+		if err := model.ValidateCompatiblePositioning(ch, entries); err != nil {
+			return err
+		}
+	}
 	if publishAfterRead != nil {
 		publishAfterRead()
 	}

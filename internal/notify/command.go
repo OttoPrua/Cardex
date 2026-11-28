@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 
 	"github.com/OttoPrua/Cardex/internal/proc"
@@ -21,6 +22,7 @@ func CommandExec(ctx context.Context, argv []string) error {
 		return fmt.Errorf("notify: empty command")
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Env = proc.CompatibleChildEnv(ctx, os.Environ())
 	proc.Script(cmd)
 	return cmd.Run()
 }

@@ -3,6 +3,7 @@ package sched
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,6 +41,9 @@ func (r *Runner) productionClassify(ctx context.Context, channelID, prompt strin
 	ch, err := db.GetChannel(ctx, channelID)
 	if err != nil {
 		return "", err
+	}
+	if ch.CompatibleRuntimeHeld() {
+		return "", errors.New(model.CompatibleRuntimeHold)
 	}
 	if _, ok := runner.Lookup(string(ch.Runner)); !ok {
 		err := fmt.Errorf("sched: classifier runner %s is not registered", ch.Runner)

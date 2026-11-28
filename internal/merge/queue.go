@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -126,12 +125,12 @@ func (q *Service) mergeOne(ctx context.Context, card *model.Card) error {
 		return err
 	}
 	defer func() {
-		_, _ = gitOut(context.Background(), repo, "worktree", "remove", "--force", wt)
+		_, _ = gitOut(context.WithoutCancel(ctx), repo, "worktree", "remove", "--force", wt)
 	}()
 
 	mergeOut, mergeErr := gitCombined(ctx, wt, mergeArgs(cardBranch)...)
 	if mergeErr != nil {
-		report, uerr := conflictReport(wt)
+		report, uerr := conflictReport(ctx, wt)
 		if uerr == nil && report != "" {
 			_, _ = gitOut(ctx, wt, "merge", "--abort")
 			return q.failCard(ctx, card, model.KindRebase, "rb-", report)
@@ -431,8 +430,8 @@ func (q *Service) noteOrphan(ctx context.Context, card *model.Card, stale *works
 	})
 }
 
-func conflictReport(dir string) (string, error) {
-	raw, err := gitOut(context.Background(), dir, "diff", "--name-only", "--diff-filter=U")
+func conflictReport(ctx context.Context, dir string) (string, error) {
+	raw, err := gitOut(ctx, dir, "diff", "--name-only", "--diff-filter=U")
 	if err != nil {
 		return "", err
 	}
@@ -494,7 +493,7 @@ func runChecks(ctx context.Context, dir string, acceptance []string, testCmd, sc
 		}
 		cmd := proc.Shell(ctx, command)
 		cmd.Dir = dir
-		cmd.Env = append(proc.AcceptanceEnv(os.Environ()), "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = append(proc.AcceptanceEnv(proc.CompatibleChildEnv(ctx, os.Environ())), "GIT_TERMINAL_PROMPT=0")
 		if scratch != "" {
 			cmd.Env = roots.ApplyTempEnv(cmd.Env, scratch)
 		}
@@ -517,15 +516,15 @@ func gitOut(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func gitCombined(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(),
+	env := append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_AUTHOR_NAME=cardex",
 		"GIT_AUTHOR_EMAIL=cardex@cardex.invalid",
 		"GIT_COMMITTER_NAME=cardex",
 		"GIT_COMMITTER_EMAIL=cardex@cardex.invalid",
 	)
+	cmd := proc.Git(ctx, env, args...)
+	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return out, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, bytes.TrimSpace(out))

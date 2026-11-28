@@ -409,3 +409,20 @@ func runGitOut(t *testing.T, dir string, args ...string) string {
 	}
 	return string(out)
 }
+
+func TestAPIChannelHeldAttemptSkipsResultAndAcceptance(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, ".cardex-result.md", "## 复核结论\npass\n")
+	result, err := Harvest(t.Context(), Input{
+		Home: t.TempDir(), Repo: dir,
+		Attempt: model.Attempt{ID: "a-api", Worktree: dir,
+			RouteReason: model.RouteReason{Dispatch: &model.RouteDispatch{CompatibleBindingID: "historical"}}},
+		Card: model.Card{ID: "c-review", Kind: model.KindReview, Acceptance: []string{"echo injected > acceptance-marker"}},
+	})
+	if err != nil || result.Outcome != model.OutcomeNoOutput || result.ResultText != "" || result.Excerpt != model.CompatibleRuntimeHold {
+		t.Fatalf("old API attempt used generic harvest: %+v %v", result, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "acceptance-marker")); !os.IsNotExist(err) {
+		t.Fatal("held compatible attempt invoked acceptance")
+	}
+}

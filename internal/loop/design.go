@@ -1301,14 +1301,13 @@ func (d Deps) applyNormalizeTx(ctx context.Context, obj model.Objective, card mo
 	if err != nil {
 		return err
 	}
-	if !ok || sourceAttempt != current || latestNormalizer != attemptID || source.Status == model.CardCanceled {
+	if !ok || sourceAttempt != current || latestNormalizer != attemptID || source.Status == model.CardCanceled || source.Status == model.CardPaused {
 		link.Reason = normalizeStale
 		return d.noteNormalizeResolution(ctx, link)
 	}
-	if sourceAttempt != "" {
-		if done, err := d.attemptHandled(ctx, sourceAttempt); err != nil || done {
-			return err
-		}
+	eligible, err := d.normalizationMayApply(ctx, source, link)
+	if err != nil || !eligible {
+		return err
 	}
 	if card.Status == model.CardFailed || card.Status == model.CardCanceled || skippedOutcome(outcome, card.Status) {
 		link.Reason = normalizeFailed

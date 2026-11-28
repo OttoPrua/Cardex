@@ -14,6 +14,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
+	engineRunner "github.com/OttoPrua/Cardex/internal/runner"
 )
 
 // runnerCLI maps a runner to the executable it starts.
@@ -42,6 +43,8 @@ const (
 // only reads local files (doctor never starts a PATH binary); with run true
 // (channel check) it also runs the CLI's own status command. It is a variable
 // so tests can replace it.
+type loginProbeHomeKey struct{}
+
 var loginProbe = func(ctx context.Context, runner model.RunnerName, bin string, run bool) loginState {
 	status := func(args []string, ok func(string) bool) loginState {
 		if !run {
@@ -50,6 +53,8 @@ var loginProbe = func(ctx context.Context, runner model.RunnerName, bin string, 
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, bin, args...)
+		home, _ := ctx.Value(loginProbeHomeKey{}).(string)
+		cmd.Env = engineRunner.CompatibleCredentialEnv(home, os.Environ())
 		var out bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &out
 		cmd.Stdin = nil
@@ -117,6 +122,13 @@ func cliFindings(ctx context.Context, channels []model.Channel, run bool) []find
 	}
 	seen := map[model.RunnerName]bool{}
 	for _, ch := range channels {
+		if ch.CompatibleRuntimeHeld() {
+			out = append(out, finding{
+				"channel " + ch.ID + ": " + model.CompatibleRuntimeHold,
+				"registration is configuration-only and does not require Claude CLI sign-in",
+			})
+			continue
+		}
 		r := ch.Runner
 		cli, known := runnerCLI[r]
 		if !known || seen[r] {
@@ -138,7 +150,7 @@ func cliFindings(ctx context.Context, channels []model.Channel, run bool) []find
 		}
 	}
 	for _, ch := range channels {
-		if ch.Health == model.HealthAuthFailed {
+		if !ch.CompatibleRuntimeHeld() && ch.Health == model.HealthAuthFailed {
 			login := model.LoginCommand(ch.Runner)
 			if login == "" {
 				login = "its CLI"

@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/OttoPrua/Cardex/internal/model"
 )
@@ -274,6 +275,15 @@ func designLevelTwoSections(md string) map[string][]string {
 	return sections
 }
 
+// Only a complete standalone web, mailto, or email Markdown autolink is exempt from the raw
+// HTML barrier. Mixed text or a second tag must never restart recognition.
+var standaloneAutolinkRE = regexp.MustCompile(`(?i)^(?:<(?:https?://|mailto:)[^<>]+>|<[A-Za-z0-9.!#$%&'*+/=?^_{}|~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?>)$`)
+
+func standaloneAutolink(line string) bool {
+	return standaloneAutolinkRE.MatchString(line) &&
+		strings.IndexFunc(line, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) < 0
+}
+
 func markdownControlHeadings(lines []string) []markdownControlHeading {
 	var headings []markdownControlHeading
 	var fence byte
@@ -309,7 +319,10 @@ func markdownControlHeadings(lines []string) []markdownControlHeading {
 			continue
 		}
 		if fence == 0 {
-			if strings.HasPrefix(trim, "<") {
+			if strings.HasPrefix(strings.TrimLeft(trim, "\uFEFF"), "<") {
+				if standaloneAutolink(trim) {
+					continue
+				}
 				// Raw HTML is outside the control protocol. A partial HTML
 				// parser could mistake an inner close for the block's end.
 				// Do not recognize any later control heading in this artifact.
@@ -339,8 +352,16 @@ func markdownControlHeadings(lines []string) []markdownControlHeading {
 		for width < len(trim) && trim[width] == '#' {
 			width++
 		}
-		if width < 1 || width > 6 || width == len(trim) || (trim[width] != ' ' && trim[width] != '\t') {
+		if width < 1 || width > 6 || width == len(trim) {
 			continue
+		}
+		if trim[width] != ' ' && trim[width] != '\t' {
+			// Existing card/fact payloads sometimes use these exact compact
+			// domain sections. Do not grant this exception to freeze or
+			// other control headings, or to arbitrary compact prose.
+			if trim != "##新卡" && trim != "##事实" {
+				continue
+			}
 		}
 		title := strings.TrimSpace(trim[width:])
 		headings = append(headings, markdownControlHeading{line: i, level: width, title: title})

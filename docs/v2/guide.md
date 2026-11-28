@@ -173,7 +173,7 @@ macOS、Windows 等其他平台或缺少必要内核保护时，应先由正常�
 
 ## 固定运行环境的 PATH
 
-可在 CardeX 数据目录的 `config.json` 写入 `"runtime_path": ["/absolute/tools/bin", "/absolute/other/bin"]`。顺序就是普通可执行文件的查找优先顺序；配置后用它替换 CardeX 进程的继承 PATH。Windows 的验收 shell 如显式设置 `CARDEX_SH` 会优先采用它，未找到 shell 或 Git 时，旧版兼容逻辑仍可能检查启动时的 PATH；工具自身也可以指定绝对路径。请填写本机真实、可信的绝对目录，Windows 使用绝对盘符路径。Unix 会在末尾补齐标准系统目录；不配置时，仍沿用父进程 PATH 并按原有方式补齐系统目录。新启动的命令和调度器 worker 生效，已经运行的进程不受影响。整个配置文件失效而无法解析时，沿用原有默认查找；已读到的 `runtime_path` 若类型或路径无效会报错。纯只读取证的 `verify` 和 `snapshot` 不读取此配置。
+可在 CardeX 数据目录的 `config.json` 写入 `"runtime_path": ["/absolute/tools/bin", "/absolute/other/bin"]`。顺序就是普通可执行文件的查找优先顺序；配置后用它替换 CardeX 进程的继承 PATH。Windows 的验收 shell 如显式设置 `CARDEX_SH` 会优先采用它，未找到 shell 或 Git 时，旧版兼容逻辑仍可能检查启动时的 PATH；工具自身也可以指定绝对路径。请填写本机真实、可信的绝对目录，Windows 使用绝对盘符路径。Unix 会在末尾补齐标准系统目录；不配置时，仍沿用父进程 PATH 并按原有方式补齐系统目录。新启动的命令和调度器 worker 生效，已经运行的进程不受影响。整个配置文件失效而无法解析时，沿用原有默认查找；已读到的 `runtime_path` 若类型或路径无效会报错。纯只读取证的 `verify` 和 `snapshot` 不读取此配置。 如果已有数据库，单独执行 `cardex channel set --id <id> --health degraded` 或 `--health auth_failed` 仍可停用渠道，不会调用外部工具或绕过重新启用及其它修改的配置检查。
 
 ### 取消目标及其未完成卡片
 

@@ -22,7 +22,7 @@ func SetCancelPollForTest(d time.Duration) func() {
 }
 
 func SetCompatibleRelayForTest(start func(context.Context, []byte, ...string) (*runner.CompatibleRelay, error)) func() {
-	old := startCompatibleRelay
-	startCompatibleRelay = start
-	return func() { startCompatibleRelay = old }
+	old := syntheticCompatibleRelay
+	syntheticCompatibleRelay = start
+	return func() { syntheticCompatibleRelay = old }
 }

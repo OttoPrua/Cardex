@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 // Claude runs the claude CLI non-interactively, including an engines profile.
@@ -54,6 +55,12 @@ func (Claude) Build(spec LaunchSpec) ([]string, []string, error) {
 		profile, ok := ParseEngineProfile(spec.Script)
 		if !ok {
 			return nil, nil, errors.New("engines profile is not usable")
+		}
+		// ApplyEngineEnv resolves AuthEnv before applying its overlay. A
+		// legacy profile must not copy a configured API credential under a
+		// different, generic name that the final env scrub cannot detect.
+		if proc.CompatibleCredentialName(profile.AuthEnv, spec.DropEnv) {
+			return nil, nil, errors.New("legacy engine profile cannot reuse a compatible API credential reference")
 		}
 		modelName = MapEngineModel(profile, spec.Model)
 		var err error

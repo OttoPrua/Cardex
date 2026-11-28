@@ -16,6 +16,7 @@ import (
 
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/proc"
+	"github.com/OttoPrua/Cardex/internal/runner"
 )
 
 // Browser cards.
@@ -245,7 +246,8 @@ func launchBrowser(ctx context.Context, cfg fileConfig, attemptDir string) (*bro
 	args := browserArgs(profile)
 	cmd := exec.Command(bin, args...)
 	proc.Script(cmd)
-	cmd.Env = browserEnv(os.Environ())
+	ctx = proc.WithCompatibleCredentialNames(ctx, runner.CompatibleConfigCredentialNames(cfg.Engines))
+	cmd.Env = browserEnv(proc.CompatibleChildEnv(ctx, os.Environ()))
 	cmd.Stdout = logf
 	cmd.Stderr = logf
 	cmd.Dir = dir

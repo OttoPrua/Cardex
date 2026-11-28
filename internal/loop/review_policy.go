@@ -3,7 +3,6 @@ package loop
 import (
 	"context"
 	"fmt"
-	"os/exec"
 	"regexp"
 	"slices"
 	"strconv"
@@ -11,6 +10,8 @@ import (
 	"time"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+
+	"github.com/OttoPrua/Cardex/internal/proc"
 )
 
 // Review policy, docs/review-policy.md.
@@ -115,7 +116,7 @@ func attemptDiff(ctx context.Context, project model.Project, attempt model.Attem
 			continue
 		}
 		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		out, err := exec.CommandContext(cctx, "git", "-C", dir, "diff", "--numstat", "--no-renames", base, head).Output()
+		out, err := proc.Git(cctx, nil, "-C", dir, "diff", "--numstat", "--no-renames", base, head).Output()
 		cancel()
 		if err != nil {
 			continue

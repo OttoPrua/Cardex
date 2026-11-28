@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -245,7 +244,7 @@ func (Git) Remove(ctx context.Context, worktree string) error {
 	// this worktree's own files writable first.
 	makeWritable(abs)
 	args := []string{"--git-dir", common, "worktree", "remove", "--force", abs}
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := proc.Git(ctx, nil, args...)
 	out, err := cmd.CombinedOutput()
 	return GitFailure(ctx, "", args, err, out)
 }
@@ -497,11 +496,16 @@ func runGit(ctx context.Context, dir string, args ...string) (string, error) {
 }
 
 func runGitRaw(ctx context.Context, dir string, args ...string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	rawEnv := os.Environ()
+	cmdArgs := args
+	if proc.ExactGitObjects(ctx) {
+		cmdArgs = append([]string{"--no-replace-objects"}, args...)
+		rawEnv = proc.GitObjectScopeEnv(rawEnv)
+	}
+	cmd := proc.Git(ctx, append(rawEnv, "GIT_TERMINAL_PROMPT=0"), cmdArgs...)
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

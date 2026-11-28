@@ -52,3 +52,9 @@ func (c Card) DependencyBlocker(id string, dep Card) string {
 	}
 	return fmt.Sprintf("dependency %s is %s", id, dep.Status)
 }
+
+// UsesStrictReviewObjects selects the exact-object scope only for strict
+// read-only review attempts which do not own a writer's branch.
+func (c Card) UsesStrictReviewObjects(a Attempt) bool {
+	return c.StrictDeps && c.Kind == KindReview && a.Card == c.ID && a.Branch == ""
+}

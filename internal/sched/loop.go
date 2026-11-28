@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,6 +23,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/merge"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/prompt"
 	"github.com/OttoPrua/Cardex/internal/question"
 	"github.com/OttoPrua/Cardex/internal/quota"
@@ -135,6 +135,7 @@ func (r *Runner) Tick(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	ctx = runner.WithCompatibleCredentialEnv(ctx, r.Home)
 	var first error
 	keep := func(err error) bool {
 		if err == nil {
@@ -274,6 +275,24 @@ func (r *Runner) harvest(ctx context.Context, db *store.Store) error {
 		if err != nil {
 			if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
 				return err
+			}
+			continue
+		}
+		d := attempt.RouteReason.Dispatch
+		channel, chErr := db.GetChannel(ctx, attempt.Route.Channel)
+		if (d != nil && d.CompatibleBindingID != "") || (chErr == nil && channel.CompatibleRuntimeHeld()) {
+			// An older API1 child produced a CLI stdout envelope, not an
+			// authenticated worktree result. Never run generic acceptance
+			// or treat a pre-existing .cardex-result.md as its proof.
+			var observed *model.Objective
+			objective, objErr := db.GetObjective(ctx, card.Objective)
+			if objErr == nil {
+				observed = &objective
+			}
+			if err := db.HoldCompatibleAttempt(ctx, card, attempt, observed, r.now()); err != nil {
+				if err := r.keepStep(ctx, db, "harvest", "card", attempt.Card, err, &first); err != nil {
+					return err
+				}
 			}
 			continue
 		}
@@ -664,6 +683,18 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		}
 		return ch, err
 	}
+	// Stop an explicit held API pin before even the classifier gets the
+	// card. Backlog fill passes one channel at a time, so use the full
+	// configured list to avoid dropping a pin to an out-of-scope API lane.
+	if card.Channel != "" || card.Model != "" || obj.Channel != "" || obj.Model != "" {
+		configured, err := db.ListChannels(ctx)
+		if err != nil {
+			return "", err
+		}
+		if len(route.ExplicitCompatibleHold(route.Request{Card: card, Objective: obj, Channels: configured})) != 0 {
+			return "", r.holdExplicitCompatibleCard(ctx, db, card, obj, card)
+		}
+	}
 	if missing, err := missingReviewSubject(ctx, db, card); err != nil || missing != "" {
 		if err != nil {
 			return "", err
@@ -687,7 +718,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	}
 	// Keep an approved recovery pinned to its exact target. The approval
 	// transaction already changed the card; scheduler history cannot do so.
-	recovery, locked, err := r.recoveryTarget(ctx, db, card, prev, channels, quotas)
+	recovery, locked, err := r.recoveryTarget(ctx, db, card, obj, prev, channels, quotas)
 	if err != nil || locked {
 		return "", err
 	}
@@ -745,14 +776,18 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		}
 		return "", err
 	}
+	gitCheckCtx := ctx
+	if card.StrictDeps && readOnly {
+		gitCheckCtx = proc.WithExactGitObjects(ctx)
+	}
 	// The branch and worktree can exist before the attempt row is stored.
 	// Continue that branch instead of creating it again.
-	if !cont && gitRefExists(ctx, project.RepoPath, "refs/heads/"+cardBranchName(wsObj, wsCard)) {
+	if !cont && gitRefExists(gitCheckCtx, project.RepoPath, "refs/heads/"+cardBranchName(wsObj, wsCard)) {
 		cont = true
 	}
 	startPoint := card.Base
 	detached := false
-	if readOnly && !gitRefExists(ctx, project.RepoPath, "refs/heads/"+cardBranchName(wsObj, wsCard)) {
+	if readOnly && !gitRefExists(gitCheckCtx, project.RepoPath, "refs/heads/"+cardBranchName(wsObj, wsCard)) {
 		// A prefix review of a dev card waits until that card has a candidate
 		// branch. Reviewing main and still naming the dev card lets a later
 		// pass queue a commit this attempt never read.
@@ -774,7 +809,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 	var closedCheckouts []string
 	gitStarted := false
 	if card.StrictDeps {
-		strictOwner, err = (workspace.Git{}).ReserveStrictPreparation(ctx, project.RepoPath, attemptID)
+		strictOwner, err = (workspace.Git{}).ReserveStrictPreparation(gitCheckCtx, project.RepoPath, attemptID)
 		if err != nil {
 			return "", err
 		}
@@ -808,7 +843,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 		root = filepath.Join(r.Home, "worktrees")
 	}
 	targetWorktree := filepath.Join(root, wsCard+"-"+attemptID)
-	gitCtx := workspace.WithGitEvidence(ctx, card.ID, attemptID, targetWorktree)
+	gitCtx := workspace.WithGitEvidence(gitCheckCtx, card.ID, attemptID, targetWorktree)
 	req := workspace.CreateRequest{
 		CardID:            wsCard,
 		AttemptID:         attemptID,
@@ -881,7 +916,7 @@ func (r *Runner) launchCard(ctx context.Context, db *store.Store, card model.Car
 			// Only discard our newly-created, uniquely named checkout.
 			// The shared branch may now belong to the winning preparation.
 			if ctx.Err() == nil {
-				workspace.Git{}.DropStrictLaunch(ctx, strictOwner, req, wt.Path, scratch.branch, scratch.base)
+				workspace.Git{}.DropStrictLaunch(gitCheckCtx, strictOwner, req, wt.Path, scratch.branch, scratch.base)
 			}
 			_ = os.Remove(dir)
 			if errors.Is(err, errStrictAdmissionChanged) {
@@ -985,6 +1020,13 @@ func dispatchExpectation(card model.Card, obj model.Objective, classified model.
 func (r *Runner) resumeAttempt(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, attempt *model.Attempt) (string, error) {
 	if !canDispatch(card) {
 		return "", nil
+	}
+	if d := attempt.RouteReason.Dispatch; d != nil && d.CompatibleBindingID != "" {
+		return "", db.HoldCompatibleAttempt(ctx, card, *attempt, &obj, r.now())
+	}
+	ch, chErr := db.GetChannel(ctx, attempt.Route.Channel)
+	if chErr == nil && ch.CompatibleRuntimeHeld() {
+		return "", db.HoldCompatibleAttempt(ctx, card, *attempt, &obj, r.now())
 	}
 	project, err := db.GetProject(ctx, obj.Project)
 	if err != nil {
@@ -1128,7 +1170,7 @@ func (r *Runner) startAttempt(ctx context.Context, db *store.Store, attempt *mod
 		pid, err = r.Launch(ctx, r.Home, attempt.ID)
 	} else {
 		dir := roots.AttemptDir(r.Home, attempt.ID, attempt.PromptPath)
-		pid, err = launchDetached(r.Home, attempt.ID, dir)
+		pid, err = launchDetached(ctx, r.Home, attempt.ID, dir)
 	}
 	if err != nil {
 		return false, err
@@ -1232,6 +1274,9 @@ func (r *Runner) fill(ctx context.Context, db *store.Store, used map[string]bool
 	}
 	now := r.now()
 	for _, ch := range channels {
+		if ch.CompatibleRuntimeHeld() {
+			continue
+		}
 		est, err := quotas.Remaining(ctx, ch.ID)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -1998,7 +2043,7 @@ func rootCardID(ctx context.Context, db *store.Store, card model.Card) (string, 
 
 func detachHead(ctx context.Context, worktree string) error {
 	args := []string{"checkout", "--detach"}
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", worktree}, args...)...)
+	cmd := proc.Git(ctx, nil, append([]string{"-C", worktree}, args...)...)
 	out, err := cmd.CombinedOutput()
 	return workspace.GitFailure(ctx, worktree, args, err, out)
 }
@@ -2117,7 +2162,16 @@ func gitRefExists(ctx context.Context, repo, ref string) bool {
 	if strings.TrimSpace(repo) == "" || strings.TrimSpace(ref) == "" {
 		return false
 	}
-	cmd := exec.CommandContext(ctx, "git", "-C", repo, "show-ref", "--verify", "--quiet", ref)
+	args := []string{"-C", repo}
+	scoped := proc.ExactGitObjects(ctx)
+	if scoped {
+		args = append(args, "--no-replace-objects")
+	}
+	env := os.Environ()
+	if scoped {
+		env = proc.GitObjectScopeEnv(env)
+	}
+	cmd := proc.Git(ctx, env, append(args, "show-ref", "--verify", "--quiet", ref)...)
 	return cmd.Run() == nil
 }
 

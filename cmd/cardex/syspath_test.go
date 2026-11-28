@@ -65,3 +65,38 @@ func TestRuntimePathUsesOnlyConfiguredToolDirectories(t *testing.T) {
 		t.Fatalf("unconfigured PATH changed: %s", got)
 	}
 }
+
+func TestRuntimePathBrokenConfigAllowsOnlyHealthDeactivation(t *testing.T) {
+	home := t.TempDir()
+	db := openBriefDB(t, home)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"runtime_path":["relative"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	initial := os.Getenv("PATH")
+	for _, cmd := range [][]string{
+		{"channel", "set", "--id", "test", "--health", "degraded"},
+		{"channel", "set", "--health=auth_failed", "test", "--json"},
+	} {
+		if err := ensureRuntimePath(append([]string{"--home", home}, cmd...)); err != nil {
+			t.Errorf("emergency deactivation blocked for %v: %v", cmd, err)
+		}
+	}
+	for _, cmd := range [][]string{
+		{"channel", "set", "--id", "test", "--health", "ok"},
+		{"channel", "set", "--id", "test", "--health", "auth_failed", "--model=synthetic"},
+		{"channel", "set", "--id", "test", "--health=degraded", "test"},
+		{"channel", "set", "--id", "test", "--health=degraded", "--health=ok"},
+		{"channel", "set", "--id", "test", "--health=degraded", "--", "--model=synthetic"},
+		{"card", "retry", "test"},
+	} {
+		if err := ensureRuntimePath(append([]string{"--home", home}, cmd...)); err == nil {
+			t.Errorf("non-emergency command bypassed invalid PATH: %v", cmd)
+		}
+	}
+	if current := os.Getenv("PATH"); current != initial {
+		t.Fatal("the emergency command rewrote PATH")
+	}
+}

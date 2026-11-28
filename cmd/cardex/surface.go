@@ -715,10 +715,9 @@ func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 			if err != nil {
 				return err
 			}
-			rows, err := db.ListPositioning(ctx)
-			if err != nil {
-				return err
-			}
+			// Store-only rows omit the active config seed on unapproved homes.
+			// First identify compatible bindings, then check the exact current
+			// positioning snapshot within this channel update.
 			projects, err := db.ListProjects(ctx)
 			if err != nil {
 				return err
@@ -730,11 +729,20 @@ func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 					managedRoots = append(managedRoots, project.WorktreeRoot)
 				}
 			}
-			next, err := runner.ValidateChannelBinding(dir, ch, others, rows, managedRoots...)
+			next, err := runner.ValidateChannelBinding(dir, ch, others, nil, managedRoots...)
 			if err != nil {
 				return invalidSet(err.Error())
 			}
 			ch = next
+			if runner.IsCompatibleBinding(ch.EngineProfile) {
+				rows, err := positioning.Inspect(dir, db).Current(ctx)
+				if err != nil {
+					return err
+				}
+				if err := model.ValidateCompatiblePositioning(ch, rows); err != nil {
+					return invalidSet(err.Error())
+				}
+			}
 		}
 		if previouslyCompatible && !runner.IsCompatibleBinding(ch.EngineProfile) {
 			return invalidSet("an api channel cannot be converted to a legacy channel; use a different channel id")
@@ -750,13 +758,15 @@ func channelSet(home string, asJSON bool, args []string, stdout, stderr io.Write
 					}
 				}
 			}
+			if flagSeen(fs, "health") && ch.Health == model.HealthOK {
+				return invalidSet(model.CompatibleRuntimeHold)
+			}
 			if previousBindingID != runner.CompatibleBindingID(ch.EngineProfile) {
-				if flagSeen(fs, "health") && ch.Health == model.HealthOK {
-					return invalidSet("stage the api channel identity before separately activating it")
-				}
 				if previouslyCompatible && !flagSeen(fs, "engine-profile") && !flagSeen(fs, "model") && !flagSeen(fs, "family") {
 					return invalidSet("api channel profile changed; explicitly stage it with --engine-profile")
 				}
+			}
+			if ch.Health == model.HealthOK {
 				ch.Health = model.HealthDegraded
 			}
 		}

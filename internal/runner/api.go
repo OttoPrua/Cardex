@@ -25,7 +25,7 @@ type LaunchSpec struct {
 	SessionID    string         // goal 模式本次会话；空则不传 -s。
 	CardKind     model.CardKind // API 渠道的卡类型，用来证明工具权限；旧渠道忽略。
 	ConfigDir    string         // API 渠道的空 CLAUDE_CONFIG_DIR；旧渠道为空。
-	DropEnv      []string       // API 渠道子进程保留环境中需明确丢弃的变量名。
+	DropEnv      []string       // Provider env reference names never passed to executor children.
 	RelayURL     string         // API 渠道每次运行绑定的本机地址。
 	RelayKey     string         // 本次运行的临时本机访问能力；不是供应商凭据。
 }

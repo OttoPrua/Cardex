@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/OttoPrua/Cardex/internal/loop"
 	"github.com/OttoPrua/Cardex/internal/model"
 	"github.com/OttoPrua/Cardex/internal/notify"
+	"github.com/OttoPrua/Cardex/internal/proc"
 	"github.com/OttoPrua/Cardex/internal/route"
 	"github.com/OttoPrua/Cardex/internal/sched"
 	"github.com/OttoPrua/Cardex/internal/store"
@@ -46,7 +48,7 @@ func TestStoredRepairRetryRestoresChannel(t *testing.T) {
 		db.Close()
 
 		var reminded []string
-		r := sched.New(home)
+		r := storedRepairFixtureRunner(t, home)
 		r.Notify = func(_ context.Context, msg notify.Message) error {
 			reminded = append(reminded, msg.QuestionID)
 			return nil
@@ -113,7 +115,7 @@ func TestStoredRepairRetryRestoresChannel(t *testing.T) {
 		db.Close()
 		mustCLI(t, "--home", home, "question", "answer", "q-old", "approve")
 		mustRejectRecovery(t, home, "retry", "rp")
-		r := sched.New(home)
+		r := storedRepairFixtureRunner(t, home)
 		r.Script = func(model.Card) ([]byte, bool) {
 			return []byte(`{"attempts":{"1":{"exit_code":0,"output":"ack"}}}`), true
 		}
@@ -161,7 +163,7 @@ func TestStoredRepairRetryRestoresChannel(t *testing.T) {
 			t.Fatalf("recovered %+v", card)
 		}
 		db.Close()
-		r := sched.New(home)
+		r := storedRepairFixtureRunner(t, home)
 		r.Script = func(model.Card) ([]byte, bool) {
 			return []byte(`{"attempts":{"1":{"exit_code":0,"output":"ack"}}}`), true
 		}
@@ -216,7 +218,7 @@ func TestStoredRepairRetryRestoresChannel(t *testing.T) {
 		}
 		db.Close()
 
-		r := sched.New(home)
+		r := storedRepairFixtureRunner(t, home)
 		r.Script = func(model.Card) ([]byte, bool) {
 			return []byte(`{"attempts":{"0":{"exit_code":1,"output":""},"1":{"exit_code":1,"output":""},"2":{"exit_code":1,"output":""},"3":{"exit_code":1,"output":""}}}`), true
 		}
@@ -344,7 +346,7 @@ func TestStoredRepairRetryRestoresChannel(t *testing.T) {
 			t.Fatalf("retry did not stage the authorized target %+v", card)
 		}
 		db.Close()
-		r := sched.New(home)
+		r := storedRepairFixtureRunner(t, home)
 		r.Script = func(model.Card) ([]byte, bool) {
 			return []byte(`{"attempts":{"2":{"exit_code":1,"output":""}}}`), true
 		}
@@ -390,7 +392,7 @@ func TestStoredRepairRetryRestoresChannel(t *testing.T) {
 		mustCLI(t, "--home", home, "card", "recover", "--note", "boundary-check", "rp")
 		mustRejectRecovery(t, home, "recover", "rp")
 		mustRejectRecovery(t, home, "retry", "rp")
-		r := sched.New(home)
+		r := storedRepairFixtureRunner(t, home)
 		r.Script = func(model.Card) ([]byte, bool) {
 			return []byte(`{"attempts":{"2":{"exit_code":0,"output":"ack"}}}`), true
 		}
@@ -438,7 +440,7 @@ func TestStoredRepairRetryRestoresChannel(t *testing.T) {
 		mustCLI(t, "--home", home, "question", "answer", "q-old", "approve")
 		mustRejectRecovery(t, home, "recover", "rp")
 		mustRejectRecovery(t, home, "retry", "rp")
-		r := sched.New(home)
+		r := storedRepairFixtureRunner(t, home)
 		r.Script = func(model.Card) ([]byte, bool) {
 			return []byte(`{"attempts":{"1":{"exit_code":0,"output":"ack"}}}`), true
 		}
@@ -457,6 +459,36 @@ func TestStoredRepairRetryRestoresChannel(t *testing.T) {
 			}
 		}
 	})
+}
+
+// storedRepairFixtureRunner keeps detached host behavior but explicitly
+// joins each synthetic host before testing.TempDir removes its Git files.
+func storedRepairFixtureRunner(t *testing.T, home string) *sched.Runner {
+	t.Helper()
+	r := sched.New(home)
+	r.Launch = func(_ context.Context, home, attempt string) (int, error) {
+		exe, err := os.Executable()
+		if err != nil {
+			return 0, err
+		}
+		cmd := exec.Command(exe, "host", attempt)
+		cmd.Env = append(os.Environ(), "CARDEX_HOME="+home, "CARDEX_SCHED_HOST=1", "CARDEX_SCHED_ATTEMPT="+attempt)
+		proc.Detach(cmd)
+		var log bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &log, &log
+		if err := cmd.Start(); err != nil {
+			return 0, err
+		}
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		t.Cleanup(func() {
+			if err := <-done; err != nil {
+				t.Errorf("synthetic host did not drain: %v: %s", err, &log)
+			}
+		})
+		return cmd.Process.Pid, nil
+	}
+	return r
 }
 
 // A recovered card has a single restart destination even if a third

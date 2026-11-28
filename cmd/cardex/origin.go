@@ -15,9 +15,10 @@ import (
 // model.Card has no origin field; the event is the existing place that can keep it.
 type cardView struct {
 	model.Card
-	Origin   string            `json:"origin,omitempty"`
-	History  []cardHistoryItem `json:"history"`
-	Attempts []cardAttemptView `json:"attempts"`
+	Origin            string            `json:"origin,omitempty"`
+	History           []cardHistoryItem `json:"history"`
+	Attempts          []cardAttemptView `json:"attempts"`
+	DependencyBlocker string            `json:"dependency_blocker,omitempty"`
 }
 
 func acceptOrigin(fs *flag.FlagSet) {

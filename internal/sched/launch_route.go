@@ -593,6 +593,13 @@ func noChannelQuestion(reason string) string {
 // settleNoChannel records the one question §5 asks for when no candidate can take the card.
 // A later launch with the same reason does not add a second question.
 func (r *Runner) settleNoChannel(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, reason string) error {
+	_, err := withObservedCard(ctx, db, card, func(ctx context.Context) error {
+		return r.recordNoChannel(ctx, db, card, obj, reason)
+	})
+	return err
+}
+
+func (r *Runner) recordNoChannel(ctx context.Context, db *store.Store, card model.Card, obj model.Objective, reason string) error {
 	text := noChannelQuestion(reason)
 	questions, err := db.ListQuestions(ctx, obj.ID)
 	if err != nil {

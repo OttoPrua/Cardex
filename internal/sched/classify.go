@@ -21,6 +21,32 @@ func (r *Runner) classifyBeforeRoute(ctx context.Context, db *store.Store, card 
 	if card.Tier.Valid() && card.Tier != model.TierNone {
 		return card, "", nil
 	}
+	if card.StrictDeps {
+		// The classifier's side attempt is not the strict card's admitted
+		// host. Never make a paid call before that launch boundary.
+		err := db.WithWriteTx(ctx, func(ctx context.Context) error {
+			fresh, err := observedStrictCard(ctx, db, card)
+			if err != nil {
+				return err
+			}
+			if !canDispatch(fresh) {
+				return errStrictAdmissionChanged
+			}
+			tier := model.DefaultTier(fresh.Kind)
+			if changed, err := db.SetUnassignedStrictTier(ctx, fresh.ID, tier); err != nil {
+				return err
+			} else if !changed {
+				return errStrictAdmissionChanged
+			}
+			fresh.Tier = tier
+			card = fresh
+			return nil
+		})
+		if err != nil {
+			return card, "", err
+		}
+		return card, card.Tier, nil
+	}
 	var call classify.Call
 	if r != nil {
 		call = r.Classify

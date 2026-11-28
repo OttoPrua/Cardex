@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -40,6 +42,14 @@ func prepareCard(c *model.Card) error {
 	}
 	c.Requires = normStrings(c.Requires)
 	c.Deps = normStrings(c.Deps)
+	if c.ID == strictRuntimeGuard {
+		return fmt.Errorf("reserved card id %q", c.ID)
+	}
+	for _, id := range c.Deps {
+		if strings.TrimSpace(id) == strictRuntimeGuard {
+			return fmt.Errorf("reserved dependency id %q", id)
+		}
+	}
 	c.Acceptance = normStrings(c.Acceptance)
 	if c.Claims == nil {
 		c.Claims = []model.Claim{}
@@ -81,7 +91,7 @@ func (s *Store) insertCard(ctx context.Context, c *model.Card) error {
 	if err != nil {
 		return err
 	}
-	deps, err := mustJSON(c.Deps)
+	deps, err := mustJSON(storedDependencies(*c))
 	if err != nil {
 		return err
 	}
@@ -93,8 +103,8 @@ func (s *Store) insertCard(ctx context.Context, c *model.Card) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO cards(id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens, sandbox, review, changed_at, wait_question_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		c.ID, c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Sandbox, c.Review, formatTime(time.Now()), c.WaitQuestionID)
+	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO cards(id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens, sandbox, review, changed_at, wait_question_id, strict_deps) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		c.ID, c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Sandbox, c.Review, formatTime(time.Now()), c.WaitQuestionID, c.StrictDeps)
 	return err
 }
 
@@ -106,6 +116,21 @@ func (s *Store) GetCard(ctx context.Context, id string) (model.Card, error) {
 	}
 	c.Claims, err = s.claimsFor(ctx, c.ID)
 	return c, err
+}
+
+// ExecutionDependencyBlocker checks the current stored statuses and returns the
+// first unsatisfied execution dependency (not a review or repair subject).
+func (s *Store) ExecutionDependencyBlocker(ctx context.Context, card model.Card) (string, error) {
+	for _, id := range card.ExecutionDependencyIDs() {
+		dep, err := s.GetCard(ctx, id)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		if reason := card.DependencyBlocker(id, dep); reason != "" {
+			return reason, nil
+		}
+	}
+	return "", nil
 }
 
 func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
@@ -124,7 +149,7 @@ func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
 		if err != nil {
 			return err
 		}
-		deps, err := mustJSON(c.Deps)
+		deps, err := mustJSON(storedDependencies(*c))
 		if err != nil {
 			return err
 		}
@@ -136,9 +161,9 @@ func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
 		if err != nil {
 			return err
 		}
-		q := `UPDATE cards SET objective_id=?, node_id=?, kind=?, title=?, body=?, tier=?, requires=?, deps=?, acceptance=?, base=?, status=?, wait_reason=?, rework_count=?, legacy=?, channel=?, model=?, rework_note=?, author_family=?, soft_tokens=?, hard_tokens=?, review=?, wait_question_id=?,
+		q := `UPDATE cards SET objective_id=?, node_id=?, kind=?, title=?, body=?, tier=?, requires=?, deps=?, acceptance=?, base=?, status=?, wait_reason=?, rework_count=?, legacy=?, channel=?, model=?, rework_note=?, author_family=?, soft_tokens=?, hard_tokens=?, review=?, wait_question_id=?, strict_deps=?,
 			changed_at=CASE WHEN status<>? OR wait_reason<>? THEN ? ELSE changed_at END WHERE id=?`
-		args := []any{c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Review, c.WaitQuestionID, string(c.Status), c.WaitReason, formatTime(time.Now()), c.ID}
+		args := []any{c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Review, c.WaitQuestionID, c.StrictDeps, string(c.Status), c.WaitReason, formatTime(time.Now()), c.ID}
 		var transitioned bool
 		if hasLifecycleStatus(c.Status) {
 			res, err := s.q(ctx).ExecContext(ctx, q+` AND (status<>? OR wait_question_id<>?)`, append(args, c.Status, c.WaitQuestionID)...)
@@ -181,7 +206,7 @@ func (s *Store) DeleteCard(ctx context.Context, id string) error {
 	})
 }
 
-const cardSelect = `SELECT id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens, sandbox, review, wait_question_id FROM cards`
+const cardSelect = `SELECT id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens, sandbox, review, wait_question_id, strict_deps FROM cards`
 
 func (s *Store) ListCards(ctx context.Context, objectiveID string) ([]model.Card, error) {
 	return s.listCards(ctx, objectiveID, nil)
@@ -248,7 +273,7 @@ func (s *Store) listCards(ctx context.Context, objectiveID string, since *time.T
 func scanCard(sc scanner) (model.Card, error) {
 	var c model.Card
 	var kind, tier, requires, deps, acceptance, status, legacy string
-	if err := sc.Scan(&c.ID, &c.Objective, &c.Node, &kind, &c.Title, &c.Body, &tier, &requires, &deps, &acceptance, &c.Base, &status, &c.WaitReason, &c.ReworkCount, &legacy, &c.Channel, &c.Model, &c.ReworkNote, &c.AuthorFamily, &c.Budget.SoftTokens, &c.Budget.HardTokens, &c.Sandbox, &c.Review, &c.WaitQuestionID); err != nil {
+	if err := sc.Scan(&c.ID, &c.Objective, &c.Node, &kind, &c.Title, &c.Body, &tier, &requires, &deps, &acceptance, &c.Base, &status, &c.WaitReason, &c.ReworkCount, &legacy, &c.Channel, &c.Model, &c.ReworkNote, &c.AuthorFamily, &c.Budget.SoftTokens, &c.Budget.HardTokens, &c.Sandbox, &c.Review, &c.WaitQuestionID, &c.StrictDeps); err != nil {
 		return c, err
 	}
 	c.Kind = model.CardKind(kind)
@@ -260,6 +285,7 @@ func scanCard(sc scanner) (model.Card, error) {
 	if err := parseJSON(deps, &c.Deps); err != nil {
 		return c, err
 	}
+	readStrictDependencies(&c)
 	if err := parseJSON(acceptance, &c.Acceptance); err != nil {
 		return c, err
 	}
@@ -271,4 +297,19 @@ func scanCard(sc scanner) (model.Card, error) {
 	c.Acceptance = normStrings(c.Acceptance)
 	c.Claims = []model.Claim{}
 	return c, nil
+}
+
+// SetUnassignedStrictTier only updates the tier of a still-strict, unassigned
+// card. The scheduler validates the rest of the observed card under its
+// surrounding writer transaction before calling this field-level CAS.
+func (s *Store) SetUnassignedStrictTier(ctx context.Context, id string, tier model.Tier) (bool, error) {
+	if tier == model.TierNone || !tier.Valid() {
+		return false, invalid("tier", tier)
+	}
+	write, err := s.q(ctx).ExecContext(ctx, `UPDATE cards SET tier=? WHERE id=? AND strict_deps=1 AND tier=''`, tier, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := write.RowsAffected()
+	return n == 1, err
 }

@@ -26,9 +26,11 @@ func (r *Runner) recoveryTarget(ctx context.Context, db *store.Store, card model
 				}
 			}
 			if latest.ID == block.Attempt && latest.Outcome != "" && !latest.EndedAt.IsZero() {
+				before := card
 				card.Status = model.CardNeedsInput
 				card.WaitQuestionID = block.Question
-				return model.Route{}, true, db.UpdateCard(ctx, &card)
+				_, err := writeObservedCard(ctx, db, before, &card)
+				return model.Route{}, true, err
 			}
 		}
 		return model.Route{}, false, nil
@@ -45,9 +47,11 @@ func (r *Runner) recoveryTarget(ctx context.Context, db *store.Store, card model
 }
 
 func (r *Runner) lockAutoRouteRestart(ctx context.Context, db *store.Store, card *model.Card) error {
+	before := *card
 	card.Status = model.CardNeedsInput
 	card.WaitReason = "repair recovery: no usable recorded channel"
-	return db.UpdateCard(ctx, card)
+	_, err := writeObservedCard(ctx, db, before, card)
+	return err
 }
 
 func repairHint(ctx context.Context, db *store.Store, card model.Card) (model.RepairHint, error) {

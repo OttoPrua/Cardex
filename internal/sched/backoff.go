@@ -24,12 +24,14 @@ func releaseDueBackoff(ctx context.Context, db *store.Store, now time.Time) erro
 		if !ok || card.Status != model.CardWaiting || until.After(now) {
 			continue
 		}
+		before := card
 		card.Status = model.CardReady
 		card.WaitReason = ""
-		if err := db.UpdateCard(ctx, &card); err != nil {
+		if changed, err := writeObservedCard(ctx, db, before, &card); err != nil {
 			return err
+		} else if changed {
+			reportServeEvent(ctx, "transition state=backoff_released")
 		}
-		reportServeEvent(ctx, "transition state=backoff_released")
 	}
 	return nil
 }

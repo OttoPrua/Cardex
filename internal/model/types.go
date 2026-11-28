@@ -119,6 +119,8 @@ type Card struct {
 	Sandbox      string     `json:"sandbox"`       // 空表示沿用项目设置；"on" 在 Cardex 沙箱内跑；"off" 整张卡在沙箱外跑。只能在 card add 时设定。
 	Review       string     `json:"review"`        // 复核模式：空表示沿用目标和项目；auto、off、check、review。
 
+	StrictDeps bool `json:"strict_deps,omitempty"` // Strict execution prerequisites; empty preserves legacy behavior.
+
 	WaitQuestionID string `json:"-"` // Question bound to the current needs_input state.
 }
 

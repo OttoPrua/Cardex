@@ -29,6 +29,7 @@ const (
 type launchScratch struct {
 	repo, worktree, branch, base string
 	dropWorktree, dropBranch     bool
+	strict                       *workspace.CreateRequest
 }
 
 // tickNoted marks an error already stored as tick_error by the step that saw it.
@@ -58,6 +59,9 @@ func (r *Runner) failLaunch(ctx context.Context, db *store.Store, card *model.Ca
 	}
 	if cause == nil {
 		cause = fmt.Errorf("sched: launch failed")
+	}
+	if card.StrictDeps {
+		return r.failStrictLaunch(ctx, db, card, attempt, step, cause, rt, scratch)
 	}
 	reportServeError(ctx, "launch", cause)
 	workspace.Git{}.DropLaunch(ctx, scratch.repo, scratch.worktree, scratch.branch, scratch.base, scratch.dropWorktree, scratch.dropBranch)
@@ -335,4 +339,76 @@ func tickObject(kind, id string) string {
 		return "tick"
 	}
 	return kind + ":" + id
+}
+
+// A failed launch can race an operator edit too. Do not convert a newer
+// card or attempt into backoff. Only remove an owned new worktree, never a
+// shared branch, and never remove a preparation another host may own.
+func (r *Runner) failStrictLaunch(ctx context.Context, db *store.Store, card *model.Card, attempt *model.Attempt, step string, cause error, rt model.Route, scratch launchScratch) (string, error) {
+	summary := clipSummary(cause.Error())
+	attemptID := ""
+	prior := 0
+	changed, err := withObservedCard(ctx, db, *card, func(ctx context.Context) error {
+		var err error
+		prior, err = r.launchFailureStreak(ctx, db, card.ID)
+		if err != nil {
+			return err
+		}
+		rows, err := db.ListAttempts(ctx, card.ID)
+		if err != nil {
+			return err
+		}
+		if attempt != nil {
+			current, err := strictPreparedAttempt(rows, *attempt)
+			if err != nil {
+				return err
+			}
+			attemptID = current.ID
+			exit := 1
+			current.Outcome, current.ErrorClass, current.ErrorExcerpt = model.OutcomeLaunchFailed, model.ErrorLaunchFailed, summary
+			current.EndedAt, current.Exit = r.now().UTC(), &exit
+			if err := db.UpdateAttempt(ctx, &current); err != nil {
+				return err
+			}
+			if err := markLaunchDisposed(ctx, db, r.now(), &current); err != nil {
+				return err
+			}
+			*attempt = current
+		} else {
+			for _, current := range rows {
+				if attemptOpen(current) {
+					return errStrictAdmissionChanged
+				}
+			}
+		}
+		r.applyLaunchBackoff(card, prior)
+		if err := db.UpdateCard(ctx, card); err != nil {
+			return err
+		}
+		return r.writeLaunchFailed(ctx, db, card.ID, attemptID, step, summary, rt)
+	})
+	if err != nil {
+		return "", err
+	}
+	if (changed || attempt == nil) && scratch.dropWorktree && scratch.strict != nil && ctx.Err() == nil {
+		workspace.Git{}.DropStrictLaunch(ctx, scratch.strict.StrictOwner, *scratch.strict, scratch.worktree, scratch.branch, scratch.base)
+	}
+	if !changed {
+		return "", nil
+	}
+	reportServeError(ctx, "launch", cause)
+	reportServeEvent(ctx, "transition state=launch_backoff")
+	if attempt != nil {
+		if err := harvest.WriteUnavailableSummary(ctx, r.harvestInput(ctx, db, *card, *attempt, 1, nil)); err != nil {
+			_ = noteEvidenceWriteFailed(ctx, db, r.Home, *attempt, err)
+		}
+	}
+	if prior+1 >= 3 {
+		if _, err := withObservedCard(ctx, db, *card, func(ctx context.Context) error {
+			return r.openLaunchQuestion(ctx, db, card, step, summary)
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "launch_failed question card=%s error=%v\n", card.ID, err)
+		}
+	}
+	return "", nil
 }

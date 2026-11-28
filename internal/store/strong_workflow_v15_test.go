@@ -52,7 +52,7 @@ func TestStrongWorkflowPrototypeDoesNotActivateOrRewriteV15(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	check(db, 5)
+	check(db, 8)
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestStrongWorkflowPrototypeDoesNotActivateOrRewriteV15(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	check(reopened, 5)
+	check(reopened, 8)
 }
 
 func TestStrongWorkflowPrototypeRejectsNumericV15WithoutTypedReceipt(t *testing.T) {

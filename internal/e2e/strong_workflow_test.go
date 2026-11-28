@@ -790,3 +790,31 @@ func TestStrongInFlightAccountingSurvivesParallelStop(t *testing.T) {
 		})
 	}
 }
+
+func TestStrongST2OnlyPrototypeStillCancelsWithoutST3Tables(t *testing.T) {
+	f := newStrongFake(t)
+	p := f.plan(t, "st2-only-cancel", model.StrongTemplateLight)
+	key := f.approve(t, p)
+	in := strongReviewReserve(t, f, key, "evidence", f.route, "")
+	external, err := sql.Open("sqlite", f.dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = external.Close() })
+	for _, name := range []string{"strong_run_review_pin", "strong_run_quota_holds", "strong_run_quota_manifests"} {
+		if _, err := external.ExecContext(f.ctx, "DROP TABLE "+name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := f.db.CancelStrongRun(f.ctx, key, "synthetic-owner"); err != nil {
+		t.Fatal(err)
+	}
+	v, _, err := f.db.StrongRun(f.ctx, key)
+	if err != nil || v.Status != store.StrongCanceled || v.Reserved != 0 || in.Reserved == 0 {
+		t.Fatalf("old prototype cancellation: %+v %v", v, err)
+	}
+	var count int
+	if err := external.QueryRowContext(f.ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name LIKE 'strong_run_quota_%'").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("old prototype silently upgraded: %d %v", count, err)
+	}
+}

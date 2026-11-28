@@ -26,25 +26,28 @@ const (
 	StrongPhaseVerify     StrongPhase = "verify"
 	StrongPhaseSynthesis  StrongPhase = "synthesis"
 	StrongPhaseCheckpoint StrongPhase = "st3_checkpoint"
+	StrongPhaseReview     StrongPhase = "review"
+	StrongPhaseRewrite    StrongPhase = "rewrite"
 )
 
 type StrongPlan struct {
-	Run             string                     `json:"run"`
-	Revision        int                        `json:"revision"`
-	Version         int                        `json:"version"`
-	Template        string                     `json:"template"`
-	Project         string                     `json:"project"`
-	Scope           string                     `json:"scope"`
-	TaskSHA         string                     `json:"task_sha"`
-	EvidenceSHA     string                     `json:"evidence_sha"`
-	EvidenceCommit  string                     `json:"evidence_commit"`
-	EvidencePaths   []string                   `json:"evidence_paths"`
-	GlobalTokens    int64                      `json:"global_tokens"`
-	Seats           int                        `json:"seats"`
-	Framing         bool                       `json:"framing"`
-	SecondPeerRound bool                       `json:"second_peer_round"`
-	TargetedVerify  bool                       `json:"targeted_verify"`
-	Limits          map[string]StrongSlotLimit `json:"limits"`
+	Run               string                     `json:"run"`
+	Revision          int                        `json:"revision"`
+	Version           int                        `json:"version"`
+	Template          string                     `json:"template"`
+	Project           string                     `json:"project"`
+	Scope             string                     `json:"scope"`
+	TaskSHA           string                     `json:"task_sha"`
+	EvidenceSHA       string                     `json:"evidence_sha"`
+	EvidenceCommit    string                     `json:"evidence_commit"`
+	EvidencePaths     []string                   `json:"evidence_paths"`
+	GlobalTokens      int64                      `json:"global_tokens"`
+	Seats             int                        `json:"seats"`
+	Framing           bool                       `json:"framing"`
+	SecondPeerRound   bool                       `json:"second_peer_round"`
+	CrossFamilyReview bool                       `json:"cross_family_review,omitempty"`
+	TargetedVerify    bool                       `json:"targeted_verify"`
+	Limits            map[string]StrongSlotLimit `json:"limits"`
 }
 
 type StrongApprovedRoute struct {
@@ -54,6 +57,16 @@ type StrongApprovedRoute struct {
 	Family  string `json:"family"`
 	T0      bool   `json:"t0"`
 }
+
+// StrongConcreteRoute is the historical concrete identity of a synthetic
+// execution, independent of its family's mutable registry label.
+type StrongConcreteRoute struct{ Runner, Channel, Model string }
+
+func (r StrongApprovedRoute) Concrete() StrongConcreteRoute {
+	return StrongConcreteRoute{strings.ToLower(r.Runner), strings.ToLower(r.Channel), strings.ToLower(r.Model)}
+}
+
+func (r StrongConcreteRoute) ModelKey() string { return r.Runner + ":" + r.Model }
 
 type StrongSlotLimit struct {
 	Tokens int64                 `json:"tokens"`
@@ -78,11 +91,10 @@ func (p StrongPlan) Graph() ([]StrongSlot, error) {
 		if p.Seats != 1 || p.Framing || p.SecondPeerRound || p.TargetedVerify {
 			return nil, ErrStrongPlan
 		}
-		return []StrongSlot{
+		return p.reviewTail([]StrongSlot{
 			{Key: "evidence", Phase: StrongPhaseEvidence},
 			{Key: "answer", Phase: StrongPhaseBlind, Seat: "seat-1", Deps: []string{"evidence"}},
-			{Key: "st3", Phase: StrongPhaseCheckpoint, Deps: []string{"answer"}},
-		}, nil
+		}, "answer", "seat-1"), nil
 	case StrongTemplateStrong:
 		if p.Seats < 2 || p.Seats > 4 {
 			return nil, ErrStrongPlan
@@ -125,16 +137,41 @@ func (p StrongPlan) Graph() ([]StrongSlot, error) {
 		slots = append(slots, StrongSlot{Key: "verify", Phase: StrongPhaseVerify, Deps: lead, Condition: StrongConditionVerifiableDispute})
 		synthesisDeps = append(synthesisDeps, "verify")
 	}
-	return append(slots, StrongSlot{Key: "synthesis", Phase: StrongPhaseSynthesis, Deps: synthesisDeps},
-		StrongSlot{Key: "st3", Phase: StrongPhaseCheckpoint, Deps: []string{"synthesis"}}), nil
+	seat := ""
+	if p.CrossFamilyReview {
+		seat = "author-seat"
+	}
+	slots = append(slots, StrongSlot{Key: "synthesis", Phase: StrongPhaseSynthesis, Seat: seat, Deps: synthesisDeps})
+	return p.reviewTail(slots, "synthesis", seat), nil
+}
+
+func (p StrongPlan) reviewTail(slots []StrongSlot, author, seat string) []StrongSlot {
+	if !p.CrossFamilyReview {
+		return append(slots, StrongSlot{Key: "st3", Phase: StrongPhaseCheckpoint, Deps: []string{author}})
+	}
+	return append(slots,
+		StrongSlot{Key: "review", Phase: StrongPhaseReview, Seat: "reviewer-seat", Deps: []string{author, "evidence"}},
+		StrongSlot{Key: "rewrite", Phase: StrongPhaseRewrite, Seat: seat, Deps: []string{author, "review", "evidence"}},
+	)
+}
+
+func (p StrongPlan) StrongAuthorSlot() string {
+	if p.Template == StrongTemplateLight {
+		return "answer"
+	}
+	return "synthesis"
 }
 
 func (p StrongPlan) Canonical() ([]byte, string, error) {
 	graph, err := p.Graph()
+	wantLimits := len(graph)
+	if !p.CrossFamilyReview {
+		wantLimits--
+	}
 	if err != nil || p.Version != StrongPlanVersion || p.Revision < 1 || p.Revision > 10000 ||
 		!StrongKey(p.Run) || !StrongKey(p.Project) || !StrongResultBody([]byte(p.Scope)) || len(p.Scope) > 4096 || strings.TrimSpace(p.Scope) != p.Scope || strings.ContainsAny(p.Scope, "\r\n") ||
 		!StrongDigestKey(p.TaskSHA) || !StrongDigestKey(p.EvidenceSHA) || !strongCommit(p.EvidenceCommit) || len(p.EvidencePaths) == 0 || len(p.EvidencePaths) > 16 ||
-		p.GlobalTokens <= 0 || p.GlobalTokens > StrongTokenCeiling || len(p.Limits) != len(graph)-1 {
+		p.GlobalTokens <= 0 || p.GlobalTokens > StrongTokenCeiling || len(p.Limits) != wantLimits {
 		return nil, "", ErrStrongPlan
 	}
 	seen := map[string]bool{}
@@ -165,6 +202,27 @@ func (p StrongPlan) Canonical() ([]byte, string, error) {
 				return nil, "", ErrStrongPlan
 			}
 			seenRoutes[r] = true
+		}
+	}
+	if p.CrossFamilyReview {
+		modelFamilies := map[string]string{}
+		routeFamilies := map[StrongConcreteRoute]string{}
+		for _, limit := range p.Limits {
+			for _, route := range limit.Routes {
+				id, family := route.Concrete(), strings.ToLower(route.Family)
+				if old := modelFamilies[id.ModelKey()]; old != "" && old != family {
+					return nil, "", ErrStrongPlan
+				}
+				if old := routeFamilies[id]; old != "" && old != family {
+					return nil, "", ErrStrongPlan
+				}
+				modelFamilies[id.ModelKey()], routeFamilies[id] = family, family
+			}
+		}
+		for _, route := range p.Limits["rewrite"].Routes {
+			if !slices.Contains(p.Limits[p.StrongAuthorSlot()].Routes, route) || route.T0 || route.Runner != string(RunnerFake) {
+				return nil, "", ErrStrongPlan
+			}
 		}
 	}
 	body, err := json.Marshal(p)

@@ -76,7 +76,7 @@ func (s *Store) strongInputRefs(ctx context.Context, p model.StrongPlan, key Str
 			return nil, err
 		}
 		include(anchor)
-	case model.StrongPhaseSynthesis:
+	case model.StrongPhaseSynthesis, model.StrongPhaseReview, model.StrongPhaseRewrite:
 		for _, name := range slot.Deps {
 			include(name)
 		}
@@ -91,6 +91,12 @@ func (s *Store) strongInputRefs(ctx context.Context, p model.StrongPlan, key Str
 		}
 		if state == strongDone {
 			out = append(out, ref)
+		}
+	}
+	if slot.Phase == model.StrongPhaseReview || slot.Phase == model.StrongPhaseRewrite {
+		pin, err := s.readStrongReviewPin(ctx, p, key)
+		if err != nil || len(out) < 2 || out[0] != pin.Ref {
+			return nil, model.ErrStrongArtifact
 		}
 	}
 	return out, nil

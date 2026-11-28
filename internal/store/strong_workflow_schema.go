@@ -23,6 +23,20 @@ var strongWorkflowPrototypeDDL = []string{
 		evidence_sha TEXT NOT NULL, record BLOB NOT NULL,
 		PRIMARY KEY(run_id,revision)
 	)`,
+	`CREATE TABLE IF NOT EXISTS strong_run_review_pin (
+		run_id TEXT NOT NULL, revision INTEGER NOT NULL, plan_sha TEXT NOT NULL,
+		body BLOB NOT NULL, body_sha TEXT NOT NULL, PRIMARY KEY(run_id,revision)
+	)`,
+	`CREATE TABLE IF NOT EXISTS strong_run_quota_holds (
+		intent_id TEXT NOT NULL, account TEXT NOT NULL, channel TEXT NOT NULL,
+		window_name TEXT NOT NULL, reset_at TEXT NOT NULL, limit_tokens INTEGER NOT NULL,
+		baseline_tokens INTEGER NOT NULL, tokens INTEGER NOT NULL, state TEXT NOT NULL,
+		PRIMARY KEY(intent_id,window_name)
+	)`,
+	`CREATE TABLE IF NOT EXISTS strong_run_quota_manifests (
+		intent_id TEXT PRIMARY KEY, count INTEGER NOT NULL, sha TEXT NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS strong_run_quota_account_window ON strong_run_quota_holds(account,window_name,reset_at,state)`,
 	`CREATE TABLE IF NOT EXISTS strong_run_slots (
 		run_id TEXT NOT NULL, revision INTEGER NOT NULL, slot TEXT NOT NULL, ordinal INTEGER NOT NULL,
 		state TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', condition TEXT NOT NULL DEFAULT '',

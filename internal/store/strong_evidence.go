@@ -69,7 +69,7 @@ func (s *Store) strongEvidence(ctx context.Context, p model.StrongPlan, key Stro
 }
 
 func (s *Store) strongBundleEvidence(ctx context.Context, target model.StrongStage) ([]strongevidence.File, error) {
-	if target.Role != model.StrongWorkflowEvidence && target.Role != model.StrongVerification {
+	if target.Role != model.StrongWorkflowEvidence && target.Role != model.StrongVerification && target.Role != model.StrongWorkflowReview && target.Role != model.StrongWorkflowRewrite {
 		return nil, nil
 	}
 	prefix, name, ok := strings.Cut(target.Stage, "-")

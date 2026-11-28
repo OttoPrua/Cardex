@@ -74,6 +74,8 @@ const (
 	StrongWorkflowEvidence  StrongRole = "workflow_evidence"
 	StrongFraming           StrongRole = "workflow_framing"
 	StrongVerification      StrongRole = "workflow_verification"
+	StrongWorkflowReview    StrongRole = "workflow_review"
+	StrongWorkflowRewrite   StrongRole = "workflow_rewrite"
 )
 
 // StrongStage is trusted controller scope, not recipient-visible metadata.
@@ -87,9 +89,11 @@ func (s StrongStage) Valid() bool {
 		return false
 	}
 	switch s.Role {
-	case StrongBlind, StrongPeer, StrongWorkflowBlind, StrongWorkflowPeer:
+	case StrongBlind, StrongPeer, StrongWorkflowBlind, StrongWorkflowPeer, StrongWorkflowReview, StrongWorkflowRewrite:
 		return StrongKey(s.Seat)
-	case StrongSynthesis, StrongRecheck, StrongEvidence, StrongFraming, StrongVerification, StrongWorkflowSynthesis, StrongWorkflowEvidence:
+	case StrongWorkflowSynthesis:
+		return s.Seat == "" || StrongKey(s.Seat)
+	case StrongSynthesis, StrongRecheck, StrongEvidence, StrongFraming, StrongVerification, StrongWorkflowEvidence:
 		return s.Seat == ""
 	default:
 		return false

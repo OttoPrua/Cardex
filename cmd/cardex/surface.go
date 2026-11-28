@@ -1110,10 +1110,11 @@ func positioningProposals(home string, asJSON bool, args []string, stdout, stder
 }
 
 type storedProposal struct {
-	ID      string              `json:"id"`
-	Entries []model.Positioning `json:"entries"`
-	Diff    string              `json:"diff"`
-	Status  string              `json:"status"`
+	TierConvention string              `json:"tier_convention,omitempty"`
+	ID             string              `json:"id"`
+	Entries        []model.Positioning `json:"entries"`
+	Diff           string              `json:"diff"`
+	Status         string              `json:"status"`
 }
 
 func readProposals(home string) ([]storedProposal, error) {
@@ -1137,6 +1138,11 @@ func readProposals(home string) ([]storedProposal, error) {
 		var item storedProposal
 		if err := json.Unmarshal(body, &item); err != nil {
 			return nil, err
+		}
+		if item.TierConvention == positioning.ProposalTierWire {
+			item.Entries = positioning.TranslateProposalWireTiers(item.Entries)
+		} else if item.Status == "" || item.Status == "proposed" {
+			item.Status = "legacy_reproposal_required"
 		}
 		out = append(out, item)
 	}
@@ -1203,15 +1209,17 @@ func cmdSchedule(home string, asJSON bool, args []string, stdout, stderr io.Writ
 }
 
 type scheduleFile struct {
-	Schedules []scheduleEntry `json:"schedules"`
+	TierConvention string          `json:"tier_convention"`
+	Schedules      []scheduleEntry `json:"schedules"`
 }
 
 type scheduleEntry struct {
-	Name     string       `json:"name"`
-	Every    string       `json:"every"`
-	Cron     string       `json:"cron"`
-	CronLite string       `json:"cron-lite"`
-	Template cardTemplate `json:"card_template"`
+	tierConvention string
+	Name           string       `json:"name"`
+	Every          string       `json:"every"`
+	Cron           string       `json:"cron"`
+	CronLite       string       `json:"cron-lite"`
+	Template       cardTemplate `json:"card_template"`
 }
 
 type cardTemplate struct {
@@ -1239,6 +1247,9 @@ func loadSchedules(home string) ([]scheduleEntry, string, error) {
 	var file scheduleFile
 	if err := json.Unmarshal(body, &file); err != nil {
 		return nil, dir, nil
+	}
+	for i := range file.Schedules {
+		file.Schedules[i].tierConvention = file.TierConvention
 	}
 	return file.Schedules, dir, nil
 }
@@ -1310,6 +1321,11 @@ func scheduleRun(home string, asJSON bool, args []string, stdout, stderr io.Writ
 
 func enqueueTemplate(ctx context.Context, db *store.Store, entry scheduleEntry) (model.Card, error) {
 	tmpl := entry.Template
+	tierLabel, err := model.TierFromConvention(model.Tier(strings.TrimSpace(tmpl.Tier)), entry.tierConvention)
+	if err != nil {
+		return model.Card{}, err
+	}
+	tmpl.Tier = string(tierLabel)
 	objID := strings.TrimSpace(tmpl.Objective)
 	if objID == "" {
 		objs, err := db.ListObjectives(ctx, "")

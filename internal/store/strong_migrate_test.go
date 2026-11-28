@@ -72,13 +72,14 @@ func TestStrongV14MigrationPreservesStrictRuntimeAndRules(t *testing.T) {
 			if err := db.Close(); err != nil {
 				t.Fatal(err)
 			}
+			prepareTestBackupOnWindows(t, filepath.Join(filepath.Dir(path), "backups"))
 			for range 2 {
-				db, err := Open(path)
+				db, err := OpenTierUpgrade(path)
 				if err != nil {
 					t.Fatal(err)
 				}
 				defer db.Close()
-				if got, err := db.SchemaVersion(ctx); err != nil || got != 14 {
+				if got, err := db.SchemaVersion(ctx); err != nil || got != latestSchema {
 					t.Fatalf("schema = %d: %v", got, err)
 				}
 				gotP, err := db.GetProject(ctx, p.ID)
@@ -100,7 +101,7 @@ func TestStrongV14MigrationPreservesStrictRuntimeAndRules(t *testing.T) {
 					}
 				}
 				var stamps int
-				if err := db.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version IN (12,13,14)`).Scan(&stamps); err != nil || stamps != 3 {
+				if err := db.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version IN (12,13,14,15)`).Scan(&stamps); err != nil || stamps != 4 {
 					t.Fatalf("migration stamps=%d: %v", stamps, err)
 				}
 				var fence int

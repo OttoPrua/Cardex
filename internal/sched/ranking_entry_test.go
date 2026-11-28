@@ -329,7 +329,7 @@ func seedRankingApproval(t *testing.T) (string, *store.Store, model.Question, st
 	}
 	if err := db.CreatePositioning(ctx, &model.Positioning{
 		ID: "pos-old", Model: "old-model", Family: "fam",
-		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+		Tiers: []model.Tier{model.TierT3, model.TierT2, model.TierT1}, Preference: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +386,7 @@ func seedWebRoute(t *testing.T, db *store.Store) {
 	}
 	pos := model.Positioning{
 		ID: "pos", Model: "old-selectable", Family: "alpha",
-		Tiers:        []model.Tier{model.TierT1, model.TierT2, model.TierT3},
+		Tiers:        []model.Tier{model.TierT3, model.TierT2, model.TierT1},
 		Capabilities: []string{"web"}, Preference: 1,
 	}
 	if err := db.CreatePositioning(ctx, &pos); err != nil {

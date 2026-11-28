@@ -104,7 +104,7 @@ func (s *Store) insertCard(ctx context.Context, c *model.Card) error {
 		return err
 	}
 	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO cards(id, objective_id, node_id, kind, title, body, tier, requires, deps, acceptance, base, status, wait_reason, rework_count, legacy, channel, model, rework_note, author_family, soft_tokens, hard_tokens, sandbox, review, changed_at, wait_question_id, strict_deps) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		c.ID, c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Sandbox, c.Review, formatTime(time.Now()), c.WaitQuestionID, c.StrictDeps)
+		c.ID, c.Objective, c.Node, string(c.Kind), c.Title, c.Body, wireTier(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Sandbox, c.Review, formatTime(time.Now()), c.WaitQuestionID, c.StrictDeps)
 	return err
 }
 
@@ -163,7 +163,7 @@ func (s *Store) UpdateCard(ctx context.Context, c *model.Card) error {
 		}
 		q := `UPDATE cards SET objective_id=?, node_id=?, kind=?, title=?, body=?, tier=?, requires=?, deps=?, acceptance=?, base=?, status=?, wait_reason=?, rework_count=?, legacy=?, channel=?, model=?, rework_note=?, author_family=?, soft_tokens=?, hard_tokens=?, review=?, wait_question_id=?, strict_deps=?,
 			changed_at=CASE WHEN status<>? OR wait_reason<>? THEN ? ELSE changed_at END WHERE id=?`
-		args := []any{c.Objective, c.Node, string(c.Kind), c.Title, c.Body, string(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Review, c.WaitQuestionID, c.StrictDeps, string(c.Status), c.WaitReason, formatTime(time.Now()), c.ID}
+		args := []any{c.Objective, c.Node, string(c.Kind), c.Title, c.Body, wireTier(c.Tier), requires, deps, acceptance, c.Base, string(c.Status), c.WaitReason, c.ReworkCount, legacy, c.Channel, c.Model, c.ReworkNote, c.AuthorFamily, c.Budget.SoftTokens, c.Budget.HardTokens, c.Review, c.WaitQuestionID, c.StrictDeps, string(c.Status), c.WaitReason, formatTime(time.Now()), c.ID}
 		var transitioned bool
 		if hasLifecycleStatus(c.Status) {
 			res, err := s.q(ctx).ExecContext(ctx, q+` AND (status<>? OR wait_question_id<>?)`, append(args, c.Status, c.WaitQuestionID)...)
@@ -277,7 +277,10 @@ func scanCard(sc scanner) (model.Card, error) {
 		return c, err
 	}
 	c.Kind = model.CardKind(kind)
-	c.Tier = model.Tier(tier)
+	var err error
+	if c.Tier, err = model.TranslateLegacyTier(model.Tier(tier)); err != nil {
+		return c, err
+	}
 	c.Status = model.CardStatus(status)
 	if err := parseJSON(requires, &c.Requires); err != nil {
 		return c, err
@@ -306,7 +309,7 @@ func (s *Store) SetUnassignedStrictTier(ctx context.Context, id string, tier mod
 	if tier == model.TierNone || !tier.Valid() {
 		return false, invalid("tier", tier)
 	}
-	write, err := s.q(ctx).ExecContext(ctx, `UPDATE cards SET tier=? WHERE id=? AND strict_deps=1 AND tier=''`, tier, id)
+	write, err := s.q(ctx).ExecContext(ctx, `UPDATE cards SET tier=? WHERE id=? AND strict_deps=1 AND tier=''`, wireTier(tier), id)
 	if err != nil {
 		return false, err
 	}

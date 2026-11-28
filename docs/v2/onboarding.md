@@ -62,14 +62,14 @@ v2.2.2 已实现第 1、2、4、5 步：`cardex setup` 只打印计划，`cardex
 
 原则：
 
-- 档位方向以代码为准（`model.DefaultTier`）：T3 是设计、计划、复核、难 bug，放最强的模型；T2 是日常开发（dev、repair、rebase、spike、ranking）；T1 是研究、整理、backlog 这类轻活，放便宜快的模型。
+- 档位方向以代码为准（`model.DefaultTier`）：T1 是设计、计划、复核、难 bug，放最强的模型；T2 是日常开发（dev、repair、rebase、spike、ranking）；T3 是研究、整理、backlog 这类轻活，放便宜快的模型。
 - 同一档里不同工作想走不同顺序时，给定位行加 `kinds`（例如 `["design","plan"]`），同一个模型可以有多行；不写 `kinds` 的行适用所有卡种。路由先按卡种筛行，再按 preference 排，同一通道同一模型只试一次。
 - 复核卡优先换一个模型族，同族只作兜底。
 - 推荐表必须来自公开评测（编程类基准、官方模型卡），每次 ranking 卡更新；没有联网能力时不自动改表，只提示（§2-4）。
 
 单订阅分档（建议，按当前 Otto 环境的模型名举例）：
 
-| 只有 | T3（设计/复核） | T2（开发） | T1（轻活） |
+| 只有 | T1（设计/复核） | T2（开发） | T3（轻活） |
 |------|----|----|----|
 | ChatGPT / Codex | gpt-6.2-astra | gpt-6.2-sol | gpt-6.2-sol |
 | Claude | opus | sonnet | sonnet |

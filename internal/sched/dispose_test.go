@@ -214,7 +214,7 @@ func TestDefaultHarvestDisposition(t *testing.T) {
 				t.Fatalf("parent %+v", parent)
 			}
 			norm := normalizeOf(t, db, "c")
-			if norm.Tier != model.TierT1 || norm.Kind != model.KindNormalize {
+			if norm.Tier != model.TierT3 || norm.Kind != model.KindNormalize {
 				t.Fatalf("normalize %+v", norm)
 			}
 		}},
@@ -227,7 +227,7 @@ func TestDefaultHarvestDisposition(t *testing.T) {
 			}
 			norm := devCard(obj, "norm")
 			norm.Kind = model.KindNormalize
-			norm.Tier = model.TierT1
+			norm.Tier = model.TierT3
 			norm.Deps = []string{"c"}
 			finishHarvest(t, db, home, repo, norm, model.Attempt{}, badText, "", false, nil)
 			tickDefault(t, home)
@@ -675,14 +675,14 @@ func TestNestedSnapshotIsNotConfidentFull(t *testing.T) {
 	}
 	pos := model.Positioning{
 		ID: "pos-ch", Model: "model-a", Family: "alpha",
-		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+		Tiers: []model.Tier{model.TierT3, model.TierT2, model.TierT1}, Preference: 1,
 	}
 	if err := db.CreatePositioning(ctx, &pos); err != nil {
 		t.Fatal(err)
 	}
 	back := model.Card{
 		ID: "back", Objective: obj, Kind: model.KindBacklog, Title: "back",
-		Tier: model.TierT1, Status: model.CardReady,
+		Tier: model.TierT3, Status: model.CardReady,
 	}
 	if err := db.CreateCard(ctx, &back); err != nil {
 		t.Fatal(err)
@@ -773,7 +773,7 @@ func plantReview(t *testing.T, db *store.Store, home, repo, obj, text string) {
 	}
 	card := devCard(obj, "rv")
 	card.Kind = model.KindReview
-	card.Tier = model.TierT3
+	card.Tier = model.TierT1
 	card.Deps = []string{"c1"}
 	finishHarvest(t, db, home, repo, card, model.Attempt{}, text, "", false, nil)
 }

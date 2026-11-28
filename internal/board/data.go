@@ -665,9 +665,13 @@ func loadChannels(ctx context.Context, db *store.Store) (*channelsView, error) {
 		}
 	}
 	view.ActiveChannels = len(activeChannels)
-	view.TierConvention = "旧版编号：T3 最强，T1 较轻量。新约定：T1 最强，T3 较轻量；T0 为稀缺顶级，使用前需确认。此页保留数据库原始等级，不转换编号或改变调度。"
-	if model.DefaultTier(model.KindDesign) == model.TierT1 {
-		view.TierConvention = "新版编号：T1 最强，T3 较轻量；T0 为稀缺顶级，使用前需确认。旧版数据的 T3 曾表示最强；此页保留数据库原始等级，不自动迁移或改变调度。"
+	tierActive, err := db.TierConventionActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	view.TierConvention = "当前数据库尚未激活新版档位。"
+	if tierActive {
+		view.TierConvention = "当前数据库使用新编号：T1 最强，T2 常规，T3 较轻量。升级前的历史记录沿用原编号。"
 	}
 	now := time.Now()
 	for _, ch := range channels {

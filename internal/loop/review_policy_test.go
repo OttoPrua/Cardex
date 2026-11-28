@@ -42,13 +42,13 @@ func TestPlanReviewTier(t *testing.T) {
 		mode model.ReviewMode
 		tier model.Tier
 	}{
-		{"no diff", dev, nil, model.ReviewFull, model.TierT3},
-		{"small", dev, &diffStat{Files: 2, Lines: 30, Paths: []string{"a.go", "b.go"}}, model.ReviewFull, model.TierT1},
+		{"no diff", dev, nil, model.ReviewFull, model.TierT1},
+		{"small", dev, &diffStat{Files: 2, Lines: 30, Paths: []string{"a.go", "b.go"}}, model.ReviewFull, model.TierT3},
 		{"medium keeps author", dev, &diffStat{Files: 5, Lines: 200, Paths: []string{"a.go"}}, model.ReviewFull, model.TierT2},
-		{"large", dev, &diffStat{Files: 30, Lines: 900, Paths: []string{"a.go"}}, model.ReviewFull, model.TierT3},
-		{"risky small", dev, &diffStat{Files: 1, Lines: 5, Paths: []string{"internal/sandbox/profile.go"}}, model.ReviewFull, model.TierT3},
-		{"forbidden", dev, &diffStat{Files: 1, Lines: 5, Paths: []string{"deploy/run.sh"}}, model.ReviewFull, model.TierT3},
-		{"check", model.Card{Kind: model.KindDev, Review: "check"}, nil, model.ReviewCheck, model.TierT1},
+		{"large", dev, &diffStat{Files: 30, Lines: 900, Paths: []string{"a.go"}}, model.ReviewFull, model.TierT1},
+		{"risky small", dev, &diffStat{Files: 1, Lines: 5, Paths: []string{"internal/sandbox/profile.go"}}, model.ReviewFull, model.TierT1},
+		{"forbidden", dev, &diffStat{Files: 1, Lines: 5, Paths: []string{"deploy/run.sh"}}, model.ReviewFull, model.TierT1},
+		{"check", model.Card{Kind: model.KindDev, Review: "check"}, nil, model.ReviewCheck, model.TierT3},
 		{"off", model.Card{Kind: model.KindDev, Review: "off"}, nil, model.ReviewOff, ""},
 	}
 	for _, tc := range cases {
@@ -130,7 +130,7 @@ func TestReviewCheckOpensT1Check(t *testing.T) {
 		t.Fatalf("%d review cards", len(reviews))
 	}
 	rv := reviews[0]
-	if rv.Tier != model.TierT1 || rv.Review != "check" {
+	if rv.Tier != model.TierT3 || rv.Review != "check" {
 		t.Fatalf("review %+v", rv)
 	}
 }
@@ -144,7 +144,7 @@ func TestReviewAutoWithoutDiffIsT3(t *testing.T) {
 		t.Fatalf("%d review cards", len(reviews))
 	}
 	rv := reviews[0]
-	if rv.Tier != model.TierT3 || rv.Review != "review" {
+	if rv.Tier != model.TierT1 || rv.Review != "review" {
 		t.Fatalf("review %+v", rv)
 	}
 }
@@ -183,7 +183,7 @@ func TestReviewBlockedAsksWithoutRework(t *testing.T) {
 func TestReviewEscalateOpensNextTier(t *testing.T) {
 	f := newFx(t, model.ModeManual)
 	mkCard(t, f, model.Card{ID: "dev", Kind: model.KindDev, Status: model.CardReviewing})
-	mkCard(t, f, model.Card{ID: "rv", Kind: model.KindReview, Tier: model.TierT1, Status: model.CardRunning, Deps: []string{"dev"}, Review: "review"})
+	mkCard(t, f, model.Card{ID: "rv", Kind: model.KindReview, Tier: model.TierT3, Status: model.CardRunning, Deps: []string{"dev"}, Review: "review"})
 	disposeReviewText(t, f, "rv", "## 复核结论\nescalate 并发部分没把握\n")
 	dev, _ := f.db.GetCard(f.ctx, "dev")
 	if dev.Status != model.CardReviewing || dev.ReworkCount != 0 {
@@ -228,7 +228,7 @@ func TestAttemptDiffReadsGit(t *testing.T) {
 		t.Fatalf("stat %+v", stat)
 	}
 	plan := planReview(model.Card{Kind: model.KindDev, Tier: model.TierT2}, model.Objective{}, model.Project{}, stat)
-	if plan.Tier != model.TierT1 {
+	if plan.Tier != model.TierT3 {
 		t.Fatalf("plan %+v", plan)
 	}
 	if attemptDiff(context.Background(), model.Project{RepoPath: repo}, model.Attempt{BaseCommit: "deadbeef", HeadCommit: head}) != nil {

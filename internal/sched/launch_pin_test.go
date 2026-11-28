@@ -19,7 +19,7 @@ import (
 // Empty, preset, failed, and unparseable classification stay on that same path.
 func TestLaunchUnusableChannel(t *testing.T) {
 	t1 := func(context.Context, string, string) (string, error) {
-		return "TIER: T1\nREASON: small change\n", nil
+		return "TIER: T3\nREASON: small change\n", nil
 	}
 	bad := func(context.Context, string, string) (string, error) {
 		return "", errors.New("classifier down")
@@ -177,8 +177,8 @@ func TestLaunchUnusableChannel(t *testing.T) {
 			},
 			objChannel: "cha", wantChannel: "cha",
 		},
-		{name: "empty tier", classify: "empty", call: t1, wantTier: model.TierT1, wantCalls: 1},
-		{name: "preset tier", classify: "preset", tier: model.TierT3, call: t1, wantTier: model.TierT3},
+		{name: "empty tier", classify: "empty", call: t1, wantTier: model.TierT3, wantCalls: 1},
+		{name: "preset tier", classify: "preset", tier: model.TierT1, call: t1, wantTier: model.TierT1},
 		{name: "failed call", classify: "failed", call: bad, wantTier: model.DefaultTier(model.KindDev), wantCalls: 1},
 		{name: "unparseable call", classify: "junk", call: junk, wantTier: model.DefaultTier(model.KindDev), wantCalls: 1},
 	}
@@ -428,7 +428,7 @@ func addPinChannel(t *testing.T, db *store.Store, spec pinChannel) {
 	}
 	pos := model.Positioning{
 		ID: "pos-" + spec.id, Model: spec.modelName, Family: spec.id,
-		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: spec.pref,
+		Tiers: []model.Tier{model.TierT3, model.TierT2, model.TierT1}, Preference: spec.pref,
 	}
 	if err := db.CreatePositioning(context.Background(), &pos); err != nil {
 		t.Fatal(err)

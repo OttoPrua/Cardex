@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/OttoPrua/Cardex/internal/model"
+	"github.com/OttoPrua/Cardex/internal/positioning"
 	"github.com/OttoPrua/Cardex/internal/sched"
 	"github.com/OttoPrua/Cardex/internal/store"
 )
@@ -93,7 +94,7 @@ func TestCLIImportLegacyDispatchCreatesIntegrationBranch(t *testing.T) {
 	mustCLI(t, "--home", home, "channel", "set", "--id", "ch", "--runner", "grok", "--model", "m", "--concurrency", "2")
 	mustCLI(t, "--home", home, "channel", "set", "--id", "ch", "--runner", "fake", "--model", "m", "--concurrency", "2")
 	prop := map[string]any{
-		"id": "prop1", "status": "proposed", "diff": "",
+		"id": "prop1", "status": "proposed", "diff": "", "tier_convention": positioning.ProposalTierWire,
 		"entries": []map[string]any{{
 			"id": "pos1", "model": "m", "family": "fake",
 			"tiers": []string{"T2"}, "capabilities": []string{}, "preference": 1,

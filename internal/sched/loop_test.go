@@ -121,7 +121,7 @@ func TestTickManualMergesWithoutAutoCards(t *testing.T) {
 		called[id]++
 		extra := model.Card{
 			ID: "design-" + id, Objective: id, Kind: model.KindDesign, Title: "design",
-			Tier: model.TierT3, Status: model.CardNeedsInput,
+			Tier: model.TierT1, Status: model.CardNeedsInput,
 		}
 		if _, err := db.GetCard(context.Background(), extra.ID); err == nil {
 			return nil
@@ -276,7 +276,7 @@ func TestTickFill(t *testing.T) {
 		card := model.Card{
 			ID: "back", Objective: obj, Kind: model.KindBacklog, Title: "back",
 			Body: `{"attempts":{"0":{"write_files":[{"path":"b.txt","content":"b\n"}]}}}`,
-			Tier: model.TierT1, Status: model.CardReady,
+			Tier: model.TierT3, Status: model.CardReady,
 		}
 		if err := db.CreateCard(ctx, &card); err != nil {
 			t.Fatal(err)
@@ -320,7 +320,7 @@ func assertNoFill(t *testing.T, now, reset time.Time, remaining, redline float64
 	home, db, repo := newHome(t)
 	_, obj := seedRepo(t, db, repo, "true")
 	channelNear(t, db, "ch", reset, remaining, redline)
-	back := model.Card{ID: "back", Objective: obj, Kind: model.KindBacklog, Title: "back", Tier: model.TierT1, Status: model.CardReady}
+	back := model.Card{ID: "back", Objective: obj, Kind: model.KindBacklog, Title: "back", Tier: model.TierT3, Status: model.CardReady}
 	if err := db.CreateCard(ctx, &back); err != nil {
 		t.Fatal(err)
 	}
@@ -698,7 +698,7 @@ func seedRoutes(t *testing.T, db *store.Store) {
 		}
 		pos := model.Positioning{
 			ID: "pos-" + spec.id, Model: spec.modelName, Family: spec.family,
-			Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+			Tiers: []model.Tier{model.TierT3, model.TierT2, model.TierT1}, Preference: 1,
 		}
 		if err := db.CreatePositioning(ctx, &pos); err != nil {
 			t.Fatal(err)
@@ -710,7 +710,7 @@ func channelNear(t *testing.T, db *store.Store, id string, reset time.Time, rema
 	t.Helper()
 	ch := model.Channel{
 		ID: id, Runner: model.RunnerFake, Family: "alpha", Models: []string{"model-a"},
-		Concurrency: 2, Health: model.HealthOK, Tier: model.TierT1, Redline: redline,
+		Concurrency: 2, Health: model.HealthOK, Tier: model.TierT3, Redline: redline,
 		QuotaWindows: []model.QuotaWindow{
 			windowWithRemaining("5h", reset, remaining),
 		},
@@ -720,7 +720,7 @@ func channelNear(t *testing.T, db *store.Store, id string, reset time.Time, rema
 	}
 	pos := model.Positioning{
 		ID: "pos-" + ch.ID, Model: "model-a", Family: "alpha",
-		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+		Tiers: []model.Tier{model.TierT3, model.TierT2, model.TierT1}, Preference: 1,
 	}
 	if err := db.CreatePositioning(context.Background(), &pos); err != nil {
 		t.Fatal(err)
@@ -986,7 +986,7 @@ func passDisposition(db *store.Store) func(context.Context, *model.Card, harvest
 			case errors.Is(err, sql.ErrNoRows):
 				review := model.Card{
 					ID: id, Objective: card.Objective, Node: card.Node, Kind: model.KindReview,
-					Title: "review " + card.Title, Body: reviewPassScript, Tier: model.TierT3,
+					Title: "review " + card.Title, Body: reviewPassScript, Tier: model.TierT1,
 					Status: model.CardReady, Deps: []string{card.ID}, AuthorFamily: card.AuthorFamily,
 				}
 				if err := db.CreateCard(ctx, &review); err != nil {

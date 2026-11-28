@@ -66,18 +66,19 @@ type ExpectedRun struct {
 
 // Summary is the structured record written when an attempt finishes.
 type Summary struct {
-	AttemptID  string             `json:"attempt_id"`
-	Runner     string             `json:"runner"`
-	Channel    string             `json:"channel"`
-	Model      string             `json:"model"`
-	Tier       model.Tier         `json:"tier,omitempty"`
-	Expected   ExpectedRun        `json:"expected"`
-	Match      bool               `json:"match"`
-	BaseCommit string             `json:"base_commit"`
-	HeadCommit string             `json:"head_commit"`
-	Files      []FileChange       `json:"files"`
-	Acceptance []AcceptanceResult `json:"acceptance"`
-	Review     *ReviewSummary     `json:"review,omitempty"`
+	TierConvention string             `json:"tier_convention,omitempty"`
+	AttemptID      string             `json:"attempt_id"`
+	Runner         string             `json:"runner"`
+	Channel        string             `json:"channel"`
+	Model          string             `json:"model"`
+	Tier           model.Tier         `json:"tier,omitempty"`
+	Expected       ExpectedRun        `json:"expected"`
+	Match          bool               `json:"match"`
+	BaseCommit     string             `json:"base_commit"`
+	HeadCommit     string             `json:"head_commit"`
+	Files          []FileChange       `json:"files"`
+	Acceptance     []AcceptanceResult `json:"acceptance"`
+	Review         *ReviewSummary     `json:"review,omitempty"`
 }
 
 type commandRun struct {
@@ -102,6 +103,15 @@ func LoadSummary(path string) (Summary, error) {
 	if err := json.Unmarshal(body, &sum); err != nil {
 		return Summary{}, err
 	}
+	tier, err := model.TierFromConvention(sum.Tier, sum.TierConvention)
+	if err != nil {
+		return Summary{}, err
+	}
+	expected, err := model.TierFromConvention(model.Tier(sum.Expected.Tier), sum.TierConvention)
+	if err != nil {
+		return Summary{}, err
+	}
+	sum.Tier, sum.Expected.Tier, sum.TierConvention = tier, string(expected), model.TierConvention
 	return sum, nil
 }
 
@@ -355,6 +365,17 @@ func writeSummary(home string, attempt model.Attempt, sum Summary) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
+	// The durable artifact keeps legacy numeric meanings; LoadSummary
+	// exposes normalized tiers without rewriting historical evidence.
+	tier, err := model.TranslateLegacyTier(sum.Tier)
+	if err != nil {
+		return err
+	}
+	expected, err := model.TranslateLegacyTier(model.Tier(sum.Expected.Tier))
+	if err != nil {
+		return err
+	}
+	sum.Tier, sum.Expected.Tier, sum.TierConvention = tier, string(expected), model.LegacyTierWire
 	body, err := json.MarshalIndent(sum, "", "  ")
 	if err != nil {
 		return err

@@ -37,7 +37,7 @@ func TestResearchGroupsFiveAndWeb(t *testing.T) {
 			} else {
 				plain = append(plain, c)
 			}
-			if c.Status != model.CardReady || c.Tier != model.TierT1 {
+			if c.Status != model.CardReady || c.Tier != model.TierT3 {
 				t.Fatalf("research card %+v", c)
 			}
 		}

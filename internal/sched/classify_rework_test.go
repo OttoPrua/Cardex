@@ -13,8 +13,8 @@ import (
 )
 
 func TestClassifyRunnerSamplesKeepTier(t *testing.T) {
-	answer := "TIER: T3\nREASON: complex"
-	decoy := "TIER: T1\nREASON: trailing"
+	answer := "TIER: T1\nREASON: complex"
+	decoy := "TIER: T3\nREASON: trailing"
 	samples := []struct {
 		name   string
 		runner model.RunnerName
@@ -23,50 +23,50 @@ func TestClassifyRunnerSamplesKeepTier(t *testing.T) {
 		{
 			name:   "claude",
 			runner: model.RunnerClaude,
-			body:   `{"type":"result","result":"TIER: T3\nREASON: complex"}` + "\n" + decoy + "\n",
+			body:   `{"type":"result","result":"TIER: T1\nREASON: complex"}` + "\n" + decoy + "\n",
 		},
 		{
 			name:   "codex",
 			runner: model.RunnerCodex,
-			body: "TIER: T1\nREASON: leading\n" +
-				`{"type":"item.completed","item":{"type":"reasoning","text":"TIER: T1\nREASON: thought"}}` + "\n" +
-				`{"type":"item.completed","item":{"type":"agent_message","text":"TIER: T3\nREASON: complex"}}` + "\n" +
+			body: "TIER: T3\nREASON: leading\n" +
+				`{"type":"item.completed","item":{"type":"reasoning","text":"TIER: T3\nREASON: thought"}}` + "\n" +
+				`{"type":"item.completed","item":{"type":"agent_message","text":"TIER: T1\nREASON: complex"}}` + "\n" +
 				decoy + "\n",
 		},
 		{
 			name:   "grok",
 			runner: model.RunnerGrok,
-			body: `{"type":"text","data":"TIER: T3\nREASON: complex"}` + "\n" +
-				`{"type":"thought","data":"TIER: T1\nREASON: thought"}` + "\n" +
-				`{"type":"plan","data":"TIER: T1\nREASON: plan"}` + "\n" +
+			body: `{"type":"text","data":"TIER: T1\nREASON: complex"}` + "\n" +
+				`{"type":"thought","data":"TIER: T3\nREASON: thought"}` + "\n" +
+				`{"type":"plan","data":"TIER: T3\nREASON: plan"}` + "\n" +
 				decoy + "\n",
 		},
 		{
 			name:   "grok fragments",
 			runner: model.RunnerGrok,
 			body: `{"type":"text","data":"TIER: T"}` + "\n" +
-				`{"type":"text","data":"3\nREASON: complex"}` + "\n" +
+				`{"type":"text","data":"1\nREASON: complex"}` + "\n" +
 				decoy + "\n",
 		},
 		{
 			name:   "cursor",
 			runner: model.RunnerCursor,
-			body:   `{"type":"result","result":"TIER: T3\nREASON: complex"}` + "\n" + decoy + "\n",
+			body:   `{"type":"result","result":"TIER: T1\nREASON: complex"}` + "\n" + decoy + "\n",
 		},
 		{
 			name:   "kimi",
 			runner: model.RunnerKimi,
-			body:   `{"role":"assistant","content":"TIER: T3\nREASON: complex"}` + "\n" + decoy + "\n",
+			body:   `{"role":"assistant","content":"TIER: T1\nREASON: complex"}` + "\n" + decoy + "\n",
 		},
 		{
 			name:   "agy",
 			runner: model.RunnerAGY,
-			body:   `{"status":"SUCCESS","response":"TIER: T3\nREASON: complex"}` + "\n" + decoy + "\n",
+			body:   `{"status":"SUCCESS","response":"TIER: T1\nREASON: complex"}` + "\n" + decoy + "\n",
 		},
 		{
 			name:   "opencode",
 			runner: model.RunnerOpenCode,
-			body:   `{"type":"text","part":{"text":"TIER: T3\nREASON: complex"}}` + "\n" + decoy + "\n",
+			body:   `{"type":"text","part":{"text":"TIER: T1\nREASON: complex"}}` + "\n" + decoy + "\n",
 		},
 	}
 	for _, sample := range samples {
@@ -78,8 +78,8 @@ func TestClassifyRunnerSamplesKeepTier(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := mustCard(t, db, card.ID)
-			if got.Tier != model.TierT3 {
-				t.Fatalf("tier %s, want T3 from %s", got.Tier, answer)
+			if got.Tier != model.TierT1 {
+				t.Fatalf("tier %s, want T1 from %s", got.Tier, answer)
 			}
 			if n := classifyErrors(t, db, card.ID); n != 0 {
 				t.Fatalf("classify_error events %d", n)
@@ -99,15 +99,15 @@ func TestClassifyRunnerSamplesKeepTier(t *testing.T) {
 }
 
 func TestClassifyAttemptIsNotHarvestedAsPassed(t *testing.T) {
-	answer := "TIER: T3\nREASON: complex"
-	home := classifyCLIHome(t, model.RunnerClaude, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' "+shellQuote(`{"type":"result","result":"TIER: T3\nREASON: complex"}`)+"\nexit 0\n")
+	answer := "TIER: T1\nREASON: complex"
+	home := classifyCLIHome(t, model.RunnerClaude, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' "+shellQuote(`{"type":"result","result":"TIER: T1\nREASON: complex"}`)+"\nexit 0\n")
 	db := mustOpen(t, home)
 	card := readyDevCard(t, db)
 	if err := New(home).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if mustCard(t, db, card.ID).Tier != model.TierT3 {
-		t.Fatalf("tier %s, want T3 from %s", mustCard(t, db, card.ID).Tier, answer)
+	if mustCard(t, db, card.ID).Tier != model.TierT1 {
+		t.Fatalf("tier %s, want T1 from %s", mustCard(t, db, card.ID).Tier, answer)
 	}
 	attempts, err := db.ListAttempts(context.Background(), "cls-"+card.ID)
 	if err != nil || len(attempts) != 1 {
@@ -141,7 +141,7 @@ func TestClassifyAttemptIsNotHarvestedAsPassed(t *testing.T) {
 }
 
 func TestClassifyNonzeroExitUsesKindDefault(t *testing.T) {
-	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' " + shellQuote(`{"type":"result","result":"TIER: T1\nREASON: complex"}`) + "\nexit 1\n"
+	script := "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' " + shellQuote(`{"type":"result","result":"TIER: T3\nREASON: complex"}`) + "\nexit 1\n"
 	home := classifyCLIHome(t, model.RunnerClaude, script)
 	db := mustOpen(t, home)
 	card := readyDevCard(t, db)
@@ -162,7 +162,7 @@ func TestClassifyTimeoutThenNextTick(t *testing.T) {
 prompt=$(cat)
 case "$prompt" in
   *"Classify this Cardex card"*)
-    printf '%s\n' '{"type":"result","result":"TIER: T1\nREASON: complex"}'
+    printf '%s\n' '{"type":"result","result":"TIER: T3\nREASON: complex"}'
     /bin/sleep 45
     ;;
 esac

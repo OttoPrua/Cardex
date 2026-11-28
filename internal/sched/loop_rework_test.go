@@ -63,7 +63,7 @@ func TestHarvestDeliversBeforeStatusChange(t *testing.T) {
 			} else if tc.reuse {
 				done := model.Card{
 					ID: "rv-c1", Objective: obj, Kind: model.KindReview, Title: "review",
-					Tier: model.TierT3, Status: model.CardDone, Deps: []string{"c1"},
+					Tier: model.TierT1, Status: model.CardDone, Deps: []string{"c1"},
 				}
 				if err := db.CreateCard(ctx, &done); err != nil {
 					t.Fatal(err)
@@ -161,7 +161,7 @@ func TestReviewWorkspaceShowsUnmergedCandidate(t *testing.T) {
 	}
 	card := model.Card{
 		ID: "rv-c1", Objective: obj, Kind: model.KindReview, Title: "review c1",
-		Tier: model.TierT3, Status: model.CardReady, Deps: []string{"c1"},
+		Tier: model.TierT1, Status: model.CardReady, Deps: []string{"c1"},
 		Body: reviewPassScript,
 	}
 	if err := db.CreateCard(ctx, &card); err != nil {
@@ -198,7 +198,7 @@ func TestReviewOfRepairShowsRootCandidate(t *testing.T) {
 	for _, card := range []model.Card{
 		{ID: "c1", Objective: obj, Kind: model.KindDev, Title: "c1", Tier: model.TierT2, Status: model.CardWaiting},
 		{ID: "rp-c1", Objective: obj, Kind: model.KindRepair, Title: "repair", Tier: model.TierT2, Status: model.CardReviewing, Deps: []string{"c1"}},
-		{ID: "rv-rp-c1", Objective: obj, Kind: model.KindReview, Title: "review repair", Tier: model.TierT3, Status: model.CardReady, Deps: []string{"rp-c1"}, Body: reviewPassScript},
+		{ID: "rv-rp-c1", Objective: obj, Kind: model.KindReview, Title: "review repair", Tier: model.TierT1, Status: model.CardReady, Deps: []string{"rp-c1"}, Body: reviewPassScript},
 	} {
 		if err := db.CreateCard(ctx, &card); err != nil {
 			t.Fatal(err)
@@ -245,7 +245,7 @@ func TestAutomaticRouteSeesQuotaAndOccupancy(t *testing.T) {
 		}
 		pos := model.Positioning{
 			ID: "pos-ch", Model: "model-a", Family: "alpha",
-			Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+			Tiers: []model.Tier{model.TierT3, model.TierT2, model.TierT1}, Preference: 1,
 		}
 		if err := db.CreatePositioning(ctx, &pos); err != nil {
 			t.Fatal(err)
@@ -432,7 +432,7 @@ func TestFillReusesAutomaticChecks(t *testing.T) {
 			}
 			ch := model.Channel{
 				ID: "ch", Runner: model.RunnerFake, Family: "alpha", Models: models,
-				Concurrency: 1, Health: tc.health, Tier: model.TierT1, Redline: tc.redline,
+				Concurrency: 1, Health: tc.health, Tier: model.TierT3, Redline: tc.redline,
 				QuotaWindows: wins,
 			}
 			if err := db.CreateChannel(ctx, &ch); err != nil {
@@ -444,12 +444,12 @@ func TestFillReusesAutomaticChecks(t *testing.T) {
 			}
 			rows := []model.Positioning{{
 				ID: "pos-a", Model: "model-a", Family: "alpha",
-				Tiers: []model.Tier{model.TierT1}, Preference: prefA,
+				Tiers: []model.Tier{model.TierT3}, Preference: prefA,
 			}}
 			if tc.prefer {
 				rows = append(rows, model.Positioning{
 					ID: "pos-b", Model: "model-b", Family: "alpha",
-					Tiers: []model.Tier{model.TierT1}, Preference: 1,
+					Tiers: []model.Tier{model.TierT3}, Preference: 1,
 				})
 			}
 			for _, row := range rows {
@@ -459,7 +459,7 @@ func TestFillReusesAutomaticChecks(t *testing.T) {
 			}
 			card := model.Card{
 				ID: "back", Objective: obj, Kind: model.KindBacklog, Title: "back",
-				Tier: model.TierT1, Status: model.CardReady,
+				Tier: model.TierT3, Status: model.CardReady,
 			}
 			if tc.web {
 				card.Requires = []string{"web"}
@@ -596,7 +596,7 @@ func TestDispatchRefusesUnfinishedDepsPausedClaims(t *testing.T) {
 				ID: "c", Objective: objID, Kind: tc.kind, Title: "c", Tier: model.TierT2, Status: model.CardReady,
 			}
 			if tc.kind == model.KindBacklog {
-				card.Tier = model.TierT1
+				card.Tier = model.TierT3
 			}
 			if tc.deps {
 				card.Deps = []string{"dep"}
@@ -729,7 +729,7 @@ func TestBacklogFailureResumesSameAttempt(t *testing.T) {
 			channelNear(t, db, "ch", now.Add(30*time.Minute), 0.9, 0)
 			card := model.Card{
 				ID: "back", Objective: obj, Kind: model.KindBacklog, Title: "back",
-				Tier: model.TierT1, Status: model.CardReady,
+				Tier: model.TierT3, Status: model.CardReady,
 			}
 			if err := db.CreateCard(ctx, &card); err != nil {
 				t.Fatal(err)
@@ -1246,7 +1246,7 @@ func runQuotaMode(t *testing.T, now time.Time, windows []model.QuotaWindow, redl
 	}
 	pos := model.Positioning{
 		ID: "pos-ch", Model: "model-a", Family: "alpha",
-		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+		Tiers: []model.Tier{model.TierT3, model.TierT2, model.TierT1}, Preference: 1,
 	}
 	if err := db.CreatePositioning(ctx, &pos); err != nil {
 		t.Fatal(err)
@@ -1305,7 +1305,7 @@ func runQuotaMode(t *testing.T, now time.Time, windows []model.QuotaWindow, redl
 		cardID = "back"
 		card = model.Card{
 			ID: cardID, Objective: obj, Kind: model.KindBacklog, Title: "back",
-			Tier: model.TierT1, Status: model.CardReady,
+			Tier: model.TierT3, Status: model.CardReady,
 		}
 	}
 	if err := db.CreateCard(ctx, &card); err != nil {
@@ -1402,7 +1402,7 @@ func TestBacklogFillStoredRatioWithoutCap(t *testing.T) {
 			_, obj := seedRepo(t, db, repo, "true")
 			ch := model.Channel{
 				ID: "ch", Runner: model.RunnerFake, Family: "alpha", Models: []string{"model-a"},
-				Concurrency: 2, Health: model.HealthOK, Tier: model.TierT1, Redline: tc.redline,
+				Concurrency: 2, Health: model.HealthOK, Tier: model.TierT3, Redline: tc.redline,
 				QuotaWindows: tc.windows,
 			}
 			if err := db.CreateChannel(ctx, &ch); err != nil {
@@ -1410,14 +1410,14 @@ func TestBacklogFillStoredRatioWithoutCap(t *testing.T) {
 			}
 			pos := model.Positioning{
 				ID: "pos-ch", Model: "model-a", Family: "alpha",
-				Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1,
+				Tiers: []model.Tier{model.TierT3, model.TierT2, model.TierT1}, Preference: 1,
 			}
 			if err := db.CreatePositioning(ctx, &pos); err != nil {
 				t.Fatal(err)
 			}
 			back := model.Card{
 				ID: "back", Objective: obj, Kind: model.KindBacklog, Title: "back",
-				Tier: model.TierT1, Status: model.CardReady,
+				Tier: model.TierT3, Status: model.CardReady,
 			}
 			if err := db.CreateCard(ctx, &back); err != nil {
 				t.Fatal(err)
@@ -1563,7 +1563,7 @@ func TestDispatchChecksAssociationEdgeAndStopState(t *testing.T) {
 				if tc.deps != "edge" {
 					skel := model.Card{
 						ID: "skel", Objective: obj, Kind: model.KindSkeleton, Title: "skel",
-						Tier: model.TierT3, Status: skelStatus,
+						Tier: model.TierT1, Status: skelStatus,
 					}
 					if err := db.CreateCard(ctx, &skel); err != nil {
 						t.Fatal(err)
@@ -2051,7 +2051,7 @@ func TestSchedulerPromptFacts(t *testing.T) {
 			body := "实现这张卡\n" + summary
 			card := model.Card{
 				ID: "c", Objective: obj, Node: node.ID, Kind: tc.kind, Title: tc.name,
-				Tier: model.TierT3, Status: model.CardReady, Body: body,
+				Tier: model.TierT1, Status: model.CardReady, Body: body,
 			}
 			if err := db.CreateCard(ctx, &card); err != nil {
 				t.Fatal(err)

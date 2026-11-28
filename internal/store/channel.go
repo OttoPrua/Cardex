@@ -45,7 +45,7 @@ func (s *Store) CreateChannel(ctx context.Context, c *model.Channel) error {
 		return err
 	}
 	_, err = s.q(ctx).ExecContext(ctx, `INSERT INTO channels(id, runner, engine_profile, source_group, family, tier, models, concurrency, quota_windows, redline, health, last_error) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		c.ID, string(c.Runner), c.EngineProfile, c.SourceGroup, c.Family, string(c.Tier), models, c.Concurrency, windows, c.Redline, string(c.Health), c.LastError)
+		c.ID, string(c.Runner), c.EngineProfile, c.SourceGroup, c.Family, wireTier(c.Tier), models, c.Concurrency, windows, c.Redline, string(c.Health), c.LastError)
 	return err
 }
 
@@ -74,7 +74,7 @@ func (s *Store) UpdateChannel(ctx context.Context, c *model.Channel) error {
 		return err
 	}
 	res, err := s.q(ctx).ExecContext(ctx, `UPDATE channels SET runner=?, engine_profile=?, source_group=?, family=?, tier=?, models=?, concurrency=?, quota_windows=?, redline=?, health=?, last_error=? WHERE id=?`,
-		string(c.Runner), c.EngineProfile, c.SourceGroup, c.Family, string(c.Tier), models, c.Concurrency, windows, c.Redline, string(c.Health), c.LastError, c.ID)
+		string(c.Runner), c.EngineProfile, c.SourceGroup, c.Family, wireTier(c.Tier), models, c.Concurrency, windows, c.Redline, string(c.Health), c.LastError, c.ID)
 	return rowsAffected(res, err)
 }
 
@@ -109,7 +109,10 @@ func scanChannel(sc scanner) (model.Channel, error) {
 		return c, err
 	}
 	c.Runner = model.RunnerName(runner)
-	c.Tier = model.Tier(tier)
+	var err error
+	if c.Tier, err = model.TranslateLegacyTier(model.Tier(tier)); err != nil {
+		return c, err
+	}
 	c.Health = model.Health(health)
 	if err := parseJSON(models, &c.Models); err != nil {
 		return c, err

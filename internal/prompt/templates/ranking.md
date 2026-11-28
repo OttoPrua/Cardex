@@ -15,6 +15,8 @@
 
 把定位提案写在工作区根目录的 `.cardex-result.md`。正文是 JSON，可以夹在说明文字里。这是提案中的整张定位表，不是补丁。每条包含 model、family、tiers、capabilities、preference 和理由。不在当前定位表里的模型单独标成新出现。
 
+档位使用当前编号：T1 最强，T2 常规，T3 轻量。
+
 ```json
 {
   "entries": [

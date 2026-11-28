@@ -99,9 +99,9 @@ func TestGoTestBaselineKeepsPackageAndSubtestIdentity(t *testing.T) {
 }
 
 func TestRouteMatch(t *testing.T) {
-	in := Input{ExpectedChannel: "cha", ExpectedModel: "model-a", ExpectedTier: "T3"}
+	in := Input{ExpectedChannel: "cha", ExpectedModel: "model-a", ExpectedTier: "T1"}
 	in.Attempt.RouteReason.Candidates = []model.RouteCandidate{{
-		Channel: "cha", Model: "model-a", Tier: model.TierT3,
+		Channel: "cha", Model: "model-a", Tier: model.TierT1,
 	}}
 	if !routeMatches(in, "cha", "model-a") {
 		t.Fatal("match")
@@ -109,7 +109,7 @@ func TestRouteMatch(t *testing.T) {
 	if routeMatches(in, "chb", "model-a") || routeMatches(in, "cha", "other") {
 		t.Fatal("channel or model mismatch")
 	}
-	in.Attempt.RouteReason.Candidates[0].Tier = model.TierT1
+	in.Attempt.RouteReason.Candidates[0].Tier = model.TierT3
 	if routeMatches(in, "cha", "model-a") {
 		t.Fatal("tier below hold matched")
 	}
@@ -293,13 +293,13 @@ func TestHarvestReviewSummaryKeepsOriginal(t *testing.T) {
 				Channel: "cha", Model: "model-a", Tier: model.TierT2,
 			}}},
 		},
-		Card:            model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT3},
+		Card:            model.Card{ID: "rev", Kind: model.KindReview, Tier: model.TierT1},
 		Home:            home,
 		Repo:            dir,
 		Runner:          "fake",
 		ExpectedChannel: "cha",
 		ExpectedModel:   "model-a",
-		ExpectedTier:    "T3",
+		ExpectedTier:    "T1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +319,7 @@ func TestHarvestReviewSummaryKeepsOriginal(t *testing.T) {
 	}
 	sum := readSummary(t, home, "rev-att")
 	if sum.Match {
-		t.Fatal("T2 candidate matched a T3 review")
+		t.Fatal("T2 candidate matched a T1 review")
 	}
 	if sum.Review == nil || sum.Review.Verdict != "rework" || sum.Review.Source != "attempts/rev-att/result.md" {
 		t.Fatalf("review %+v", sum.Review)

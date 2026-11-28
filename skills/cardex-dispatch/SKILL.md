@@ -13,7 +13,7 @@ Read [docs/v2/agent-guide.md](../../docs/v2/agent-guide.md) first: it lists ever
 
 Review rules live in [docs/review-policy.md](../../docs/review-policy.md). Set `--review` on `project add/set`, `objective add/set`, or `card add`; empty inherits card → objective → project, and all-empty means `auto`.
 
-- Leave it empty for ordinary development: `auto` picks the reviewer tier from the diff (small → T1, risky or large → T3).
+- Leave it empty for ordinary development: `auto` picks the reviewer tier from the diff (small → T3, risky or large → T1).
 - Use `check` for general tasks whose deliverable is a document, report, screenshot, or data.
 - Use `review` to force a full review on risky work.
 - Raising review needs no approval; tell 使用者（owner） afterwards. Lowering it (`off`, or `review` → `check`) needs 使用者's OK first.

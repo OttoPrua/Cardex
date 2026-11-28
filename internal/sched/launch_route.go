@@ -274,9 +274,9 @@ func selectHeldReviewRoute(ctx context.Context, req route.Request) (model.Route,
 		req.Channels = free
 	}
 	rt, reason, err := chooseRoute(ctx, req)
-	if errors.Is(err, route.ErrNoCandidate) && card.Tier == model.TierT1 {
-		// The ordinary selector borrows one tier. A held review can also use T3.
-		req.Card.Tier = model.TierT3
+	if errors.Is(err, route.ErrNoCandidate) && card.Tier == model.TierT3 {
+		// The ordinary selector borrows one tier. A held review can also use T1.
+		req.Card.Tier = model.TierT1
 		rt, reason, err = chooseRoute(ctx, req)
 	}
 	if err == nil && (reason.SelectedTier(rt).Rank() < card.Tier.Rank() ||

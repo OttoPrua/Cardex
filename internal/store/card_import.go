@@ -121,6 +121,13 @@ func (s *Store) checkImportSchema(ctx context.Context) error {
 	if version != latestSchema {
 		return fmt.Errorf("card import requires schema %d; found %d (this command does not migrate databases)", latestSchema, version)
 	}
+	active, err := s.TierConventionActive(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot validate card import tier activation: %w", err)
+	}
+	if !active {
+		return errors.New("card import requires a valid tier activation receipt")
+	}
 	return nil
 }
 

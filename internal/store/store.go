@@ -19,7 +19,7 @@ import (
 )
 
 // latestSchema is the migration applied by Open.
-const latestSchema = 14
+const latestSchema = TierConventionSchema
 
 // ErrAppendOnly is returned by event update and delete.
 var ErrAppendOnly = errors.New("event is append-only")
@@ -55,6 +55,22 @@ func open(path string, backupBeforeWrite bool) (*Store, error) {
 }
 
 func openWithSnapshot(path string, backupBeforeWrite bool, snapshot func(*Store, context.Context, string) error) (*Store, error) {
+	return openStore(path, backupBeforeWrite, false, snapshot)
+}
+
+// OpenTierUpgrade is the explicit, backup-backed upgrade entry point for an
+// existing home. Ordinary Open never activates a new convention on old data.
+func OpenTierUpgrade(path string) (*Store, error) {
+	if info, err := os.Stat(path); err != nil {
+		return nil, err
+	} else if !info.Mode().IsRegular() || info.Size() == 0 {
+		return nil, errors.New("tier upgrade requires an initialized database")
+	}
+	return openStore(path, false, true, (*Store).backup)
+}
+
+func openStore(path string, backupBeforeWrite, tierUpgrade bool, snapshot func(*Store, context.Context, string) error) (*Store, error) {
+
 	if err := refuseCardexHome(path); err != nil {
 		return nil, err
 	}
@@ -78,21 +94,26 @@ func openWithSnapshot(path string, backupBeforeWrite bool, snapshot func(*Store,
 	}()
 
 	backupDir := roots.Load(filepath.Dir(abs)).BackupsDir
-	if backupDir != "" {
-		info, err := os.Stat(abs)
-		if os.IsNotExist(err) || (err == nil && info.Size() == 0) {
-			backupDir = ""
-		} else if err != nil {
-			return nil, err
-		}
+	if tierUpgrade && backupDir == "" {
+		backupDir = filepath.Join(filepath.Dir(abs), "backups")
+	}
+	info, statErr := os.Stat(abs)
+	existing := statErr == nil && info.Size() != 0
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return nil, statErr
+	}
+	if tierUpgrade && !existing {
+		return nil, errors.New("tier upgrade requires an initialized database")
+	}
+	if !existing {
+		backupDir = ""
 	}
 	dsn := sqliteURI(abs) + "?_pragma=busy_timeout(30000)"
-	if backupDir == "" {
+	if !existing {
 		dsn += "&_pragma=journal_mode(WAL)"
 	}
-	// A configured existing database keeps its original journal mode while
-	// making the backup. Forcing WAL during driver connection initialization
-	// would change the source before a failed backup can stop the operation.
+	// Existing databases keep their original journal mode until the
+	// activation check and every required pre-write snapshot succeeds.
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -109,7 +130,7 @@ func openWithSnapshot(path string, backupBeforeWrite bool, snapshot func(*Store,
 			return err
 		}
 	}
-	if err := s.migrate(context.Background(), migrationBackup); err != nil {
+	if err := s.migrate(context.Background(), migrationBackup, tierUpgrade); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -133,7 +154,7 @@ func openWithSnapshot(path string, backupBeforeWrite bool, snapshot func(*Store,
 		_ = db.Close()
 		return nil, err
 	}
-	if backupDir != "" && !strings.EqualFold(mode, "wal") {
+	if !strings.EqualFold(mode, "wal") {
 		// Clear the idle connections used during migration and copy before
 		// SQLite attempts a journal mode transition on the source.
 		db.SetMaxIdleConns(0)
@@ -369,7 +390,7 @@ func (s *Store) q(ctx context.Context) execer {
 	return s.db
 }
 
-func (s *Store) migrate(ctx context.Context, beforeMigration func(context.Context) error) error {
+func (s *Store) migrate(ctx context.Context, beforeMigration func(context.Context) error, tierUpgrade bool) error {
 	// BEGIN IMMEDIATE takes the write lock before the version is read again, so a
 	// later opener skips DDL that an earlier opener already committed.
 	conn, err := s.db.Conn(ctx)
@@ -394,6 +415,21 @@ func (s *Store) migrate(ctx context.Context, beforeMigration func(context.Contex
 		if err := conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&current); err != nil {
 			return err
 		}
+	}
+	if current > latestSchema {
+		return errors.New("database requires a newer cardex build")
+	}
+	if current >= TierConventionSchema {
+		active, err := tierConventionActive(ctx, conn)
+		if err != nil {
+			return fmt.Errorf("check tier activation: %w", err)
+		}
+		if !active {
+			return errors.New("database has no valid tier activation receipt")
+		}
+	}
+	if current > 0 && current < TierConventionSchema && !tierUpgrade {
+		return ErrTierUpgradeRequired
 	}
 	var missingScratch bool
 	if err := conn.QueryRowContext(ctx, `SELECT NOT EXISTS (
@@ -650,6 +686,14 @@ func (s *Store) migrate(ctx context.Context, beforeMigration func(context.Contex
 			}
 		}
 		if _, err := conn.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES (14, ?)`, formatTime(time.Now())); err != nil {
+			return err
+		}
+	}
+	if current < TierConventionSchema {
+		if err := validateTierUpgrade(ctx, conn); err != nil {
+			return fmt.Errorf("migration %d (tier convention): %w", TierConventionSchema, err)
+		}
+		if err := recordTierActivation(ctx, conn); err != nil {
 			return err
 		}
 	}

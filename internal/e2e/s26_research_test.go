@@ -195,7 +195,7 @@ func TestS26(t *testing.T) {
 	}
 	var web, plain int
 	for _, c := range research {
-		if c.Tier != model.TierT1 || len(c.Deps) != 0 {
+		if c.Tier != model.TierT3 || len(c.Deps) != 0 {
 			t.Fatalf("research card %+v", c)
 		}
 		if containsReq(c.Requires, "web") {

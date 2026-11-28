@@ -185,3 +185,67 @@ func TestStrictDependenciesChooseLocalDefaultWithoutClassifierSideAttempt(t *tes
 		t.Fatalf("strict classification side card exists: %v", err)
 	}
 }
+
+func TestStrictTickKeepsUnassignedTierWireAndSelectedModel(t *testing.T) {
+	for _, fixture := range []struct {
+		name string
+		kind model.CardKind
+		tier model.Tier
+		wire string
+	}{
+		{"strong", model.KindPlan, model.TierT1, "T3"},
+		{"light", model.KindResearch, model.TierT3, "T1"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			ctx := t.Context()
+			home, db, repo := newHome(t)
+			_, objective := seedRepo(t, db, repo, "true")
+			for _, modelName := range []struct {
+				id   string
+				tier model.Tier
+			}{{"strong", model.TierT1}, {"light", model.TierT3}} {
+				ch := model.Channel{ID: modelName.id, Runner: model.RunnerFake, Models: []string{modelName.id}, Tier: modelName.tier, Health: model.HealthOK, Concurrency: 1}
+				p := model.Positioning{ID: modelName.id, Model: modelName.id, Tiers: []model.Tier{modelName.tier}, Preference: 1}
+				if err := db.CreateChannel(ctx, &ch); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.CreatePositioning(ctx, &p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, card := range []model.Card{
+				{ID: "gate", Kind: model.KindDev, Objective: objective, Status: model.CardDone},
+				{ID: "strict", Kind: fixture.kind, Objective: objective, Status: model.CardReady, StrictDeps: true, Deps: []string{"gate"}},
+			} {
+				if err := db.CreateCard(ctx, &card); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r := New(home)
+			r.Classify = func(context.Context, string, string) (string, error) {
+				t.Fatal("strict card unexpectedly classified")
+				return "", nil
+			}
+			r.Launch = func(context.Context, string, string) (int, error) { return 12345, nil }
+			if err := r.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			attempts, err := db.ListAttempts(ctx, "strict")
+			if err != nil || len(attempts) != 1 || attempts[0].Route.Model != fixture.name || attempts[0].RouteReason.SelectedTier(attempts[0].Route) != fixture.tier {
+				t.Fatalf("wrong selected route: %+v %v", attempts, err)
+			}
+			if got := mustCard(t, db, "strict"); got.Tier != fixture.tier {
+				t.Fatalf("reloaded tier: %s, expected %s", got.Tier, fixture.tier)
+			}
+			raw, err := sql.Open("sqlite", filepath.Join(home, "cardex.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer raw.Close()
+			var wire string
+			if err := raw.QueryRowContext(ctx, "SELECT tier FROM cards WHERE id='strict'").Scan(&wire); err != nil || wire != fixture.wire {
+				t.Fatalf("wire: %s expected %s: %v", wire, fixture.wire, err)
+			}
+		})
+	}
+}

@@ -426,6 +426,9 @@ func FollowRanking(ctx context.Context, db *store.Store) error {
 			continue
 		}
 		status, err := proposalStatus(home, id)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
 		if err != nil {
 			return err
 		}
@@ -647,13 +650,14 @@ func (d Deps) rankingAlreadyHandled(ctx context.Context, home string, card model
 			return false, err
 		}
 		var saved struct {
-			Entries []model.Positioning `json:"entries"`
-			Status  string              `json:"status"`
+			TierConvention string              `json:"tier_convention"`
+			Entries        []model.Positioning `json:"entries"`
+			Status         string              `json:"status"`
 		}
 		if err := json.Unmarshal(body, &saved); err != nil {
 			continue
 		}
-		if proposalEntriesKey(saved.Entries) != want {
+		if saved.TierConvention != positioning.ProposalTierWire || proposalEntriesKey(positioning.TranslateProposalWireTiers(saved.Entries)) != want {
 			continue
 		}
 		if rankingProposalTerminal(saved.Status) {
@@ -976,10 +980,14 @@ func proposalStatus(home, id string) (string, error) {
 		return "", err
 	}
 	var saved struct {
-		Status string `json:"status"`
+		TierConvention string `json:"tier_convention"`
+		Status         string `json:"status"`
 	}
 	if err := json.Unmarshal(body, &saved); err != nil {
 		return "", err
+	}
+	if saved.TierConvention != positioning.ProposalTierWire {
+		return "legacy_reproposal_required", nil
 	}
 	return saved.Status, nil
 }

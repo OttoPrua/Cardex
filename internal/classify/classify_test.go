@@ -17,12 +17,12 @@ func TestClassifySkipCacheAndRule(t *testing.T) {
 
 	t.Run("skip", func(t *testing.T) {
 		calls := 0
-		card := model.Card{Kind: model.KindDev, Tier: model.TierT3, Body: "already"}
+		card := model.Card{Kind: model.KindDev, Tier: model.TierT1, Body: "already"}
 		res, err := Classify(ctx, card, Options{Channel: "classifier", Call: func(context.Context, string, string) (string, error) {
 			calls++
 			return "", nil
 		}})
-		if err != nil || calls != 0 || res.Tier != model.TierT3 {
+		if err != nil || calls != 0 || res.Tier != model.TierT1 {
 			t.Fatalf("skip res %+v calls %d err %v", res, calls, err)
 		}
 	})
@@ -47,15 +47,15 @@ func TestClassifySkipCacheAndRule(t *testing.T) {
 			if remain < 28*time.Second || remain > 30*time.Second {
 				t.Fatalf("deadline %s", remain)
 			}
-			return "TIER: T1\nREASON: small change\n", nil
+			return "TIER: T3\nREASON: small change\n", nil
 		}
 		opt := Options{Channel: "classifier", Call: call, Cache: cache}
 		first, err := Classify(ctx, model.Card{Kind: model.KindDev, Title: "one", Body: "same body"}, opt)
-		if err != nil || first.Tier != model.TierT1 || first.Source != SourceModel || first.Reason != "small change" {
+		if err != nil || first.Tier != model.TierT3 || first.Source != SourceModel || first.Reason != "small change" {
 			t.Fatalf("first %+v err %v", first, err)
 		}
 		second, err := Classify(ctx, model.Card{Kind: model.KindDev, Title: "other title", Body: "same body"}, opt)
-		if err != nil || second.Tier != model.TierT1 || second.Source != SourceCache || calls != 1 {
+		if err != nil || second.Tier != model.TierT3 || second.Source != SourceCache || calls != 1 {
 			t.Fatalf("cache %+v calls %d err %v", second, calls, err)
 		}
 		third, err := Classify(ctx, model.Card{Kind: model.KindDev, Body: "different body"}, opt)
@@ -85,7 +85,7 @@ func TestClassifySkipCacheAndRule(t *testing.T) {
 			Channel: "classifier",
 			Call:    func(context.Context, string, string) (string, error) { return "not a tier", nil },
 		})
-		if err != nil || bad.Source != SourceRule || bad.Tier != model.TierT1 {
+		if err != nil || bad.Source != SourceRule || bad.Tier != model.TierT3 {
 			t.Fatalf("unparseable %+v err %v", bad, err)
 		}
 		calls := 0
@@ -93,14 +93,14 @@ func TestClassifySkipCacheAndRule(t *testing.T) {
 			Channel: "",
 			Call: func(context.Context, string, string) (string, error) {
 				calls++
-				return "TIER: T1\nREASON: no\n", nil
+				return "TIER: T3\nREASON: no\n", nil
 			},
 		})
-		if err != nil || calls != 0 || down.Source != SourceRule || down.Tier != model.TierT3 {
+		if err != nil || calls != 0 || down.Source != SourceRule || down.Tier != model.TierT1 {
 			t.Fatalf("unavailable %+v calls %d err %v", down, calls, err)
 		}
 		none, err := Classify(ctx, model.Card{Kind: model.KindNormalize, Body: "x"}, Options{Channel: "classifier"})
-		if err != nil || none.Source != SourceRule || none.Tier != model.TierT1 {
+		if err != nil || none.Source != SourceRule || none.Tier != model.TierT3 {
 			t.Fatalf("nil call %+v err %v", none, err)
 		}
 	})

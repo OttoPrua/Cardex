@@ -91,7 +91,7 @@ func TestOpenQuestionRoundTripLegacyAndQuery(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := Open(path)
+	reopened, err := OpenTierUpgrade(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,13 +256,14 @@ func TestOpenQuestionIrregularEnumsSoft(t *testing.T) {
 	if _, err := db.db.ExecContext(ctx, `UPDATE design_nodes SET open_questions=? WHERE id=?`, mixed, "n-mix"); err != nil {
 		t.Fatal(err)
 	}
+
 	if _, err := db.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE version>=2`); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := Open(path)
+	reopened, err := OpenTierUpgrade(path)
 	if err != nil {
 		t.Fatal(err)
 	}

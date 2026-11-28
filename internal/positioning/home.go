@@ -28,6 +28,11 @@ const versionRowID = "cardex.positioning.version"
 // This package reads it and does not write that table.
 const positioningMetaID = "version"
 
+// ProposalTierWire marks a proposal produced under the normalized application
+// convention. Its entries retain legacy wire labels, so the old executable
+// can never publish an inverted model mapping from the same file.
+const ProposalTierWire = "t1-strongest-compatible-wire-v1"
+
 // publishAfterRead runs inside the publish transaction after the stored version
 // is read and before rows are replaced. Tests use it to overlap two approvals.
 var publishAfterRead func()
@@ -47,14 +52,16 @@ type Home struct {
 }
 
 type configFile struct {
-	Positioning []model.Positioning `json:"positioning"`
+	TierConvention string              `json:"tier_convention"`
+	Positioning    []model.Positioning `json:"positioning"`
 }
 
 type savedProposal struct {
-	ID      string              `json:"id"`
-	Entries []model.Positioning `json:"entries"`
-	Diff    string              `json:"diff"`
-	Status  string              `json:"status"`
+	TierConvention string              `json:"tier_convention"`
+	ID             string              `json:"id"`
+	Entries        []model.Positioning `json:"entries"`
+	Diff           string              `json:"diff"`
+	Status         string              `json:"status"`
 }
 
 // Open binds a positioning table to home. A v1 data directory is refused.
@@ -190,6 +197,9 @@ func (h *Home) seedLocked() ([]model.Positioning, error) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return nil, err
 	}
+	if err := normalizeSavedPositioning(cfg.Positioning, cfg.TierConvention); err != nil {
+		return nil, err
+	}
 	return stampVersion(cfg.Positioning, 0), nil
 }
 
@@ -261,7 +271,7 @@ func (h *Home) Propose(ctx context.Context, entries []model.Positioning) (Propos
 		return Proposal{}, err
 	}
 	cloned := cloneEntries(entries)
-	saved := savedProposal{ID: id, Entries: cloned, Diff: summarize(cur, cloned), Status: "proposed"}
+	saved := savedProposal{TierConvention: ProposalTierWire, ID: id, Entries: cloned, Diff: summarize(cur, cloned), Status: "proposed"}
 	if err := h.writeProposal(saved); err != nil {
 		return Proposal{}, err
 	}
@@ -281,6 +291,9 @@ func (h *Home) Approve(ctx context.Context, proposalID string) error {
 	}
 	if p.Status != "proposed" && p.Status != "" {
 		return fmt.Errorf("proposal %s is %s", proposalID, p.Status)
+	}
+	if p.TierConvention != ProposalTierWire {
+		return fmt.Errorf("proposal %s uses old tier labels; submit a new proposal using T1 strongest before approval", proposalID)
 	}
 	softened, review := softenPositioningTiers(cloneEntries(p.Entries))
 	if err := h.publish(ctx, softened); err != nil {
@@ -414,6 +427,9 @@ func (h *Home) writeProposal(p savedProposal) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	if p.TierConvention == ProposalTierWire {
+		p.Entries = TranslateProposalWireTiers(p.Entries)
+	}
 	body, err := json.Marshal(p)
 	if err != nil {
 		return err
@@ -433,7 +449,44 @@ func (h *Home) readProposal(id string) (savedProposal, error) {
 	if err := json.Unmarshal(b, &p); err != nil {
 		return savedProposal{}, err
 	}
+	if p.TierConvention == ProposalTierWire {
+		p.Entries = TranslateProposalWireTiers(p.Entries)
+	}
 	return p, nil
+}
+
+// TranslateProposalWireTiers converts from/to a representation compatible
+// with the pre-upgrade executable. Unknown values remain untouched until
+// the proposal's existing tier validation/softening records them.
+func TranslateProposalWireTiers(in []model.Positioning) []model.Positioning {
+	entries := cloneEntries(in)
+	for i := range entries {
+		for j, raw := range entries[i].Tiers {
+			if tier, err := model.TranslateLegacyTier(raw); err == nil {
+				entries[i].Tiers[j] = tier
+			}
+		}
+	}
+	return entries
+}
+
+func normalizeSavedPositioning(entries []model.Positioning, convention string) error {
+	if _, err := model.TierFromConvention(model.TierNone, convention); err != nil {
+		return err
+	}
+	for i := range entries {
+		for j, raw := range entries[i].Tiers {
+			tier, err := model.TierFromConvention(raw, convention)
+			if err != nil {
+				return err
+			}
+			if tier == model.TierNone {
+				return fmt.Errorf("empty positioning tier")
+			}
+			entries[i].Tiers[j] = tier
+		}
+	}
+	return nil
 }
 
 func newID() (string, error) {

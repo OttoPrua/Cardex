@@ -50,7 +50,7 @@ func TestLaunchFailedRouteReused(t *testing.T) {
 			tier := model.TierT2
 			if tc.mode == "fill" || tc.mode == "fill-other" {
 				kind = model.KindBacklog
-				tier = model.TierT1
+				tier = model.TierT3
 				setFillWindow(t, db, "cha", reset, true)
 			}
 			card := model.Card{
@@ -272,7 +272,7 @@ func TestLaunchFailedModelOnlyKeepsRoute(t *testing.T) {
 			tier := model.TierT2
 			if fill {
 				kind = model.KindBacklog
-				tier = model.TierT1
+				tier = model.TierT3
 			}
 			cardModel := ""
 			switch tc.pin {
@@ -571,7 +571,7 @@ func TestAutoNormalizeLaunchFailureRetries(t *testing.T) {
 	}
 	norm := model.Card{
 		ID: "norm", Objective: objID, Kind: model.KindNormalize, Title: "norm",
-		Tier: model.TierT1, Status: model.CardReady, Deps: []string{"parent"},
+		Tier: model.TierT3, Status: model.CardReady, Deps: []string{"parent"},
 	}
 	if err := db.CreateCard(ctx, &parent); err != nil {
 		t.Fatal(err)
@@ -1039,7 +1039,7 @@ func addCarrier(t *testing.T, db *store.Store, id, modelName string) {
 	}
 	pos := model.Positioning{
 		ID: "pos-" + id, Model: modelName, Family: "early",
-		Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 0,
+		Tiers: []model.Tier{model.TierT3, model.TierT2, model.TierT1}, Preference: 0,
 	}
 	if err := db.CreatePositioning(ctx, &pos); err != nil {
 		t.Fatal(err)

@@ -39,7 +39,7 @@ func TestLegacyOwnerQuestionMigration(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := Open(path)
+	reopened, err := OpenTierUpgrade(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestLegacyOwnerQuestionMigration(t *testing.T) {
 	if err := reopened.Close(); err != nil {
 		t.Fatal(err)
 	}
-	again, err := Open(path)
+	again, err := OpenTierUpgrade(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +82,15 @@ func TestLegacyOwnerQuestionMigration(t *testing.T) {
 	if n := versionRows(t, again, 3); n != 1 {
 		t.Fatalf("second open version 3 rows %d", n)
 	}
-	if n := versionRows(t, again, 0); n != latestSchema {
-		t.Fatalf("schema rows %d", n)
+	if v, err := again.SchemaVersion(ctx); err != nil || v != latestSchema {
+		t.Fatalf("schema version %d: %v", v, err)
+	}
+	// Both the strict-runtime D1 fence and explicit T1 activation are
+	// independently recorded, and the old owner marker remains singular.
+	for _, version := range []int{3, 13, 14, TierConventionSchema} {
+		if n := versionRows(t, again, version); n != 1 {
+			t.Fatalf("schema %d rows %d", version, n)
+		}
 	}
 }
 

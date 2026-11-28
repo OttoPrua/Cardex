@@ -12,10 +12,10 @@ import (
 func TestExplainNoCandidate(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
-	card := model.Card{ID: "c1", Kind: model.KindDev, Tier: model.TierT1, Status: model.CardReady}
+	card := model.Card{ID: "c1", Kind: model.KindDev, Tier: model.TierT3, Status: model.CardReady}
 	obj := model.Objective{ID: "o1"}
 	ok := model.Channel{ID: "grok", Runner: model.RunnerGrok, Models: []string{"grok-4.7"}, Health: model.HealthOK, Concurrency: 1}
-	row := model.Positioning{ID: "p", Model: "grok-4.7", Family: "grok", Tiers: []model.Tier{model.TierT1}, Preference: 1}
+	row := model.Positioning{ID: "p", Model: "grok-4.7", Family: "grok", Tiers: []model.Tier{model.TierT3}, Preference: 1}
 
 	if ex, show := explainNoCandidate(ctx, card, obj, nil, nil, nil, nil, now); !show || !strings.Contains(ex.Reason, "no channel") {
 		t.Fatalf("no channel: %+v %v", ex, show)
@@ -35,8 +35,8 @@ func TestExplainNoCandidate(t *testing.T) {
 		t.Fatal("busy-only channel explained")
 	}
 	t3 := row
-	t3.Tiers = []model.Tier{model.TierT3}
-	if ex, show := explainNoCandidate(ctx, card, obj, []model.Channel{ok}, []model.Positioning{t3}, nil, nil, now); !show || !strings.Contains(ex.Reason, "tier T1") {
+	t3.Tiers = []model.Tier{model.TierT1}
+	if ex, show := explainNoCandidate(ctx, card, obj, []model.Channel{ok}, []model.Positioning{t3}, nil, nil, now); !show || !strings.Contains(ex.Reason, "tier T3") {
 		t.Fatalf("tier gap: %+v %v", ex, show)
 	}
 }

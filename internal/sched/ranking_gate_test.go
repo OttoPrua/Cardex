@@ -46,7 +46,7 @@ func TestDefaultRankingGate(t *testing.T) {
 	if err := db.CreateChannel(ctx, &ch); err != nil {
 		t.Fatal(err)
 	}
-	pos := model.Positioning{ID: "pos", Model: "m", Family: "alpha", Tiers: []model.Tier{model.TierT1, model.TierT2, model.TierT3}, Preference: 1}
+	pos := model.Positioning{ID: "pos", Model: "m", Family: "alpha", Tiers: []model.Tier{model.TierT3, model.TierT2, model.TierT1}, Preference: 1}
 	if err := db.CreatePositioning(ctx, &pos); err != nil {
 		t.Fatal(err)
 	}

@@ -35,7 +35,7 @@ func TestReviewSubjectResolution(t *testing.T) {
 		}
 	}
 	r := &Runner{}
-	orphan := model.Card{ID: "rv-gone", Objective: "o", Kind: model.KindReview, Title: "orphan", Tier: model.TierT3, Status: model.CardReady}
+	orphan := model.Card{ID: "rv-gone", Objective: "o", Kind: model.KindReview, Title: "orphan", Tier: model.TierT1, Status: model.CardReady}
 	if err := db.CreateCard(ctx, &orphan); err != nil {
 		t.Fatal(err)
 	}
@@ -51,19 +51,19 @@ func TestReviewSubjectResolution(t *testing.T) {
 		t.Fatalf("fallback base %q", got)
 	}
 
-	linked := model.Card{ID: "rv-dev", Objective: "o", Kind: model.KindReview, Title: "prefix", Tier: model.TierT3, Status: model.CardReady}
+	linked := model.Card{ID: "rv-dev", Objective: "o", Kind: model.KindReview, Title: "prefix", Tier: model.TierT1, Status: model.CardReady}
 	card, objID, _, _, pin, err = r.workspaceTarget(ctx, db, linked, "o")
 	if err != nil || card != "dev" || objID != "o" || pin.Standalone || pin.Subject != "dev" {
 		t.Fatalf("prefix review target %s %s %+v %v", card, objID, pin, err)
 	}
 
-	explicit := model.Card{ID: "rv-dev", Objective: "o", Kind: model.KindReview, Title: "dep", Tier: model.TierT3, Deps: []string{"other"}, Status: model.CardReady}
+	explicit := model.Card{ID: "rv-dev", Objective: "o", Kind: model.KindReview, Title: "dep", Tier: model.TierT1, Deps: []string{"other"}, Status: model.CardReady}
 	card, _, _, _, pin, err = r.workspaceTarget(ctx, db, explicit, "o")
 	if err != nil || card != "other" || pin.Standalone || pin.Subject != "other" {
 		t.Fatalf("dep review target %s %+v %v", card, pin, err)
 	}
 
-	missing := model.Card{ID: "rv-dev", Objective: "o", Kind: model.KindReview, Title: "bad", Tier: model.TierT3, Deps: []string{"nope"}, Status: model.CardReady}
+	missing := model.Card{ID: "rv-dev", Objective: "o", Kind: model.KindReview, Title: "bad", Tier: model.TierT1, Deps: []string{"nope"}, Status: model.CardReady}
 	_, _, _, _, _, err = r.workspaceTarget(ctx, db, missing, "o")
 	if err == nil || strings.Contains(err.Error(), "no rows") || !strings.Contains(err.Error(), "nope") {
 		t.Fatalf("missing dep error %v", err)
@@ -79,9 +79,9 @@ func TestIndependentRVReviewDispatches(t *testing.T) {
 	cards := []model.Card{
 		{ID: "c1", Objective: obj, Kind: model.KindDev, Title: "c1", Tier: model.TierT2, Status: model.CardReviewing},
 		{ID: "other", Objective: obj, Kind: model.KindDev, Title: "other", Tier: model.TierT2, Status: model.CardDone},
-		{ID: "rv-gone", Objective: obj, Kind: model.KindReview, Title: "standalone", Tier: model.TierT3, Status: model.CardReady, Body: reviewPassScript},
-		{ID: "rv-c1", Objective: obj, Kind: model.KindReview, Title: "prefix", Tier: model.TierT3, Status: model.CardReady, Body: reviewPassScript},
-		{ID: "rv-other", Objective: obj, Kind: model.KindReview, Title: "dep wins", Tier: model.TierT3, Status: model.CardReady, Deps: []string{"c1"}, Body: reviewPassScript},
+		{ID: "rv-gone", Objective: obj, Kind: model.KindReview, Title: "standalone", Tier: model.TierT1, Status: model.CardReady, Body: reviewPassScript},
+		{ID: "rv-c1", Objective: obj, Kind: model.KindReview, Title: "prefix", Tier: model.TierT1, Status: model.CardReady, Body: reviewPassScript},
+		{ID: "rv-other", Objective: obj, Kind: model.KindReview, Title: "dep wins", Tier: model.TierT1, Status: model.CardReady, Deps: []string{"c1"}, Body: reviewPassScript},
 	}
 	for i := range cards {
 		if err := db.CreateCard(ctx, &cards[i]); err != nil {
@@ -134,7 +134,7 @@ func TestMissingReviewDepParksOnce(t *testing.T) {
 	_, obj := seedRepo(t, db, repo, "true")
 	seedRoutes(t, db)
 	card := model.Card{
-		ID: "rv-gone", Objective: obj, Kind: model.KindReview, Title: "bad dep", Tier: model.TierT3,
+		ID: "rv-gone", Objective: obj, Kind: model.KindReview, Title: "bad dep", Tier: model.TierT1,
 		Status: model.CardReady, Deps: []string{"nope"}, Body: reviewPassScript,
 	}
 	if err := db.CreateCard(ctx, &card); err != nil {
@@ -177,7 +177,7 @@ func TestPinnedStandaloneSurvivesLaterSubject(t *testing.T) {
 	_, obj := seedRepo(t, db, repo, "true")
 	seedRoutes(t, db)
 	card := model.Card{
-		ID: "rv-future", Objective: obj, Kind: model.KindReview, Title: "standalone", Tier: model.TierT3,
+		ID: "rv-future", Objective: obj, Kind: model.KindReview, Title: "standalone", Tier: model.TierT1,
 		Status: model.CardReady, Body: reviewPassScript,
 	}
 	if err := db.CreateCard(ctx, &card); err != nil {
@@ -247,7 +247,7 @@ func TestPinnedPrefixReviewsExistingSubject(t *testing.T) {
 	branch(t, repo, obj, "present", "unique.txt", "candidate-not-on-main\n")
 	for _, card := range []model.Card{
 		{ID: "present", Objective: obj, Kind: model.KindDev, Title: "present", Tier: model.TierT2, Status: model.CardPaused},
-		{ID: "rv-present", Objective: obj, Kind: model.KindReview, Title: "prefix", Tier: model.TierT3, Status: model.CardReady, Body: reviewPassScript},
+		{ID: "rv-present", Objective: obj, Kind: model.KindReview, Title: "prefix", Tier: model.TierT1, Status: model.CardReady, Body: reviewPassScript},
 	} {
 		if err := db.CreateCard(ctx, &card); err != nil {
 			t.Fatal(err)
@@ -308,8 +308,8 @@ func TestMissingFirstDepBeforeGate(t *testing.T) {
 	cards := []model.Card{
 		{ID: "gate", Objective: obj, Kind: model.KindDev, Title: "gate", Tier: model.TierT2, Status: model.CardPaused},
 		{ID: "dev", Objective: obj, Kind: model.KindDev, Title: "dev", Tier: model.TierT2, Status: model.CardPaused},
-		{ID: "rv-old", Objective: obj, Kind: model.KindReview, Title: "old", Tier: model.TierT3, Status: model.CardReady, Deps: []string{"bad", "gate"}, Body: reviewPassScript},
-		{ID: "rv-ok", Objective: obj, Kind: model.KindReview, Title: "ok", Tier: model.TierT3, Status: model.CardReady, Deps: []string{"dev", "gate"}, Body: reviewPassScript},
+		{ID: "rv-old", Objective: obj, Kind: model.KindReview, Title: "old", Tier: model.TierT1, Status: model.CardReady, Deps: []string{"bad", "gate"}, Body: reviewPassScript},
+		{ID: "rv-ok", Objective: obj, Kind: model.KindReview, Title: "ok", Tier: model.TierT1, Status: model.CardReady, Deps: []string{"dev", "gate"}, Body: reviewPassScript},
 	}
 	for i := range cards {
 		if err := db.CreateCard(ctx, &cards[i]); err != nil {
@@ -361,7 +361,7 @@ func TestPrefixDevWaitsForCandidateBranch(t *testing.T) {
 	seedRoutes(t, db)
 	cards := []model.Card{
 		{ID: "bare", Objective: obj, Kind: model.KindDev, Title: "bare", Tier: model.TierT2, Status: model.CardPaused},
-		{ID: "rv-bare", Objective: obj, Kind: model.KindReview, Title: "prefix", Tier: model.TierT3, Status: model.CardReady, Body: reviewPassScript},
+		{ID: "rv-bare", Objective: obj, Kind: model.KindReview, Title: "prefix", Tier: model.TierT1, Status: model.CardReady, Body: reviewPassScript},
 	}
 	for i := range cards {
 		if err := db.CreateCard(ctx, &cards[i]); err != nil {
@@ -408,7 +408,7 @@ func TestExplicitDepReviewsWithoutCandidateBranch(t *testing.T) {
 	seedRoutes(t, db)
 	cards := []model.Card{
 		{ID: "bare", Objective: obj, Kind: model.KindDev, Title: "bare", Tier: model.TierT2, Status: model.CardPaused},
-		{ID: "rv-explicit", Objective: obj, Kind: model.KindReview, Title: "dep", Tier: model.TierT3, Status: model.CardReady, Deps: []string{"bare"}, Body: reviewPassScript},
+		{ID: "rv-explicit", Objective: obj, Kind: model.KindReview, Title: "dep", Tier: model.TierT1, Status: model.CardReady, Deps: []string{"bare"}, Body: reviewPassScript},
 	}
 	for i := range cards {
 		if err := db.CreateCard(ctx, &cards[i]); err != nil {
@@ -443,7 +443,7 @@ func TestPrefixPassRequiresCandidateCommit(t *testing.T) {
 	branch(t, repo, obj, "present", "unique.txt", "candidate-not-on-main\n")
 	for _, card := range []model.Card{
 		{ID: "present", Objective: obj, Kind: model.KindDev, Title: "present", Tier: model.TierT2, Status: model.CardRunning},
-		{ID: "rv-present", Objective: obj, Kind: model.KindReview, Title: "prefix", Tier: model.TierT3, Status: model.CardReady, Body: reviewPassScript},
+		{ID: "rv-present", Objective: obj, Kind: model.KindReview, Title: "prefix", Tier: model.TierT1, Status: model.CardReady, Body: reviewPassScript},
 	} {
 		if err := db.CreateCard(ctx, &card); err != nil {
 			t.Fatal(err)
@@ -546,7 +546,7 @@ func TestSubjectCreatedDuringWorktreeStaysUnpinned(t *testing.T) {
 	_, obj := seedRepo(t, db, repo, "true")
 	seedRoutes(t, db)
 	card := model.Card{
-		ID: "rv-late", Objective: obj, Kind: model.KindReview, Title: "standalone", Tier: model.TierT3,
+		ID: "rv-late", Objective: obj, Kind: model.KindReview, Title: "standalone", Tier: model.TierT1,
 		Status: model.CardReady, Body: reviewPassScript,
 	}
 	if err := db.CreateCard(ctx, &card); err != nil {
